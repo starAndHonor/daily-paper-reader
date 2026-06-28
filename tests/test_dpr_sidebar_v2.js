@@ -468,7 +468,8 @@ function testSidebarPaperVisualStateCssContract() {
   assert.ok(/\.dpr-sidebar-paper\[data-read="0"\]::after\s*{[^}]*box-shadow:\s*0 0 0 2px #ffffff,\s*0 0 5px rgba\(239,\s*68,\s*68,\s*\.45\)/i.test(css));
   assert.ok(/\.dpr-sidebar-paper\[data-read="0"\]::after\s*{[^}]*z-index:\s*6/i.test(css));
   assert.ok(/#dpr-sidebar-v2\.is-filter-unread\s+\.dpr-sidebar-paper\.is-active\[data-read="1"\]\s*{[^}]*display:\s*block/i.test(css));
-  assert.ok(/#dpr-sidebar-v2\.is-filter-unread\s+\.dpr-sidebar-axis-section\.is-all-read:has\(\.dpr-sidebar-paper\.is-active\)\s*{[^}]*display:\s*block/i.test(css));
+  assert.ok(!css.includes('.dpr-sidebar-axis-section.is-all-read:has(.dpr-sidebar-paper.is-active)'));
+  assert.ok(/#dpr-sidebar-v2\.is-filter-unread\s+\.dpr-sidebar-axis-section\.is-all-read\.has-active-paper\s*{[^}]*display:\s*block/i.test(css));
 
   const mainRule = cssRule(css, '.dpr-sidebar-paper-main');
   assert.ok(/display:\s*block/i.test(mainRule));
@@ -644,7 +645,7 @@ function testAxisSectionsAreExpandable() {
     activeDailyDate: '20260624',
   });
 
-  assert.ok(expandedHtml.includes('class="dpr-sidebar-axis-section dpr-sidebar-axis-section-conference is-expanded"'));
+  assert.ok(/class="[^"]*dpr-sidebar-axis-section-conference[^"]*is-expanded[^"]*"/.test(expandedHtml));
   assert.ok(expandedHtml.includes(`data-axis-section-toggle="${sectionKey}"`));
   assert.ok(expandedHtml.includes('aria-expanded="true"'));
 
@@ -798,6 +799,8 @@ function testUnreadResultsKeepCurrentReadPaperVisible() {
   assert.ok(html.includes('Paper A'));
   assert.ok(html.includes('data-paper-id="202606/24/paper-a"'));
   assert.ok(html.includes('data-read="1"'));
+  assert.ok(/class="dpr-sidebar-axis-section dpr-sidebar-axis-section-daily[^"]*has-active-paper/.test(html));
+  assert.ok(/class="dpr-sidebar-paper dpr-sidebar-paper-deep is-active"/.test(html));
 }
 
 function testStatusClickKeepsPaperRowInPlace() {

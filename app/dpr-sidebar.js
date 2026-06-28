@@ -1229,6 +1229,7 @@
           unreadCount: conferenceUnread,
           collapsedAxisSections: vs.collapsedAxisSections,
           readMap: vs.readMap,
+          currentPaperId: resultOptions.currentPaperId,
         }));
       }
     }
@@ -1254,6 +1255,7 @@
           unreadCount: dailyUnread,
           collapsedAxisSections: vs.collapsedAxisSections,
           readMap: vs.readMap,
+          currentPaperId: resultOptions.currentPaperId,
         }));
       }
     }
@@ -1364,7 +1366,7 @@
     html.push('  </button>');
     html.push('  <div class="dpr-sidebar-panel-content">');
     html.push(renderAxisTabs(opts.group, opts.mode, opts.view, opts.toggleLabel));
-    html.push(renderAxisContent(opts.group, axisMode, opts.view, opts.collapsedAxisSections, opts.readMap));
+    html.push(renderAxisContent(opts.group, axisMode, opts.view, opts.collapsedAxisSections, opts.readMap, opts.currentPaperId));
     html.push('  </div>');
     html.push('</section>');
     return html.join('');
@@ -1393,7 +1395,7 @@
     return html.join('');
   }
 
-  function renderAxisContent(group, mode, view, collapsedAxisSections, readMap) {
+  function renderAxisContent(group, mode, view, collapsedAxisSections, readMap, currentPaperId) {
     var html = [];
     var collapsed = normalizeSet(collapsedAxisSections);
     html.push('<div class="dpr-sidebar-axis-content" data-axis-content="' + safeAttr(group) + '">');
@@ -1404,16 +1406,19 @@
       var stateKey = axisSectionStateKey(group, mode, item.key);
       var isExpanded = !collapsed.has(stateKey);
       var expandedClass = isExpanded ? ' is-expanded' : '';
+      var activeSectionClass = (currentPaperId && (item.papers || []).some(function (paper) {
+        return paperIdentity(paper) === currentPaperId;
+      })) ? ' has-active-paper' : '';
       var unread = typeof item.unreadCount === 'number' ? item.unreadCount : (item.papers || []).length;
       var unreadFlag = unread > 0 ? '1' : '0';
-      html.push('<section class="dpr-sidebar-axis-section' + sectionClass + expandedClass + '" data-axis-section="' + safeAttr(item.key) + '" data-axis-section-key="' + safeAttr(stateKey) + '">');
+      html.push('<section class="dpr-sidebar-axis-section' + sectionClass + expandedClass + activeSectionClass + '" data-axis-section="' + safeAttr(item.key) + '" data-axis-section-key="' + safeAttr(stateKey) + '">');
       html.push('  <button type="button" class="dpr-sidebar-axis-section-header" data-axis-section-toggle="' + safeAttr(stateKey) + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '" data-unread="' + unreadFlag + '">');
       html.push('    <span class="dpr-sidebar-day-arrow" aria-hidden="true">▸</span>');
       html.push('    <span class="dpr-sidebar-axis-section-label">' + safeText(item.label) + ' <span class="dpr-sidebar-day-counts"><span class="dpr-sidebar-day-unread">' + safeText(unread) + '</span>/<span class="dpr-sidebar-day-total">' + safeText((item.papers || []).length) + '</span></span></span>');
       html.push('  </button>');
       html.push('  <ul class="dpr-sidebar-axis-papers">');
       (item.papers || []).forEach(function (paper) {
-        html.push(renderPaper(paper, readMap));
+        html.push(renderPaper(paper, readMap, currentPaperId));
       });
       html.push('  </ul>');
       html.push('</section>');
@@ -1422,10 +1427,11 @@
     return html.join('');
   }
 
-  function renderPaper(p, readMap) {
+  function renderPaper(p, readMap, currentPaperId) {
     var sectionClass = p.section ? ' dpr-sidebar-paper-' + p.section : '';
     var paperId = p.id || '';
     var status = paperReadStatus(p, readMap || {});
+    var activeClass = currentPaperId && paperIdentity(p) === currentPaperId ? ' is-active' : '';
     var dataAttrs = [
       'data-paper-id="' + safeAttr(paperId) + '"',
       'data-href="' + safeAttr(p.href) + '"',
@@ -1448,7 +1454,7 @@
       );
     }).join('');
     return (
-      '<li class="dpr-sidebar-paper' + sectionClass + '" ' + dataAttrs + '>' +
+      '<li class="dpr-sidebar-paper' + sectionClass + activeClass + '" ' + dataAttrs + '>' +
       '  <div class="dpr-sidebar-paper-main">' +
       '    <a class="dpr-sidebar-paper-link" href="' + safeAttr(p.href) + '">' +
       '      <span class="dpr-sidebar-paper-title">' + safeText(p.title) + '</span>' +
@@ -1539,6 +1545,9 @@
     $$('.dpr-sidebar-paper.is-active', state.bodyEl).forEach(function (li) {
       li.classList.remove('is-active');
     });
+    $$('.dpr-sidebar-axis-section.has-active-paper', state.bodyEl).forEach(function (section) {
+      section.classList.remove('has-active-paper');
+    });
     if (!href) return;
     var li = state.bodyEl.querySelector(
       '.dpr-sidebar-paper[data-href="' + cssEscape(href) + '"]'
@@ -1553,6 +1562,8 @@
     }
     if (!li) return;
     li.classList.add('is-active');
+    var activeSection = li.closest && li.closest('.dpr-sidebar-axis-section');
+    if (activeSection) activeSection.classList.add('has-active-paper');
     var currentPaperHref = findCurrentPaperHrefFromModel(state.model, href);
     var currentPaperId = currentPaperHref ? paperIdFromHref(currentPaperHref) : '';
     var readMap = ReadState.getAll();
