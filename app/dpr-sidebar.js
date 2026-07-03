@@ -752,6 +752,67 @@
     return true;
   }
 
+  function filterModelForPaperResults(model, options) {
+    var opts = resolveResultOptions(options);
+    if (!opts.keyword && !opts.unreadOnly) return model || { home: null, tutorial: null, daily: [], conferences: [] };
+    var source = model || {};
+    var filtered = {
+      home: source.home || null,
+      tutorial: source.tutorial || null,
+      daily: [],
+      conferences: [],
+    };
+    (source.daily || []).forEach(function (day) {
+      var papers = (day.papers || []).filter(function (paper) {
+        return paperMatchesResult(paper, opts);
+      });
+      if (!papers.length) return;
+      var nextDay = {};
+      Object.keys(day || {}).forEach(function (key) {
+        nextDay[key] = day[key];
+      });
+      nextDay.papers = papers;
+      filtered.daily.push(nextDay);
+    });
+    (source.conferences || []).forEach(function (conf) {
+      var topics = [];
+      (conf.topics || []).forEach(function (topic) {
+        var papers = (topic.papers || []).filter(function (paper) {
+          return paperMatchesResult(paper, opts);
+        });
+        if (!papers.length) return;
+        var nextTopic = {};
+        Object.keys(topic || {}).forEach(function (key) {
+          nextTopic[key] = topic[key];
+        });
+        nextTopic.papers = papers;
+        topics.push(nextTopic);
+      });
+      if (!topics.length) return;
+      var nextConf = {};
+      Object.keys(conf || {}).forEach(function (key) {
+        nextConf[key] = conf[key];
+      });
+      nextConf.topics = topics;
+      filtered.conferences.push(nextConf);
+    });
+    return filtered;
+  }
+
+  function modelForUnreadNormalFilter(model, readMap) {
+    var keyword = String(state.search || '').trim();
+    if (state.filter !== 'unread' || keyword) return model;
+    var currentPaperHref = resolveCurrentPaperHrefForRender(model, {
+      currentPaperHref: state.pendingPaperHref || currentRouteHref(),
+    });
+    return filterModelForPaperResults(model, {
+      readMap: readMap || {},
+      unreadOnly: true,
+      currentPaperId: currentPaperHref ? paperIdFromHref(currentPaperHref) : '',
+      unreadResultPaperIds: state.unreadResultPaperIds,
+    });
+  }
+
   function resultTabLabel(options) {
     var opts = resolveResultOptions(options);
     if (opts.keyword && opts.unreadOnly) return '未读搜索';
@@ -1334,25 +1395,28 @@
     var vs = resolveViewState(viewState);
     var map = readMap || vs.readMap || {};
     var axisMode = mode || '';
-    var resultMode = axisMode === 'results' || !!vs.search.trim() || vs.filter === 'unread';
+    var keyword = vs.search.trim();
+    var resultMode = axisMode === 'results' || !!keyword;
+    var normalUnreadFilterMode = vs.filter === 'unread' && !keyword && axisMode !== 'results';
     var currentPaperHref = resolveCurrentPaperHrefForRender(model, vs);
     var resultOptions = {
-      keyword: vs.search.trim(),
+      keyword: keyword,
       readMap: map,
       unreadOnly: vs.filter === 'unread',
       currentPaperId: currentPaperHref ? paperIdFromHref(currentPaperHref) : '',
       unreadResultPaperIds: vs.unreadResultPaperIds,
     };
+    var viewModel = normalUnreadFilterMode ? filterModelForPaperResults(model, resultOptions) : model;
     if (group === 'conference') {
       if (resultMode) return buildConferenceResultView(model, resultOptions);
       return axisMode === 'tag'
-        ? buildConferenceTagView(model, vs.activeConferenceTag, map)
-        : buildConferenceConfView(model, vs.activeConference, map);
+        ? buildConferenceTagView(viewModel, vs.activeConferenceTag, map)
+        : buildConferenceConfView(viewModel, vs.activeConference, map);
     }
     if (resultMode) return buildDailyResultView(model, resultOptions);
     return axisMode === 'tag'
-      ? buildDailyTagView(model, vs.activeDailyTag, map)
-      : buildDailyDateView(model, vs.activeDailyDate, map, vs.activeDailyMonth);
+      ? buildDailyTagView(viewModel, vs.activeDailyTag, map)
+      : buildDailyDateView(viewModel, vs.activeDailyDate, map, vs.activeDailyMonth);
   }
 
   function renderBodyHtml(model, viewState) {
@@ -1360,7 +1424,8 @@
     var vs = resolveViewState(viewState);
     var unreadOnly = vs.filter === 'unread';
     var keyword = vs.search.trim();
-    var resultMode = !!keyword || unreadOnly;
+    var resultMode = !!keyword;
+    var normalUnreadFilterMode = unreadOnly && !keyword;
     var currentPaperHref = resolveCurrentPaperHrefForRender(model, vs);
     var resultOptions = {
       keyword: keyword,
@@ -1369,14 +1434,15 @@
       currentPaperId: currentPaperHref ? paperIdFromHref(currentPaperHref) : '',
       unreadResultPaperIds: vs.unreadResultPaperIds,
     };
-    var summary = computeModelReadSummary(model, vs.readMap);
+    var viewModel = normalUnreadFilterMode ? filterModelForPaperResults(model, resultOptions) : model;
+    var summary = computeModelReadSummary(viewModel, vs.readMap);
     var renderedGroups = 0;
-    if (model && model.conferences && model.conferences.length) {
+    if (viewModel && viewModel.conferences && viewModel.conferences.length) {
       var conferenceView = resultMode
         ? buildConferenceResultView(model, resultOptions)
         : (vs.conferenceViewMode === 'tag'
-          ? buildConferenceTagView(model, vs.activeConferenceTag, vs.readMap)
-          : buildConferenceConfView(model, vs.activeConference, vs.readMap));
+          ? buildConferenceTagView(viewModel, vs.activeConferenceTag, vs.readMap)
+          : buildConferenceConfView(viewModel, vs.activeConference, vs.readMap));
       var conferenceTotal = resultMode ? countPapersInView(conferenceView) : summary.conference.papers;
       var conferenceUnread = resultMode ? countUnreadInView(conferenceView, vs.readMap) : summary.conference.unread;
       if (!resultMode || conferenceTotal > 0) {
@@ -1397,12 +1463,12 @@
         }));
       }
     }
-    if (model && model.daily && model.daily.length) {
+    if (viewModel && viewModel.daily && viewModel.daily.length) {
       var dailyView = resultMode
         ? buildDailyResultView(model, resultOptions)
         : (vs.dailyViewMode === 'tag'
-          ? buildDailyTagView(model, vs.activeDailyTag, vs.readMap)
-          : buildDailyDateView(model, vs.activeDailyDate, vs.readMap, vs.activeDailyMonth));
+          ? buildDailyTagView(viewModel, vs.activeDailyTag, vs.readMap)
+          : buildDailyDateView(viewModel, vs.activeDailyDate, vs.readMap, vs.activeDailyMonth));
       var dailyTotal = resultMode ? countPapersInView(dailyView) : summary.daily.papers;
       var dailyUnread = resultMode ? countUnreadInView(dailyView, vs.readMap) : summary.daily.unread;
       if (!resultMode || dailyTotal > 0) {
@@ -1424,7 +1490,7 @@
         }));
       }
     }
-    if (resultMode && renderedGroups === 0) {
+    if ((resultMode || normalUnreadFilterMode) && renderedGroups === 0) {
       html.push('<div class="dpr-sidebar-empty">没有匹配的论文</div>');
     }
     return html.join('');
@@ -1510,7 +1576,9 @@
 
   function updateDailyCalendarUnreadMarks(readMap) {
     if (!state.bodyEl) return;
-    var view = buildDailyDateView(state.model, state.activeDailyDate, readMap || {}, state.activeDailyMonth);
+    var map = readMap || {};
+    var calendarModel = modelForUnreadNormalFilter(state.model, map);
+    var view = buildDailyDateView(calendarModel, state.activeDailyDate, map, state.activeDailyMonth);
     var daysByKey = {};
     (view.calendar && view.calendar.days || []).forEach(function (day) {
       if (day && day.dateKey) daysByKey[day.dateKey] = day;
@@ -1540,10 +1608,12 @@
   }
 
   function syncResolvedAxisState() {
-    var dailyDate = buildDailyDateView(state.model, state.activeDailyDate, null, state.activeDailyMonth);
-    var dailyTag = buildDailyTagView(state.model, state.activeDailyTag);
-    var confView = buildConferenceConfView(state.model, state.activeConference);
-    var confTag = buildConferenceTagView(state.model, state.activeConferenceTag);
+    var readMap = ReadState.getAll();
+    var axisModel = modelForUnreadNormalFilter(state.model, readMap);
+    var dailyDate = buildDailyDateView(axisModel, state.activeDailyDate, readMap, state.activeDailyMonth);
+    var dailyTag = buildDailyTagView(axisModel, state.activeDailyTag, readMap);
+    var confView = buildConferenceConfView(axisModel, state.activeConference, readMap);
+    var confTag = buildConferenceTagView(axisModel, state.activeConferenceTag, readMap);
     state.activeDailyDate = dailyDate.activeKey;
     state.activeDailyMonth = dailyDate.calendar && dailyDate.calendar.monthKey || monthKeyFromDateKey(dailyDate.activeKey) || '';
     state.activeDailyTag = dailyTag.activeKey;

@@ -993,6 +993,65 @@ function testUnreadResultsComeFromFullModel() {
   assert.deepEqual(view.groups[0].papers.map((paper) => paper.title), ['Paper D']);
 }
 
+function testUnreadFilterReusesNormalSidebarViews() {
+  const sidebar = loadSidebarForTest('#/202606/24/paper-b');
+  const tools = sidebar.__test;
+  const model = tools.parseSidebar(sampleSidebar);
+
+  const readMap = {
+    '202606/24/paper-a': 'read',
+    'conference/iclr-2025/paper-e': 'read',
+  };
+  const html = tools.renderBodyHtml(model, {
+    expandedGroups: { conference: true, daily: true },
+    conferenceViewMode: 'conf',
+    dailyViewMode: 'date',
+    activeConference: 'neurips-2024',
+    activeDailyDate: '20260624',
+    filter: 'unread',
+    readMap: readMap,
+  });
+
+  assert.ok(html.includes('data-axis-group="conference"'));
+  assert.ok(html.includes('data-axis-mode="conf"'));
+  assert.ok(html.includes('data-axis-key="neurips-2024"'));
+  assert.ok(!html.includes('data-axis-key="__results__"'));
+  assert.ok(!html.includes('dpr-sidebar-axis-row-results'));
+  assert.ok(!html.includes('未读搜索'));
+  assert.ok(!html.includes('>未读<'));
+
+  assert.ok(html.includes('class="dpr-sidebar-calendar'));
+  assert.ok(html.includes('data-calendar-date="20260624"'));
+  assert.ok(html.includes('data-calendar-date="20260623"'));
+  assert.ok(!html.includes('data-axis-tab="daily"'));
+  assert.ok(html.includes('title="日历下置"'));
+
+  assert.ok(!html.includes('Paper A'));
+  assert.ok(html.includes('Paper B'));
+  assert.ok(html.includes('Paper C'));
+  assert.ok(!html.includes('Paper E'));
+
+  const dailyView = tools.buildAxisViewForMode(model, 'daily', 'date', {
+    dailyViewMode: 'date',
+    activeDailyDate: '20260624',
+    filter: 'unread',
+    readMap: readMap,
+  }, readMap);
+  assert.equal(dailyView.resultMode, undefined);
+  assert.equal(dailyView.activeKey, '20260624');
+  assert.deepEqual(dailyView.groups[0].papers.map((paper) => paper.title), ['Paper B']);
+
+  const confView = tools.buildAxisViewForMode(model, 'conference', 'conf', {
+    conferenceViewMode: 'conf',
+    activeConference: 'neurips-2024',
+    filter: 'unread',
+    readMap: readMap,
+  }, readMap);
+  assert.equal(confView.resultMode, undefined);
+  assert.deepEqual(confView.tabs.map((tab) => tab.key), ['neurips-2024']);
+  assert.deepEqual(confView.groups[0].papers.map((paper) => paper.title), ['Paper C']);
+}
+
 function testUnreadResultsKeepCurrentReadPaperVisible() {
   const sidebar = loadSidebarForTest('#/202606/24/paper-a');
   const tools = sidebar.__test;
@@ -1068,10 +1127,26 @@ function testUnreadSessionSnapshotKeepsSeenRowsVisibleUntilReload() {
   assert.ok(html.includes('Paper A'));
   assert.ok(html.includes('Paper B'));
   assert.ok(html.includes('Paper C'));
-  assert.ok(html.includes('Paper E'));
+  assert.ok(html.includes('data-axis-key="iclr-2025"'));
+  assert.ok(!html.includes('Paper E'));
   assert.ok(!html.includes('Paper D'));
-  assert.equal((html.match(/data-read="1"/g) || []).length, 4);
+  assert.equal((html.match(/data-read="1"/g) || []).length, 3);
   assert.equal((html.match(/data-read="0"/g) || []).length, 0);
+
+  const iclrView = tools.buildAxisViewForMode(model, 'conference', 'conf', {
+    conferenceViewMode: 'conf',
+    activeConference: 'iclr-2025',
+    filter: 'unread',
+    unreadResultPaperIds: snapshot,
+    readMap: {
+      '202606/24/paper-a': 'read',
+      '202606/24/paper-b': 'read',
+      '202606/23/paper-d': 'read',
+      'conference/iclr-2025/paper-e': 'read',
+      'conference/neurips-2024/paper-c': 'read',
+    },
+  });
+  assert.deepEqual(iclrView.groups[0].papers.map((paper) => paper.title), ['Paper E']);
 }
 
 function testUnreadClickPendingHrefKeepsClickedPaperVisibleBeforeHashUpdates() {
@@ -1160,6 +1235,7 @@ testPanelCountsUseFullModel();
 testSearchResultsComeFromFullModel();
 testSearchNoResultsShowsEmptyState();
 testUnreadResultsComeFromFullModel();
+testUnreadFilterReusesNormalSidebarViews();
 testUnreadResultsKeepCurrentReadPaperVisible();
 testUnreadSessionSnapshotKeepsSeenRowsVisibleUntilReload();
 testUnreadClickPendingHrefKeepsClickedPaperVisibleBeforeHashUpdates();
