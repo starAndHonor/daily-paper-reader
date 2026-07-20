@@ -1,0 +1,856 @@
+Title: Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation
+
+URL Source: https://arxiv.org/pdf/2607.14557v1
+
+Published Time: Fri, 17 Jul 2026 01:20:17 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+# Qicheng Zhao 
+
+22447067@zju.edu.cn Zhejiang University Hangzhou, China 
+
+# Qi Sun 
+
+qisunchn@zju.edu.cn Zhejiang University Hangzhou, China 
+
+# Zheyu Yan ∗
+
+zyan2@zju.edu.cn Zhejiang University Hangzhou, China 
+
+## Abstract 
+
+Diffusion Multimodal Large Language Models (DMLLMs) are highly effective for multimodal reasoning, yet their inference efficiency is significantly hindered by fixed-length generation constraints. Since the actual output length is unknown, output sequences are padded to a predefined maximum length, resulting in substantial redun-dant computation over unnecessary [EOS] tokens. In this work, we discover that DMLLMs implicitly reveal their valid semantic boundary at the very first denoising step through a distinct shift in MLP activation sparsity. Leveraging this observation, we propose Seer, a training-free framework that detects this boundary using a Signal-to-Noise Ratio (SNR)-based criterion and performs one-shot truncation of the redundant suffix for all subsequent computations. To preserve these theoretical gains during batched serving, Seer incorporates a hybrid execution strategy that maximizes through-put while seamlessly accommodating dynamic sequence lengths. Experimental results demonstrate that Seer effectively eliminates padding waste, accelerating throughput by up to ∼31 ×. Across 9 benchmarks, Seer robustly maintains overall performance and even improves accuracy on complex visual tasks by mitigating noise leakage (e.g., DocVQA score increases from 63.52 to 63.66), offering a highly efficient, plug-and-play solution for DMLLM acceleration. 
+
+## CCS Concepts 
+
+• Computing methodologies → Neural networks .
+
+## Keywords 
+
+Multimodal Learning, Diffusion Models, Efficient Inference, Multi-modal Large Language Models 
+
+## 1 Introduction 
+
+Diffusion Multimodal Large Language Models (DMLLMs), repre-sented by LaViDa [ 27 ], aA [ 66 ], and LLaDA-V [ 73 ], have recently emerged as a compelling alternative to autoregressive multimodal models. Instead of decoding text strictly token by token, DMLLMs formulate generation as a global iterative denoising process over a predefined fixed-length sequence window. This paradigm naturally enables bidirectional interaction between visual and textual tokens at every diffusion step, making it attractive for holistic multimodal reasoning. However, it also introduces a severe inference bottle-neck. Because denoising updates the entire sequence concurrently, the model must repeatedly process all positions layer by layer and step by step, even when only a small prefix contains semantically valid output and the remaining positions are already occupied by redundant [EOS] tokens.  
+
+> ∗Corresponding author. Q: Provide a detailed description of what
+> is happening in the picture.
+> A: A basketball player wearing a white
+> USA jersey with the number four is
+> taking a jump shot while his teammates
+> watch closely from the sideline .
+> <|eot_id|> <|endoftext|> <|endoftext|>
+> <|endoftext|> <|endoftext|> <|endoftext|>
+> <|endoftext|> <|endoftext|> <|endoftext|>
+> <|endoftext|> <|endoftext|>
+
+Figure 1: An illustration of the “Curse of Padding” in DM-LLMs. Due to the fixed-length generation window, a short se-mantically valid response is inevitably followed by a massive sequence of redundant padding tokens (e.g., <|endoftext|> ), leading to severe computational waste. 
+
+As illustrated in Figure 1, in fixed-length generation, because the ground truth response sequence length is unknown, even a short response is designated a very long generation window and the generated response is then inevitably padded with a massive se-quence of redundant tokens (e.g., <|endoftext|> ). This overhead, which we refer to as the curse of padding , is particularly severe in multimodal settings. In pure language diffusion models, a redun-dant suffix mainly interacts with other text tokens. In DMLLMs, by contrast, modern architectures often ingest large visual contexts from high-resolution images or multi-frame videos, so redundant text positions repeatedly participate in dense cross-modal attention with a large visual prefix. This large prefix, along with the quadratic nature of the bidirectional generation, significantly exacerbates the overhead incurred by longer generation windows. Beyond efficiency, these semantically vacuous suffix tokens may also degrade prediction quality. As illustrated in Figure 2, because padding tokens like [EOS] are weakly grounded, they tend to attend diffusely to task-irrelevant visual backgrounds (Figure 2a). In a bidirectional attention paradigm, these suffix tokens act as weak relay nodes, causing background noise to leak back into the valid text prefix (Figure 2b). By early truncating the redundant suffix, we effectively cut off this indirect contamination pathway, allowing the valid tokens to concentrate their cross-modal attention sharply on the correct semantic target (Figure 2c). Therefore, removing the padding suffix is not merely a systems-level acceleration technique, but also a representation purification process that guards against bidirectional noise interference. Existing acceleration methods for multimodal large models do not adequately resolve this form of text-side redundancy. In fact, recent acceleration efforts for Diffusion Multimodal Large Lan-guage Models (DMLLMs), such as D3ToM [ 6] and RedVTP [ 63 ], arXiv:2607.14557v1 [cs.AI] 16 Jul 2026 Zhao et al. (a) [EOS] (b) w/ [EOS] (c) w/o [EOS] 
+
+> What is the name of the actor in the red bounding box?
+> The name of the actor in the red bounding box is [ ] [ ] .
+
+Figure 2: Visualization of cross-modal attention showing suffix-mediated noise leakage. (a) Redundant [EOS] tokens attend to irrelevant backgrounds. (b) Valid tokens absorb this background noise due to bidirectional attention (white boxes show abnormal hotspots). (c) Removing the [EOS] suffix elim-inates this noise, concentrating attention on the correct tar-get (the actor’s face). This shows that truncating padding improves both efficiency and visual reasoning. 
+
+largely inherit visual token compression paradigms from autore-gressive multimodal models, primarily focusing on token merging or pruning. However, these methods that heavily target visual to-kens have inherent limitations. Aggressive visual compression may irreversibly remove fine-grained details that are crucial for complex vision-language reasoning. More importantly, they completely fail to address the redundant text suffix that remains on the output side under the fixed-window diffusion decoding paradigm. In short, existing multimodal acceleration techniques mainly attack visual redundancy at the input side, while leaving untouched the massive, repeated computation over semantically empty text suffixes. This raise the question: can we improve generation efficiency by pre-defining a precise sequence length? 
+
+The answer is yes, but the solution is non-trivial. A naive ap-proach to mitigate this padding waste is to statically reduce the max-imum sequence window, but as illustrated in Figure 3(a), ground-truth answer lengths exhibit high variance and right-skewed long-tail distributions across diverse multimodal tasks. The longest an-swer is often 10 × to the shorter ones. Setting a static window small enough to save compute would blindly truncate valid reasoning chains, while a large safe window maintains the padding curse. Faced with this dilemma, we ask a different question: can a DM-LLM infer, at the very beginning of denoising, where the semantically valid text ends so the redundant suffix can be dynamically removed once and for all? Intuitively, semantically valid tokens encapsulate rich information, so their continuous MLP activation values devi-ate strongly from zero. Conversely, semantically vacuous padding tokens’ activations naturally cluster around zero. Motivated by this difference, we systematically profile the text-side MLP activation sparsity at the initial denoising step (Step-0). Through empirical analysis, we discover that defining near-zero activations with an absolute threshold yields the most distinct boundary discrimination. As visualized in the layer-wise sparsity curves across early layers (Layers 3 to 6) in Figure 3(b), we uncover a striking and previously undocumented phenomenon. Long before explicit sequence generation completes, these early layers already expose a highly distinct boundary signal. The semantically valid prefix maintains relatively dense activations, whereas the predicted end region is marked by a sharp sparsity spike (the Semantic Jump), immediately followed by a prolonged and highly stable flat line (the Padding Plateau). This Step-0 indicator reveals that the model internally “knows” the true semantic boundary right from the start. Based on this observation, we present Seer, an algorithm-system co-design framework for accelerating DMLLM inference through Step-0 semantic boundary detection and early suffix truncation. At the algorithmic level, Seer introduces an SNR-aware boundary detector. Rather than relying on brittle absolute thresholds, it cap-tures the jump-to-plateau structure in early-layer MLP sparsity to estimate the semantic boundary robustly. This enables a one-shot macro-truncation strategy: once the boundary is identified at Step-0, the redundant suffix can be removed from all subsequent layers and denoising steps. In addition to reducing computation, we further observe that early suffix removal can help mitigate suffix-mediated noise leakage in bidirectional multimodal attention, which may improve reasoning quality on some visually complex examples. Turning this semantic shortening into real latency and through-put gains, however, requires more than boundary detection alone. Under high-concurrency serving, naive per-sample truncation can easily undermine the practical benefit of shortening. When samples with different predicted boundaries are batched together, shorter sequences are often padded again to match the longest truncated sequence in the batch, which reintroduces substantial invalid com-putation. At the same time, if the effective sequence shape varies significantly across batches, optimized static execution paths be-come difficult to preserve. Consequently, the theoretical benefit of truncation does not automatically translate into reduced end-to-end latency or higher throughput. To address this mismatch, Seer introduces a hybrid execution routing framework. Rather than padding all dynamically shortened sequences to a batch-level maximum, which risks severe padding waste when a few long sequences dominate the batch, Seer clus-ters sequences and quantitatively evaluates their expected Padding Waste Ratio (PWR). Based on this metric, sequence groups are dynamically dispatched across three specialized paths. Uniform groups with negligible waste are routed to a highly optimized Static-Graph path; groups with moderate length dispersion are directed to a Bucket-Varlen-Graph path that repacks sequences to eliminate padding while maintaining CUDA Graph compatibility; and highly skewed outliers or ultra-short prefixes are isolated into a light-weight Eager execution path. By mapping dynamic boundaries into these execution-friendly layouts, Seer translates theoretical FLOP reductions into consistent wall-clock acceleration under batched inference. In summary, our main contributions are as follows: 
+
+• We demonstrate that output sequence-level text redun-dancy creates significant overhead in multimodal diffu-sion, as repeated suffixes amplify unnecessary interactions with high-dimensional visual contexts and can inject suffix-driven visual noise. 
+
+• We are the first to identify a previously undocumented phenomenon in DMLLMs: Step-0 early-layer text-side MLP sparsity serves as a reliable semantic boundary signal for the valid text prefix. Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+• We introduce Seer, a training-free, one-shot macro-truncation framework that detects semantic boundaries using an SNR-aware sparsity criterion and eliminates redundant suffix computations throughout the rest of the denoising process. 
+
+• We design a systems-level execution framework that main-tains the practical benefits of semantic shortening during batched serving by combining padding-waste-aware rout-ing with device-resident latency shadowing. 
+
+## 2 Related Work 2.1 Visual Token Compression for Autoregressive MLLMs 
+
+In autoregressive MLLMs [ 9 , 32 , 33 , 52 , 69 ], high-resolution images and multi-frame videos often produce excessively long visual token sequences, resulting in substantial self-attention overhead. To mit-igate this input-side redundancy, early works primarily explored token merging [ 5 ], heuristic pruning and selection [ 1 , 7 , 13 , 48 ], or attention/sparsity-guided reduction [ 67 , 80 ]. Building upon these foundations, recent advances have introduced more adaptive com-pression criteria, including language-guided visual token pruning, hierarchical multi-stage reduction, distribution-aligned optimal transport, adaptive token skipping, search-based reduction, pro-gressive compression, dynamic token early exit, and adaptive in-ference strategies [ 3, 8, 12 , 15 , 19 , 21 , 38 – 40 , 50 , 51 , 54 , 57 , 59 , 60 ,64 , 65 , 71 , 72 , 76 , 78 , 81 , 82 ]. By leveraging clustering mechanisms, complex visual cues, or graph perspectives, these methods aim to preserve task-relevant semantics while discarding uninforma-tive background features. Meanwhile, recent critical studies have re-examined these paradigms [ 56 , 84 ], showing that blindly pri-oritizing highly activated or highlighted tokens can compromise holistic visual context and motivating strategies that better preserve global structural integrity. Furthermore, output-side acceleration via speculative decoding has also been explored [ 30 ]. However, while effective for autoregressive models, these methods are not designed to address the massive output-side padding redundancy arising in fixed-window diffusion-based multimodal generation. 
+
+## 2.2 Acceleration for Diffusion Multimodal LLMs 
+
+Accelerating DMLLMs naturally inherits optimization strategies from diffusion language models [ 47 , 70 ], which demonstrate faster-than-autoregressive potential [ 53 ] and inspire comprehensive effi-cient inference frameworks [ 42 ]. Existing methods mainly include caching intermediate states [ 16 , 20 , 35 , 41 , 46 , 49 , 58 ], speculative de-coding [ 11 , 24 , 31 ], parallel decoding via chunking [ 2, 4 , 10 , 18 , 74 ], and post-training quantization [ 29 , 62 , 79 ]. Extending to the multi-modal setting, alongside general architectures such as Lumina-DiMOO [ 61 ], recent works focus on accelerating visual inputs through dynamic token merging or pruning [ 6, 23 , 63 ]. However, such lossy compression may discard fine-grained features crucial for complex reasoning, while sparse optimization mechanisms [ 26 ]often require prohibitive fine-tuning costs. More fundamentally, these visual-centric methods fail to address the core bottleneck: the massive computational waste on text padding tokens. To resolve this issue, alternative variable-length strategies employ EOS-guided stopping [ 68 ], early-skipping and dual-boundary orchestration mechanisms [ 55 , 83 ], or dynamic per-step token eviction [ 22 , 25 , 28 ]. However, continuous token eviction shatters the static computation graphs (e.g., CUDA Graphs) required by modern inference engines, incurring substantial CPU launch overheads. In contrast, we pro-pose a training-free, one-shot macro-truncation approach based on Step-0 text-side MLP sparsity, which resolves the padding curse with zero visual feature loss and perfect CUDA Graph compatibility. 
+
+## 3 Methodology 
+
+In this section, we present Seer (Step-zero End Estimation and Re-duction), an algorithm-system co-design framework to resolve the 
+
+padding curse in Diffusion Multimodal Large Language Models (DM-LLMs). Figure 4 illustrates our overall pipeline. We first review the DMLLM background (Sec. 3.1) and reveal a pivotal text-side MLP sparsity phenomenon at the initial denoising step (Sec. 3.2). Based on this empirical indicator, we propose an SNR-guided semantic boundary detection algorithm (Sec. 3.3). Finally, to elegantly trans-late this dynamic suffix truncation into high-throughput execution during high-concurrency serving, we introduce a padding-waste-aware static bucket lowering abstraction (Sec. 3.4). 
+
+## 3.1 Motivation: The Curse of Padding 
+
+Unlike Autoregressive (AR) models that generate tokens sequen-tially, Diffusion Multimodal Large Language Models (DMLLMs, e.g., LaViDa) frame text generation as a global, iterative denoising process over a discrete state space. Let v denote the visual con-text embeddings and x𝑡 = [𝑥 𝑡, 1, 𝑥 𝑡, 2, . . . , 𝑥 𝑡,𝐿 ] represent the text sequence of length 𝐿 at diffusion timestep 𝑡 ∈ { 1, . . . ,𝑇 }.During inference, the model initializes the sequence from a fully masked absorbing state x𝑇 ∼ 𝑝 (x𝑇 ) and progressively refines it into the clean data distribution x0. At each timestep 𝑡 , the neural network computes the reverse transition probabilities parameterized by 𝜃 :
+
+𝑝 𝜃 (x𝑡 −1 |x𝑡 , v) =
+
+> 𝐿
+
+Ö
+
+> 𝑖 =1
+
+𝑝 𝜃 (𝑥 𝑡 −1,𝑖 |x𝑡 , v). (1) Equation 1 reveals a key DMLLM property: the network uncon-ditionally processes the entire sequence x𝑡 of length 𝐿 at every denoising step to predict all token marginals simultaneously. To enable batched execution, the 𝐵 sequences in a batch are padded to 𝐿 max = max (𝐿 1, . . . , 𝐿 𝐵 ). The input tensor thus becomes 
+
+H ∈ R𝐵 ×𝐿 max ×𝑑 , where 𝑑 is the hidden dimension. This static padding introduces a catastrophic computational bur-den. For a Transformer layer computing self-attention and MLP projections, the computational complexity per step is: FLOPs ≈ O( 𝐿 max · 𝑑 2 + 𝐿 2max · 𝑑 ). (2) Because the diffusion process operates globally over 𝑇 steps , this 
+
+O( 𝐿 2max ) attention complexity is multiplied by 𝑇 , leading to severe performance degradation. We refer to this structural redundancy as the Curse of Padding. Even when the actual semantic output for sequence 𝑖 requires a fraction of tokens ( 𝐿 𝑖 ≪ 𝐿 max ), the system ex-pends immense computational resources processing vacant [EOS] 
+
+or padding tokens. Zhao et al. (a) Ground-truth Answer Length Distributions 
+
+(b) Step-0 MLP Sparsity Curves as Semantic Oracles        
+
+> Ground-truth Answer Length Ground-truth Answer Length Ground-truth Answer Length Ground-truth Answer Length
+> Count (log scale) MLP Sparsity MLP Sparsity
+> Token Position Token Position Token Position
+> Token Position Token Position Token Position
+
+Figure 3: Motivation for dynamic semantic truncation. (a) Ground-truth Answer Length Distributions across four representative VQA datasets. The high variance and right-skewed long tails demonstrate that a statically fixed sequence window inevitably incurs massive padding waste for shorter answers. (b) Step-0 MLP Sparsity Curves across early layers (Layers 3–6). Rather than being indistinguishable, the sparsity curves reveal a sharp Semantic Jump exactly at the predicted [EOT] token, followed by a highly stable Padding Plateau across the redundant [EOS] suffix. This distinct early-layer phenomenon serves as a robust, training-free indicator for dynamic boundary detection. 
+
+## 3.2 Observation: Seeing the End at Step-0 
+
+To fundamentally break this computational bottleneck, we inves-tigate whether the model internally “knows” the actual semantic boundary before explicitly generating [EOT] or [EOS] tokens. Profiling the text-side MLP sparsity across early layers at the initial denoising step (Step-0), we consistently observe a highly distinctive phenomenon: (1) The Semantic Jump: Information-rich prefix tokens exhibit dense activations (low sparsity), whereas the sparsity sharply spikes exactly at the predicted [EOT] or the first [EOS] padding token. (2) The Padding Plateau: Following this jump, the sparsity of the remaining redundant suffix enters a prolonged, extremely stable plateau with minimal variance. This Step-0 MLP sparsity acts as a global metric, enabling a prefix-preserving one-shot macro-truncation. By detecting this boundary at Step-0, the entire redundant padding suffix is permanently elimi-nated from all subsequent computation graphs. 
+
+## 3.3 SNR-Aware Semantic Boundary Detection 
+
+Hardcoded absolute sparsity thresholds are brittle because activa-tion scales vary across tasks and prompts. We therefore formulate boundary detection as a Signal-to-Noise Ratio (SNR) test with a short local look-ahead. Let S = [𝑠 1, 𝑠 2, . . . , 𝑠 𝑁 ] be the 1D sparsity array from Layer 3 at Step-0. At position 𝑖 , we examine three consecutive positions, i.e., 
+
+W𝑖 = {𝑠 𝑖 , 𝑠 𝑖 +1, 𝑠 𝑖 +2 }, against the preceding baseline 𝑠 𝑖 −1. This short look-ahead is kept fixed throughout and serves as the minimal local context to capture a sparsity jump followed by a stable plateau. The jump magnitude (Signal) and intra-window fluctuation (Noise) are defined as: 
+
+Δ(𝑖 ) 
+
+> 𝑗𝑢𝑚𝑝
+
+= min (W 𝑖 ) − 𝑠 𝑖 −1, (3) 
+
+Δ(𝑖 ) 
+
+> 𝑛𝑜𝑖𝑠𝑒
+
+= max (W 𝑖 ) − min (W 𝑖 ). (4) A valid semantic boundary 𝑖 ∗ is detected only if: 
+
+• Significant Signal: Δ(𝑖 ) 
+
+> 𝑗𝑢𝑚𝑝
+
+≥ 𝜏 𝑗𝑢𝑚𝑝 ,
+
+• Stable Plateau (SNR Check): Δ(𝑖 ) 
+
+> 𝑛𝑜𝑖𝑠𝑒
+
+≤ 𝛾 · Δ(𝑖 ) 
+
+> 𝑗𝑢𝑚𝑝
+
+.The relative SNR constraint ( 𝛾 ) adapts to different absolute spar-sity scales. To avoid trimming the last valid token, we keep one extra token and truncate at 𝐿 ∗ = 𝑖 ∗ + 1.Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation ⋯⋯ ⋯
+
+> Give a short caption for the image. Give a short caption for the image.
+
+⋯ ⋯   
+
+> A
+> hamster
+> on
+> a
+> table
+> .
+> <eos>
+> token position
+> MLP sparsity
+> 0.15
+> 0.35
+> vaild tokens invalid tokens padding tokens
+> too small
+> to pack
+> high padding
+> waste
+> low padding
+> waste
+> Which path ?
+> <eos>
+> A
+> hamster
+> on
+> a
+> table
+> .
+> step 0 layer 0 - 3 layer 4 + & step 1 +
+> sequence ids
+> sequence ids
+> sequence ids
+> length length length
+> eager
+> cuda
+> graph
+> cuda
+> graph
+
+Figure 4: Overview of the Seer framework. Left (Step 0, early layers): Redundant suffix tokens waste computation and diffusely attend to irrelevant visual backgrounds. Mid-Left: Seer identifies the exact semantic boundary via the MLP sparsity jump and strictly truncates the redundant suffix. Mid-Right: to preserve high-throughput serving, a hybrid router dynamically dispatches the truncated batch into execution-friendly paths (Eager, Varlen-Graph, or Static-Graph) based on padding waste. Right (Remaining steps & layers): The compacted sequence accelerates inference while purifying cross-modal attention, focusing purely on the relevant visual target. 
+
+## 3.4 Hybrid Execution Routing for Dynamic Boundaries 
+
+Identifying a semantic boundary at Step-0 is only the first half of the problem. The more fundamental challenge is how to preserve execution regularity after dynamic suffix truncation, especially un-der high-concurrency serving. A naive realization would directly slice each sequence according to its detected boundary. However, such per-sample dynamic truncation destroys batch uniformity, fragments the execution shape space, and prevents the inference engine from exploiting highly optimized static serving primitives (e.g., CUDA Graphs). As a result, theoretical FLOP reduction does not automatically translate into wall-clock acceleration. To address this, Seer maps the dynamically shortened batch into a nearby static bucket. Formally, suppose a batch contains 𝐵 
+
+sequences with detected boundaries {𝐿 ∗
+
+> 1
+
+, 𝐿 ∗
+
+> 2
+
+, . . . , 𝐿 ∗ 
+
+> 𝐵
+
+}. A straightfor-ward approach computes a unified batch-level boundary: 
+
+𝐿 ∗ 
+
+> max
+
+= max (𝐿 ∗
+
+> 1
+
+, 𝐿 ∗
+
+> 2
+
+, . . . , 𝐿 ∗ 
+
+> 𝐵
+
+). (5) This boundary is then mapped into a predefined set of static micro-buckets, B = {8, 16 , 32 , . . . , 𝑁 max }.While static bucket mapping successfully preserves execution regularity, naive batch-level max-pooling suffers from the straggler effect . If a single extremely long sequence co-exists with numerous short sequences in the same batch, coercing all sequences to the maximum static bucket introduces massive padding waste, nullify-ing the FLOP savings gained from Step-0 truncation. To quantitatively govern this routing and isolate stragglers, we define the Padding Waste Ratio (PWR) for a sequence group 𝐺 
+
+mapped to a static bucket of size 𝐵 𝐺 as: 
+
+𝜌 = 1 −
+
+Í𝑖 ∈𝐺 𝐿 ∗
+
+> 𝑖
+
+|𝐺 | × 𝐵 𝐺 
+
+. (6) Based on 𝜌 and the absolute sequence length, Seer implements a three-tier hybrid execution routing policy. Sequences are first clustered into coarse buckets, and each bucket is dynamically routed via the following execution paths: 
+
+❶ Static-Graph Path: Triggered when lengths are concentrated and padding waste is negligible ( 𝜌 ≤ 𝜏 𝑝𝑎𝑑 , e.g., 𝜏 𝑝𝑎𝑑 = 0.2). Here, variable-length repacking costs more than it saves. Seer assigns the group to a unified static bucket 𝐵 𝐺 and leverages pre-captured CUDA Graphs for regular execution. 
+
+❷ Bucket-Varlen-Graph Path: Triggered when the bucket ex-hibits moderate dispersion ( 𝜌 > 𝜏 pad ), where static mapping incurs unacceptable padding waste. Seer regroups sequences and performs variable-length (varlen) packed execution. Instead of padding indi-vidual sequences, the total packed capacity Í𝑖 ∈𝐺 𝐿 ∗ 
+
+> 𝑖
+
+is mapped to a predefined 1D graph shape, preserving graph compatibility while substantially eliminating padding. 
+
+❸ Bucket-Varlen-Eager Path: Triggered for highly skewed distri-butions, e.g., ultra-short prefixes ( 𝐵 𝐺 ≤ 4 in our implementation) or isolated stragglers ( |𝐺 | → 1). Graph capture is inefficient here. Seer isolates these sequences and routes them to a lightweight eager path, with the dispatch overhead offset by padding elimination. 
+
+## 3.5 Device-Resident Latency Shadowing 
+
+A critical pitfall in dynamic inference systems is the CPU-GPU synchronization barrier. If dynamic semantic boundaries evaluated at Step-0 require CPU intervention to slice tensors and dispatch modified shapes, the resulting PCIe data transfer and sync delays will outright negate any acceleration benefits. To decouple semantic adaptivity from host-side control flow, Seer introduces a zero-host-intervention In-GPU Compaction mecha-nism. We implemented a specialized fused Triton kernel that oper-ates directly within the device memory (VRAM). Once the bound-aries 𝐿 ∗ are evaluated, this kernel asynchronously performs prefix slicing, sequence repacking (for varlen paths), bucket alignment, padding, and attention mask rewriting in a single pass. Zhao et al. 
+
+Crucially, to orchestrate the subsequent execution paths without blocking the CPU, the kernel utilizes an asynchronous pinned mem-ory (page-locked) flag. It writes a lightweight control signal (e.g., the target bucket ID, chosen execution path, or packed length) back to the host. The CPU simply polls this signal without waiting for the massive data tensors, maintaining a fully device-resident dataflow. This abstraction ensures that the serving stack only observes a highly optimized, static-compatible execution queue, turning theo-retical FLOP reductions into strict wall-clock acceleration. 
+
+## 3.6 Accuracy Impact Analysis 
+
+While the preceding algorithm-system co-design focuses entirely on eliminating redundant computation for inference acceleration, we empirically observe that our macro-truncation mechanism can unexpectedly improve multimodal reasoning accuracy on visu-ally complex datasets. In this subsection, we provide a theoretical perspective on this phenomenon. Our analysis suggests that, in bidirectional diffusion MLLMs, redundant suffix tokens may serve as leakage channels that relay task-irrelevant visual information back into the semantic text prefix. By removing these suffixes early, Seer can suppress this indirect contamination pathway in addition to reducing FLOPs. Let the full multimodal sequence be X = V ∪ P ∪ S , where V
+
+denotes the visual tokens, P denotes the valid semantic text prefix, and S denotes the redundant text suffix consisting of padding and trailing [EOS] tokens. For a valid prefix token 𝑝 ∈ P , its hidden state at layer 𝑙 + 1 is updated through bidirectional self-attention over the entire sequence: 
+
+h(𝑙 +1) 
+
+> 𝑝
+
+=∑︁  
+
+> 𝑣 ∈ V
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑣
+
+v(𝑙 ) 
+
+> 𝑣
+
++∑︁  
+
+> 𝑝 ′∈ P
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑝 ′
+
+v(𝑙 ) 
+
+> 𝑝 ′
+
++∑︁  
+
+> 𝑠 ∈ S
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑠
+
+v(𝑙 ) 
+
+> 𝑠
+
+. (7) Here, the attention weights are given by: 
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑗
+
+= exp (𝑒 (𝑙 ) 
+
+> 𝑝,𝑗
+
+)
+
+Í𝑢 ∈ X exp (𝑒 (𝑙 ) 
+
+> 𝑝,𝑢
+
+) , (8) where the attention logit is 
+
+𝑒 (𝑙 ) 
+
+> 𝑝,𝑗
+
+= q(𝑙 )
+
+> 𝑝
+> ⊤
+
+k(𝑙 )
+
+> 𝑗
+
+√𝑑 . (9) The key observation is that the suffix term in Eq. 7 is not neces-sarily harmless under bidirectional attention. Since the suffix tokens in S are semantically weakly grounded, their visual attention can become diffuse and may absorb information from task-irrelevant visual regions. For analytical clarity, we decompose the value rep-resentation of a suffix token 𝑠 ∈ S as 
+
+v(𝑙 ) 
+
+> 𝑠
+
+= c(𝑙 ) 
+
+> 𝑠
+
++ n(𝑙 ) 
+
+> 𝑠
+
+, (10) where c(𝑙 ) 
+
+> 𝑠
+
+denotes the task-consistent component and n(𝑙 ) 
+
+> 𝑠
+
+denotes the task-irrelevant visual component carried by that suffix token. Substituting Eq. 10 into the suffix term of Eq. 7 yields ∑︁  
+
+> 𝑠 ∈ S
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑠
+
+v(𝑙 ) 
+
+> 𝑠
+
+=∑︁  
+
+> 𝑠 ∈ S
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑠
+
+c(𝑙 ) 
+
+> 𝑠
+
++∑︁  
+
+> 𝑠 ∈ S
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑠
+
+n(𝑙 ) 
+
+> 𝑠
+
+. (11) The second term in Eq. 11 captures an indirect contamination effect. We denote it by 
+
+Δh(𝑙 +1) 
+
+> 𝑝, S
+
+=∑︁  
+
+> 𝑠 ∈ S
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑠
+
+n(𝑙 ) 
+
+> 𝑠
+
+. (12) This term reflects suffix-mediated noise leakage: even if a valid prefix token 𝑝 does not directly attend to irrelevant visual regions, it may still absorb such information through suffix tokens. In other words, redundant suffixes can act as semantically weak relay nodes in bidirectional attention. After Seer detects the semantic boundary at Step-0, the redun-dant suffix S is removed from subsequent computation. The at-tention update for 𝑝 is then restricted to the retained multimodal context V ∪ P :
+
+˜h(𝑙 +1) 
+
+> 𝑝
+
+=∑︁  
+
+> 𝑣 ∈ V
+
+˜𝐴 (𝑙 ) 
+
+> 𝑝 →𝑣
+
+v(𝑙 ) 
+
+> 𝑣
+
++∑︁  
+
+> 𝑝 ′∈ P
+
+˜𝐴 (𝑙 ) 
+
+> 𝑝 →𝑝 ′
+
+v(𝑙 ) 
+
+> 𝑝 ′
+
+. (13) The corresponding normalized attention weights become 
+
+˜𝐴 (𝑙 ) 
+
+> 𝑝 →𝑗
+
+= exp (𝑒 (𝑙 ) 
+
+> 𝑝,𝑗
+
+)
+
+Í𝑢 ∈ V∪P exp (𝑒 (𝑙 ) 
+
+> 𝑝,𝑢
+
+) , 𝑗 ∈ V ∪ P . (14) Comparing Eq. 13 with Eq. 7, the suffix-mediated relay term in Eq. 12 is removed entirely. Under a fixed-score view of Eq. 8 and Eq. 14, removing S also reallocates the normalization mass from the discarded suffix toward the retained valid context. Formally, ∑︁  
+
+> 𝑗 ∈ V∪P
+
+˜𝐴 (𝑙 ) 
+
+> 𝑝 →𝑗
+
+= 1,∑︁  
+
+> 𝑗 ∈ X
+
+𝐴 (𝑙 ) 
+
+> 𝑝 →𝑗
+
+= 1. (15) Thus, truncation not only reduces the number of processed to-kens, but also removes one source of indirect contamination while concentrating attention on semantically relevant subsets. This perspective provides a plausible explanation for why Seer can occasionally improve accuracy instead of merely preserving it. If the expected magnitude of the suffix-mediated noise term is non-negligible, i.e., 
+
+E
+
+h
+
+Δh(𝑙 +1) 
+
+> 𝑝, S2
+
+i
+
+> 0, (16) then removing S suppresses a meaningful contamination pathway. In this case, macro-truncation acts not only as a computational re-duction mechanism, but also as a form of representation purification ,which can improve robustness and reasoning accuracy in visually noisy environments. 
+
+## 4 Experiments 4.1 Evaluated Models, Baselines, and Setup 
+
+To comprehensively evaluate the effectiveness and generalization of our proposed acceleration framework, we conduct experiments on three representative multi-modal models, specifically Mmada [ 66 ]and two variants from the LaViDa family [ 27 ], namely LaViDa-LLaDA and LaViDa-Dream. Furthermore, to demonstrate the su-periority of our approach in achieving an optimal trade-off be-tween inference efficiency and generation quality, we compare it against state-of-the-art acceleration strategies tailored for diffusion-based multi-modal large language models, namely D3TOM [ 6] and RedVTP [ 63 ], as well as highly influential visual token compres-sion and pruning techniques originally designed for autoregressive multi-modal large language models but migrated to diffusion-based architectures in our implementation, including VisionZip [ 67 ], MM-Tok [ 13 ], DivPrune [ 1 ], and SparseVLM [ 80 ]. Detailed hardware Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Table 1: Comprehensive benchmark results on LaViDa-LLaDA and MMaDA architectures. Benchmark abbreviations: MU (MMMU), MB (MMBench), IV (InfoVQA), CQ (ChartQA), SQ (SQA), DV (DocVQA), GQ (GQA), MV (MathVista).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+
+> Method LaViDa-LLaDA MMaDA
+> MME MU MB IV CQ SQ DV GQ MV MME MU MB IV CQ SQ DV GQ MV Baseline 1705.29 44.00 75.76 38.11 60.60 72.38 63.52 56.70 45.70 1306.72 31.44 39.72 15.11 9.92 56.82 10.30 50.79 58.00 Throughput ↑0.53 0.60 0.12 0.81 1.50 0.77 1.16 0.64 0.16 0.29 0.14 0.28 0.13 1.37 0.28 0.15 0.35 0.59 Latency ↓1.87 1.88 8.66 3.32 1.95 1.30 3.68 1.95 8.79 3.48 7.72 3.58 14.94 1.70 3.54 15.20 3.41 11.22 + D3ToM 1577.04 42.67 70.45 25.58 23.00 71.79 24.49 52.12 40.00 1269.41 31.11 25.08 14.76 9.16 56.82 6.73 34.87 56.80 Throughput ↑0.85 0.90 0.19 1.37 2.20 1.01 1.72 1.07 0.20 0.59 0.25 0.56 0.24 2.12 0.54 0.23 0.66 1.07 Latency ↓1.16 1.24 5.20 1.87 1.18 0.99 1.97 1.17 5.08 1.70 4.00 1.79 7.65 0.89 1.84 7.56 1.68 5.91 + RedVTP 1510.48 42.22 70.45 24.25 25.40 71.15 27.78 49.93 39.00 1280.91 30.78 25.39 14.35 10.00 57.56 6.70 36.03 57.40 Throughput ↑0.88 0.90 0.21 1.38 2.22 1.04 1.83 1.10 0.28 0.48 0.21 0.45 0.21 1.76 0.46 0.19 0.53 0.95 Latency ↓1.13 1.24 4.78 1.75 1.14 0.96 1.83 1.12 4.75 2.07 4.78 2.20 8.75 1.09 2.17 8.89 2.09 6.62 + VisionZip 1438.05 41.89 72.73 23.87 33.20 70.45 32.20 49.78 38.20 879.05 29.78 23.84 15.32 9.64 58.95 6.37 34.39 58.30
+> Throughput ↑0.72 0.81 0.16 1.11 2.00 0.88 1.41 0.92 0.44 1.17 0.51 1.13 0.47 4.58 1.08 0.45 1.35 1.74 Latency ↓1.39 1.36 6.18 2.27 1.41 1.14 2.49 1.39 3.05 0.85 2.12 0.88 3.86 0.41 0.93 3.79 0.82 3.26 + MMTok 1600.66 43.11 71.97 29.78 42.20 72.78 29.78 53.27 42.50 869.26 31.22 22.37 14.91 9.52 58.95 6.81 34.40 56.90 Throughput ↑0.86 0.92 0.19 1.38 2.42 0.95 1.38 1.09 0.28 1.20 0.53 1.16 0.50 4.84 1.22 0.46 1.28 1.72 Latency ↓1.17 1.22 5.20 1.87 1.16 1.06 1.87 1.15 5.00 0.83 2.06 0.86 3.69 0.40 0.89 3.74 0.86 3.04 + DivPrune 1333.60 41.33 62.88 22.70 21.80 71.15 38.78 46.14 38.40 860.21 29.89 21.90 14.79 9.56 58.60 6.30 49.10 57.10 Throughput ↑1.09 1.13 0.24 1.67 2.59 1.11 1.88 1.37 0.40 1.13 0.52 1.16 0.49 4.58 1.10 0.45 1.38 1.48 Latency ↓0.92 0.99 4.11 1.40 0.91 0.90 1.90 0.88 3.28 0.89 2.04 0.86 3.71 0.40 0.91 3.70 0.80 3.06 + SparseVLMs 1217.15 40.67 59.85 23.65 18.20 70.20 14.20 44.20 39.10 866.13 29.89 24.23 15.25 9.36 57.31 6.48 34.23 56.80 Throughput ↑0.89 0.97 0.19 1.34 2.21 0.99 1.69 1.11 0.27 1.11 0.44 1.01 0.37 4.35 0.96 0.35 1.24 1.73 Latency ↓1.12 1.16 5.30 1.77 1.11 1.01 1.76 1.09 4.91 0.90 2.48 0.99 4.94 0.44 1.04 4.88 0.90 3.70 + Seer (ours) 1697.94 43.89 75.76 38.40 57.80 72.73 63.66 56.75 45.10 1315.69 31.33 39.16 15.29 10.12 57.16 9.26 49.45 55.80 Throughput ↑1.11 1.39 0.93 2.76 2.95 1.58 4.40 1.36 1.68 3.39 2.33 3.17 4.02 3.95 2.35 4.48 4.46 3.39
+> Latency ↓0.90 0.81 1.08 0.99 0.98 0.65 0.97 0.92 0.75 0.30 0.46 0.32 0.49 0.59 0.43 0.50 0.27 0.39
+
+specifications, implementation details, additional results on LaViDa-Dream, and further supplementary experiments and ablation stud-ies are provided in the appendix. 
+
+## 4.2 Evaluation Benchmarks and Metrics 
+
+To comprehensively assess the multimodal understanding and rea-soning capabilities of our framework, we evaluate it on nine widely used benchmarks: MME [ 14 ], MMMU [ 75 ], MMBench [ 34 ], In-foVQA [ 44 ], ChartQA [ 43 ], ScienceQA [ 37 ], DocVQA [ 45 ], GQA [ 17 ], and MathVista [ 36 ]. To ensure fair and reproducible comparisons, we use the official implementation of the lmms-eval [ 77 ] frame-work for all evaluations. We report task accuracy, end-to-end through-put (tokens/s), and end-to-end latency (s), with the latter two mea-sured over the full serving pipeline. 
+
+## 4.3 Main Results 
+
+As shown in Table 1, Seer achieves a favorable efficiency–quality trade-off on both LaViDa-LLaDA and MMaDA. Compared with the baseline, Seer consistently improves end-to-end throughput and reduces latency while maintaining competitive multimodal reason-ing performance. Specifically, when evaluating LaViDa-LLaDA on MathVista, throughput increases from 0.16 to 1.68 tokens/s (a 10.5 ×
+
+gain) with only a 1.31% relative decrease in accuracy; additionally, when evaluating MMaDA on InfoVQA, throughput increases from 0.13 to 4.02 tokens/s (a 30.9 × gain), while accuracy improves from 15.11 to 15.29. In contrast, other baseline acceleration methods re-lying on visual token compression often suffer from significant accuracy drops when increasing speed. More importantly, under most evaluation settings in Table 1, these existing baselines are in-ferior to Seer in both throughput and task accuracy. This highlights the advantage of Seer operating solely on redundant text suffixes, allowing it to preserve performance more steadily. Overall, these results demonstrate that text-side suffix truncation delivers sub-stantial efficiency gains with limited impact on generation quality, and the performance improvements observed on certain visually complex tasks align with the analysis in Sec. 3.6. 
+
+## 4.4 Effectiveness of System-Level Optimizations 
+
+We evaluate how execution strategies affect inference throughput across batch sizes. As Figure 5 shows, throughput for both Vanilla LaViDa and Seer Naive Pad stagnates at larger batches due to severe padding waste from sequence-length variance. In contrast, Seer Full 
+
+resolves this bottleneck by combining padding-waste-aware hybrid routing with device-resident execution lowering. By dynamically packing sequences while preserving execution regularity, it trans-lates theoretical reductions into substantial wall-clock acceleration, reaching 35.84 tokens/s at batch size 256 (a 1.6× baseline speedup). 
+
+## 4.5 Ablation Studies 
+
+Hyperparameters with Accuracy-Throughput Trade-Off. Ta-ble 2 demonstrates how the absolute jump threshold ( 𝜏 𝑗𝑢𝑚𝑝 ) and tol-erance ratio ( 𝛾 ) govern our SNR-based detector’s sensitivity. Rather than requiring heuristic tuning, they provide an explicit interface to navigate the quality-throughput Pareto frontier. Smaller 𝜏 𝑗𝑢𝑚𝑝 
+
+or larger 𝛾 prioritizes aggressive truncation for maximal speed (e.g., 7.45 tokens/s) in latency-sensitive applications. Conversely, larger Zhao et al. 
+
+Figure 5: Effectiveness of system-level optimizations. Impact of different execution strategies on inference throughput. While applying algorithmic truncation alone (Seer Naive Pad) yields marginal gains over Vanilla LaViDa due to padding waste, our complete framework (Seer Full) translates theoret-ical reductions into substantial throughput improvements, especially at larger batch sizes. Table 2: Joint impact of Absolute Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 ) and Tolerance Ratio ( 𝛾 ) on generation accuracy and inference throughput (Evaluated on ChartQA). Tol. Abs. Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 )(𝛾 ) 0.01 0.02 0.03 0.04 0.05 0.06 0.2 60.6/1.62 60.6/1.55 60.4/1.48 60.2/1.50 60.6/1.53 60.6/1.48 0.3 59.8/2.15 60.6/1.59 60.6/1.55 60.6/1.45 60.6/1.51 60.6/1.47 0.4 54.2/3.11 59.5/2.15 60.4/1.67 59.3/1.69 60.3/1.57 59.6/1.54 0.5 48.4/4.18 55.6/3.41 58.4/2.43 60.1/1.81 60.6/1.55 60.6/1.45 0.6 35.8/5.15 51.4/3.80 57.8/2.93 59.8/2.35 60.5/1.60 60.6/1.58 0.7 18.5/6.05 42.6/4.88 54.5/3.51 58.3/2.64 60.1/2.11 60.6/1.54 0.8 8.4/6.67 30.2/5.62 46.8/4.35 53.4/3.36 55.1/3.13 60.4/1.95 0.9 4.2/7.15 16.5/6.37 34.5/5.18 48.6/4.25 52.2/3.50 56.1/2.82 1.0 2.1/7.49 8.6/6.88 20.5/5.85 38.2/4.80 51.4/3.93 55.4/3.12 
+
+𝜏 𝑗𝑢𝑚𝑝 or smaller 𝛾 ensures strict boundary preservation, maintain-ing the 60.6 baseline accuracy for quality-critical tasks. 
+
+Formulation of the Pareto Optimal Configuration. To jus-tify our default parameters ( 𝜏 𝑗𝑢𝑚𝑝 = 0.03 , 𝛾 = 0.6) in Table 1 and avoid arbitrary tuning, we formalize this trade-off as a multi-objective optimization problem. Let ˆA ( 𝜏, 𝛾 ) and ˆT ( 𝜏, 𝛾 ) denote baseline-normalized accuracy and throughput, with joint utility U
+
+defined as: 
+
+U ( 𝜏, 𝛾 ) = ˆA ( 𝜏, 𝛾 ) + 𝜆 log ˆ T ( 𝜏, 𝛾 ), (17) where 𝜆 dictates efficiency preference, and the logarithm models diminishing returns. Mapping Table 2 onto the Pareto frontier iden-tifies the “knee” (Figure 6), revealing (𝜏 𝑗𝑢𝑚𝑝 = 0.03 , 𝛾 = 0.6) as the theoretical optimum arg max 𝜏,𝛾 U. This achieves a ∼2× speedup ( ˆT ≈ 1.98 ) with marginal 4.6% accuracy degradation ( ˆA ≈ 0.954 ), confirming it as a principled solution rather than mere empirical coincidence. 
+
+Sensitivity of Padding Waste Threshold. As shown in Figure 7, the padding waste threshold ( 𝜏 𝑝𝑎𝑑 ) crucially dictates our routing policy. Setting 𝜏 𝑝𝑎𝑑 ≤ 0.7 effectively filters highly skewed batches to prevent excessive padding. However, exceeding this tipping point causes a sharp throughput drop across all batch sizes, because more Pareto Frontier 
+
+Figure 6: Pareto frontier of generation accuracy versus infer-ence throughput based on Table 2. The default configuration (𝜏 𝑗𝑢𝑚𝑝 = 0.03 , 𝛾 = 0.6) is located at the optimal “knee” point. 
+
+Figure 7: Effect of 𝜏 𝑝𝑎𝑑 on throughput. Experiments with LaViDa-LLaDA on ChartQA show that as 𝜏 𝑝𝑎𝑑 increases be-yond a critical point, throughput drops sharply across all batch sizes. This indicates that an excessively high thresh-old forces too many skewed sequences into static execution paths, incurring severe padding waste that negates the bene-fits of semantic truncation. 
+
+long-tailed batches are forced into static execution paths where a few long sequences dominate the bucket size and reintroduce substantial invalid computation. An excessively high threshold forces long-tailed sequences into static execution paths, incurring severe padding waste that negates algorithmic truncation benefits. This confirms the indispensability of our padding-waste-aware hybrid routing. 
+
+Boundary Detection Quality. Table 3 reports MAE and over-truncation rate, which measure the mean absolute boundary pre-diction error and the risk of premature truncation, respectively. As shown in Table 3, Step-0 sparsity provides reliable boundary esti-mates across diverse tasks. DocVQA achieves the best performance, while MathVista is more challenging and exhibits larger boundary error. The consistently low over-truncation rates suggest that Seer rarely removes valid tokens in practice. 
+
+Table 3: Boundary detection quality on three benchmarks. Metric ChartQA DocVQA MathVista MAE ↓ 0.86 0.40 1.18 
+
+Over-truncation (%) ↓ 3.4 0.8 3.8 Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+## 5 Conclusion 
+
+We identify output-side padding as an important yet underexplored efficiency bottleneck in Diffusion Multimodal Large Language Mod-els, and show that the semantic boundary of a valid response is implicitly revealed at the first denoising step through early-layer text-side MLP sparsity. Based on this observation, we propose Seer, a training-free framework that detects semantic boundaries via an SNR-based criterion and removes redundant suffix computation through one-shot truncation. Combined with a hybrid execution design, Seer translates semantic shortening into practical accelera-tion under realistic batched serving. Experiments show that Seer consistently improves throughput and latency while maintaining, and in some cases even improving, task performance, highlight-ing output-side semantic redundancy as a promising direction for efficient diffusion-based multimodal generation. Nevertheless, ex-tending Seer to broader settings and model architectures remains an important direction for future work. Zhao et al. 
+
+## Acknowledgments 
+
+This study is partially supported by the National Natural Science Foundation of China (Grant No.62504204). 
+
+## References 
+
+[1] Saeed Ranjbar Alvar, Gursimran Singh, Mohammad Akbari, and Yong Zhang. 2025. Divprune: Diversity-based visual token pruning for large multimodal models. In Proceedings of the Computer Vision and Pattern Recognition Conference .9392–9401. [2] Marianne Arriola, Aaron Gokaslan, Justin T Chiu, Zhihan Yang, Zhixuan Qi, Jiaqi Han, Subham Sekhar Sahoo, and Volodymyr Kuleshov. 2025. Block diffusion: Interpolating between autoregressive and diffusion language models. arXiv preprint arXiv:2503.09573 (2025). [3] Changwoo Baek, Jouwon Song, Sohyeon Kim, and Kyeongbo Kong. 2026. Ag-ilePruner: An Empirical Study of Attention and Diversity for Adaptive Visual Token Pruning in Large Vision-Language Models. arXiv preprint arXiv:2603.01236 
+
+(2026). [4] Wenrui Bao, Zhiben Chen, Dan Xu, and Yuzhang Shang. 2025. Learning to parallel: Accelerating diffusion large language models via learnable parallel decoding. arXiv preprint arXiv:2509.25188 (2025). [5] Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang, Christoph Feicht-enhofer, and Judy Hoffman. 2022. Token merging: Your vit but faster. arXiv preprint arXiv:2210.09461 (2022). [6] Shuochen Chang, Xiaofeng Zhang, Qingyang Liu, and Li Niu. 2025. D 3 ToM: Decider-Guided Dynamic Token Merging for Accelerating Diffusion MLLMs. 
+
+arXiv preprint arXiv:2511.12280 (2025). [7] Liang Chen, Haozhe Zhao, Tianyu Liu, Shuai Bai, Junyang Lin, Chang Zhou, and Baobao Chang. 2024. An Image is Worth 1/2 Tokens After Layer 2: Plug-and-Play Inference Acceleration for Large Vision-Language Models. arXiv:2403.06764 [cs.CV] [8] Xiwen Chen, Wenhui Zhu, Gen Li, Xuanzhao Dong, Yujian Xiong, Hao Wang, Peijie Qiu, Qingquan Song, Zhipeng Wang, Shao Tang, et al . 2026. OTPrune: Distribution-Aligned Visual Token Pruning via Optimal Transport. arXiv preprint arXiv:2602.20205 (2026). [9] Zhe Chen, Jiannan Wu, Wenhai Wang, Weijie Su, Guo Chen, Sen Xing, Muyan Zhong, Qinglong Zhang, Xizhou Zhu, Lewei Lu, et al . 2024. Internvl: Scaling up vision foundation models and aligning for generic visual-linguistic tasks. In 
+
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition .24185–24198. [10] Shuang Cheng, Yuhua Jiang, Zineng Zhou, Dawei Liu, Wang Tao, Linfeng Zhang, Biqing Qi, and Bowen Zhou. 2025. Sdar-vl: Stable and efficient block-wise diffusion for vision-language understanding. arXiv preprint arXiv:2512.14068 
+
+(2025). [11] Zicong Cheng, Guo-Wei Yang, Jia Li, Zhijie Deng, Meng-Hao Guo, and Shi-Min Hu. 2025. Deer: Draft with diffusion, verify with autoregressive models. arXiv preprint arXiv:2512.15176 (2025). [12] Mohamed Dhouib, Davide Buscaldi, Sonia Vanier, and Aymen Shabou. 2025. Pact: Pruning and clustering-based token reduction for faster visual language models. In Proceedings of the Computer Vision and Pattern Recognition Conference .14582–14592. [13] Sixun Dong, Juhua Hu, Mian Zhang, Ming Yin, Yanjie Fu, and Qi Qian. 2025. Mmtok: Multimodal coverage maximization for efficient inference of vlms. arXiv preprint arXiv:2508.18264 (2025). [14] Chaoyou Fu, Peixian Chen, Yunhang Shen, Yulei Qin, Mengdan Zhang, Xu Lin, Jinrui Yang, Xiawu Zheng, Ke Li, Xing Sun, et al . 2023. Mme: A comprehensive evaluation benchmark for multimodal large language models. arXiv preprint arXiv:2306.13394 (2023). [15] Yefei He, Feng Chen, Jing Liu, Wenqi Shao, Hong Zhou, Kaipeng Zhang, and Bohan Zhuang. 2024. Zipvl: Efficient large vision-language models with dynamic token sparsification. arXiv preprint arXiv:2410.08584 (2024). [16] Jianuo Huang, Yaojie Zhang, Yicun Yang, Benhao Huang, Biqing Qi, Dongrui Liu, and Linfeng Zhang. 2025. Mask tokens as prophet: Fine-grained cache eviction for efficient dllm inference. arXiv preprint arXiv:2510.09309 (2025). [17] Drew A Hudson and Christopher D Manning. 2019. Gqa: A new dataset for real-world visual reasoning and compositional question answering. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition . 6700–6709. [18] Daniel Israel, Guy Van den Broeck, and Aditya Grover. 2025. Accelerating diffusion llms via adaptive parallel decoding. arXiv preprint arXiv:2506.00413 
+
+(2025). [19] Ting Jiang, Yixiao Wang, Hancheng Ye, Zishan Shao, Jingwei Sun, Jingyang Zhang, Zekai Chen, Jianyi Zhang, Yiran Chen, and Hai Li. 2025. Sada: Stability-guided adaptive diffusion acceleration. arXiv preprint arXiv:2507.17135 (2025). [20] Yuchu Jiang, Yue Cai, Xiangzhong Luo, Jiale Fu, Jiarui Wang, Chonghan Liu, and Xu Yang. 2025. d 2Cache: Accelerating Diffusion-Based LLMs via Dual Adaptive Caching. arXiv preprint arXiv:2509.23094 (2025). [21] Yutao Jiang, Qiong Wu, Wenhao Lin, Wei Yu, and Yiyi Zhou. 2025. What kind of visual tokens do we need? training-free visual token pruning for multi-modal large language models from the perspective of graph. In Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 39. 4075–4083. [22] Jaeyeon Kim, Lee Cheuk-Kit, Carles Domingo-Enrich, Yilun Du, Sham Kakade, Timothy Ngotiaoco, Sitan Chen, and Michael Albergo. 2025. Any-order flexible length masked diffusion. arXiv preprint arXiv:2509.01025 (2025). [23] Duo Li, Zuhao Yang, Xiaoqin Zhang, Ling Shao, and Shijian Lu. 2025. A Com-prehensive Study on Visual Token Redundancy for Discrete Diffusion-based Multimodal Large Language Models. arXiv preprint arXiv:2511.15098 (2025). [24] Guanghao Li, Zhihui Fu, Min Fang, Qibin Zhao, Ming Tang, Chun Yuan, and Jun Wang. 2025. Diffuspec: Unlocking diffusion language models for speculative decoding. arXiv preprint arXiv:2510.02358 (2025). [25] Jinsong Li, Xiaoyi Dong, Yuhang Zang, Yuhang Cao, Jiaqi Wang, and Dahua Lin. 2025. Beyond fixed: Training-free variable-length denoising for diffusion large language models. arXiv preprint arXiv:2508.00819 (2025). [26] Shufan Li, Jiuxiang Gu, Kangning Liu, Zhe Lin, Zijun Wei, Aditya Grover, and Ja-son Kuen. 2025. Sparse-LaViDa: Sparse Multimodal Discrete Diffusion Language Models. arXiv preprint arXiv:2512.14008 (2025). [27] Shufan Li, Konstantinos Kallidromitis, Hritik Bansal, Akash Gokul, Yusuke Kato, Kazuki Kozuka, Jason Kuen, Zhe Lin, Kai-Wei Chang, and Aditya Grover. 2025. Lavida: A large diffusion language model for multimodal understanding. arXiv preprint arXiv:2505.16839 (2025). [28] Kaihua Liang, Xin Tan, An Zhong, Hong Xu, and Marco Canini. 2026. FO-CUS: DLLMs Know How to Tame Their Compute Bound. arXiv preprint arXiv:2601.23278 (2026). [29] Haokun Lin, Haobo Xu, Yichen Wu, Ziyu Guo, Renrui Zhang, Zhichao Lu, Ying Wei, Qingfu Zhang, and Zhenan Sun. 2025. Quantization meets dllms: A sys-tematic study of post-training quantization for diffusion llms. arXiv preprint arXiv:2508.14896 (2025). [30] Luxi Lin, Zhihang Lin, Zhanpeng Zeng, and Rongrong Ji. 2025. Speculative decoding reimagined for multimodal large language models. arXiv preprint arXiv:2505.14260 (2025). [31] Fuliang Liu, Xue Li, Ketai Zhao, Yinxi Gao, Ziyan Zhou, Zhonghui Zhang, Zhibin Wang, Wanchun Dou, Sheng Zhong, and Chen Tian. 2026. DART: Diffusion-Inspired Speculative Decoding for Fast LLM Inference. arXiv preprint arXiv:2601.19278 (2026). [32] Haotian Liu, Chunyuan Li, Yuheng Li, and Yong Jae Lee. 2024. Improved baselines with visual instruction tuning. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition . 26296–26306. [33] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. 2023. Visual in-struction tuning. Advances in neural information processing systems 36 (2023), 34892–34916. [34] Yuan Liu, Haodong Duan, Yuanhan Zhang, Bo Li, Songyang Zhang, Wangbo Zhao, Yike Yuan, Jiaqi Wang, Conghui He, Ziwei Liu, et al . 2024. Mmbench: Is your multi-modal model an all-around player?. In European conference on computer vision . Springer, 216–233. [35] Zhiyuan Liu, Yicun Yang, Yaojie Zhang, Junjie Chen, Chang Zou, Qingyuan Wei, Shaobo Wang, and Linfeng Zhang. 2025. dllm-cache: Accelerating diffusion large language models with adaptive caching. arXiv preprint arXiv:2506.06295 (2025). [36] Pan Lu, Hritik Bansal, Tony Xia, Jiacheng Liu, Chunyuan Li, Hannaneh Hajishirzi, Hao Cheng, Kai-Wei Chang, Michel Galley, and Jianfeng Gao. 2023. Mathvista: Evaluating mathematical reasoning of foundation models in visual contexts. 
+
+arXiv preprint arXiv:2310.02255 (2023). [37] Pan Lu, Swaroop Mishra, Tanglin Xia, Liang Qiu, Kai-Wei Chang, Song-Chun Zhu, Oyvind Tafjord, Peter Clark, and Ashwin Kalyan. 2022. Learn to explain: Multimodal reasoning via thought chains for science question answering. Ad-vances in neural information processing systems 35 (2022), 2507–2521. [38] Junwei Luo, Yingying Zhang, Xue Yang, Kang Wu, Qi Zhu, Lei Liang, Jingdong Chen, and Yansheng Li. 2025. When large vision-language model meets large remote sensing imagery: Coarse-to-fine text-guided token pruning. In Proceedings of the IEEE/CVF International Conference on Computer Vision . 9206–9217. [39] Ji Ma, Wei Suo, Peng Wang, and Yanning Zhang. 2025. Short-lvlm: Compressing and accelerating large vision-language models by pruning redundant layers. In 
+
+Proceedings of the 33rd ACM International Conference on Multimedia . 3575–3584. [40] Qiankun Ma, Ziyao Zhang, Haofei Wang, Jie Chen, Zhen Song, and Hairong Zheng. 2026. ApET: Approximation-Error Guided Token Compression for Effi-cient VLMs. arXiv preprint arXiv:2602.19870 (2026). [41] Xinyin Ma, Runpeng Yu, Gongfan Fang, and Xinchao Wang. 2025. dkv-cache: The cache for diffusion language models. arXiv preprint arXiv:2505.15781 (2025). [42] Yuxin Ma, Lun Du, Lanning Wei, Kun Chen, Qian Xu, Kangyu Wang, Guofeng Feng, Guoshan Lu, Lin Liu, Xiaojing Qi, et al . 2025. dinfer: An efficient inference framework for diffusion language models. arXiv preprint arXiv:2510.08666 (2025). [43] Ahmed Masry, Xuan Long Do, Jia Qing Tan, Shafiq Joty, and Enamul Hoque. 2022. Chartqa: A benchmark for question answering about charts with visual and logical reasoning. In Findings of the association for computational linguistics: ACL 2022 . 2263–2279. Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+[44] Minesh Mathew, Viraj Bagal, Rubèn Tito, Dimosthenis Karatzas, Ernest Valveny, and CV Jawahar. 2022. Infographicvqa. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision . 1697–1706. [45] Minesh Mathew, Dimosthenis Karatzas, and CV Jawahar. 2021. Docvqa: A dataset for vqa on document images. In Proceedings of the IEEE/CVF winter conference on applications of computer vision . 2200–2209. [46] Quan Nguyen-Tri, Mukul Ranjan, and Zhiqiang Shen. 2025. Attention is all you need for kv cache in diffusion llms. arXiv preprint arXiv:2510.14973 (2025). [47] Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. 2025. Large language diffusion models. arXiv preprint arXiv:2502.09992 (2025). [48] Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh. 2021. Dynamicvit: Efficient vision transformers with dynamic token sparsification. Advances in neural information processing systems 34 (2021), 13937–13949. [49] Yuerong Song, Xiaoran Liu, Ruixiao Li, Zhigeng Liu, Zengfeng Huang, Qipeng Guo, Ziwei He, and Xipeng Qiu. [n. d.]. Sparse-dllm: Accelerating diffusion llms with dynamic cache eviction, 2025a. URL https://arxiv. org/abs/2508.02558 
+
+([n. d.]). [50] Yizheng Sun, Yanze Xin, Hao Li, Jingyuan Sun, Chenghua Lin, and Riza Theresa Batista-Navarro. 2025. Lvpruning: An effective yet simple language-guided vision token pruning approach for multi-modal large language models. In Findings of the Association for Computational Linguistics: NAACL 2025 . 4299–4308. [51] Pavan Kumar Anasosalu Vasu, Fartash Faghri, Chun-Liang Li, Cem Koc, Nate True, Albert Antony, Gokula Santhanam, James Gabriel, Peter Grasch, Oncel Tuzel, et al . 2025. Fastvlm: Efficient vision encoding for vision language models. In Proceedings of the Computer Vision and Pattern Recognition Conference . 19769– 19780. [52] Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan, Jinze Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, et al . 2024. Qwen2-vl: Enhancing vision-language model’s perception of the world at any resolution. arXiv preprint arXiv:2409.12191 (2024). [53] Xu Wang, Chenkai Xu, Yijie Jin, Jiachun Jin, Hao Zhang, and Zhijie Deng. 2025. Diffusion llms can do faster-than-ar inference via discrete diffusion forcing. arXiv preprint arXiv:2508.09192 (2025). [54] Yixiao Wang, Ting Jiang, Zishan Shao, Hancheng Ye, Jingwei Sun, Mingyuan Ma, Jianyi Zhang, Yiran Chen, and Hai Li. 2026. Zeus: Accelerating diffusion models with only second-order predictor. arXiv preprint arXiv:2604.01552 (2026). [55] Linye Wei, Wenjue Chen, Pingzhi Tang, Xiaotian Guo, Le Ye, Runsheng Wang, and Meng Li. 2025. Orchestrating Dual-Boundaries: An Arithmetic Intensity Inspired Acceleration Framework for Diffusion Language Models. arXiv preprint arXiv:2511.21759 (2025). [56] Zichen Wen, Yifeng Gao, Weijia Li, Conghui He, and Linfeng Zhang. 2025. Token pruning in multimodal large language models: Are we solving the right problem?. In Findings of the Association for Computational Linguistics: ACL 2025 . 15537– 15549. [57] Zichen Wen, Yifeng Gao, Shaobo Wang, Junyuan Zhang, Qintong Zhang, Weijia Li, Conghui He, and Linfeng Zhang. 2025. Stop Looking for “Important Tokens” in Multimodal Language Models: Duplication Matters More. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing . 9972–9991. [58] Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. 2025. Fast-dllm: Training-free acceleration of diffusion llm by enabling kv cache and parallel decoding. arXiv preprint arXiv:2505.22618 (2025). [59] Hao Wu, Yingqi Fan, Jinyang Dai, Junlong Tong, Yunpu Ma, and Xiaoyu Shen. 2026. HiDrop: Hierarchical Vision Token Reduction in MLLMs via Late Injection, Concave Pyramid Pruning, and Early Exit. arXiv preprint arXiv:2602.23699 (2026). [60] Qiong Wu, Wenhao Lin, Yiyi Zhou, Weihao Ye, Zhanpeng Zen, Xiaoshuai Sun, and Rongrong Ji. 2024. Accelerating multimodal large language mod-els via dynamic visual-token exit and the empirical findings. arXiv preprint arXiv:2411.19628 (2024). [61] Yi Xin, Qi Qin, Siqi Luo, Kaiwen Zhu, Juncheng Yan, Yan Tai, Jiayi Lei, Yuewen Cao, Keqi Wang, Yibin Wang, et al . 2025. Lumina-dimoo: An omni diffusion large language model for multi-modal generation and understanding. arXiv preprint arXiv:2510.06308 (2025). [62] Chen Xu and Dawei Yang. 2025. Dllmquant: Quantizing diffusion-based large language models. arXiv preprint arXiv:2508.14090 (2025). [63] Jingqi Xu, Jingxi Lu, Chenghao Li, Sreetama Sarkar, Souvik Kundu, and Peter A Beerel. 2025. RedVTP: Training-Free Acceleration of Diffusion Vision-Language Models Inference via Masked Token-Guided Visual Token Pruning. arXiv preprint arXiv:2511.12428 (2025). [64] Zhuoyan Xu, Khoi Duc Nguyen, Preeti Mukherjee, Saurabh Bagchi, Somali Chaterji, Yingyu Liang, and Yin Li. 2025. Learning to inference adaptively for multimodal large language models. In Proceedings of the IEEE/CVF International Conference on Computer Vision . 3552–3563. [65] Chenyu Yang, Xuan Dong, Xizhou Zhu, Weijie Su, Jiahao Wang, Hao Tian, Zhe Chen, Wenhai Wang, Lewei Lu, and Jifeng Dai. 2025. PVC: Progressive Visual Token Compression for Unified Image and Video Processing in Large Vision-Language Models. In Proceedings of the Computer Vision and Pattern Recognition Conference . 24939–24949. [66] Ling Yang, Ye Tian, Bowen Li, Xinchen Zhang, Ke Shen, Yunhai Tong, and Mengdi Wang. 2025. Mmada: Multimodal large diffusion language models. arXiv preprint arXiv:2505.15809 (2025). [67] Senqiao Yang, Yukang Chen, Zhuotao Tian, Chengyao Wang, Jingyao Li, Bei Yu, and Jiaya Jia. 2025. Visionzip: Longer is better but not necessary in vision language models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition . 19792–19802. [68] Yicun Yang, Cong Wang, Shaobo Wang, Zichen Wen, Biqing Qi, Hanlin Xu, and Linfeng Zhang. 2025. Diffusion llm with native variable generation lengths: Let [eos] lead the way. arXiv preprint arXiv:2510.24605 (2025). [69] Yuan Yao, Tianyu Yu, Ao Zhang, Chongyi Wang, Junbo Cui, Hongji Zhu, Tianchi Cai, Haoyu Li, Weilin Zhao, Zhihui He, et al . 2024. Minicpm-v: A gpt-4v level mllm on your phone. arXiv preprint arXiv:2408.01800 (2024). [70] Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. 2025. Dream 7b: Diffusion large language models. arXiv preprint arXiv:2508.15487 (2025). [71] Weihao Ye, Qiong Wu, Wenhao Lin, and Yiyi Zhou. 2025. Fit and prune: Fast and training-free visual token pruning for multi-modal large language models. In 
+
+Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 39. 22128–22136. [72] X Ye, Y Gan, Y Ge, XP Zhang, and Y Tang. [n. d.]. ATP-LLAVA: adaptive token pruning for large vision language models (2024). URL https://arxiv. org/abs/2412 
+
+447 ([n. d.]). [73] Zebin You, Shen Nie, Xiaolu Zhang, Jun Hu, Jun Zhou, Zhiwu Lu, Ji-Rong Wen, and Chongxuan Li. 2025. Llada-v: Large language diffusion models with visual instruction tuning. arXiv preprint arXiv:2505.16933 (2025). [74] Runpeng Yu, Xinyin Ma, and Xinchao Wang. [n. d.]. Dimple: Discrete diffusion multimodal large language model with parallel decoding, 2025. URL https://arxiv. org/abs/2505.16990 ([n. d.]). [75] Xiang Yue, Yuansheng Ni, Kai Zhang, Tianyu Zheng, Ruoqi Liu, Ge Zhang, Samuel Stevens, Dongfu Jiang, Weiming Ren, Yuxuan Sun, et al . 2024. Mmmu: A massive multi-discipline multimodal understanding and reasoning benchmark for expert agi. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition . 9556–9567. [76] Weili Zeng, Ziyuan Huang, Kaixiang Ji, and Yichao Yan. 2025. Skip-vision: Efficient and scalable acceleration of vision-language models via adaptive token skipping. In Proceedings of the IEEE/CVF International Conference on Computer Vision . 21384–21397. [77] Kaichen Zhang, Bo Li, Peiyuan Zhang, Fanyi Pu, Joshua Adrian Cahyono, Kairui Hu, Shuai Liu, Yuanhan Zhang, Jingkang Yang, Chunyuan Li, et al . 2025. Lmms-eval: Reality check on the evaluation of large multimodal models. In Findings of the Association for Computational Linguistics: NAACL 2025 . 881–916. [78] Qizhe Zhang, Aosong Cheng, Ming Lu, Renrui Zhang, Zhiyong Zhuo, Jiajun Cao, Shaobo Guo, Qi She, and Shanghang Zhang. 2025. Beyond text-visual attention: Exploiting visual cues for effective token pruning in vlms. In Proceedings of the IEEE/CVF International Conference on Computer Vision . 20857–20867. [79] Tianao Zhang, Zhiteng Li, Xianglong Yan, Haotong Qin, Yong Guo, and Yu-lun Zhang. 2025. Quant-dllm: Post-training extreme low-bit quantization for diffusion large language models. arXiv preprint arXiv:2510.03274 (2025). [80] Yuan Zhang, Chun-Kai Fan, Junpeng Ma, Wenzhao Zheng, Tao Huang, Kuan Cheng, Denis Gudovskiy, Tomoyuki Okuno, Yohei Nakata, Kurt Keutzer, et al .2024. Sparsevlm: Visual token sparsification for efficient vision-language model inference. arXiv preprint arXiv:2410.04417 (2024). [81] Shiyu Zhao, Zhenting Wang, Felix Juefei-Xu, Xide Xia, Miao Liu, Xiaofang Wang, Mingfu Liang, Ning Zhang, Dimitris N Metaxas, and Licheng Yu. 2025. Accelerating multimodal large language models by searching optimal vision token reduction. In Proceedings of the Computer Vision and Pattern Recognition Conference . 29869–29879. [82] Yiwu Zhong, Zhuoming Liu, Yin Li, and Liwei Wang. 2025. Aim: Adaptive inference of multi-modal llms via token merging and pruning. In Proceedings of the IEEE/CVF International Conference on Computer Vision . 20180–20192. [83] Zijian Zhu, Fei Ren, Zhanhong Tan, and Kaisheng Ma. 2026. ES-dLLM: Efficient Inference for Diffusion Large Language Models by Early-Skipping. arXiv preprint arXiv:2603.10088 (2026). [84] Xin Zou, Di Lu, Yizhou Wang, Yibo Yan, Yuanhuiyi Lyu, Xu Zheng, Linfeng Zhang, and Xuming Hu. 2025. Don’t Just Chase" Highlighted Tokens" in MLLMs: Revisiting Visual Holistic Context Retention. arXiv preprint arXiv:2510.02912 
+
+(2025). Zhao et al. 
+
+## A Experimental Details A.1 Hardware Setup and Evaluation Stability 
+
+All experiments were conducted on NVIDIA A100 GPUs. Specifi-cally, the experiments for evaluating the “Effectiveness of system-level optimizations” were performed on 4 × A100 GPUs to simulate high-concurrency batched serving, while all other baseline and ablation experiments were executed on a single A100 GPU. To ensure the reliability and reproducibility of our results, all ex-periments were run three times, and the average values are reported. The maximum variance observed across all evaluation metrics was strictly bounded: 
+
+• Accuracy: The maximum variance was 0.0025, observed when evaluating the DivPrune method on the MMaDA model using the DocVQA benchmark. 
+
+• Throughput: The maximum variance was 0.0759 tokens/s, observed when evaluating the Seer method on the MMaDA model using the MME benchmark. 
+
+• Latency: The maximum variance was 0.1164 s, observed when evaluating the D3TOM method on the LaViDa-LLaDA model using the MathVista benchmark. 
+
+## A.2 Hyperparameter Configurations 
+
+After careful hyperparameter tuning, the specific configurations for the baseline methods across different model architectures are detailed below: 
+
+D3TOM: Adaptive merging was enabled. Token merging was strictly performed at the 3rd layer with a base merge rate set to 0.8. 
+
+RedVTP: The visual token retention rate was set to 0.25. 
+
+VisionZip: For the LaViDa-LLaDA and LaViDa-Dream ar-chitectures, VISIONZIP_DOMINANT was set to 80, and VI-SIONZIP_CONTEXTUAL was set to 10. For the MMaDA model, these parameters were adjusted to 32 and 16, respectively. Note that because MMaDA utilizes MAGVIT-v2 VQ tokens and lacks continuous attention mechanisms, we adapted the VisionZip im-plementation to use text-visual cosine similarity for token filtering. 
+
+MMTok: For LaViDa-LLaDA and LaViDa-Dream, the parameters were configured as MMTOK_TOKENS = 64, MMTOK_ALPHA = 0.5, MMTOK_TV_TEMP = 0.02, and MMTOK_VV_TEMP = 0.2. For MMaDA, MMTOK_TOKENS was reduced to 32, while the remain-ing temperature and alpha parameters were kept identical. 
+
+DivPrune: The token retention rate was set to 0.1 for LaViDa-LLaDA and LaViDa-Dream. Because MMaDA’s visual encoder (MAGVIT-v2 VQ tokenizer) operates on a discrete codebook, we adapted the pruning strategy to use an absolute number to retain tokens, setting the retention count to exactly 32. 
+
+SparseVLM: The absolute token retention count was set to 128 for LaViDa-LLaDA and LaViDa-Dream, and 64 for MMaDA. Pruning was executed at layers 2, 6, and 15 across all models. 
+
+Focus: Focus is an acceleration method originally designed for pure diffusion language models, falling into the category of dynamic per-step token eviction. To evaluate its cross-modal effectiveness, we migrated this method to the diffusion multimodal large language model (DMLLM) architectures. In our experiments, we kept its default parameters. 
+
+Daedal: Similarly, Daedal is a variable-length generation strat-egy (dynamic token eviction) originally proposed for diffu-sion language models, which we adapted for DMLLMs in our comparative study. Its parameters were configured as DAEDAL_INITIAL_LENGTH = 16, DAEDAL_MAX_LENGTH = 100, and DAEDAL_EXPANSION_FACTOR = 8. 
+
+## A.3 Evaluation Settings 
+
+The generation configurations for each benchmark strictly followed the default lmms-eval settings. Table 4 details the predefined denois-ing timestep 𝑇 , which directly corresponds to the padded output sequence length |𝑂 |, used for each dataset during inference. 
+
+Table 4: Output length settings to produce the main results. By default, we use the denoising timestep 𝑇 corresponding to the valid output window |𝑂 |.Dataset |O| Dataset |O|
+
+MME 16 DocVQA 32 MMMU 16 InfoVQA 32 ChartQA 16 MathVista 100 SQA 16 MMBench 100 GQA 16 
+
+## A.4 Datasets 
+
+We list all evaluations on these multimodal (vision-language) un-derstanding benchmarks below. 
+
+Comprehensive reasoning MME. The MME benchmark is designed to comprehensively as-sess multimodal large language models across a wide spectrum of perception and cognition tasks. 
+
+MMMU. The MMMU benchmark is designed to access a model’s proficiency in tasks requiring expert-level and domain-specific understanding and reasoning. It consists of over 10k questions derived from college-level examinations and tutorials across science, engineering and humanities. The questions challenge models on both advanced perception and deep knowledge. We evaluate all methods on the validation splits. 
+
+MMBench. MMBench implements a multi-level framework to eval-uate cross-specific task dimensions. The assessment is structured into different levels, enabling a comprehensive precise analysis of the strengths and weaknesses across skills. We evaluate methods’ performance on dev splits. 
+
+Visual Question Answering ChartQA. The ChartQA benchmark targets the complex challenge of question answering about charts, requiring models to integrate visual parsing with logical and mathematical reasoning. 
+
+SQA. ScienceQA targets complex and multi-step reasoning within scientific domains. The benchmark features a dataset of questions Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Table 5: Additional comparative benchmark results on LaViDa-LLaDA and MMaDA architectures. Benchmark abbreviations: MU (MMMU), MB (MMBench), IV (InfoVQA), CQ (ChartQA), SQ (SQA), DV (DocVQA), GQ (GQA), MV (MathVista). The best results are highlighted in bold, the second best are underlined, and the third best are marked in blue. 
+
+Method MME MU MB IV CQ SQ DV GQ MV 
+
+LaViDa-LLaDA 
+
+Baseline 1705.29 44.00 75.76 38.11 60.60 72.38 63.52 56.70 45.70 Throughput ↑ 0.53 0.60 0.12 0.81 1.50 0.77 1.16 0.64 0.16 Latency ↓ 1.87 1.88 8.66 3.32 1.95 1.30 3.68 1.95 8.79 + Focus 1707.11 44.00 75.00 37.02 60.60 72.48 62.16 56.74 46.00 
+
+Throughput ↑ 0.45 0.44 0.09 0.66 1.25 0.69 6.91 0.54 0.12 Latency ↓ 2.23 2.56 10.61 3.99 2.33 1.45 4.59 2.29 11.0634 + Daedal 1683.28 43.21 73.48 37.43 54.40 71.34 58.62 56.35 45.00 Throughput ↑ 1.01 1.32 0.70 2.57 3.35 1.45 3.48 1.23 1.73 
+
+Latency ↓ 0.99 0.84 1.43 1.01 0.86 0.69 1.13 1.00 0.80 + Seer (ours) 1697.94 43.89 75.76 38.40 57.80 72.73 63.66 56.75 45.10 Throughput ↑ 1.11 1.39 0.93 2.76 2.95 1.58 4.40 1.36 1.68 Latency ↓ 0.90 0.81 1.08 0.99 0.98 0.65 0.97 0.92 0.75 MMaDA 
+
+Baseline 1306.72 31.44 39.72 15.11 9.92 56.82 10.30 50.79 58.00 
+
+Throughput ↑ 0.29 0.14 0.28 0.13 1.37 0.28 0.15 0.35 0.59 Latency ↓ 3.48 7.72 3.58 14.94 1.70 3.54 15.20 3.41 11.22 + Focus 1312.10 31.00 39.70 14.83 10.04 56.87 10.01 50.14 57.70 Throughput ↑ 0.19 0.09 0.19 0.09 0.82 0.17 0.10 0.25 0.40 Latency ↓ 5.38 12.04 5.29 20.81 2.76 5.74 21.45 4.76 16.28 + Daedal 1289.24 30.78 38.78 14.75 9.80 57.21 9.05 50.03 57.50 Throughput ↑ 2.34 1.20 2.55 3.53 2.49 2.53 3.17 2.52 6.74 
+
+Latency ↓ 0.43 0.91 0.39 0.56 0.95 0.39 0.73 0.48 0.67 + Seer (ours) 1315.69 31.33 39.16 14.87 10.12 58.16 9.27 50.65 55.80 Throughput ↑ 3.39 2.33 3.17 4.02 3.95 2.35 4.48 4.46 3.39 Latency ↓ 0.30 0.46 0.32 0.49 0.59 0.43 0.50 0.27 0.39 
+
+across nature, language and social science. It is explicitly designed to evaluate multimodal understanding, sophisticated reasoning chains and interpretability. We evaluate methods on the image split to achieve visual ability. 
+
+GQA. The GQA is composed of three parts: scene graphs, ques-tions, and images. GQA offers a targeted evaluation methodology for visual question answering, grounded in detailed scene graph representations of images. The questions are generated to test a model’s ability to reason about object attributes, the understanding of visual scenes and image spatial relationships. We evaluate all methods’ performance on the GQA_lite split. 
+
+DocVQA. DocVQA focuses on visual question answering based on document images, pushing models to accurately parse dense text and structural elements within scanned documents. 
+
+InfoVQA. InfoVQA evaluates a model’s capability to comprehend infographics, demanding the joint interpretation of complex visual layouts, charts, and embedded textual information. 
+
+MathVista. MathVista provides a fine-grained test bed for eval-uating the mathematical reasoning of MLLMs in visual contexts, markedly widening the topical coverage and problem diversity. We conduct our evaluation on the test split. 
+
+## B Extended Evaluation on Inference Efficiency 
+
+Analysis of Comprehensive Benchmarks. As demonstrated in the comprehensive benchmark results across the LaViDa-LLaDA and MMaDA (Table 5), as well as the LaViDa-Dream (Table 6) ar-chitectures, our proposed Seer framework consistently achieves state-of-the-art efficiency. It delivers the highest throughput and lowest latency while rigorously preserving multimodal reasoning accuracy. While the baseline-adapted Daedal provides noticeable speedups, it often struggles to maintain optimal performance across all complex visual datasets. Most notably, Focus fails entirely to generalize to the multimodal diffusion paradigm; it actually exac-erbates the computational bottleneck, resulting in strictly lower throughput and higher latency compared to the unaccelerated base-line in both Table 5 and Table 6, thereby offering no acceleration effect whatsoever. These findings underscore the superior adapt-ability and necessity of Seer’s sparsity-aware truncation approach for practically optimizing DMLLMs. Zhao et al. 
+
+Table 6: Comprehensive benchmark results on the LaViDa-Dream architecture. Benchmark abbreviations: MU (MMMU), MB (MMBench), IV (InfoVQA), CQ (ChartQA), SQ (SQA), DV (DocVQA), GQ (GQA), MV (MathVista). The best results are highlighted in bold, the second best are underlined, and the third best are marked in blue. 
+
+Method MME MU MB IV CQ SQ DV GQ MV 
+
+LaViDa-Dream 
+
+Baseline 1822.04 42.44 76.52 40.61 55.40 75.21 59.28 58.05 41.60 Throughput ↑ 2.54 2.53 0.20 2.04 4.09 3.97 2.25 2.67 0.46 Latency ↓ 1.18 1.24 7.16 2.30 1.19 0.76 2.70 1.23 7.24 + D3ToM 1564.48 42.89 75.00 26.77 19.00 73.87 15.15 48.97 38.10 Throughput ↑ 4.09 3.73 0.63 3.22 5.79 4.98 3.35 4.31 0.72 Latency ↓ 0.73 0.83 4.77 1.36 0.75 0.60 1.47 0.75 4.61 + RedVTP 1547.32 42.33 68.94 30.12 25.20 72.24 34.38 50.94 37.60 Throughput ↑ 4.64 4.18 0.75 3.74 6.68 6.01 4.28 4.86 0.84 Latency ↓ 0.65 0.75 4.01 1.21 0.68 0.50 1.29 0.67 3.93 + VisionZip 1491.66 42.33 75.00 25.43 25.60 72.34 25.75 51.65 39.20 Throughput ↑ 4.25 4.23 0.64 3.12 6.22 5.32 3.49 4.61 0.70 Latency ↓ 0.71 0.74 4.71 1.40 0.73 0.56 1.43 0.71 4.75 + MMTok 1741.38 43.44 77.27 33.64 34.40 75.16 38.80 54.95 41.50 Throughput ↑ 4.20 4.29 0.68 3.40 6.46 5.39 3.90 4.51 0.75 Latency ↓ 0.71 0.73 4.42 1.35 0.74 0.56 1.43 0.73 4.45 + DivPrune 1113.88 41.11 49.24 24.41 15.60 71.15 9.67 39.20 37.90 Throughput ↑ 8.87 6.53 1.01 5.97 11.66 7.90 6.24 9.42 1.19 Latency ↓ 0.34 0.47 2.98 0.71 0.35 0.38 0.68 0.34 2.75 + SparseVLM 1424.32 42.11 72.74 24.97 27.60 73.62 19.98 48.93 40.90 Throughput ↑ 6.22 5.18 0.77 4.61 9.12 6.39 5.22 6.70 0.88 Latency ↓ 0.48 0.60 3.90 0.92 0.49 0.47 0.91 0.48 3.81 + Focus 1835.20 42.56 75.76 41.70 54.00 75.51 59.20 58.48 42.20 Throughput ↑ 1.42 1.30 0.24 1.13 2.26 2.47 1.24 1.48 0.24 Latency ↓ 2.11 2.41 12.61 4.13 2.17 1.21 4.92 2.21 13.73 + Daedal 1828.15 42.44 77.27 40.22 49.40 75.31 59.34 58.67 42.10 Throughput ↑ 11.34 5.73 1.44 5.22 10.95 8.71 8.40 9.49 1.84 Latency ↓ 0.26 0.50 2.24 0.84 0.45 0.45 0.77 0.35 1.83 + Seer (ours) 1852.05 42.60 78.01 41.12 54.60 75.82 60.13 59.06 42.30 
+
+Throughput ↑ 9.53 5.99 1.58 7.85 11.28 8.95 8.30 8.22 2.00 
+
+Latency ↓ 0.21 0.52 1.90 0.59 0.43 0.34 0.73 0.40 1.67 Scaling Characteristics and System-Level Performance Gains. We conducted comprehensive throughput comparison ex-periments across different concurrency scales on the LaViDa-LLaDA model (Figure 8), as well as the LaViDa-Dream and MMaDA archi-tectures (Figure 9). Across all evaluated models and datasets, the results demonstrate that the complete Seer framework achieves sig-nificant and sustained acceleration as the batch size increases. For instance, Seer Full reaches peak throughputs of 21.57 tokens/s on LaViDa-LLaDA (MathVista, BS 256) and 118.59 tokens/s on LaViDa-Dream (ChartQA, BS 256). Notably, on the MMaDA architecture evaluated on MathVista, throughput increases from 2.07 tokens/s to 47.60 tokens/s at a batch size of 192, representing a 23 × gain over the vanilla baseline. We also observe that when scaling to even larger batch sizes, the throughput saturates in compute-bound setups (e.g., LaViDa-LLaMA on MathVista); however, it continues to in-crease until out-of-memory (OOM) occurs in memory-bound setups (e.g., MMaDA at BS 256 in our setting). These experiments con-sistently reveal that while applying algorithmic truncation alone (Seer Naive Pad) yields marginal improvements, its throughput stagnates at larger batch sizes due to severe padding waste caused by intra-batch sequence length variance (i.e., the straggler effect). Conversely, Seer’s proposed Hybrid Execution Routing effectively overcomes this system-level bottleneck by dynamically dispatching sequences into execution-friendly paths, successfully translating theoretical FLOP reductions into consistent end-to-end wall-clock acceleration across different DMLLM backbones. Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation (a) Throughput Comparison on MMMU (b) Throughput Comparison on MathVista 
+
+Figure 8: Throughput Scaling on LaViDa-LLaDA. Impact of different execution strategies on inference throughput across varying batch sizes on the (a) MMMU and (b) MathVista datasets. Seer (Full) overcomes the padding waste bottleneck observed in Seer (Naive Pad), achieving significant and sustained throughput scaling at high concurrency. (b) Throughput Comparison on MMaDA across ChartQA, MMMU, and MathVista 
+
+(b) Throughput Comparison on LaViDa-Dream across ChartQA, MMMU, and MathVista 
+
+Figure 9: Throughput Scaling on LaViDa-Dream and MMaDA. Impact of different execution strategies on inference throughput across varying batch sizes on the ChartQA, MMMU, and MathVista datasets for (a) LaViDa-Dream and (b) MMaDA. Consistent with LaViDa-LLaDA, Seer (Full) effectively translates theoretical reductions into robust end-to-end acceleration. 
+
+## C Bounding-Box-Grounded Attention Analysis 
+
+To provide quantitative support for the interpretation in Sec. 3.6, we analyze how early suffix truncation changes valid-prefix visual at-tention on a subset of 100 MME samples with explicit bounding-box annotations. These samples allow us to define question-relevant vi-sual regions directly, enabling a region-aware comparison between the original model and Seer. For each sample, let 𝑉 denote the set of visual tokens, and let 
+
+𝑅 ⊆ 𝑉 denote the visual tokens whose image patches overlap with the ground-truth bounding box. Following common patch-region alignment practice, a visual token is assigned to 𝑅 if its patch overlaps with the bounding box by more than a threshold 𝜏 (we use 𝜏 = 0.5 in our implementation). The remaining visual tokens form the irrelevant region set 𝐼 = 𝑉 \ 𝑅 .Let 𝑃 denote the set of valid generated text tokens before the first [EOS] or [EOT] . For each valid prefix token 𝑝 ∈ 𝑃 , we extract its attention over visual tokens and renormalize the distribution within the visual modality: 
+
+˜𝐴 𝑝 →𝑣 = 𝐴 𝑝 →𝑣 
+
+Í𝑢 ∈𝑉 𝐴 𝑝 →𝑢 + 𝜖 , 𝑣 ∈ 𝑉 , (18) where 𝜖 is a small constant for numerical stability. We then compute two complementary metrics. First, we use 
+
+attention entropy to measure how diffuse the valid-prefix visual Zhao et al. 
+
+Table 7: Compatibility of Seer with KV Cache. Benchmark results on LaViDa-LLaDA, LaViDa-Dream, and MMaDA architectures equipped with KV Cache. Benchmark abbreviations: MU (MMMU), MB (MMBench), IV (InfoVQA), CQ (ChartQA), SQ (SQA), DV (DocVQA), GQ (GQA), MV (MathVista). The better results between the baseline and Seer for each metric are highlighted in bold. 
+
+Method MME MU MB IV CQ SQ DV GQ MV 
+
+LaViDa-LLaDA (w/ KV Cache) 
+
+Baseline 1694.92 43.78 73.48 36.58 57.40 71.24 58.67 56.10 44.90 
+
+Throughput ↑ 1.01 1.15 0.31 1.84 2.96 1.11 2.75 1.28 0.42 Latency ↓ 0.99 0.96 3.25 1.41 0.98 0.90 1.44 0.97 3.27 + Seer (ours) 1707.78 43.89 73.48 36.88 57.60 71.19 58.75 56.37 44.80 Throughput ↑ 1.43 1.63 1.55 3.66 4.14 1.73 5.22 1.89 1.89 
+
+Latency ↓ 0.70 0.65 0.64 0.71 0.70 0.58 0.76 0.67 0.64 LaViDa-Dream (w/ KV Cache) 
+
+Baseline 1856.96 42.00 75.76 41.17 53.40 75.31 56.32 57.80 41.80 
+
+Throughput ↑ 6.05 6.47 1.23 5.53 9.90 7.05 7.01 6.48 1.41 Latency ↓ 0.50 0.49 2.45 0.86 0.50 0.43 0.86 0.50 2.44 + Seer (ours) 1874.37 41.97 77.27 41.76 50.19 75.38 58.39 56.32 40.90 Throughput ↑ 23.62 13.85 3.35 28.13 24.69 14.92 19.19 14.19 4.45 
+
+Latency ↓ 0.13 0.23 0.90 0.17 0.20 0.20 0.32 0.23 0.77 MMaDA (w/ KV Cache) 
+
+Baseline 1306.95 31.00 37.69 12.35 9.56 53.89 8.85 47.38 51.70 
+
+Throughput ↑ 0.74 0.39 0.72 0.36 0.64 0.71 0.49 0.88 0.32 Latency ↓ 1.34 2.77 1.38 6.14 4.09 1.37 6.10 1.34 4.46 + Seer (ours) 1329.57 32.67 37.62 11.98 9.24 53.84 8.37 46.65 51.70 
+
+Throughput ↑ 5.75 5.09 4.80 8.83 10.08 4.43 9.65 6.56 6.05 
+
+Latency ↓ 0.17 0.21 0.21 0.23 0.25 0.22 0.27 0.18 0.21 
+
+attention is: 
+
+𝐻 𝑝 = −∑︁  
+
+> 𝑣 ∈𝑉
+
+˜𝐴 𝑝 →𝑣 log ( ˜𝐴 𝑝 →𝑣 + 𝜖 ), (19) and normalize it by log |𝑉 |:
+
+ˆ𝐻 𝑝 = 𝐻 𝑝 
+
+log |𝑉 | . (20) Lower entropy indicates that the prefix attends to a more concen-trated subset of visual tokens. Second, we compute the irrelevant-region attention mass , defined as the fraction of valid-prefix visual attention assigned to tokens outside the bounding box: 
+
+𝑀 irr  
+
+> 𝑝
+
+=∑︁  
+
+> 𝑣 ∈𝐼
+
+˜𝐴 𝑝 →𝑣 . (21) Lower values indicate weaker reliance on question-irrelevant visual context. Unless otherwise specified, we report both metrics averaged over all valid prefix tokens, all attention heads, and the last four transformer layers at the final denoising step: 
+
+ˆ𝐻 = 1
+
+|𝑃 ||L||H | ∑︁ 𝑝 ∈𝑃 ∑︁ 𝑙 ∈ L ∑︁ ℎ∈ H 
+
+ˆ𝐻 (𝑙,ℎ ) 
+
+> 𝑝
+
+, (22) 
+
+𝑀 irr = 1
+
+|𝑃 ||L||H | ∑︁ 𝑝 ∈𝑃 ∑︁ 𝑙 ∈ L ∑︁ ℎ∈ H 
+
+𝑀 irr ,(𝑙,ℎ ) 
+
+> 𝑝
+
+. (23) 
+
+## D Compatibility with KV Cache 
+
+Orthogonality to Existing Caching Mechanisms. To demon-strate that our Seer framework is orthogonal to existing attention-level optimizations, we conducted an extended evaluation integrat-ing Seer with the standard KV Cache mechanism. We assessed the joint performance on the LaViDa-LLaDA, LaViDa-Dream, and MMaDA architectures across all nine reasoning benchmarks. As shown in Table 7, even when the baseline models are inherently accelerated by KV caching, applying Seer still yields substantial and consistent improvements in both end-to-end throughput and latency. For instance, on the MMaDA model, Seer increases the actual throughput on the ChartQA dataset from 0.64 tokens/s to 10.08 tokens/s while reducing latency from 4.09s to 0.25s. Crucially, these significant speedups are achieved without compromising the multimodal reasoning scores across diverse tasks. This empirically confirms that Seer’s dynamic sparsity-aware truncation provides independent, cumulative acceleration benefits that seamlessly com-plement and enhance foundational system-level optimizations like KV caching, proving its broad applicability as a plug-and-play solu-tion. Table 10 reports the results on three representative DMLLMs. Across all models, Seer consistently reduces both attention entropy and irrelevant-region attention mass. This indicates that early suf-fix truncation makes valid-prefix visual attention less diffuse and reduces the fraction of attention assigned to regions outside the Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Table 8: Joint impact of Absolute Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 ) and Tolerance Ratio ( 𝛾 ) on generation accuracy and inference throughput (Evaluated on MMMU). The optimal Pareto fron-tier configuration is highlighted in bold.                                                               
+
+> Tol. Abs. Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 )(𝛾 )0.01 0.02 0.03 0.04 0.05 0.06 0.2 43.9/0.82 44.0/0.78 44.0/0.75 44.0/0.71 44.0/0.67 44.0/0.64 0.3 43.8/1.02 43.9/0.92 44.0/0.86 44.0/0.80 44.0/0.75 44.0/0.70 0.4 42.1/1.35 43.6/1.18 43.9/1.02 44.0/0.92 44.0/0.85 44.0/0.78 0.5 37.6/1.77 42.2/1.45 43.8/1.22 43.9/1.08 44.0/0.96 44.0/0.86 0.6 28.5/2.21 38.6/1.72 43.9/1.39 43.8/1.21 43.9/1.05 44.0/0.92 0.7 16.2/2.75 30.5/2.15 40.2/1.65 42.6/1.42 43.5/1.22 43.8/1.08 0.8 8.5/3.12 21.4/2.65 33.5/2.05 39.2/1.72 42.1/1.45 43.5/1.25 0.9 3.8/3.55 11.5/3.05 24.6/2.45 34.5/1.94 38.6/1.68 42.2/1.40 1.0 1.5/3.87 6.2/3.45 15.5/2.85 28.5/2.35 34.2/1.95 39.5/1.62
+
+Table 9: Joint impact of Absolute Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 ) and Tolerance Ratio ( 𝛾 ) on generation accuracy and inference throughput (Evaluated on MathVista). The optimal Pareto frontier configuration is highlighted in bold.                                                               
+
+> Tol. Abs. Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 )(𝛾 )0.01 0.02 0.03 0.04 0.05 0.06 0.2 45.5/0.52 45.6/0.48 45.7/0.45 45.7/0.38 45.7/0.25 45.7/0.18 0.3 44.8/0.85 45.5/0.72 45.6/0.65 45.7/0.52 45.7/0.40 45.7/0.30 0.4 41.2/1.56 44.9/1.15 45.4/0.96 45.7/0.73 45.7/0.60 45.7/0.44 0.5 35.6/2.20 42.6/1.65 45.3/1.25 45.6/1.08 45.7/0.82 45.7/0.62 0.6 28.5/2.95 39.2/2.10 45.1/1.68 45.5/1.31 45.6/1.05 45.7/0.85 0.7 15.2/3.66 32.5/2.76 41.5/2.11 43.2/1.75 45.1/1.40 45.5/1.12 0.8 8.5/4.15 22.4/3.40 35.2/2.80 40.8/2.25 43.5/1.85 44.9/1.55 0.9 4.1/4.50 12.5/4.02 26.5/3.35 36.4/2.70 40.2/2.30 43.2/1.97 1.0 1.8/4.85 6.8/4.42 16.2/3.93 29.5/3.24 36.5/2.80 40.5/2.40
+
+(a) Pareto Frontier on MMMU 
+
+Pareto Frontier 
+
+(b) Pareto Frontier on MathVista 
+
+Pareto Frontier 
+
+Figure 10: Pareto frontier of generation accuracy versus inference throughput. (a) and (b) illustrate the trade-off on the MMMU and MathVista datasets, respectively. Each point represents a specific hyperparameter combination (Absolute Jump Threshold 
+
+𝜏 𝑗𝑢𝑚𝑝 and Tolerance Ratio 𝛾 ) corresponding to Table 8 and Table 9. The arrow highlights the optimal "knee" point on the Pareto frontier (our default configuration 𝜏 𝑗𝑢𝑚𝑝 = 0.03 , 𝛾 = 0.6), which achieves the best balance between preserving reasoning quality and maximizing inference acceleration. 
+
+target box. These results provide quantitative evidence consistent with our interpretation that Seer suppresses suffix-mediated inter-ference, although we do not view them as a causal proof of the mechanism. 
+
+Table 10: Bounding-box-grounded attention analysis on 100 MME samples with explicit bounding boxes. Lower is better for both metrics. 
+
+Model Normalized Attention Entropy ↓
+
+Irrelevant-Region Attention Mass ↓
+
+Baseline Seer Baseline Seer LaViDa-LLaDA 0.612 0.583 0.431 0.381 LaViDa-Dream 0.634 0.603 0.509 0.488 MMaDA 0.671 0.568 0.462 0.404 As shown in Table 10, Seer consistently reduces both normalized attention entropy and irrelevant-region attention mass across all three DMLLMs. This suggests that, after early suffix truncation, valid generated tokens attend to a less diffuse subset of visual tokens and allocate a smaller fraction of their visual attention to regions outside the target bounding box. Notably, the reduction is most pronounced on MMaDA, which also exhibits the highest baseline entropy, suggesting that models with more diffuse cross-modal attention may benefit more from suffix truncation. Overall, these findings provide region-grounded quantitative evidence that Seer reduces visually irrelevant interference in the retained text prefix, complementing the qualitative attention maps in Fig. 2. 
+
+## E Additional Ablation Studies 
+
+Joint Impact of Hyperparameters on MMMU and MathVista. 
+
+To comprehensively evaluate the robustness of our dynamic trun-cation mechanism across diverse reasoning tasks, we extend the joint hyperparameter ablation study to the MMMU and MathVista datasets using the LaViDa-LLaDA architecture. As presented in Table 8 and Table 9, the Absolute Jump Threshold ( 𝜏 𝑗𝑢𝑚𝑝 ) and Tol-erance Ratio ( 𝛾 ) jointly govern the trade-off between generation accuracy and inference throughput. We visualize this relationship in Figure 10, which clearly maps out a Pareto frontier for both bench-marks. Relaxing the boundary detection criteria (i.e., increasing 𝛾 
+
+or decreasing 𝜏 𝑗𝑢𝑚𝑝 ) triggers more aggressive truncation, yielding exponential throughput gains but eventually leading to severe ac-curacy degradation due to the premature removal of valid semantic tokens. Conversely, overly strict criteria perfectly preserve accu-racy but severely limit the acceleration benefits. Consistently, our default configuration ( 𝜏 𝑗𝑢𝑚𝑝 = 0.03 , 𝛾 = 0.6) emerges as the optimal “knee” point on the Pareto frontiers across both datasets. At this Zhao et al. (a) Sensitivity of �pad on MMMU (b) Sensitivity of �pad on MathVista 
+
+Figure 11: Sensitivity analysis of the padding waste threshold ( 𝜏 𝑝𝑎𝑑 ). Effect of varying 𝜏 𝑝𝑎𝑑 on inference throughput across different batch sizes on the (a) MMMU and (b) MathVista datasets. The system performance is highly robust and stable when 
+
+𝜏 𝑝𝑎𝑑 < 0.7 (e.g., 0.1 ≤ 𝜏 𝑝𝑎𝑑 ≤ 0.6). However, reaching or exceeding this tipping point ( 𝜏 𝑝𝑎𝑑 ≥ 0.7) causes a sharp throughput drop across all batch sizes, as excessively high thresholds force long-tailed sequences into static execution paths, reintroducing massive padding waste. 
+
+specific configuration, Seer successfully strikes the best balance, achieving substantial inference speedups while strictly maintaining highly competitive reasoning quality (e.g., maintaining an accuracy of 43.9% and 45.1% on MMMU and MathVista, respectively), thereby demonstrating the task-agnostic reliability and generalizability of the proposed SNR-aware boundary detector. 
+
+Sensitivity of Padding Waste Threshold on Diverse Tasks. 
+
+In addition to the semantic boundary detection parameters, the padding waste threshold ( 𝜏 𝑝𝑎𝑑 ) acts as the critical gatekeeper in our Hybrid Execution Routing policy. To evaluate its generalizability, we conducted a sensitivity analysis on the MMMU and MathVista datasets, as illustrated in Figure 11. The results reveal a highly consistent and robust trend across both benchmarks: the end-to-end throughput remains stable and is largely insensitive to the exact value of 𝜏 𝑝𝑎𝑑 as long as it stays strictly below a critical tipping point ( 𝜏 𝑝𝑎𝑑 < 0.7). Within this safe zone (i.e., 𝜏 𝑝𝑎𝑑 ∈ [ 0.1, 0.6]), the routing mechanism successfully filters out highly skewed batches (dispatching them to variable-length or eager paths) while reserving the highly optimized Static-Graph path strictly for uniform batches. However, once 𝜏 𝑝𝑎𝑑 reaches 0.7 or above, a sharp and simultaneous drop in throughput is observed across all batch sizes. This occurs because an excessively lenient threshold forces long-tailed batches into static buckets, where a single straggler sequence coerces the entire batch to pad heavily, thereby nullifying the computational savings gained from Step-0 truncation. These findings confirm the indispensability of our padding-waste-aware routing design and demonstrate that setting a moderately conservative threshold (e.g., between 0.2 and 0.6) serves as a universally reliable default for diverse multimodal tasks. 
+
+System Overhead Breakdown. To further validate the effi-ciency of our system-level co-design, we profile the proportional time breakdown of the end-to-end inference pipeline across dif-ferent system components on the LaViDa-LLaDA architecture. As detailed in Table 11 (with values averaged across four batch sizes), the actual model computation heavily dominates the inference process, accounting for 95.05% to 99.52% of the total time across the evaluated datasets. Crucially, the core mechanisms introduced by Seer—namely, the SNR-aware boundary detection and the hy-brid execution routing/dispatch—introduce negligible latency over-head, collectively consuming less than 0.5% of the total execu-tion time. Furthermore, the overhead from sequence repacking (Packing/compaction) and the device-resident Triton fused kernel operations is strictly bounded (peaking at a combined 4.75% on ChartQA) and even drops to 0% on MathVista, where sequences are predominantly handled by static or eager paths without the need for varlen repacking. This highly lightweight profile conclusively demonstrates that Seer successfully bypasses CPU-GPU synchro-nization bottlenecks, ensuring that the theoretical FLOP reductions are seamlessly converted into robust wall-clock acceleration with-out incurring prohibitive system overhead. 
+
+Table 11: Proportional breakdown of end-to-end inference time (%) across different system components for the LaViDa-LLaDA architecture. The reported values are averaged across four batch sizes (32, 64, 128, and 256). Component ChartQA MMMU MathVista 
+
+Model computation 95.05 97.425 99.525 Boundary detection 0.10 0.225 0.275 Routing / dispatch 0.10 0.175 0.200 Packing / compaction 1.70 0.725 0.000 Triton fused kernel 3.05 1.450 0.000 
+
+Sensitivity of Look-Ahead Window Size. To evaluate the robustness of the local look-ahead mechanism in our SNR-aware boundary detector, we conducted a sensitivity analysis on the win-dow size parameter using the LaViDa-LLaDA architecture across the ChartQA, MMMU, and MathVista benchmarks, as shown in Ta-ble 12. The window size determines the local context used to verify the MLP sparsity “jump-to-plateau” structural pattern. When the window is extremely small (e.g., size 2), the detection criterion be-comes overly aggressive and brittle to local activation noise, leading to the premature truncation of semantically valid tokens; this causes Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Table 12: Sensitivity analysis of the look-ahead window size on the LaViDa-LLaDA architecture. The horizontal axis represents the varying local window sizes used in the SNR-aware boundary detector. Benchmark Metric Look-Ahead Window Size 2 3 4 5 6 8 10 ChartQA 
+
+Score ↑ 22.10 57.80 57.80 60.40 57.40 60.60 60.60 Throughput (tokens/s) ↑ 5.74 3.18 3.11 2.20 1.71 1.47 1.47 Latency (s) ↓ 0.4367 0.8816 0.9033 1.3219 1.7024 1.9831 1.9925 
+
+MMMU 
+
+Score ↑ 38.11 43.89 43.74 43.90 44.00 44.10 44.00 Throughput (tokens/s) ↑ 1.91 1.39 0.99 0.83 0.62 0.59 0.60 Latency (s) ↓ 0.5581 0.8100 1.1280 1.4479 1.8192 1.9047 1.8677 
+
+MathVista 
+
+Score ↑ 15.73 45.10 44.69 45.28 45.70 45.70 45.65 Throughput (tokens/s) ↑ 3.70 1.68 0.65 0.21 0.16 0.16 0.16 Latency (s) ↓ 0.2889 0.7500 2.1100 6.7300 8.8200 8.7200 8.6200 a catastrophic degradation in reasoning accuracy, with scores plum-meting to 22.10 on ChartQA and 15.73 on MathVista. Conversely, as the window size increases excessively (e.g., size 8 or 10), the bound-ary detector becomes overly conservative and struggles to trigger. While this safely preserves accuracy, the truncation mechanism is rendered largely ineffective, causing inference throughput to plum-met and latency to climb back to unoptimized baseline levels (e.g., dropping to 0.16 tokens/s on MathVista). A moderate window size (e.g., size 3) emerges as the optimal configuration, striking a perfect balance that reliably captures the true semantic boundary without risking over-truncation, thereby yielding substantial end-to-end speedups while fully preserving generation quality. 
+
+## F Extended Visualizations of Step-0 Layer-wise MLP Sparsity 
+
+To further substantiate the empirical observations in Section 3.2, we provide extended visualizations of Step-0 layer-wise MLP spar-sity across diverse generation lengths, consistently demonstrating why early-layer sparsity serves as a robust semantic oracle. In the heatmaps below, the black bounding boxes highlight the early layers (L1–L6) where the “Semantic Jump” is most pronounced: semantically valid prefix tokens exhibit distinctively dense activa-tions (lighter colors), whereas sparsity sharply spikes exactly at the predicted [EOT] token and subsequent [EOS] padding suffix (blue bounding boxes) to form a stable “Padding Plateau.” Further-more, these visualizations justify our algorithmic design of strictly relying on early layers for boundary detection. Layer 0 exhibits uni-form, uninformative high sparsity across all tokens, while deeper layers (L9–L31) suffer from extensive information mixing via bidi-rectional self-attention, which homogenizes the entire sequence into near-zero sparsity (pale yellow) and completely blurs the se-mantic boundary. Therefore, isolating the sparsity signal within the early layers is both empirically necessary and highly effective across varying sequence lengths. Zhao et al. 
+
+Figure 12: Step-0 MLP sparsity heatmap for an extremely short response (Generation Length = 16). The semantic boundary is distinctly captured by the sudden sparsity increase within the early layers (L1–L6, black box) at the [EOT] token. Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Figure 13: Step-0 MLP sparsity heatmap for a short response (Generation Length = 16). The blue box highlights the sharp “Semantic Jump” precisely at the transition to the [EOT] token. Zhao et al. 
+
+Figure 14: Step-0 MLP sparsity heatmap (Generation Length = 16). The early layers consistently maintain a stable “Padding Plateau” immediately following the valid semantic tokens. Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Figure 15: Step-0 MLP sparsity heatmap (Generation Length = 16) demonstrating the contrast between the informative early layers (black box) and the homogenized dense activations in deeper layers. Zhao et al. 
+
+Figure 16: Step-0 MLP sparsity heatmap for a medium-length response (Generation Length = 32), showing a highly consistent boundary signal regardless of the prompt content. Seeing the End at Step Zero: Accelerating Diffusion MLLMs via MLP Sparsity-Aware Truncation 
+
+Figure 17: Step-0 MLP sparsity heatmap (Generation Length = 32). The color shift within the L1–L6 window accurately pinpoints the end of the semantic prefix. 
+
+Figure 18: Step-0 MLP sparsity heatmap for a long response (Generation Length = 64). Even as the valid prefix extends, the early-layer sparsity jump remains remarkably robust. Zhao et al. 
+
+Figure 19: Step-0 MLP sparsity heatmap for an extremely long response (Generation Length = 64). The visualization confirms that the boundary detection phenomenon scales stably to extensive output sequences.

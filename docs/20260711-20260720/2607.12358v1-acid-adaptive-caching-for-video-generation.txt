@@ -1,0 +1,374 @@
+Title: ACID: Adaptive Caching for vIDeo generation
+
+URL Source: https://arxiv.org/pdf/2607.12358v1
+
+Published Time: Wed, 15 Jul 2026 11:59:07 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# ACID: Adaptive Caching for vIDeo generation 
+
+Om Agrawal 
+
+UT Austin 
+
+Saurabh Agarwal 
+
+UT Austin 
+
+Aditya Akella 
+
+UT Austin 
+
+# Abstract 
+
+Video diffusion models produce high-quality generations but remain slow at in-ference due to their sequential denoising procedure. Caching-based acceleration methods address this by reusing intermediate model outputs: leading dynamic approaches such as TeaCache, EasyCache, and DiCache accumulate a drift signal and skip expensive model evaluations when accumulated drift stays below a fixed threshold τ . This threshold controls an apparent tradeoff—raising it yields faster generation at the cost of visual quality, while lowering it preserves quality but sacrifices speed. We show this tradeoff is not fundamental; it is an artifact of holding τ constant throughout denoising. We identify the existence of critical steps —timesteps where the drift signal changes rapidly—and show that applying a low threshold selectively at these steps while caching aggressively elsewhere re-covers most of the quality of conservative caching at substantially higher inference speeds. Building on this insight, we propose ACID , a lightweight, training-free wrapper that monitors the rate of change of each method’s existing drift signal to dynamically switch between a low and a high threshold. ACID is signal-agnostic and modular: it requires no retraining and plugs directly into existing dynamic caching methods without modifying their core mechanisms. Evaluated across three caching methods (TeaCache, EasyCache, DiCache) and three open-source video diffusion models (HunyuanVideo, Wan 2.1, CogVideoX), ACID consis-tently expands the Pareto frontier of visual quality versus inference speed beyond what any fixed threshold achieves. In particular, on TeaCache and HunyuanVideo, ACID achieves up to 2.16 × speedup over the no-caching baseline, and up to 38% 
+
+additional speedup over the conservative fixed-threshold baseline with negligible (< 0.3 dB PSNR, < 0.01 SSIM, < 0.01 LPIPS) quality degradation. 
+
+# 1 Introduction 
+
+Video generation models [ 29 , 30 , 31 , 32 , 33 , 37 ] are becoming increasingly powerful in generating realistic videos [ 36 ]; however, their slow inference speed and high compute requirements (3 to 23 minutes for ∼5-second videos on a single A100 GPU) pose an impediment to their wide adoption [ 38 ]. As these models scale to generate even higher resolutions, the challenges associated with slow inference speed and high computation requirements will be further exacerbated. The primary reason for these slow inference speeds and high computation needs is the core inference loop of these video generation models [ 29 , 30 , 31 , 32 , 33 , 37 ]: a computationally expensive diffusion backbone that runs a sequential denoising procedure, dominating generation time. To alleviate this bottleneck, several approaches have been proposed [ 17 , 11 , 26 ]. These generation-accelerating approaches can be classified into two categories: training-based [ 14 , 15 , 16 , 39 , 40 , 11 ]and training-free [41 , 12 , 13 , 17 , 26 ] acceleration strategies. Due to the significant overhead [ 28 , 27 ,26 ] associated with training-based approaches, which generally entail substantial compute, data, and cost, training-free acceleration methods have become particularly appealing. Among training-free methods, caching methods, due to their lightweight computation requirements, are being rapidly deployed. Caching methods leverage similarity between intermediate states and reuse them to reduce 
+
+Preprint. arXiv:2607.12358v1 [cs.CV] 14 Jul 2026 Figure 1: DiCache on Wan 2.1. Our adaptive thresholding expands the Pareto frontier beyond any fixed-threshold configuration, achieving better quality at the same or lower latency. computational redundancy. Caching strategies have rapidly evolved from early uniform caching strategies that used fixed intervals to sophisticated methods [ 23 , 26 , 27 , 42 , 28 ] which determine their caching strategy based on the similarity predicted at each step, thus adapting caching to the behavior of the diffusion process. All of the dynamic caching strategies—such as TeaCache [ 26 ], EasyCache [ 27 ], and DiCache [ 28 ]— share a common structure: they use an accumulated drift metric that estimates the change in model output. If this accumulated drift is below a user-provided threshold, they skip the expensive model run and reuse the previous output with some correction. If the accumulated drift exceeds the threshold, they run the full model and reset the accumulated drift to zero. Choosing this threshold presents a seemingly inherent tradeoff between output quality and inference latency. A high threshold caches more aggressively, yielding faster generation but lower quality. A low threshold caches conservatively, preserving quality but sacrificing speed. This raises a fundamental question: is this tradeoff between output quality and inference latency actually fundamental? In this work, we show that it is not. It is instead an artifact of using a fixed threshold throughout the sequential denoising procedure. When the threshold is chosen adaptively, the quality-latency tradeoff can be improved relative to any fixed-threshold dynamic caching method. Figure 1 shows that a dynamic threshold method can push the Pareto frontier beyond that of any fixed-threshold method. We attribute the power of adaptive threshold schemes to the existence of critical steps in the sequential denoising procedure. By avoiding aggressive caching during these critical steps, our method mitigates the quality loss that fixed-threshold dynamic caching methods typically exhibit. This means one can design an adaptive scheme that identifies critical steps and adjusts the threshold accordingly. Based on these findings, we propose ACID , a simple but powerful adaptive threshold caching mechanism that generalizes across different dynamic caching methods and models, while imposing low computational overhead. ACID examines the rate of change of the respective method’s metric to detect critical steps and adjust thresholds dynamically, improving performance without sacrificing output quality. Our experiments show that ACID achieves reduced inference latency while maintaining output quality on video generation tasks. In particular, on TeaCache and HunyuanVideo, ACID achieves up to 2.16 × speedup over the no-caching baseline, and up to 38% additional speedup over the conservative fixed-threshold baseline with negligible ( < 0.3 dB PSNR, < 0.01 SSIM, < 0.01 LPIPS) quality degradation. We summarize our contributions below: • We identify the existence of critical steps in the sequential denoising procedure and show that video generation caching methods must account for them. • We design ACID , an adaptive threshold dynamic caching mechanism that switches between low and high thresholds based on the second derivative of each method’s metric. This signals critical steps in the denoising process, enabling significant performance improvements without sacrificing output quality. • We provide empirical evaluation across several dynamic caching methods (TeaCache, Easy-Cache, DiCache) and several diffusion models (HunyuanVideo, Wan 2.1, CogVideoX). 22 Related Work 
+
+Diffusion Models. While U-Net-based diffusion models like Stable Diffusion [ 1] and SDXL [ 2]successfully catalyzed high-quality image and video generation [ 3 , 4 , 5 ], their limited architectural capacity bottlenecks the training and deployment of massive models. To eliminate this constraint, recent frameworks have rapidly shifted toward the Diffusion Transformer (DiT) backbone, exploiting its structural flexibility to support next-generation foundation models [ 6, 7, 8, 9 ]. However, despite their theoretical promise, scaling these DiT backbones introduces substantial computational overhead. 
+
+Diffusion Model Acceleration. As DiT backbones scale in capacity and complexity, their runtime increases proportionately, exacerbating the notoriously slow inference speeds of diffusion models and impeding real-world deployment. To alleviate this latency bottleneck, several acceleration paradigms have emerged. Recent work has extensively explored efficient attention [ 10 , 11 ], sparse attention [ 12 , 13 ], distillation [ 14 , 15 , 16 ], quantization [ 11 ], and improved SDE/ODE solvers [ 17 ]. Alongside these methods, caching-based feature reuse strategies offer a particularly compelling, orthogonal path forward, which we detail next. 
+
+Caching-based feature reuse strategies. Caching methods have gained attention recently due to their lightweight nature. DeepCache [ 18 ] and Faster Diffusion [ 19 ] reuse U-Net features across timesteps to reduce computational redundancy. FORA [ 20 ] and ∆-DiT [ 21 ] extend this idea to transformer-based architectures. PAB [ 22 ] broadcasts attention features to later timesteps in a pyramid-style method based on various block characteristics. AdaCache [ 23 ] modifies residual reuse methods based on content complexity. FasterCache [ 24 ] proposes to cache for both the conditional and unconditional branch of Classifier Free Guidance [ 25 ]. TeaCache [ 26 ], EasyCache [ 27 ], and DiCache [ 28 ] represent the most recent state-of-the-art dynamic caching approaches; we examine their shared structure and its key limitation in the paragraphs below. 
+
+The Fixed Threshold of Dynamic Feature Caching Methods. Many recent dynamic caching-based feature reuse strategies make caching decisions based on the diffusion process’s state at runtime. Methods like TeaCache, EasyCache, and DiCache share a common algorithmic skeleton: a running accumulated drift variable is initialized to zero, an estimate of output change is added at each step, and this accumulated value is compared against a fixed threshold τ . When the accumulated drift is below τ , the expensive model forward pass is skipped and the previous output is reused with some correction. When the accumulated drift exceeds τ , the full model is run and the accumulator is reset. The methods differ in how they estimate drift and how they reconstruct the output on skipped steps, which we delve into below. 
+
+TeaCache. TeaCache estimates drift using the L1 distance between consecutive values of the Timestep Embedding Modulated Noisy Input (TEMNI), a combination of the text embedding, timestep embedding, and current noisy input. Rather than measuring how much the model output changed, which would require running the model, TeaCache measures how much the model’s inputs changed, exploiting the empirical observation that large input changes correlate with large output changes. On skipped steps, TeaCache reuses the previous output with a stored residual correction. 
+
+EasyCache. EasyCache estimates drift using the model’s transformation rate k, defined as the ratio of output change to input change at the most recently computed step. The authors observe that k
+
+is unstable early in the denoising process but quickly stabilizes, reflecting the model settling into a roughly linear input-output regime. Under this regime, EasyCache estimates the current step’s output change as k × ∆input /∥vt−1∥, where ∆input is the current input change, ∥vt−1∥ is the magnitude of the previous output, and k is the transformation rate of the last fully computed step. This normalized estimate is accumulated against τ . On skipped steps, EasyCache reconstructs the output as the current input plus the offset ∆ = output − input from the last fully computed step, which is justified because a stable k implies the model’s additive contribution is approximately constant. 
+
+DiCache. DiCache replaces the input-level proxy used by TeaCache and EasyCache with a feature-level proxy. At each step, DiCache runs only the first few transformer blocks of the model as a shallow probe and measures how much those features changed. Because these early layers are cheap to compute, this provides a direct estimate of whether the full model’s output would change significantly, 3without paying the cost of a full forward pass. On skipped steps, DiCache uses the trajectory of shallow probe features across multiple recent steps to interpolate a better estimate of the current deep output. Despite these differences, all three methods share a critical limitation: the fixed user-provided threshold is held constant throughout the entire denoising process. This means the caching schedule cannot respond to the diffusion process’s varying dynamics. Our work identifies this fixed threshold as the source of the quality-latency tradeoff observed in prior methods, and proposes an adaptive and modular threshold mechanism on top of methods like TeaCache, EasyCache, and DiCache that modulates τ based on the local rate of change of each method’s metric, enabling more aggressive caching in stable regions and more conservative caching at critical steps. 
+
+# 3 ACID 
+
+In this section, we introduce ACID, a method for adaptively varying caching frequency. 
+
+3.1 Preliminaries Denoising Diffusion Models. At inference time, diffusion models generate content through several sequential denoising steps. The core idea is to start with random noise and iteratively refine it until it approximates a sample from the target distribution. During training (the forward diffusion process), Gaussian noise is incrementally added over T steps to a sample datapoint x0 from a data distribution: 
+
+xt = √αt xt−1 + √1 − αt zt, t = 1 , . . . , T (1) where αt ∈ [0 , 1] governs the noise level and zt ∼ N (0 , I ) represents Gaussian noise. As t increases, 
+
+xt becomes progressively noisier, ultimately approaching a standard normal distribution at t = T .The reverse diffusion process, which is what we perform at inference time, is designed to reconstruct the original sample from the noise: 
+
+pθ (xt−1 | xt) = N (xt−1; μθ (xt, t ), Σθ (xt, t )) (2) where μθ and Σθ are learned parameters defining the mean and covariance. 
+
+3.2 Analysis Analyzing Caching Metrics. To understand the limitations of fixed-threshold caching, we analyze how caching signals evolve throughout the denoising process. We begin with TeaCache’s ∆TEMNI as a representative signal, since TeaCache is one of the earliest dynamic caching methods for video diffusion models and thus a natural starting point for analysis. We find that these structural properties generalize across other caching signals, motivating the general adaptive framework we propose. Preliminary analysis of the ∆TEMNI metric from TeaCache reveals two empirical properties of caching signals. First, these metrics remain relatively consistent across diverse prompts, as illustrated in Figure 2. Second, the structural behavior of these signals is model-dependent, as shown in Figure 3; specifically, HunyuanVideo and Wan 2.1 exhibit a characteristic U-shaped pattern, whereas CogVideoX demonstrates a distinctly different distribution. Based on these observations, we evaluate our proposed solution across three models (HunyuanVideo, Wan 2.1, and CogVideoX), which together cover both signal pattern types and ensure robustness against their varying behaviors. As Figures 2 and 3 show, there are certain parts of the diffusion process where ∆output and ∆TEMNI are relatively high, and other parts where ∆TEMNI is low. Dynamic feature caching methods already take this into account: when the predicted ∆output is greater, they cache less often (because they hit the fixed threshold more often), and when the predicted ∆output is smaller, they cache more often (they hit the fixed threshold less often). But while dynamic caching methods do find a better speed–quality tradeoff than the no-caching baseline, we find that this tradeoff is not optimal: the degree to which they cache more in stable zones or cache less in unstable zones is suboptimal—a limitation imposed by the single fixed threshold. We find that using different thresholds for different parts of the diffusion process—such as low thresholds for unstable regions and high thresholds for stable regions—leads to a better speed–quality tradeoff. We could attribute the gains from adaptive thresholding to a suboptimal metric for TeaCache, but we importantly find the same gains from adaptive thresholding for EasyCache and DiCache as well, 4which use entirely different caching signals. This suggests the limitation is structural: any method that applies a single fixed threshold throughout the denoising process will face this suboptimality, regardless of the signal it uses. 
+
+Figure 2: Comparison of caching metric consistency across diverse prompts. Prompt 1: “Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.” 
+
+Prompt 2: “Static black and white shot of a single bare tree against an overcast sky, no movement, high contrast, minimalist composition.” 
+
+Figure 3: Analysis of structural patterns in caching signals across different models. To find a method with a better speed–quality tradeoff than any fixed-threshold approach, we ran a small experiment. Using TeaCache on HunyuanVideo, we compared a low fixed threshold, a high fixed threshold, and a range of two-threshold configurations in which we varied the transition point between the low and high threshold. We repeated this across two additional open-source models: Wan 2.1 and CogVideoX. Figure 4 shows the ∆TEMNI signal throughout the denoising process for each model, with dashed lines marking the transition points at which a dual-threshold configuration had a better speed–quality tradeoff than both fixed-threshold baselines. We then asked: what signal determines where these optimal transition points fall? Examining the second derivative of the TEMNI signal (Figure 5), we found that the optimal transition points coincide with the step at which the second derivative stabilizes—transitioning from a variable regime to a stable one. This suggests that the rate of change of the caching signal is a natural indicator of when to switch thresholds. 
+
+3.3 Adaptive Threshold Caching 
+
+ACID extends the single-threshold framework of methods like TeaCache, EasyCache, and DiCache with a dual-threshold strategy. Rather than applying a single fixed threshold τ , we maintain two thresholds: a high threshold τhigh and a low threshold τlow . The active threshold is selected based on 5Figure 4: ∆TEMNI signal across all three models throughout the denoising process. Vertical dashed lines mark the optimal threshold-transition points identified in the multi-threshold experiment. 
+
+Figure 5: Second derivative of the ∆TEMNI signal across all three models, with the same threshold-transition markers. The transition points align with where the second derivative stabilizes, motivating its use as a signal for adaptive threshold switching. the rate of change of the underlying signal of the dynamic caching method ( ∆TEMNI for TeaCache, 
+
+k × ∆input /∥vt−1∥ for EasyCache, and ∆probe features for DiCache). When the rate of change is within [ −δ, δ], indicating a stable phase of the diffusion process, we apply 
+
+τhigh , permitting more aggressive caching. When the rate of change escapes this [ −δ, δ] safe zone, indicating a more dynamic and quality-critical phase, we apply τlow , restricting caching to preserve output fidelity. This reflects the key observation that certain parts of the diffusion process are more important to preserve than others, and that the diffusion process cannot be treated as uniform throughout. 
+
+# 4 Experiments 
+
+4.1 Experimental Setup Base models. We evaluate on three open-source video generation diffusion models: HunyuanVideo T2V 720P [37], Wan 2.1 T2V 1.3B [32], and CogVideoX 1.5-5B [34]. 
+
+Compared methods. We apply our adaptive threshold framework on top of three base caching methods: TeaCache (evaluated on HunyuanVideo, Wan 2.1, CogVideoX), EasyCache (evaluated on HunyuanVideo, Wan 2.1), and DiCache (evaluated on HunyuanVideo, Wan 2.1). EasyCache and DiCache are not evaluated on CogVideoX because neither method provides an official implementation for that model; we restrict our evaluation to officially supported configurations to avoid confounding 6Algorithm 1 Adaptive Threshold Caching 
+
+Require: Sampling steps T , base method M , low threshold τlow , high threshold τhigh , stability bound 
+
+δ 
+
+> 1:
+
+Initialize accumulated drift Σ ← 0, previous signal sprev ← None  
+
+> 2:
+
+for t = T to 0 do  
+
+> 3:
+
+if M .warmup (t) then  
+
+> 4:
+
+yt ← fθ (xt, t, c ); M .update (yt) // run full model during warmup  
+
+> 5:
+
+else  
+
+> 6:
+
+st ← M .signal (xt, t, c ) // compute drift signal via M 
+
+> 7:
+
+Σ ← Σ + st 
+
+> 8:
+
+if sprev ̸ = None and |st − sprev | ≤ δ then  
+
+> 9:
+
+τ ← τhigh // stable phase: cache aggressively  
+
+> 10:
+
+else  
+
+> 11:
+
+τ ← τlow // dynamic phase: cache conservatively  
+
+> 12:
+
+end if  
+
+> 13:
+
+if Σ ≤ τ then  
+
+> 14:
+
+yt ← M .reuse (xt, t ) // skip full model; reconstruct via M 
+
+> 15:
+
+else  
+
+> 16:
+
+yt ← fθ (xt, t, c ); M .update (yt); Σ ← 0 // run full model, reset  
+
+> 17:
+
+end if  
+
+> 18:
+
+sprev ← st 
+
+> 19:
+
+end if  
+
+> 20:
+
+end for 
+
+results from self-implemented ports. For each method–model combination, we compare a no-caching baseline, the fixed-threshold method with several threshold values spanning a low-to-high range, and our adaptive dual-threshold variant ACID with several low/high threshold values. 
+
+Evaluation metrics. Following TeaCache, we evaluate along two dimensions: inference efficiency and visual quality. For inference efficiency, we report inference latency and speedup, defined as the ratio of the no-caching baseline latency to the method latency for the same model. For visual quality, we use LPIPS, PSNR, and SSIM, computed by comparing cached-method outputs against the no-caching baseline. 
+
+Implementation details. All experiments were carried out on NVIDIA A100 80GB PCIe GPUs with PyTorch. We selected 33 prompts from VBench’s [ 35 ] prompt set: 3 prompts per group across 11 groups, where each group corresponds to one or more VBench evaluation dimensions, together spanning all 16 VBench dimensions. For each method–model combination, we generated 33 videos per configuration (one per prompt) across all evaluated threshold settings, using a fixed seed throughout. 
+
+4.2 Main Results 
+
+The Pareto plots in Appendix A show the efficiency and visual quality tradeoff offered by fixed-threshold methods, and how our adaptive dual-threshold method consistently expands the fixed-threshold Pareto frontier for each of the seven caching method and diffusion model combinations. Table 1 shows the efficiency and visual quality of notable adaptive mode points for each feature caching method and diffusion model combination, comparing them to the baseline mode, the fixed-threshold mode using the low threshold of the adaptive mode, and the fixed-threshold mode using the high threshold of the adaptive mode. 
+
+TeaCache. For TeaCache and HunyuanVideo, the adaptive mode achieves a 2.16 × speedup, be-tween the low-threshold fixed mode’s speedup of 1.57 × and the high-threshold fixed mode’s speedup of 3.20 ×, while offering fidelity scores very similar to those of the low-threshold mode. 7Table 1: Quantitative evaluation of caching methods across video generation models. For each method and model, rows show: baseline (no caching), fixed low threshold, fixed high threshold, and our adaptive method (best Pareto-optimal configuration). The fixed thresholds shown correspond to the low/high thresholds used by the adaptive mode. Fidelity metrics (PSNR, SSIM, LPIPS) are computed against the uncached baseline; “—” entries indicate the self-referential baseline. ↑ = higher is better; ↓ = lower is better.                                                                                                                                                       
+
+> Method Model Mode Latency Speedup PSNR ↑SSIM ↑LPIPS ↓
+> TeaCache
+> HunyuanVideo Baseline 1359s 1.00 ×———Fixed (lo, 0.1) 864s 1.57 ×24.69 0.819 0.187 Fixed (hi, 0.3) 424s 3.20 ×19.98 0.693 0.353 Adaptive 628s 2.16 ×24.41 0.813 0.196 Wan 2.1 Baseline 212s 1.00 ×———Fixed (lo, 0.05) 150s 1.42 ×24.93 0.845 0.083 Fixed (hi, 0.2) 74s 2.86 ×17.10 0.538 0.335 Adaptive 108s 1.96 ×22.10 0.757 0.150 CogVideoX 1.5 Baseline 1019s 1.00 ×———Fixed (lo, 0.1) 723s 1.41 ×37.32 0.958 0.029 Fixed (hi, 0.3) 465s 2.19 ×16.35 0.580 0.463 Adaptive 545s 1.87 ×32.02 0.930 0.058
+> EasyCache
+> HunyuanVideo Baseline 1357s 1.00 ×———Fixed (lo, 0.025) 659s 2.06 ×33.51 0.926 0.058 Fixed (hi, 0.045) 531s 2.55 ×28.99 0.851 0.153 Adaptive 568s 2.39 ×30.62 0.894 0.094 Wan 2.1 Baseline 216s 1.00 ×———Fixed (lo, 0.020) 125s 1.73 ×25.58 0.852 0.087 Fixed (hi, 0.040) 102s 2.12 ×22.02 0.750 0.148 Adaptive 113s 1.92 ×24.90 0.833 0.100
+> DiCache
+> HunyuanVideo Baseline 1265s 1.00 ×———Fixed (lo, 0.05) 659s 1.92 ×30.96 0.904 0.088 Fixed (hi, 0.10) 419s 3.02 ×20.15 0.720 0.328 Adaptive 620s 2.04 ×29.42 0.888 0.105 Wan 2.1 Baseline 224s 1.00 ×———Fixed (lo, 0.07) 99s 2.27 ×13.41 0.356 0.508 Fixed (hi, 0.225) 56s 3.97 ×11.79 0.282 0.644 Adaptive 82s 2.73 ×13.29 0.355 0.541
+
+For TeaCache and Wan 2.1, the adaptive mode achieves a speedup of 1.96 ×, between the low-threshold fixed mode’s speedup of 1.42 × and the high-threshold fixed mode’s speedup of 2.86 ×,while retaining quality far closer to the low-threshold mode than to the high-threshold mode. For TeaCache and CogVideoX, the adaptive mode achieves a speedup of 1.87 ×, between the low-threshold fixed mode’s speedup of 1.41 × and the high-threshold fixed mode’s speedup of 2.19 ×,again retaining quality far closer to the low-threshold mode than to the high-threshold mode. Figure 6 shows how ACID ’s adaptive modes surpass the Pareto frontier curves for all three diffusion models when used with TeaCache. 
+
+EasyCache. For EasyCache and HunyuanVideo, our adaptive mode achieves a speedup of 2.39 ×,much closer to the high-threshold fixed mode’s speedup of 2.55 × than to the low-threshold fixed mode’s speedup of 2.06 ×, with quality metrics falling between those of the two fixed modes. For EasyCache and Wan 2.1, our adaptive mode achieves a speedup of 1.92 ×, falling between the low- and high-threshold fixed mode speedups of 1.73 × and 2.12 ×, while retaining quality far closer to the low-threshold mode than to the high-threshold mode. 8Figure 7 shows how several of ACID ’s adaptive threshold modes surpass the Pareto frontier curves for both diffusion models when used with EasyCache. We also note that EasyCache, by running the full model for the first few diffusion steps, already supports our main idea: varying the threshold across the diffusion process—in this case using a threshold of 0 (full computation) at the beginning and a higher threshold later—leads to a better quality–efficiency tradeoff. 
+
+DiCache. For DiCache and HunyuanVideo, the adaptive mode achieves a speedup of 2.04 ×, falling between the low- and high-threshold speedups of 1.92 × and 3.02 ×, while achieving visual quality very close to the low-threshold mode and much better than the high-threshold mode. For DiCache and Wan 2.1, the adaptive mode achieves a speedup of 2.73 ×, falling between the low-and high-threshold speedups of 2.27 × and 3.97 ×, while achieving visual quality very close to the low-threshold mode and much better than the high-threshold mode. Figure 8 in Appendix A shows how several of ACID ’s adaptive modes surpass the Pareto frontier curve for both diffusion models when used with DiCache. 
+
+# 5 Conclusion 
+
+We proposed ACID , a dynamic dual-threshold caching method for accelerating video diffusion model inference. By applying a high caching threshold during stable phases of the diffusion process and a low threshold during quality-critical phases, identified via the rate of change of each method’s caching signal, our method improves the Pareto frontier in the video quality vs. generation speed space over any fixed-threshold dynamic caching method. Experiments across three open-source video generation models and three caching methods confirm that ACID achieves near-low-threshold visual quality with substantially higher inference speedup. 
+
+# References 
+
+[1] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 10684–10695, 2022. [2] Dustin Podell, Zion English, Kyle Lacey, Andreas Blattmann, Tim Dockhorn, Jonas Müller, Joe Penna, and Robin Rombach. Sdxl: Improving latent diffusion models for high-resolution image synthesis. arXiv preprint arXiv:2307.01952 , 2023. [3] Yuwei Guo, Ceyuan Yang, Anyi Rao, Zhengyang Liang, Yaohui Wang, Yu Qiao, Maneesh Agrawala, Dahua Lin, and Bo Dai. Animatediff: Animate your personalized text-to-image diffusion models without specific tuning. arXiv preprint arXiv:2307.04725 , 2023. [4] Haoxin Chen, Yong Zhang, Xiaodong Cun, Menghan Xia, Xintao Wang, Chao Weng, and Ying Shan. Videocrafter2: Overcoming data limitations for high-quality video diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 7310–7320, 2024. [5] Andreas Blattmann, Tim Dockhorn, Sumith Kulal, Daniel Mendelevitch, Maciej Kilian, Dominik Lorenz, Yam Levi, Zion English, Vikram Voleti, Adam Letts, et al. Stable video diffusion: Scaling latent video diffusion models to large datasets. arXiv preprint arXiv:2311.15127 , 2023. [6] Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, et al. Scaling rectified flow transformers for high-resolution image synthesis. In Forty-first International Conference on Machine Learning , 2024. [7] Black Forest Labs. Flux. https://github.com/black-forest-labs/flux , 2024. [8] Junsong Chen, Jincheng Yu, Chongjian Ge, Lewei Yao, Enze Xie, Yue Wu, Zhongdao Wang, James Kwok, Ping Luo, Huchuan Lu, et al. Pixart-α: Fast training of diffusion transformer for photorealistic text-to-image synthesis. arXiv preprint arXiv:2310.00426 , 2023. [9] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 4195–4205, 2023. 
+
+9[10] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in Neural Information Processing Systems , 35:16344– 16359, 2022. [11] Muyang Li, Yujun Lin, Zhekai Zhang, Tianle Cai, Xiuyu Li, Junxian Guo, Enze Xie, Chenlin Meng, Jun-Yan Zhu, and Song Han. Svdquant: Absorbing outliers by low-rank components for 4-bit diffusion models. arXiv preprint arXiv:2411.05007 , 2024. [12] Haocheng Xi, Shuo Yang, Yilong Zhao, Chenfeng Xu, Muyang Li, Xiuyu Li, Yujun Lin, Han Cai, Jintao Zhang, Dacheng Li, et al. Sparse videogen: Accelerating video diffusion transformers with spatial-temporal sparsity. arXiv preprint arXiv:2502.01776 , 2025. [13] Sucheng Ren, Qihang Yu, Ju He, Alan Yuille, and Liang-Chieh Chen. Grouping first, attending smartly: Training-free acceleration for diffusion transformers. arXiv preprint arXiv:2505.14687 , 2025. [14] Chenlin Meng, Robin Rombach, Ruiqi Gao, Diederik Kingma, Stefano Ermon, Jonathan Ho, and Tim Salimans. On distillation of guided diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 14297–14306, 2023. [15] Axel Sauer, Dominik Lorenz, Andreas Blattmann, and Robin Rombach. Adversarial diffusion distillation. In European Conference on Computer Vision , pp. 87–103. Springer, 2024. [16] Xiang Wang, Shiwei Zhang, Han Zhang, Yu Liu, Yingya Zhang, Changxin Gao, and Nong Sang. Videolcm: Video latent consistency model. arXiv preprint arXiv:2312.09109 , 2023. [17] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in Neural Information Processing Systems , 35:5775–5787, 2022. [18] Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deepcache: Accelerating diffusion models for free. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 15762–15772, 2024. [19] Senmao Li, Taihang Hu, Fahad Shahbaz Khan, Linxuan Li, Shiqi Yang, Yaxing Wang, Ming-Ming Cheng, and Jian Yang. Faster diffusion: Rethinking the role of unet encoder in diffusion models. CoRR , 2023. [20] Pratheba Selvaraju, Tianyu Ding, Tianyi Chen, Ilya Zharkov, and Luming Liang. Fora: Fast-forward caching in diffusion transformer acceleration. arXiv preprint arXiv:2407.01425 , 2024. [21] Pengtao Chen, Mingzhu Shen, Peng Ye, Jianjian Cao, Chongjun Tu, Christos-Savvas Bouganis, Yiren Zhao, and Tao Chen. ∆-dit: A training-free acceleration method tailored for diffusion transformers. arXiv preprint arXiv:2406.01125 , 2024. [22] Xuanlei Zhao, Xiaolong Jin, Kai Wang, and Yang You. Real-time video generation with pyramid attention broadcast. arXiv preprint arXiv:2408.12588 , 2024. [23] Kumara Kahatapitiya, Haozhe Liu, Sen He, Ding Liu, Menglin Jia, Chenyang Zhang, Michael S. Ryoo, and Tian Xie. Adaptive caching for faster video generation with diffusion transformers. arXiv preprint arXiv:2411.02397 , 2024. [24] Zhengyao Lv, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K. Wong. Fastercache: Training-free video diffusion model acceleration with high quality. arXiv preprint arXiv:2410.19355 , 2024. [25] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 ,2022. [26] Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep embedding tells: It’s time to cache for video diffusion model. In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 7353–7363, 2025. [27] Xin Zhou, Dingkang Liang, Kaijin Chen, Tianrui Feng, Xiwu Chen, Hongkai Lin, Yikang Ding, Feiyang Tan, Hengshuang Zhao, and Xiang Bai. Less is enough: Training-free video diffusion acceleration via runtime-adaptive caching. arXiv preprint arXiv:2507.02860 , 2025. [28] J. Bu, P. Ling, Y. Zhou, Y. Wang, Y. Zang, D. Lin, and J. Wang. Dicache: Let diffusion model determine its own cache. arXiv preprint arXiv:2508.17356 , 2025. 
+
+10 [29] Zangwei Zheng, Xiangyu Peng, Tianji Yang, Chenhui Shen, Shenggui Li, Hongxin Liu, Yukun Zhou, Tianyi Li, and Yang You. Open-sora: Democratizing efficient video production for all. arXiv preprint arXiv:2412.20404 , 2024. [30] Xin Ma, Yaohui Wang, Gengyun Jia, Xinyuan Chen, Ziwei Liu, Yuan-Fang Li, Cunjian Chen, and Yu Qiao. Latte: Latent diffusion transformer for video generation. Transactions on Machine Learning Research ,2024. [31] Tim Brooks et al. Video generation models as world simulators. OpenAI Blog , 1:8, 2024. [32] Ang Wang et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. [33] Wenyi Hong, Ming Ding, Wendi Zheng, Xinghao Liu, and Jie Tang. Cogvideo: Large-scale pretraining for text-to-video generation via transformers. In Proceedings of the International Conference on Learning Representations , 2023. [34] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. Cogvideox: Text-to-video diffusion models with an expert transformer. arXiv preprint arXiv:2408.06072 , 2024. [35] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21807–21818, 2024. [36] Dian Zheng, Ziqi Huang, Hongbo Liu, Kai Zou, Yinan He, Fan Zhang, Lulu Gu, Yuanhan Zhang, Jingwen He, Wei-Shi Zheng, Yu Qiao, and Ziwei Liu. Vbench-2.0: Advancing video generation benchmark suite for intrinsic faithfulness. arXiv preprint arXiv:2503.21755 , 2025. [37] Weijie Kong et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. [38] Yanyu Li, Huan Wang, Qing Jin, Ju Hu, Pavlo Chemerys, Yun Fu, Yanzhi Wang, Sergey Tulyakov, and Jian Ren. Snapfusion: Text-to-image diffusion model on mobile devices within two seconds. Advances in Neural Information Processing Systems , 36, 2024. [39] Lei Chen, Yuan Meng, Chen Tang, Xinzhu Ma, Jingyan Jiang, Xin Wang, Zhi Wang, and Wenwu Zhu. Q-dit: Accurate post-training quantization for diffusion transformers. In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 28306–28315, 2025. [40] Xinyin Ma, Gongfan Fang, Michael Bi Mi, and Xinchao Wang. Learning-to-cache: Accelerating diffusion transformer via layer caching. Advances in Neural Information Processing Systems , 37:133282–133304, 2024. [41] Jintao Zhang, Chendong Xiang, Haofeng Huang, Jia Wei, Haocheng Xi, Jun Zhu, and Jianfei Chen. Spargeattn: Accurate sparse attention accelerating any model inference. arXiv preprint arXiv:2502.18137 ,2025. [42] Jiacheng Liu, Chang Zou, Yuanhuiyi Lyu, Junjie Chen, and Linfeng Zhang. From reusing to forecasting: Accelerating diffusion models with taylorseers. arXiv preprint arXiv:2503.06923 , 2025. 
+
+# A Pareto Frontier Plots 
+
+Figures 6–8 show Pareto frontier plots for all evaluated method–model combinations. Each plot compares fixed-threshold configurations across a range of thresholds against our adaptive dual-threshold variants. In each case, adaptive points expand the frontier beyond what any fixed threshold achieves. 11 (a) HunyuanVideo 
+
+> (b) Wan 2.1
+> (c) CogVideoX 1.5
+
+Figure 6: TeaCache Pareto frontiers across all three models. Adaptive modes (colored markers) expand the frontier beyond any fixed-threshold configuration (gray markers). 12 (a) HunyuanVideo 
+
+> (b) Wan 2.1
+
+Figure 7: EasyCache Pareto frontiers. Adaptive modes expand the frontier beyond any fixed-threshold configuration. 
+
+> (a) HunyuanVideo
+> (b) Wan 2.1
+
+Figure 8: DiCache Pareto frontiers. Adaptive modes expand the frontier beyond any fixed-threshold configuration. 13 B Detailed Per-Combo Results 
+
+All configurations evaluated for each method × model combination are listed below, sorted by increasing speedup. Bold rows are adaptive modes. Fidelity metrics (PSNR, SSIM, LPIPS) are computed against the uncached baseline. τ denotes the caching threshold for all methods (cache-reuse residual for TeaCache/EasyCache; feature-difference score for DiCache). Subscripts ℓ/h mark the low/high threshold in adaptive modes. Adaptive rows that share the same threshold pair differ in the stability bound δ.Table 2: TeaCache on HunyuanVideo: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .1) 864s 1.57 × 24.69 0.819 0.187 
+
+Adaptive ( τℓ = 0 .1, τh = 0 .25 ) 654s 2.08 × 24.47 0.814 0.194 
+
+Adaptive ( τℓ = 0 .1, τh = 0 .2) 652s 2.09 × 23.85 0.796 0.215 
+
+Adaptive ( τℓ = 0 .1, τh = 0 .3) 628s 2.16 × 24.41 0.813 0.196 
+
+Adaptive ( τℓ = 0 .15 , τh = 0 .3) 554s 2.45 × 24.04 0.802 0.209 Fixed ( τ = 0 .2) 542s 2.51 × 21.71 0.755 0.276 
+
+Adaptive ( τℓ = 0 .2, τh = 0 .3) 483s 2.81 × 21.66 0.754 0.281 Fixed ( τ = 0 .3) 424s 3.20 × 19.98 0.693 0.353 
+
+Table 3: TeaCache on Wan 2.1: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .05 ) 150s 1.42 × 24.93 0.845 0.083 Fixed ( τ = 0 .1) 113s 1.88 × 19.92 0.678 0.197 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .2) 108s 1.96 × 22.10 0.757 0.150 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .25 ) 105s 2.03 × 21.69 0.739 0.164 
+
+Adaptive ( τℓ = 0 .1, τh = 0 .2) 94s 2.26 × 19.56 0.657 0.222 Fixed ( τ = 0 .15 ) 89s 2.38 × 18.42 0.609 0.262 Fixed ( τ = 0 .2) 74s 2.86 × 17.10 0.538 0.335 Fixed ( τ = 0 .25 ) 70s 3.02 × 16.94 0.527 0.354 
+
+Table 4: TeaCache on CogVideoX 1.5: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .1) 723s 1.41 × 37.32 0.958 0.029 Fixed ( τ = 0 .2) 582s 1.75 × 34.35 0.945 0.042 Fixed ( τ = 0 .22 ) 579s 1.76 × 25.28 0.845 0.152 
+
+Adaptive ( τℓ = 0 .1, τh = 0 .3) 545s 1.87 × 32.02 0.930 0.058 Fixed ( τ = 0 .25 ) 536s 1.90 × 25.03 0.843 0.154 
+
+Adaptive ( τℓ = 0 .1, τh = 0 .3) 525s 1.94 × 31.74 0.929 0.059 Fixed ( τ = 0 .3) 465s 2.19 × 16.35 0.580 0.463 
+
+Adaptive ( τℓ = 0 .30 , τh = 0 .35 ) 441s 2.31 × 16.18 0.572 0.472 
+
+Adaptive ( τℓ = 0 .30 , τh = 0 .40 ) 441s 2.31 × 16.08 0.568 0.479 
+
+14 Table 5: EasyCache on HunyuanVideo: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .025 ) 659s 2.06 × 33.51 0.926 0.058 
+
+Adaptive ( τℓ = 0 .010 , τh = 0 .050 ) 626s 2.17 × 31.18 0.905 0.085 
+
+Adaptive ( τℓ = 0 .010 , τh = 0 .120 ) 616s 2.20 × 28.43 0.837 0.179 
+
+Adaptive ( τℓ = 0 .010 , τh = 0 .075 ) 596s 2.28 × 29.72 0.884 0.112 
+
+Adaptive ( τℓ = 0 .010 , τh = 0 .100 ) 584s 2.32 × 28.67 0.859 0.141 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .075 ) 569s 2.38 × 30.49 0.890 0.101 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .090 ) 569s 2.38 × 29.27 0.855 0.151 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .045 ) 568s 2.39 × 30.62 0.894 0.094 Fixed ( τ = 0 .0375 ) 561s 2.42 × 30.67 0.883 0.106 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .050 ) 561s 2.42 × 30.43 0.888 0.101 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .050 ) 557s 2.44 × 30.08 0.887 0.102 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .150 ) 552s 2.46 × 27.69 0.811 0.225 Fixed ( τ = 0 .040 ) 549s 2.47 × 29.98 0.872 0.122 
+
+Adaptive ( τℓ = 0 .030 , τh = 0 .050 ) 542s 2.51 × 29.63 0.876 0.113 
+
+Adaptive ( τℓ = 0 .0375 , τh = 0 .050 ) 537s 2.53 × 29.50 0.863 0.134 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .075 ) 533s 2.55 × 29.08 0.865 0.132 Fixed ( τ = 0 .045 ) 531s 2.55 × 28.99 0.851 0.153 
+
+Adaptive ( τℓ = 0 .030 , τh = 0 .060 ) 522s 2.60 × 28.95 0.866 0.126 Fixed ( τ = 0 .050 ) 503s 2.70 × 28.17 0.833 0.183 
+
+Adaptive ( τℓ = 0 .035 , τh = 0 .065 ) 499s 2.72 × 28.37 0.853 0.144 
+
+Adaptive ( τℓ = 0 .050 , τh = 0 .120 ) 478s 2.84 × 27.08 0.803 0.243 Fixed ( τ = 0 .060 ) 473s 2.87 × 27.20 0.807 0.232 Fixed ( τ = 0 .075 ) 436s 3.12 × 25.62 0.755 0.336 
+
+Table 6: EasyCache on Wan 2.1: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .020 ) 125s 1.73 × 25.58 0.852 0.087 Fixed ( τ = 0 .025 ) 116s 1.86 × 24.42 0.822 0.105 
+
+Adaptive ( τℓ = 0 .020 , τh = 0 .040 ) 112s 1.92 × 24.90 0.833 0.100 
+
+Adaptive ( τℓ = 0 .025 , τh = 0 .050 ) 103s 2.10 × 23.62 0.795 0.123 Fixed ( τ = 0 .040 ) 102s 2.12 × 22.02 0.750 0.148 Fixed ( τ = 0 .050 ) 95s 2.28 × 21.16 0.709 0.173 Fixed ( τ = 0 .060 ) 90s 2.40 × 20.55 0.686 0.189 
+
+Adaptive ( τℓ = 0 .020 , τh = 0 .025 ) 88s 2.45 × 20.80 0.682 0.197 Fixed ( τ = 0 .070 ) 87s 2.49 × 20.04 0.665 0.207 Fixed ( τ = 0 .080 ) 84s 2.57 × 19.85 0.656 0.216 Fixed ( τ = 0 .090 ) 82s 2.62 × 19.64 0.642 0.223 
+
+Adaptive ( τℓ = 0 .020 , τh = 0 .050 ) 81s 2.68 × 19.88 0.645 0.224 
+
+Adaptive ( τℓ = 0 .020 , τh = 0 .075 ) 76s 2.86 × 19.31 0.617 0.248 Fixed ( τ = 0 .125 ) 75s 2.89 × 19.11 0.610 0.253 
+
+Adaptive ( τℓ = 0 .020 , τh = 0 .1) 74s 2.93 × 19.13 0.605 0.257 Fixed ( τ = 0 .150 ) 72s 2.98 × 18.83 0.589 0.269 Fixed ( τ = 0 .175 ) 70s 3.09 × 18.70 0.581 0.280 Fixed ( τ = 0 .200 ) 69s 3.15 × 18.45 0.568 0.293 Fixed ( τ = 0 .225 ) 66s 3.25 × 18.29 0.550 0.306 Fixed ( τ = 0 .250 ) 66s 3.28 × 18.26 0.548 0.310 
+
+15 Table 7: DiCache on HunyuanVideo: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .05 ) 659s 1.92 × 30.96 0.904 0.088 Fixed ( τ = 0 .07 ) 626s 2.02 × 27.95 0.858 0.140 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .10 ) 620s 2.04 × 29.42 0.888 0.105 Fixed ( τ = 0 .08 ) 570s 2.22 × 20.21 0.729 0.322 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .15 ) 567s 2.23 × 28.19 0.874 0.123 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .25 ) 529s 2.39 × 26.66 0.852 0.155 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .30 ) 529s 2.39 × 26.15 0.844 0.169 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .35 ) 506s 2.50 × 25.55 0.832 0.195 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .40 ) 502s 2.52 × 25.20 0.824 0.206 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .20 ) 465s 2.72 × 27.08 0.859 0.144 Fixed ( τ = 0 .10 ) 419s 3.02 × 20.15 0.720 0.328 Fixed ( τ = 0 .15 ) 347s 3.65 × 20.18 0.719 0.330 
+
+Adaptive ( τℓ = 0 .10 , τh = 0 .30 ) 327s 3.87 × 20.23 0.724 0.338 Fixed ( τ = 0 .20 ) 286s 4.42 × 20.11 0.716 0.340 
+
+Adaptive ( τℓ = 0 .15 , τh = 0 .40 ) 275s 4.60 × 19.83 0.707 0.380 Fixed ( τ = 0 .25 ) 250s 5.05 × 19.79 0.704 0.364 Fixed ( τ = 0 .30 ) 226s 5.59 × 18.97 0.686 0.410 Fixed ( τ = 0 .35 ) 202s 6.25 × 18.73 0.680 0.431 Fixed ( τ = 0 .40 ) 186s 6.79 × 17.85 0.660 0.488 Fixed ( τ = 0 .60 ) 164s 7.69 × 16.30 0.620 0.641 
+
+Table 8: DiCache on Wan 2.1: all evaluated configurations 
+
+Mode Latency Speedup PSNR ↑ SSIM ↑ LPIPS ↓
+
+Fixed ( τ = 0 .05 ) 126s 1.78 × 13.83 0.380 0.479 Fixed ( τ = 0 .07 ) 99s 2.27 × 13.41 0.356 0.508 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .225 ) 98s 2.28 × 13.45 0.371 0.508 
+
+Adaptive ( τℓ = 0 .05 , τh = 0 .25 ) 98s 2.29 × 13.38 0.369 0.520 Fixed ( τ = 0 .08 ) 92s 2.44 × 12.91 0.333 0.538 Fixed ( τ = 0 .10 ) 87s 2.58 × 12.55 0.313 0.556 
+
+Adaptive ( τℓ = 0 .07 , τh = 0 .225 ) 82s 2.73 × 13.29 0.355 0.541 
+
+Adaptive ( τℓ = 0 .07 , τh = 0 .25 ) 81s 2.76 × 13.30 0.356 0.546 
+
+Adaptive ( τℓ = 0 .10 , τh = 0 .225 ) 78s 2.89 × 12.59 0.316 0.581 
+
+Adaptive ( τℓ = 0 .10 , τh = 0 .25 ) 76s 2.94 × 12.54 0.314 0.593 Fixed ( τ = 0 .15 ) 71s 3.16 × 12.16 0.293 0.583 
+
+Adaptive ( τℓ = 0 .15 , τh = 0 .225 ) 67s 3.33 × 12.20 0.294 0.599 
+
+Adaptive ( τℓ = 0 .15 , τh = 0 .25 ) 66s 3.39 × 12.22 0.293 0.605 Fixed ( τ = 0 .20 ) 61s 3.66 × 11.75 0.282 0.636 Fixed ( τ = 0 .225 ) 56s 3.97 × 11.79 0.282 0.644 Fixed ( τ = 0 .25 ) 56s 4.03 × 11.70 0.284 0.658 
+
+16
