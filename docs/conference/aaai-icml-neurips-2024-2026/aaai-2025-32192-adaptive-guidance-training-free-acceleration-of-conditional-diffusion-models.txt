@@ -1,0 +1,354 @@
+Title: Adaptive Guidance: Training-free Acceleration of Conditional Diffusion Models
+
+URL Source: https://ojs.aaai.org/index.php/AAAI/article/download/32192/34347
+
+Number of Pages: 9
+
+Markdown Content:
+# Adaptive Guidance: Training-free Acceleration of Conditional Diffusion Models 
+
+# Angela Castillo 1* , Jonas Kohler 2* , Juan C. P´ erez 2,3* , Juan Pablo P´ erez 1, Albert Pumarola 2,Bernard Ghanem 3, Pablo Arbel´ aez 1, Ali Thabet 2
+
+> 1
+
+Center for Research and Formation in Artificial Intelligence, Universidad de los Andes 
+
+> 2
+
+GenAI, Meta 
+
+> 3
+
+King Abdullah University of Science and Technology (KAUST) 
+
+Abstract 
+
+This paper presents a comprehensive study on the role of Classifier-Free Guidance (C FG ) in text-conditioned diffusion models from the perspective of inference efficiency. In par-ticular, we relax the default choice of applying C FG in all diffusion steps and instead propose to search for more effi-cient guidance policies. We formulate the discovery of such policies in the framework of differentiable neural architecture search. Our findings suggest that, as denoising progresses, the updates produced by C FG become increasingly aligned with simple conditional steps, which renders C FG ’s addi-tional neural network evaluation redundant, especially in the second half of the denoising process. Building upon this in-sight, we propose “Adaptive Guidance” (A G), an efficient variant of C FG that adaptively omits network evaluations when the denoising process displays convergence. Our exper-iments demonstrate that A G preserves C FG ’s image quality while reducing computation by 25% . Thus, A G constitutes a plug-and-play alternative to Guidance Distillation, achieving 
+
+50% of the speed-ups of the latter, while being training-free and retaining the capacity to handle negative prompts. We conclude by uncovering further redundancies of C FG in the first half of the diffusion process, showing that entire neural network evaluations can be replaced by simple affine trans-formations of past score estimates 1.
+
+# Introduction 
+
+Diffusion Models (DMs) (Ho, Jain, and Abbeel 2020; Song et al. 2020) exhibit outstanding generative capacities across domains such as images (Rombach et al. 2022), video (Ho et al. 2022a), audio (Kong et al. 2020), human pose esti-mation (Castillo et al. 2023), and even cosmological simu-lations (Schanz, List, and Hahn 2023). DMs generate data by sampling noise and iteratively denoising it with a neural network. The sequential nature of this denoising operation makes sampling from DMs a slow and expensive process. In particular, the time required to sample from a given DM is a function of (i) the latency of each denoising iteration, and 
+
+(ii) the number of denoising steps. Many practical applications target “conditional genera-tion”, where DMs synthesize samples conditioned on spe-
+
+> *
+
+These authors contributed equally. Copyright © 2025, Association for the Advancement of Artificial Intelligence (www.aaai.org). All rights reserved. 
+
+> 1
+
+Find more at bcv-uniandes.github.io/adaptiveguidance-wp/ 
+
+cific criteria such as a class, a text, or an image (Nichol et al. 2021). DMs perform conditional generation by replacing un-conditional denoising steps with conditional ones, in which the neural network processes both the input and the condi-tion. While conditional denoising steps provide competitive results, Ho et al. proposed Classifier-Free Guidance (C FG )(Ho and Salimans 2022) as a technique to enhance sample quality. C FG enriches the conditional denoising process by leveraging implicit priors of the diffusion model itself. De-spite its simplicity, C FG significantly improves sample qual-ity in tasks such as text-to-image generation (Nichol et al. 2021; Peebles and Xie 2023; Dai et al. 2023), image edit-ing (Brooks, Holynski, and Efros 2023; Meng et al. 2021; Sheynin et al. 2023), and text-to-3D (Poole et al. 2022; Lin et al. 2023). Yet, the benefits of C FG come at the cost of du-plicating the Number of Function Evaluations (NFEs), since each denoising iteration requires evaluating the neural net-work both conditionally and unconditionally. Adding to the problem, neural networks used in practice for DMs exceed the parallelization capacity of production-grade GPUs. For instance, with bfloat16 precision and a batch size of 1, an EMU-768 model requires 1,553 ms on an A100 GPU with-out C FG and nearly doubles to 2,865 ms with C FG . This fact prevents simultaneous computation of the conditional and unconditional function evaluations. In this paper, we improve the efficiency of text-to-image DMs that use C FG . Our analysis reveals that not all de-noising steps contribute equally to image quality, suggest-ing that the traditional policy of applying C FG in all steps is sub-optimal. Instead, we search for policies offering more desirable trade-offs between quality and NFEs by em-ploying techniques from differentiable neural architecture search (Liu, Simonyan, and Yang 2018). Our search uncov-ers that unnecessary function evaluations occur in the lat-ter part of the denoising process. based on this we propose “Adaptive Guidance” (A G), an adaptive version of C FG that maintains image quality while reducing NFEs by 25%. See Fig. 1 for A G’s generation quality. Compared to the popular alternative of Guidance Distil-lation (G D) (Meng et al. 2023), A G is easy to implement, training-free, and preserves the capacity to handle negative prompts and image conditioning, which are useful capabili-ties for editing tasks. Finally, we propose L INEAR AG, a fast version of A G that estimates updates required by A G as a The Thirty-Ninth AAAI Conference on Artificial Intelligence (AAAI-25) 
+
+1962 Figure 1: Accelerating Guided Diffusion Models with Adaptive Guidance. We present Adaptive Guidance (A G), an efficient variant of C FG that reduces the NFEs by 25% without compromising image quality. A G is a training-free, plug-and-play alternative to Guidance Distillation (Meng et al. 2023) that achieves 50% of its speed-ups while offering the ability to handle dynamic negative prompts. As shown above, our approach (left) replicates the baseline one-to-one and furthermore outperforms a na¨ ıve reduction of diffusion steps (right). linear combination of past iterates. L INEAR AG provides fur-ther reductions in computation at the cost of imperceptible losses in sample quality. In summary, our contributions are threefold: 1. We show that efficient guidance policies for sampling from Diffusion Models can be found via gradient-based neural architecture search. 2. We propose “Adaptive Guidance”, a plug-and-play alter-native to Guidance Distillation that achieves 50% of the speed-ups of the latter, while retaining the ability to han-dle dynamic negative prompts and image conditioning. 3. We discover that regularities across diffusion paths en-able replacing certain network evaluations in C FG with affine transformations of past iterates. This observation enables further runtime reductions and constitutes an in-teresting starting point for future research. Thereby, our findings provide insights into the efficiency of the conditional denoising process that contribute to more practical deployment of text-conditioned diffusion models. 
+
+# Related Work 
+
+Fast Inference with Diffusion Models 
+
+Diffusion Models (DMs) (Sohl-Dickstein et al. 2015; Ho, Jain, and Abbeel 2020; Nichol and Dhariwal 2021) achieve density estimation and sampling by modeling a reversible transport map T that pushes forward a tractable base dis-tribution pb (usually a standard Gaussian) to a target dis-tribution p∗(x), i.e. , T #pb = p∗(x). In contrast to tra-ditional measure transport approaches ( e.g. , (Dinh, Sohl-Dickstein, and Bengio 2016; Kingma and Dhariwal 2018; Chen et al. 2018)), DMs do not parameterize T explicitly but rather learn it implicitly from the reverse direction of a gradual noising process. DMs, hence, enjoy the benefit of the transport T being learnable without the need for simula-tion. However, DMs also suffer from having high inference costs due to the iterative nature of the sampling process. Thus, a significant body of work aims to accelerate and optimize sampling from DMs. One angle of attack is im-proving the solvers used for integrating the differential equa-tions that drive the measure transport process. For exam-ple, methods based on exponential integrators (Lu et al. 2022a,b), higher-order solvers (Zhao et al. 2023; Karras et al. 2022; Zhang and Chen 2022) or model-specific be-spoke solvers (Shaul et al. 2023; Zheng et al. 2023; Wiz-adwongsa and Suwajanakorn 2023; Zheng et al. 2024) have been proposed. Orthogonal to these efforts, alternative strategies include parallelizing sampling via fixed-point it-erations (Shih et al. 2023), reducing the size of denoising networks (Peebles and Xie 2023; Yang et al. 2023; Li et al. 2023b), and decreasing the diffusion’s latent space (Gu et al. 2022; Ho et al. 2022b; Rombach et al. 2022; Rampas et al. 2022). Recent research has also focused on reformulating the diffusion process to reduce curvature in both forward (noising) (Albergo, Boffi, and Vanden-Eijnden 2023; Lip-man et al. 2022) and backward (denoising) trajectories (Liu, Gong, and Liu 2022; Pooladian et al. 2023; Lee, Kim, and Ye 2023; Karras et al. 2022), which allows for larger solver steps even when employing lower-order solvers. Along these lines, (Salimans and Ho 2022) suggests progressively reduc-ing diffusion steps through distillation. AutoDiffusion (Li et al. 2023a) is conceptually similar to our work as it uses a neural architecture search-inspired al-gorithm to speed up pre-trained DMs. In contrast, our ap-proach utilizes a more efficient gradient-based search rather than an evolutionary one, and we optimize per-step guidance options, whereas AutoDiffusion focuses on the time sched-ule and network architecture. 
+
+Conditioning Diffusion Paths 
+
+For both image generation and editing, the most chal-lenging and practical cases involve some form of condi-tioning. Inspired by the success of class-conditioning in GANs ( e.g. , (Odena, Olah, and Shlens 2017)), (Dhariwal 1963 AG (ours)                            
+
+> (a) ¯γ=∞(40 NFEs) (b) ¯γ= 0 .993 (32 NFEs) (c) ¯γ= 0 .991 (30 NFEs) (d) Zoom of left image CFG
+> (e) steps = 20 (40 NFEs) (f) steps = 16 (32 NFEs) (g) steps = 15 (30 NFEs) (h) Zoom of left image
+
+Figure 2: Adaptive Guidance (A G) vs. Classifier-Free Guidance (C FG ) for various Number of Function Evaluations (NFEs). For A G, we fix the number of denoising iterations and reduce the NFEs that use C FG by increasing the threshold 
+
+¯γ (top). C FG reduces NFEs by directly decreasing the total number of denoising steps (bottom). Vertically-aligned samples require the same NFEs. Notably, A G closely replicates the baseline, while when C FG uses fewer steps it introduces undesirable artifacts (for instance, see the helmet’s glass). and Nichol 2021) enhances the estimates of the diffusion probability path pt(x|c) with the gradient of an image classi-fier pθ (c|x). Similarly, (Nichol et al. 2021) uses CLIP guid-ance for text-to-image generation with DMs. Yet, both ap-proaches are prone to adversarial outcomes ( i.e. , degenerate solutions) and struggle with the domain shift between the noisy images of the diffusion sampling process and the clean images on which the guidance models are trained. In their seminal work, Ho et al. (Ho and Salimans 2022) show that the diffusion process can be successfully condi-tioned in a “classifier-free” manner by leveraging implicit priors of the DM itself. Toward this end, Ho et al. jointly train a network to predict both unconditional and conditional scores. During generation, the two scores are combined, giv-ing rise to the technique known as Classifier-Free Guidance (C FG ), to pinpoint samples with high conditional probabil-ity using the inverted DM as an implicit classifier. Despite the inherent imperfections of implicit classifiers, especially when the model’s representation of the data distribution is not perfect, C FG ’s effectiveness remains evident in practice. Unfortunately, by design, C FG requires two function evalu-ations per step instead of one. While simultaneous inference of conditional and unconditional scores is common practice, CFG nearly doubles the sampling latency of state-of-the-art models that saturate the parallelization capacities of GPUs. Guidance Distillation (G D) (Meng et al. 2023) performs distillation to mitigate the need for an additional uncondi-tional forward pass. However, G D requires re-training as well as re-evaluation, both of which are resource intensive. For instance, to achieve comparable performance to C FG ,applying G D on EMU-768 requires around 10 k iterations with batch size of over 32 , which amounts to roughly 4 days on an A100 GPU. Moreover, this technique cannot handle dynamic negative prompts, which are an important asset for responsible AI. Furthermore, G D is also incompatible with compositional guidance (Liu et al. 2022), which is used, for instance, in text-to-3D generation (Poole et al. 2022). Finally, it is unclear how to generalize G D to multimodal conditioning, such as the one employed in image editing (Brooks, Holynski, and Efros 2023; Sheynin et al. 2023). In this work, we propose A G, a plug-and-play technique that achieves 50% to 75% of G D speed-ups while maintain-ing equal sample quality and addressing the aforementioned problems. A G supports image editing, negative prompts, re-quires no training, and precisely replicates baseline outputs, such that no re-evaluation is needed. 
+
+Neural Architecture Search 
+
+Neural architecture search automates neural network de-sign by conceptualizing the network as a Directed Acyclic Graph (DAG), with layers as nodes (Zoph and Le 2016; Zoph et al. 2018; Pham et al. 2018; Liu et al. 2018; Brock et al. 2017). Our review focuses on differentiable meth-ods (Liu, Simonyan, and Yang 2018; Li et al. 2020, 2022; Wu et al. 2019). The DARTS framework (Liu, Simonyan, and Yang 2018) is central to our work, enabling differen-tiable and efficient architecture search through continuous relaxation of layer representation (see Tab. 3 in (Liu, Si-monyan, and Yang 2018)). We extend the analogies between neural network design and the denoising process by un-rolling the synthesis process across time, treating each de-noising step as a distinct node in the DAG, which allows us to apply DARTS conceptualization directly to search for the optimal guidance at each node. 
+
+# Methodology 
+
+Background on Diffusion Models 
+
+As introduced before, diffusion models generate images by reversing a pre-defined noising process. In particular, when the noising process is an Ornstein-Uhlenbeck process, the continuous-time limit of the forward Stochastic Differ-1964 0 2 4 6 8 10 12 14 16 18 Step Index 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 Score
+> ----------------------------
+
+Figure 3: Search results over guidance policies. These re-sults suggest that C FG is most important at the beginning of denoising, and then its importance decreases over time. ential Equation (SDE) reads as dx = f (x, t ) dt + g(t) dw,where f (x, t ) : Rd → Rd is a vector-valued drift coefficient, 
+
+g(t) : R → R is the diffusion coefficient of x(t) and w is the standard Brownian motion. Anderson’s Theorem (An-derson 1982) states that, under mild assumptions, such SDE satisfies the reverse-time process 
+
+dx = f (x, t ) − g(t)2∇x log pt(x) dt + g(t) d ¯w, (1) where ¯w is the reverse-time Brownian motion. As shown in (Hyv¨ arinen and Dayan 2005; Song et al. 2020), the marginal transport map can be learned (in expectation) by maximum likelihood estimation of the perturbation kernel of individually diffused data samples ∇x log pt(x|x0) in a simulation-free manner. This map is commonly learnt by op-timizing the parameters θ of a time-conditioned neural net-work, yielding score estimates ϵθ (xt, t ). For brevity’s sake, we omit the conditioning of ϵ on t going forward. As shown in (Song et al. 2020), the SDE in Eq. (1) has a deterministic counterpart ( i.e. , an ODE) that enjoys equiva-lent marginal probability densities: 
+
+dx =
+
+
+
+f (x, t ) − 12 g(t)2∇x log pt(x)
+
+
+
+dt. (2) When using few (and large) discretization steps, solv-ing Eq. (2) generally yields better results than solving its stochastic counterpart (Karras et al. 2022). 
+
+Conditional generation with diffusion models. The dif-fusion framework can be extended to allow for conditional generation by learning the score log pt(x|c), where c is, for example, a class or text condition. Current state-of-the-art models for conditional generation employ “Classifier-Free Guidance” (C FG ) (Ho and Salimans 2022), a technique in which both the conditional and unconditional scores are lin-early combined to denoise the sample. In particular, C FG 
+
+proposes to follow the score estimate given by 
+
+ϵcfg (xt, c, s ) = ϵθ (xt, ∅) + s · (ϵθ (xt, c) − ϵθ (xt, ∅)) , (3) where ∅ is the unconditional prompt token, and s >
+
+1 indicates the guidance strength. While this new score may not directly reflect the gradient of a classifier’s log-likelihood, it is inspired by the gradient of an im-plicit classifier p′(c|x) ∝ p(x|c)/p (x). As a result, 
+
+∇x log p(c|x) ∝ ∇ x log p(x|c) − ∇ x log p(x) and hence 
+
+ϵλ(xt, c) ∝ ϵ(xt, ∅) + s · ∇ x log p(x|c). In that sense, C FG 
+
+shifts probability mass toward data where an implicit classi-fier p′(c|x) assigns a high likelihood to the condition c.Notably, evaluating Eq. (3) introduces an extra function evaluation compared to unguided sampling, which may al-most double the latency. Therefore, we search for efficient ways of guiding the denoising process, aiming at reducing NFEs while retaining the benefits of C FG . Next, we discuss these approaches. 
+
+Gradient Search along Diffusion Dynamics 
+
+Assuming a pre-trained diffusion model Φ : X ×C → X,where X = RH×W ×C is the latent space and C represents the condition space, with c ∈ C denoting a condition ( e.g. ,a text prompt), we initialize xT ∼ pb, where pb is a Gaus-sian distribution. By setting a condition c ∈ C and a time-schedule τ = {T, T − 1, ..., 0}, the diffusion model gener-ates a sequence of latent codes 
+
+{xt}Tt=0 s.t. xT ∼ pb, xt−1 = Φ(solver(¯ xt)) , (4) where “ solver ” represents an ODE solver for Eq. (2). The model Φ operates uses C FG as in Eq. (3), with ¯xt =
+
+ϵcfg (xt, c, s ), where s remains constant over time. While this setup is standard in many diffusion models (Rombach et al. 2022; Dai et al. 2023; Saharia et al. 2022; Nichol et al. 2021), alternative options for ¯xt exist, each with its associ-ated computational costs: (i) Unconditional score: ϵθ (xt, ∅) (1 NFE) (ii) Conditional score: ϵθ (xt, c) (1 NFE) (iii) CFG score: ϵcfg (xt, c, s t) (2 NFEs) Here, ϵθ represents a neural network with fixed weights 
+
+θ, and st is no longer constant in time. We denote by 
+
+ft the particular step choice at time t with ft ∈ Ft =
+
+{ϵθ (xt, ∅), ϵ θ (xt, c), ϵ cfg (xt, c, s t)} .
+
+The search space for the denoising process is S =
+
+QTt=0 Ft, representing all possible sequences of choices 
+
+ζ = ( f0, f 1, . . . , f T ), which we refer to as policies . Here, Q denotes the Cartesian product over sets. As st ∈ R, S is unbounded, but to simplify and generalize policies, we con-strain st to belong to a finite set S = {s1, ..., s k}. Thus, there are |S| = | QTt=0 Ft| = (2 + k)T +1 different policies. To enable backpropagation, we relax the discrete search to a continuous one. Each set of choices Ft is associated with a trainable vector αt ∈ Rk+2 , and we obtain the solver’s input using a softmax weighting of options, i.e. ,
+
+¯xt := softmax (α)⊺ Ft. (5) The score matrix α := [ α⊺ 
+
+> T
+
+, ..., α⊺ 
+
+> 0
+
+] represents a multino-mial distribution over options, from which concrete policies 
+
+ζ can be sampled. We define a differentiable objective to guide the search for efficient policies, aiming to find a policy ζ that closely replicates Φ, as measured by a differentiable distance metric 
+
+d(x0, x′
+
+> 0
+
+). Thus, we optimize: 
+
+α∗ = argmin α [d(x0, x′
+
+> 0
+
+(ζ(α)) + λg (ζ(α))] , (6) where λ > 0 and g(ζ(α)) regularizes the sum of scores weighted by the per-choice costs. We initialize α randomly, update it iteratively by sampling xT ∼ N (0 , I ), and back-propagate through a student model Φ′ (which mimics Φ but 1965 (a) Individual denoising iterates. (b) Element-wise difference between consecutive iterates. 
+
+Figure 4: Denoising process. Point-wise differences reveal scene organization from the start. uses the soft alphas from Eq. (5)) to obtain x′
+
+> 0
+
+(ζ(α)) . We elaborate on this search in the Suppl. 
+
+Adaptive Guidance 
+
+Building on the insights gained from this search, we ob-served that conditional and unconditional updates become increasingly correlated over time. This fact suggests an in-tuitive way to save NFEs by stopping C FG computation when this correlation is high. This observation led us to de-velop a more efficient approach to guidance, which we term “Adaptive Guidance” (A G), a principled technique to de-crease sampling cost while maintaining high image quality. AG leverages the correlation to reduce the number of NFEs by strategically switching from C FG updates to conditional updates when the correlation, measured by γt (Eq. (8)), ex-ceeds a certain threshold ¯γ. Consequently, A G produces sim-plified policies, such as 
+
+ζAG = [ ϵcfg (xT , c), ... , ϵ cfg (xt, c), ϵ θ (xt−1, c), ... , ϵ θ (x0, c)] ,
+
+(7) where the truncation timestep t is a function of ¯γ, the starting seed xT and the conditioning c. More details in the Suppl. We highlight that ζAG is independent of the specific time schedule τ (Eq. (4)) or solver used for sampling, making it adaptable to a wide range of diffusion models and arbitrary quantities of diffusion steps. 
+
+Replacing NFEs with Affine Transformations 
+
+Guided by these insights, we found that in the latter stages of denoising C FG updates can be replaced with conditional steps. However, during the first half of the denoising pro-cess, guidance remains crucial. As demonstrated in Fig. 9a, prematurely replacing C FG updates with conditional steps —such as reducing the number of guidance steps to just five, followed by 15 conditional steps— can significantly degrade image quality. At the same time, the smooth alignment of conditional and unconditional steps over time, along with the consistent cosine similarities shown in Fig. 5, suggest a high regularity in diffusion paths. Intrigued by this observa-tion, we probe for linear patterns in the diffusion path. 
+
+# Experiments 
+
+Experimental Setup. We optimize guidance policies for text-to-image generation using the Stable Diffusion archi-tecture (Rombach et al. 2022), referred to as LDM-512 . We train LDM-512 from scratch on a commissioned dataset, consisting of 900 M parameters and generating 512 × 512 
+
+resolution images from a 4 × 64 × 64 latent space. Training involves 10 k noise-image pairs from CC3M (Sharma et al. Model GPU AG (30 NFEs) CFG (40 NFEs) AG Gain EMU 9.5b H100 3251 ± 26 3822 ± 31 15% EMU 2.7b A100 2634 ± 8 3184 ± 6 17% SD XL 2.5b V100 4584 ± 8 5876 ± 10 22% SD XL 2.5b RTX 8000 4932 ± 5 6339 ± 6 22% SD 1.5 0.8b GTX 1080Ti 4396 ± 27 5542 ± 30 21% Table 1: Runtime for 20 denoising steps in ms (mean ±
+
+std., 30 runs). All models run in half-precision in PyTorch 2. Times exclude text-conditioning and VAE-decoding, which induce a < 5% overhead. 2018) with T = 20 DPM++ (Lu et al. 2022a) steps and a guidance strength of s = 7 .5. CC3M is used because the lin-guistic richness and contextual variety of its prompts ensure meaningful and realistic image synthesis. The search space 
+
+S includes k = 3 guidance strengths: unconditional, condi-tional, and scaled ϵcfg (xt, c, a · 7.5) with a ∈ { 1/2, 1, 2}. We optimize Eq. (6) using the Lion optimizer (Chen et al. 2023) for 5 epochs. Evaluation metrics are computed on 1k real-world user prompts from the OUI dataset (Dai et al. 2023), which represents diverse, practical user inputs. The search took approximately 1.5 days on a Quadro RTX 8000. We demonstrate that our findings generalize by validating the efficacy of A G on the larger EMU-768 model (Dai et al. 2023), with 2.7B parameters and 768 × 768 resolution, as well as on the SDXL-1024 (Rombach et al. 2022) model at 
+
+1024 × 1024 resolution. We also include results on a latent flow matching model ( FM-256 ) (Liu, Gong, and Liu 2022) trained on a smaller 256 ×256 dataset of sticker-like images. The following section presents our search results. 
+
+Gradient Search 
+
+Our search identifies three main guidance options: condi-tional, unconditional, and C FG with s = 7 .5. This outcome aligns with expectations, as following the entire diffusion path is essential for accurate replication. The score distribu-tion, shown in Fig. 3, reveals a clear pattern: C FG is crucial in the early stages of denoising but less so later. We sug-gest that text-conditioning is vital for establishing semantic structures early on, while later steps refine local details and high-frequency features (see Fig. 4). Interestingly, this generative structure is mirrored in the diffusion process itself. The cosine similarity γt be-tween conditional and unconditional predictions, ϵ(xt, c)
+
+and ϵ(xt, ∅), steadily increases until they nearly align. As shown in Fig. 5, γt reaches near-perfect alignment by the end of the diffusion process, a pattern observed across dif-ferent models and resolutions. We empirically observe that 
+
+lim 
+
+> t→0
+
+
+
+γt := ϵθ (xt, c) · ϵθ (xt, ∅)
+
+∥ϵθ (xt, c)∥∥ ϵθ (xt, ∅)∥
+
+
+
+= 1 . (8) 1966 0 5 10 15 20      
+
+> Step index
+> 0.84 0.88 0.92 0.96 1.00
+> Cosine similarity
+> FM-256 LDM-512 EMU-768 SDXL-1024 0510 15 20
+> Step index
+> 0.96 0.97 0.98 0.99 1.00
+> Cosine similarity
+> thres = 0.991
+
+Figure 5: Cosine similarities over time. Left: Average co-sine similarity γ and 99% confidence interval over 1, 000 
+
+OUI prompts for FM, EMU, LDM and SDXL. Right: Zoom to y-values in [0 .955 , 1.0] for 21 EMU samples. 24 26 28 30 32 34 36 38 40 NFEs 0.5 0.6 0.7 0.8 0.9 1.0 SSIM      
+
+> Policies cfg (xt,c, 7.5)
+> CFG AG = 0.9996
+> AG = 0.9994
+> AG = 0.9990
+
+Figure 6: Search results. SSIM of various policies (dots) vs. 20-step C FG baseline on LDM-512. A G results (dashed lines) and C FG with na¨ ıve step reduction (solid line) are shown. A G outperforms na¨ ıve step reduction, closely match-ing most searched policies while being simpler and scalable. In light of this finding, we argue that an adaptive method for guidance can reduce network evaluations by stopping guid-ance precisely when the conditional and unconditional up-date steps have approximately converged, such that guidance no longer introduces directional changes. As illustrated in Fig. 4, the semantic content dictated by the prompt is setup in the first half of diffusion process, which suggests an op-portunity to cease C FG guidance early, thus saving NFEs toward the latter stage of the generative process. 
+
+Adaptive Guidance 
+
+Figure 5 shows a consistent trend of increasing cosine similarities across different models and resolutions, includ-ing FM-256, EMU-768, and the larger SDXL-1024, demon-strating the generalization capacity of our findings. 
+
+Quantitative evaluation. In our comparison of A G and CFG , we evaluate their ability to reconstruct a set of 1k tar-get images generated from a baseline model using 20 C FG 
+
+steps (40 NFEs). Running this experiment on LDM-512, as shown in Fig. 6, A G consistently outperforms C FG in repli-cating target images with higher accuracy across the entire regime considered (from 22 to 40 NFEs). These results, also generalize to the much larger EMU-768 model. 
+
+EMU-756 SSIM ↑ Win ↑ Lose ↓ NFEs ↓
+
+CFG - 502 498 40 AG ¯γ = 0 .991 0.91 ± 0.03 498 502 29 .6 ± 1.3
+
+Table 2: Evaluation results. Comparison of A G (¯γ = 0 .991 ,approximately 30 NFEs) and the 20 step ( i.e. , 40 NFEs) C FG 
+
+baseline. We report average SSIM and majority voting of five trained human evaluators (each voting on 1k images generated from OUI prompts). These results show that A G
+
+achieves equal visual quality despite using 25% fewer NFEs. Moreover, as demonstrated in Tab. 1, A G offers signif-icant efficiency gains in terms of wall-clock time. While CFG requires two NFEs per step, resulting in 40 NFEs when 
+
+T = 20 , G D reduces this to one NFE per step, saving 20 NFEs. However, it necessitates re-training and does not sup-port negative prompts. Alternatively, A G achieves 50% of the G D savings (reducing 10 NFEs) by dropping guidance after the first half of steps, achieving similar efficiency with greater flexibility. This efficiency is particularly advanta-geous for large models, which can saturate the paralleliza-tion capacity of even production-grade GPUs (A/H100), as well as for smaller GPUs commonly used in academic com-munities, where NFE savings translate almost 1:1 to latency reduction (RTX, GTX, and V100). An example of the per-formance gap between G D and A G is provided in the Suppl. 
+
+Qualitative evaluation. Figure 2 depicts samples gener-ated with A G for different ¯γ values. Our results suggest that up to 50% of the diffusion steps can be performed without CFG at no cost to image quality. Moreover, Figs. 1 and 2 showcase samples where A G outperforms the na¨ ıve alterna-tive of reducing the total number of diffusion steps. 
+
+Human evaluation. We validated A G’s image quality through a human evaluation with five trained annotators comparing images generated by C FG (40 NFEs) and A G
+
+with ¯γ = 0 .991 , achieving 25% fewer NFEs (examples in Fig. 7 and in the Suppl.). Using 1k prompts from the OUI dataset, results in Tab. 2 showed no significant preference (A G: 498 votes, C FG : 502 votes), with a mean vote differ-ence of −0.047 (SD = 2 .543 ) and a p-value of 0.603 using a two-sided Wilcoxon Signed-Rank Test. These findings in-dicate no significant difference in visual appeal between the images generated by the two models ( p > 0.05 ), which sug-gest that A G maintains comparable image quality to C FG ,despite its greater efficiency. 
+
+Image editing. To highlight our method’s generalization, we showcase results in image editing. Text-to-image mod-els are widely studied for generating novel images and instruction-based editing ( e.g. , (Meng et al. 2021; Zhang et al. 2023; Brooks, Holynski, and Efros 2023; Sheynin et al. 2023)). InstructPix2Pix (Brooks, Holynski, and Efros 2023) extends C FG to enable conditioning on images and text, modifying the score estimate as 
+
+ϵpix2pix (xt, c, I) = ϵθ (xt, ∅, ∅)+ sc · (ϵθ (xt, c, I) − ϵθ (xt, ∅, I)) + sT · (ϵθ (xt, ∅, I) − ϵθ (xt, ∅, ∅)) .
+
+(9) 1967 “A whale breaching near a mountain” (win) “A red laptop with earbuds on a table” (lose) 
+
+> (a) C FG
+> (40NFEs)
+> (b) A G
+> (30NFEs)
+> (c) C FG
+> (40NFEs)
+> (d) A G
+> (29NFEs)
+
+Figure 7: Human evaluation examples. An exemplary sam-ple for win and lose of A G with ¯γ = 0 .991 vs. CFG . Baseline CFG tends to produce higher frequencies, which can be for better or worse. More examples in the Suppl. However, (Brooks, Holynski, and Efros 2023) introduces two important implications: (i) a diffusion step now requires 3 NFEs instead of 2, and (ii) GD cannot be applied as part of the “unconditional” update due to dynamic changes in I
+
+(akin to negative prompts). These effects hinder fast image editing, where users may wish to test instructions quickly. Notably, as in text con-ditioning, the terms in Eq. (9) converge over time. Hence, Fig. 8 shows that A G can reduce NFEs without notable qual-ity loss. In the images we show above, A G employs only ten (instead of 20) steps of InstructPix2Pix ( ϵpix2pix (xt, c, I)), thereby saving 1/3 of the total NFEs. 
+
+Replacing NFEs with Affine Transformations 
+
+We find that unconditional network evaluations ϵ(xt, ∅)
+
+can be accurately estimated with high accuracy via affine transformations of network evaluations of previous itera-tions. The unconditional score, being prompt-independent, is more regular and easier to learn. To compute the param-eters of these affine transformations, we generate a small dataset of 200 images from EMU-768 and store the interme-diate iterations. Subsequently, we model an unconditional step given at any t < T as a linear combination of the previ-ous iterations in the diffusion chain as 
+
+ˆϵ(xt, ∅) = 
+
+> t
+
+X
+
+> i=T
+
+βc 
+
+> i
+
+ϵθ (xi, c) + 
+
+> t+1
+
+X
+
+> i=T
+
+β∅ 
+
+> i
+
+ϵθ (xi, ∅), (10) where βc 
+
+> i
+
+and β∅ 
+
+> i
+
+are scalars . We learn these Linear Regres-sion (LR) coefficients for each step by solving a simple Or-dinary Least Squares problem on the 200 trajectories. To-gether with the time required for generating the dataset, we obtain LR coefficients for all steps in under 20 minutes. Dur-ing sampling, computing ˆϵ(xt, ∅) is thus essentially for free. Perhaps surprisingly, we find that this estimator effec-tively predicts unconditional steps. Of course, for any un-conditional score replaced by an LR predictor, the following denoising step will no longer have ground truth past infor-mation and errors accumulate auto-regressively. Yet, inter-leaving C FG steps with “estimated” C FG steps (where the step ϵθ (xt, ∅) is replaced by its linear estimator ˆϵ(xt, ∅)), re-duces the rate of error accumulation. We term this strategy LINEAR AG. When T = 20 , L INEAR AG performs ten steps, alternating between C FG (2 NFEs) and LR-based C FG (1 
+
+> “Turn the horse into a cow”
+> (a) Input image spaceeee
+> (b) C FG -based editing (60NFEs)
+> (c) A G-based editing (40NFEs)
+
+Figure 8: Image editing. Instruction-based editing with EMU Edit (Sheynin et al. 2023), based on InstructPix2Pix. Original image (left), classic C FG editing (Eq. (9)), and A G
+
+editing, which achieves equal quality with 1/3 fewer NFEs.    
+
+> “A traditional tea house in a garden with cherry blossom trees”
+> (a) A G¯γ= 0 .975
+> (25 NFEs)
+> (b) na¨ ıve C FG s(25 NFEs)
+> (c) L INEAR AG
+> (25 NFEs)
+
+Figure 9: Replacing C FG in the initial diffusion steps. 
+
+Three methods to reduce NFEs in early diffusion steps. L IN -
+
+> EAR
+
+AG samples show sharper details, and vivid colors. NFE), followed by ten LR-based C FG steps. This policy re-sults in 25 NFEs, which accounts for 75% of G D savings. Figure 9 shows that L INEAR AG significantly improves image quality over A G at very low ¯γ. This demonstrates that the LR effectively recognizes patterns along the path, outperforming the na¨ ıve approach of alternating C FG and conditional steps in the first half, followed by T/2 condi-tional steps. Additionally, L INEAR AG can handle negative prompts to some extent (see examples in the Supplemen-tary). LR parameters, optimized for empty negative prompts, are applied in every even iteration of denoising, while odd it-erations use the U-Net conditioned on a negative prompt. 
+
+# Conclusions 
+
+This work identifies computational redundancies in C FG 
+
+during denoising. Building on these insights, we introduce Adaptive Guidance (A G), a general and efficient plug-and-play C FG variant that closely replicates a baseline model while achieving 50% of G D speed-ups. Unlike G D, A G requires no training, is easy to implement, and supports negative prompts and image editing. We also introduce L INEAR AG, a faster C FG variant that saves up to 75% G D computations using affine transformations in-stead of full network evaluations. It highlights the potential of leveraging diffusion path smoothness for efficient infer-ence, although it does not exactly replicate the baseline. 1968 References 
+
+Albergo, M. S.; Boffi, N. M.; and Vanden-Eijnden, E. 2023. Stochastic interpolants: A unifying framework for flows and dif-fusions. arXiv preprint arXiv:2303.08797 .Anderson, B. D. 1982. Reverse-time diffusion equation models. 
+
+Stochastic Processes and their Applications , 12(3): 313–326. Brock, A.; Lim, T.; Ritchie, J. M.; and Weston, N. 2017. Smash: one-shot model architecture search through hypernetworks. arXiv preprint arXiv:1708.05344 .Brooks, T.; Holynski, A.; and Efros, A. A. 2023. Instructpix2pix: Learning to follow image editing instructions. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recog-nition , 18392–18402. Castillo, A.; Escobar, M.; Jeanneret, G.; Pumarola, A.; Arbel´ aez, P.; Thabet, A.; and Sanakoyeu, A. 2023. BoDiffusion: Diffus-ing Sparse Observations for Full-Body Human Motion Synthesis. 
+
+arXiv preprint arXiv:2304.11118 .Chen, R. T.; Rubanova, Y.; Bettencourt, J.; and Duvenaud, D. K. 2018. Neural ordinary differential equations. Advances in neural information processing systems , 31. Chen, X.; Liang, C.; Huang, D.; Real, E.; Wang, K.; Liu, Y.; Pham, H.; Dong, X.; Luong, T.; Hsieh, C.-J.; et al. 2023. Symbolic discov-ery of optimization algorithms. arXiv preprint arXiv:2302.06675 .Dai, X.; Hou, J.; Ma, C.-Y.; Tsai, S.; Wang, J.; Wang, R.; Zhang, P.; Vandenhende, S.; Wang, X.; Dubey, A.; et al. 2023. Emu: En-hancing image generation models using photogenic needles in a haystack. arXiv preprint arXiv:2309.15807 .Dhariwal, P.; and Nichol, A. 2021. Diffusion models beat gans on image synthesis. Advances in neural information processing systems , 34: 8780–8794. Dinh, L.; Sohl-Dickstein, J.; and Bengio, S. 2016. Density estima-tion using real nvp. arXiv preprint arXiv:1605.08803 .Gu, S.; Chen, D.; Bao, J.; Wen, F.; Zhang, B.; Chen, D.; Yuan, L.; and Guo, B. 2022. Vector quantized diffusion model for text-to-image synthesis. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 10696–10706. Ho, J.; Chan, W.; Saharia, C.; Whang, J.; Gao, R.; Gritsenko, A.; Kingma, D. P.; Poole, B.; Norouzi, M.; Fleet, D. J.; et al. 2022a. Im-agen video: High definition video generation with diffusion mod-els. arXiv preprint arXiv:2210.02303 .Ho, J.; Jain, A.; and Abbeel, P. 2020. Denoising diffusion prob-abilistic models. Advances in neural information processing sys-tems , 33: 6840–6851. Ho, J.; Saharia, C.; Chan, W.; Fleet, D. J.; Norouzi, M.; and Sal-imans, T. 2022b. Cascaded diffusion models for high fidelity im-age generation. The Journal of Machine Learning Research , 23(1): 2249–2281. Ho, J.; and Salimans, T. 2022. Classifier-free diffusion guidance. 
+
+arXiv preprint arXiv:2207.12598 .Hyv¨ arinen, A.; and Dayan, P. 2005. Estimation of non-normalized statistical models by score matching. Journal of Machine Learning Research , 6(4). Karras, T.; Aittala, M.; Aila, T.; and Laine, S. 2022. Elucidating the design space of diffusion-based generative models. Advances in Neural Information Processing Systems , 35: 26565–26577. Kingma, D. P.; and Dhariwal, P. 2018. Glow: Generative flow with invertible 1x1 convolutions. Advances in neural information pro-cessing systems , 31. Kong, Z.; Ping, W.; Huang, J.; Zhao, K.; and Catanzaro, B. 2020. Diffwave: A versatile diffusion model for audio synthesis. arXiv preprint arXiv:2009.09761 .Lee, S.; Kim, B.; and Ye, J. C. 2023. Minimizing trajec-tory curvature of ode-based generative models. arXiv preprint arXiv:2301.12003 .Li, G.; Qian, G.; Delgadillo, I. C.; Muller, M.; Thabet, A.; and Ghanem, B. 2020. Sgas: Sequential greedy architecture search. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 1620–1630. Li, G.; Xu, M.; Giancola, S.; Thabet, A.; and Ghanem, B. 2022. LC-NAS: Latency constrained neural architecture search for point cloud networks. In 2022 International Conference on 3D Vision (3DV) , 1–11. IEEE. Li, L.; Li, H.; Zheng, X.; Wu, J.; Xiao, X.; Wang, R.; Zheng, M.; Pan, X.; Chao, F.; and Ji, R. 2023a. AutoDiffusion: Training-Free Optimization of Time Steps and Architectures for Automated Dif-fusion Model Acceleration. In Proceedings of the IEEE/CVF In-ternational Conference on Computer Vision , 7105–7114. Li, Y.; Wang, H.; Jin, Q.; Hu, J.; Chemerys, P.; Fu, Y.; Wang, Y.; Tulyakov, S.; and Ren, J. 2023b. SnapFusion: Text-to-Image Diffu-sion Model on Mobile Devices within Two Seconds. arXiv preprint arXiv:2306.00980 .Lin, C.-H.; Gao, J.; Tang, L.; Takikawa, T.; Zeng, X.; Huang, X.; Kreis, K.; Fidler, S.; Liu, M.-Y.; and Lin, T.-Y. 2023. Magic3d: High-resolution text-to-3d content creation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recogni-tion , 300–309. Lipman, Y.; Chen, R. T.; Ben-Hamu, H.; Nickel, M.; and Le, M. 2022. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 .Liu, C.; Zoph, B.; Neumann, M.; Shlens, J.; Hua, W.; Li, L.-J.; Fei-Fei, L.; Yuille, A.; Huang, J.; and Murphy, K. 2018. Progressive neural architecture search. In Proceedings of the European Con-ference on Computer Vision (ECCV) , 19–34. Liu, H.; Simonyan, K.; and Yang, Y. 2018. Darts: Differentiable architecture search. arXiv preprint arXiv:1806.09055 .Liu, N.; Li, S.; Du, Y.; Torralba, A.; and Tenenbaum, J. B. 2022. Compositional visual generation with composable diffusion mod-els. In European Conference on Computer Vision , 423–439. Springer. Liu, X.; Gong, C.; and Liu, Q. 2022. Flow straight and fast: Learn-ing to generate and transfer data with rectified flow. arXiv preprint arXiv:2209.03003 .Lu, C.; Zhou, Y.; Bao, F.; Chen, J.; Li, C.; and Zhu, J. 2022a. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in Neural Information Processing Systems , 35: 5775–5787. Lu, C.; Zhou, Y.; Bao, F.; Chen, J.; Li, C.; and Zhu, J. 2022b. Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. arXiv preprint arXiv:2211.01095 .Meng, C.; He, Y.; Song, Y.; Song, J.; Wu, J.; Zhu, J.-Y.; and Ermon, S. 2021. Sdedit: Guided image synthesis and editing with stochas-tic differential equations. arXiv preprint arXiv:2108.01073 .Meng, C.; Rombach, R.; Gao, R.; Kingma, D.; Ermon, S.; Ho, J.; and Salimans, T. 2023. On distillation of guided diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 14297–14306. Nichol, A.; Dhariwal, P.; Ramesh, A.; Shyam, P.; Mishkin, P.; Mc-Grew, B.; Sutskever, I.; and Chen, M. 2021. Glide: Towards pho-torealistic image generation and editing with text-guided diffusion models. arXiv preprint arXiv:2112.10741 .1969 Nichol, A. Q.; and Dhariwal, P. 2021. Improved denoising diffu-sion probabilistic models. In International Conference on Machine Learning , 8162–8171. PMLR. Odena, A.; Olah, C.; and Shlens, J. 2017. Conditional image syn-thesis with auxiliary classifier gans. In International conference on machine learning , 2642–2651. PMLR. Peebles, W.; and Xie, S. 2023. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF International Con-ference on Computer Vision , 4195–4205. Pham, H.; Guan, M. Y.; Zoph, B.; Le, Q. V.; and Dean, J. 2018. Efficient neural architecture search via parameter sharing. arXiv preprint arXiv:1802.03268 .Pooladian, A.-A.; Ben-Hamu, H.; Domingo-Enrich, C.; Amos, B.; Lipman, Y.; and Chen, R. 2023. Multisample flow match-ing: Straightening flows with minibatch couplings. arXiv preprint arXiv:2304.14772 .Poole, B.; Jain, A.; Barron, J. T.; and Mildenhall, B. 2022. Dreamfusion: Text-to-3d using 2d diffusion. arXiv preprint arXiv:2209.14988 .Rampas, D.; Pernias, P.; Zhong, E.; and Aubreville, M. 2022. Fast text-conditional discrete denoising on vector-quantized latent spaces. arXiv preprint arXiv:2211.07292 .Rombach, R.; Blattmann, A.; Lorenz, D.; Esser, P.; and Ommer, B. 2022. High-resolution image synthesis with latent diffusion mod-els. In Proceedings of the IEEE/CVF conference on computer vi-sion and pattern recognition , 10684–10695. Saharia, C.; Chan, W.; Saxena, S.; Li, L.; Whang, J.; Denton, E. L.; Ghasemipour, K.; Gontijo Lopes, R.; Karagol Ayan, B.; Salimans, T.; et al. 2022. Photorealistic text-to-image diffusion models with deep language understanding. Advances in Neural Information Processing Systems , 35: 36479–36494. Salimans, T.; and Ho, J. 2022. Progressive distillation for fast sam-pling of diffusion models. arXiv preprint arXiv:2202.00512 .Schanz, A.; List, F.; and Hahn, O. 2023. Stochastic Super-resolution of Cosmological Simulations with Denoising Diffusion Models. arXiv preprint arXiv:2310.06929 .Sharma, P.; Ding, N.; Goodman, S.; and Soricut, R. 2018. Con-ceptual Captions: A Cleaned, Hypernymed, Image Alt-text Dataset For Automatic Image Captioning. In Proceedings of ACL .Shaul, N.; Perez, J.; Chen, R. T.; Thabet, A.; Pumarola, A.; and Lipman, Y. 2023. Bespoke Solvers for Generative Flow Models. 
+
+arXiv preprint arXiv:2310.19075 .Sheynin, S.; Polyak, A.; Singer, U.; Kirstain, Y.; Zohar, A.; Ashual, O.; Parikh, D.; and Taigman, Y. 2023. Emu Edit: Precise Im-age Editing via Recognition and Generation Tasks. arXiv preprint arXiv:2311.10089 .Shih, A.; Belkhale, S.; Ermon, S.; Sadigh, D.; and Anari, N. 2023. Parallel Sampling of Diffusion Models. arXiv preprint arXiv:2305.16317 .Sohl-Dickstein, J.; Weiss, E.; Maheswaranathan, N.; and Ganguli, S. 2015. Deep unsupervised learning using nonequilibrium ther-modynamics. In International conference on machine learning ,2256–2265. PMLR. Song, Y.; Sohl-Dickstein, J.; Kingma, D. P.; Kumar, A.; Ermon, S.; and Poole, B. 2020. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 .Wizadwongsa, S.; and Suwajanakorn, S. 2023. Accelerating Guided Diffusion Sampling with Splitting Numerical Methods. In 
+
+The Eleventh International Conference on Learning Representa-tions .Wu, B.; Dai, X.; Zhang, P.; Wang, Y.; Sun, F.; Wu, Y.; Tian, Y.; Vajda, P.; Jia, Y.; and Keutzer, K. 2019. Fbnet: Hardware-aware ef-ficient convnet design via differentiable neural architecture search. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , 10734–10742. Yang, X.; Zhou, D.; Feng, J.; and Wang, X. 2023. Diffusion proba-bilistic model made slim. In Proceedings of the IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition , 22552–22562. Zhang, K.; Mo, L.; Chen, W.; Sun, H.; and Su, Y. 2023. Mag-icBrush: A Manually Annotated Dataset for Instruction-Guided Image Editing. arXiv preprint arXiv:2306.10012 .Zhang, Q.; and Chen, Y. 2022. Fast Sampling of Diffusion Models with Exponential Integrator. In The Eleventh International Confer-ence on Learning Representations .Zhao, W.; Bai, L.; Rao, Y.; Zhou, J.; and Lu, J. 2023. UniPC: A Unified Predictor-Corrector Framework for Fast Sampling of Dif-fusion Models. arXiv preprint arXiv:2302.04867 .Zheng, K.; Lu, C.; Chen, J.; and Zhu, J. 2023. DPM-Solver-v3: Im-proved Diffusion ODE Solver with Empirical Model Statistics. In 
+
+Thirty-seventh Conference on Neural Information Processing Sys-tems .Zheng, K.; Lu, C.; Chen, J.; and Zhu, J. 2024. Dpm-solver-v3: Improved diffusion ode solver with empirical model statistics. Ad-vances in Neural Information Processing Systems , 36. Zoph, B.; and Le, Q. 2016. Neural Architecture Search with Re-inforcement Learning. In International Conference on Learning Representations .Zoph, B.; Vasudevan, V.; Shlens, J.; and Le, Q. V. 2018. Learning transferable architectures for scalable image recognition. In Pro-ceedings of the IEEE conference on computer vision and pattern recognition , 8697–8710. 1970
