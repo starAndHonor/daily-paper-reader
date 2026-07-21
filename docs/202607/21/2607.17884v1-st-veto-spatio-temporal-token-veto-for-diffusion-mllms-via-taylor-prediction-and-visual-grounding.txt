@@ -1,0 +1,611 @@
+Title: ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding
+
+URL Source: https://arxiv.org/pdf/2607.17884v1
+
+Published Time: Tue, 21 Jul 2026 01:51:46 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+Keuntae Kim 1 * Beomseok Lee 2 * Hyunwoo Kim 3 * Yong Suk Choi 1 †
+
+## Abstract 
+
+Vision Language Models (VLMs) achieve strong reasoning with Chain-of-Thought (CoT) prompt-ing but incur high sequential-generation cost, er-ror accumulation, and limited self-correction. Dif-fusion Multimodal Large Language Models (dM-LLMs) unmask tokens in an order-agnostic pro-cess, improving efficiency and enabling itera-tive refinement, yet their reasoning and how to enhance it remain underexplored. We propose a training-free method, Spatio-Temporal Token Veto (ST-Veto), which leverages the ability to ob-serve all token positions at each diffusion step. Rather than relying only on current-step confi-dence, ST-Veto vetoes temporally unstable tokens via second-order Taylor prediction of confidence dynamics and filters weakly grounded tokens us-ing image-attention mass, swapping them with safer candidates. Across multiple dMLLMs and multimodal reasoning benchmarks, ST-Veto con-sistently outperforms standard decoding policies and prior VLM reasoning methods, improving accuracy by up to 9% with no additional train-ing or generation cost. Analyses show that ST-Veto steers generation toward higher-confidence, better-grounded paths. 
+
+## 1. Introduction 
+
+Large Language Models (LLMs) have established a strong foundation in NLP tasks through next-token prediction. Building upon this, Vision Language Models (VLMs), which integrate LLMs as backbones with vision en-coders, have achieved strong results in the multimodal do-main (Alayrac et al., 2022; Li et al., 2023b;a; Wang et al., 
+
+> *
+
+Equal contribution 1ktkpv94@hanyang.ac.kr, Hanyang University; 2qpwoeiru6486@gmail.com, LG Electronics; 
+
+> 3
+
+kimhw199807@gmail.com, KT Corporation;. Correspondence to: Yong Suk Choi <cys@hanyang.ac.kr >.
+
+Proceedings of the 43 rd International Conference on Machine Learning , Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s). 
+
+2024; Zhang et al., 2024a). Central to the success of both LLMs and VLMs is the Auto-Regressive (AR) mechanism, which generates tokens sequentially. Furthermore, condi-tioning on previously generated tokens, such as via Chain-of-Thought (CoT) prompting, has substantially enhanced the reasoning capabilities of AR models (Wei et al., 2022; Zhang et al., 2022; Wang et al., 2022). However, the sequential nature of AR models incurs high latency and inference costs. A critical limitation is the dif-ficulty of self-correction: because the model continually consumes its own generated tokens as input, errors can eas-ily propagate and amplify hallucinations (Ji et al., 2023; Pan et al., 2023). Recent diffusion-based language models instead generate tokens through order-agnostic denoising and iterative refinement (Li et al., 2022; Gong et al., 2022; Sahoo et al., 2024b; Nie et al., 2025). Diffusion Large Lan-guage Models (dLLMs) and diffusion Multimodal Large Language Models (dMLLMs) leverage these properties to improve efficiency and enable bidirectional context model-ing, facilitating capabilities such as self-correction (Li et al., 2025; Yang et al., 2025; You et al., 2025). Despite this potential, d(M)LLMs remain in the nascent stages of research and have not yet reached the maturity of AR models, particularly regarding reasoning. Prior works have primarily emphasized efficiency by restricting evalua-tion to relatively simple tasks with short generation lengths (e.g., 16 or 32 tokens) (Li et al., 2025; Yang et al., 2025). As a result, it remains unclear whether dMLLMs can sustain non-trivial reasoning under long-generation settings or how they internally perform inference. For instance, whether dM-LLMs can generate coherent and faithful rationales when given sufficient generation length has received limited at-tention. Moreover, since standard CoT prompting does not directly translate to the non-sequential generation paradigm, a key open question is how to improve reasoning reliability in diffusion models (Sahoo et al., 2025). In this study, we analyze the reasoning capabilities of dM-LLMs and propose a method to enhance them. We eval-uate two state-of-the-art dMLLMs, LaViDa-Reason (Li et al., 2025) and MMaDA-MixCoT (Yang et al., 2025), on benchmarks requiring multimodal understanding and reasoning (Chen et al., 2024; Liu et al., 2024; Lu et al., 1arXiv:2607.17884v1 [cs.AI] 20 Jul 2026 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding knife      
+
+> MASK Selects ‘man’ & ‘a’ (low visual grounding & focused on the "eats"). Model focuses on “knife,” which leads the model to generate a "cuts". (a) Base : Unmasks Tokens with High Confidence Score
+> (Risk of Low Visual Grounding or Unstable Tokens)
+> Unmasks high-prob tokens first (e.g., articles, punctuation). Selects ‘eats’ & ‘with’ (low visual grounding). Model focuses on “eats,” which leads the model to generate a fork.
+> Final Output (Incorrect) : A man eats cake with a fork. ❌Final Output (Correct) : A man cuts cake with a knife. ✅
+
+t-3             
+
+> eats
+> (b) ST-Veto (Ours): Spatial & Temporal token Veto
+> (via Image Attention &Taylor Residual)
+> loves Veto ‘eats’ (Low Visual Grounding Token via Image Attention)
+> Veto ‘loves’ (Unstable Token via Taylor Residual) & unmask 'knife' first
+> Question : What is happening in the image?
+> The MASK MASK MASK MASK MASK
+> The MASK cake MASK MASK man
+
+t The man eats cake with a fork .
+
+t-1 The man eats MASK with a MASK .
+
+t-2 The MASK eats MASK with MASK MASK .                   
+
+> The MASK cake with MASK .man
+> The man cuts cake with aknife .
+> The MASK MASK MASK MASK MASK MASK .
+> MASK
+> .
+> VETO: 'loves'
+> t-3 t-2 t-1 t
+> Negative Residual (Unstable) Taylor Pred
+> .
+> VETO: 'eats'
+> t-3 t-2 t-1 t
+> Low Visual Grounding
+> Img Attn
+
+Figure 1. Overview of our work. The base decoder unmasks tokens according to current-step confidence, whereas ST-Veto applies temporal-stability and visual-grounding checks before committing tokens to the denoising trajectory. 
+
+2022) while allowing sufficiently long generation lengths. Crucially, we observe that directly applying state-of-the-art (SOTA) reasoning methods developed for VLMs is ineffec-tive under the diffusion generation paradigm (Mitra et al., 2024; Zheng et al., 2023; Zhang et al., 2023; Xu et al., 2025). These methods assume an autoregressive chain in which in-termediate rationales become stable conditioning context for subsequent tokens. In contrast, dMLLMs repeatedly revise many token positions in parallel, so a token selected at one step can become an unreliable anchor if it is chosen only because it appears confident under the current partially denoised context. These observations motivate a new ap-proach tailored to dMLLMs rather than adapting AR-style reasoning methods. Our approach leverages a unique characteristic of dMLLMs distinct from AR models: the ability to observe the evolution of all token positions across diffusion time steps. Unlike the generation of AR models, dMLLMs observe all masked positions at every step, unmasking confident tokens while remasking the rest for the subsequent iteration (Sahoo et al., 2024b; Austin et al., 2021). This global visibility suggests that reliable reasoning should not depend only on the instan-taneous confidence of a token. Instead, a token should be committed when it is stable across denoising time and mean-ingfully grounded in the visual input. Capitalizing on this mechanism, we propose Spatio-Temporal Token Veto (ST-Veto) , a training-free decoding-time method that exploits spatio-temporal token information to guide generation. ST-Veto operates via two key mechanisms. First, it tracks token confidence values across diffusion steps and predicts the confidence at the next step using a second-order Taylor expansion. By comparing the actual confidence with the predicted value, ST-Veto identifies unstable tokens whose confidence deviates from the expected trajectory and vetoes them during unmasking selection. Second, it employs image attention mass to veto tokens with low visual grounding, preventing tokens from being unmasked solely due to high textual confidence without sufficient visual support (Favero et al., 2024; Kang et al., 2025; Jiang et al., 2025; Kim et al., 2026). Vetoed tokens are replaced only with near-boundary candidates that satisfy both temporal and visual reliability criteria. As a result, ST-Veto encourages the model to build its subsequent context from tokens that are spatio-temporally stable and semantically meaningful. Across all evaluated models, benchmarks, and settings, ST-Veto consistently outperforms both the baseline decoding strategy and SOTA reasoning methods originally designed for VLMs. Extensive analyses further confirm that ST-Veto functions as intended, guiding dMLLMs toward genera-tion trajectories with higher overall confidence. Notably, ST-Veto requires no additional training and introduces no additional generation cost, while achieving improvements of up to 9%. Our contributions are summarized as follows: • We systematically evaluate the reasoning behavior of dMLLMs under long-generation settings and show that VLM-based reasoning methods do not transfer effec-tively to diffusion decoding. 2ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+• We propose ST-Veto, a novel training-free decoding-time method that prioritizes spatio-temporally stable tokens by combining confidence-evolution dynamics with visual grounding signals. 
+
+Conflict of Interest Disclosure. The authors declare no financial conflicts of interest related to this work. 
+
+## 2. Background 
+
+2.1. Diffusion Large Language Models 
+
+Diffusion Large Language Models (dLLMs) adapt the diffu-sion paradigm originally proposed for generating continu-ous data such as images or audio (Ho et al., 2020; Rombach et al., 2022) to language generation. Early studies applied diffusion to continuous text embeddings (Li et al., 2022; Gong et al., 2022); however, directly modeling discrete to-ken distributions proved challenging, limiting performance. Subsequently, discrete diffusion approaches were introduced to learn the probabilistic masking-and-restoration process directly at the token level (Austin et al., 2021; Sahoo et al., 2024a), substantially improving both generation quality and training stability. Recently, dLLMs such as LLaDA (Nie et al., 2025) and Dream (Ye et al., 2025) have emerged, offering a new paradigm that balances inference speed and generation quality through parallel token restoration, effec-tively addressing the speed–quality trade-off. Formally, given a discrete token sequence of length L, X0 =[X10 , X 20 , . . . , X L 
+
+> 0
+
+], we consider a continuous-time masking process parameterized by t ∈ [0 , 1] . Let q(Xt | Xs) denote the forward noising (masking) transition kernel for 1 ≥ t ≥
+
+s ≥ 0, which progressively replaces a subset of tokens with a special mask token [M ]. At t = 1 , the sequence becomes fully masked, i.e., X1 = [ M, M, . . . , M ]. A model pθ
+
+parameterizes the reverse denoising process, learning to reconstruct less-masked states from more-masked ones (e.g., 
+
+pθ (Xs | Xt) for s < t ) (Sahoo et al., 2024a; Nie et al., 2025). During inference, sampling starts from the fully masked se-quence X1 and iteratively transitions to less-masked states by predicting masked tokens using the learned reverse model. Concretely, given the current state Xt, the model predicts all masked positions in parallel via pθ (· | Xt).Then, following a masking schedule, some tokens are frozen 
+
+(kept) while the remaining tokens are remasked for further refinement. One simple example is to remask a fraction determined by a schedule γ(t → s) (e.g., a function of t
+
+and s) while keeping the others fixed (Sahoo et al., 2024a). Repeating this procedure gradually reduces the masking level and ultimately yields a complete token sequence. 
+
+2.2. Diffusion Multimodal Large Language Models 
+
+Diffusion MLLMs extend discrete diffusion language mod-eling to conditional generation with multimodal inputs, such as an image I and a prompt P . Models like LaViDa (Li et al., 2025) and MMaDA (Yang et al., 2025) learn reverse denoising as a masked-token prediction task conditioned on multimodal signals. LaViDa encodes an image I into continuous visual features and trains a diffusion language model to predict the original text sequence X0 from a partially masked Xt given I and 
+
+P . The training objective is defined as (Li et al., 2025): 
+
+LLaViDa = −Et,I,P,X 0,X t
+
+h
+
+w(t) log pθ (X0 | I, P, X t)
+
+i
+
+,
+
+(1) where w(t) is a time-dependent reweighting (often chosen as w(t) = 1 /t ). With masked positions Mt = {i | Xit =[M ]}, the loss effectively applies only to those positions. To fit the constraints of the model, we reformulate the objective as: 
+
+LLaViDa = −Et,I,P,X 0,X t
+
+"
+
+w(t) X
+
+> i∈M t
+
+log pθ (Xi 
+
+> 0
+
+| I, P, X t)
+
+#
+
+.
+
+(2) In contrast, MMaDA unifies text and image into a single discrete token sequence (Yang et al., 2025). With discrete image tokens V0 = [ V 10 , . . . , V Lv 
+
+> 0
+
+] and text tokens X0 =[X10 , . . . , X Lx 
+
+> 0
+
+], the unified representation is: 
+
+U0 = [ P ; X0; V0 ]. (3) The forward process masks a subset of positions to form 
+
+Ut, and the model predicts the masked tokens. The unified pretraining objective is given by: 
+
+LMMaDA = −Et,U 0,U t
+
+"
+
+1
+
+|M t|
+
+X
+
+> i∈M t
+
+log pθ (U i 
+
+> 0
+
+| Ut)
+
+#
+
+,
+
+where t ∼ U (0 , 1) .
+
+(4) Unlike LaViDa, which uses continuous visual features for conditioning, MMaDA tokenizes images discretely and op-timizes a single diffusion objective over both text and image tokens, enabling unified multimodal understanding and text-to-image generation. 
+
+2.3. Reasoning in dMLLMs 
+
+Current research on multimodal reasoning primarily targets autoregressive (AR) models, employing Chain-of-Thought (CoT) strategies that rely on generating intermediate ratio-nales sequentially (Wei et al., 2022; Zhang et al., 2023). 3ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding Final Veto-and-Swap Policy    
+
+> Step t -1 → t
+> Red = Final Veto
+> Purple = Final Selected (Swap)
+> Blue = Final Selected
+> dMLLM Token Unmasking at Step t
+> In general, tokens with higher confidence scores are selected.
+> Low Visual Grounding Veto
+> Candidate Boundary (via Confidence Score)
+> Image Attention Mass (Red:low, Blue:high)
+> Conf
+> Veto Candidate Safe Candidate
+> 2nd-Order Taylor Residual Veto
+> Veto Candidate
+> Safe Candidate Candidate Boundary (via Confidence Score)
+> Conf
+> ✅
+> ✅
+> ConfTokens
+> ConfTokens
+
+Figure 2. Overview of ST-Veto. Tokens are vetoed based on the Taylor residual and low visual grounding, and are replaced by safe tokens that are unmasked instead. 
+
+However, these methods are structurally incompatible with the diffusion generation paradigm. Unlike AR models that condition current generation on a fixed history of preceding tokens, dMLLMs update all tokens simultaneously through iterative denoising (Sahoo et al., 2024b). Consequently, the standard ”generate-then-condition” mechanism fails in diffusion decoding because there is no stable, causal se-quence to anchor intermediate reasoning steps during the bidirectional refinement process. This fundamental mis-match underscores the necessity for diffusion-native reason-ing approaches that leverage the global visibility of token evolution, rather than forcing sequential dependencies. 
+
+## 3. Method 
+
+We operationalize the self-correction capability of diffusion models through a mechanism we term “Veto-and-Swap”. A common diffusion decoding policy unmasks the currently most confident tokens at each step. However, an unmasking decision made only from the instantaneous context at step t
+
+can be unreliable: a token may be highly ranked because it is locally obvious in the current partially denoised sequence, while its confidence trajectory is unstable or its prediction is weakly supported by the image. ST-Veto therefore seeks to secure tokens that are both temporally stable and spatially grounded before they become fixed context for later denois-ing steps. Our approach is motivated by three key insights derived from the properties of diffusion models: • Stability via Veto-and-Swap: Directly manipulating logits or attention distributions can destabilize the diffu-sion process. Instead, a discrete veto-and-swap policy offers a more robust control mechanism. • Temporal Stability: Unlike autoregressive models, dMLLMs provide visibility into all masked token po-sitions at every step t, allowing us to leverage the evo-lution of confidence over time rather than relying only on the current-step score. • Visual Anchoring: Since dMLLMs generate tokens in parallel, we can prioritize unmasking tokens that are supported by visual evidence, using them as spatial anchors to guide subsequent generation. 
+
+Notation. Let c(t) ∈ Rn denote the confidence score vec-tor of the currently masked token positions at diffusion step 
+
+t, where n is the number of masked positions. Each ele-ment c(t) 
+
+> i
+
+is the model confidence assigned to the predicted token at position i. We aim to unmask k positions at this step. Let I be the set of indices corresponding to image tokens, and let A(ℓ) ∈ RLseq ×Lseq denote the head-averaged attention matrix at Transformer layer ℓ, where Lseq is the total multimodal sequence length. We denote the number of Transformer layers by Nlay .
+
+3.1. Taylor Residual (Temporal Instability Signal) 
+
+In diffusion-based generation, token-level confidence scores are expected to evolve smoothly as the sequence is progres-sively denoised. However, abrupt fluctuations often signal instability: a token may look confident under the current noisy context but become unsupported once neighboring to-kens are refined. Such premature commitments can produce unstable anchors for later steps. To identify these cases, we predict the expected confidence via a second-order Taylor expansion using finite-difference velocity and acceleration computed from a local 4-step history over the same masked positions, {c(t−3) , . . . , c(t)}:
+
+ˆc(t) = c(t−1) +  c(t−1) − c(t−2) 
+
++ 12
+
+h c(t−1) − c(t−2)  −  c(t−2) − c(t−3) i
+
+. (5) 4ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+The instability signal (Taylor residual) for token i is then defined as the deviation from this trajectory: 
+
+ei = c(t) 
+
+> i
+
+− ˆc(t) 
+
+> i
+
+. (6) Here, large negative residuals ( ei ≪ 0) indicate that the confidence has dropped significantly below expectation, sig-naling temporal instability. 
+
+3.2. Image Attention (Grounding Signal) 
+
+Temporal stability alone does not ensure that an unmasked token is semantically grounded in the visual input. A token can be stable because it is a frequent or textually plausible continuation, while still being weakly supported by the image. Unlike sequential generation, dMLLMs can commit to token positions in any order, so ST-Veto can prefer tokens that are meaningful in the current multimodal context and visually supported before they influence later denoising. We measure visual grounding by aggregating the attention mass assigned to image tokens I across a set of intermediate layers: 
+
+Lattn =
+
+ Nlay 
+
+3 , Nlay 
+
+2 , 2Nlay 
+
+3
+
+
+
+. (7) When these indices are non-integers, we use the nearest valid layer index. For a token i at layer ℓ, we define the image attention ratio ρ(ℓ) 
+
+> i
+
+as: 
+
+ρ(ℓ) 
+
+> i
+
+=
+
+P 
+
+> j∈I
+
+A(ℓ)
+
+> i,j
+
+PLseq  
+
+> p=1
+
+A(ℓ)
+
+> i,p
+
+. (8) The final grounding signal mi is obtained by averaging across the selected layers: 
+
+mi = 1
+
+|L attn |
+
+X
+
+> ℓ∈L attn
+
+ρ(ℓ) 
+
+> i
+
+. (9) 
+
+3.3. Veto-and-Swap Policy 
+
+A standard decoding strategy is to unmask the set of tokens with the highest confidence scores at the current step. This greedy rule is efficient, but it only reflects the current par-tially denoised context. ST-Veto instead treats the top-k set as a proposal and checks whether each proposed token is spatio-temporally reliable. Let Tk denote the indices of the top-k tokens: 
+
+Tk =
+
+n
+
+i | rank ↓(c(t) 
+
+> i
+
+) ≤ k
+
+o
+
+, (10) where rank ↓ ranks confidence scores in descending order. Let c(k) = min i∈T k c(t) 
+
+> i
+
+represent the confidence thresh-old. While efficient, this greedy selection often includes unstable or weakly grounded tokens. We therefore apply a conservative policy based on robust statistics. 
+
+Robust statistics. For a signal X ∈ { e, m }, we compute robust location and scale estimates: μX = median (X) and 
+
+σX = MAD (X).
+
+Veto and Safe Criteria. A token i is flagged for veto if either its temporal residual or visual grounding score deviates negatively from the population distribution: 
+
+Cveto (i) ⇐⇒ (ei < μ e − σe) ∨ (mi < μ m − σm). (11) Conversely, a token is considered safe only if it satisfies both stricter temporal stability and visual grounding require-ments: 
+
+Csafe (i) ⇐⇒ (ei ≥ μe + σe) ∧ (mi ≥ μm + σm). (12) 
+
+Veto and Swap sets. We define the veto set V as the risky tokens currently within the top-k selection: 
+
+V = {i ∈ T k | C veto (i)} . (13) To fill the vacated slots, we identify a set of swap candidates 
+
+S. To prevent destabilization from low-confidence tokens, candidates must be safe and reside within a “candidate line” (a near-boundary region around c(k)): 
+
+S =
+
+n
+
+i / ∈ T k | C safe (i) ∧ | c(t) 
+
+> i
+
+− c(k)| ≤ σc
+
+o
+
+, (14) where σc = MAD (c(t)).
+
+Final Selection. We replace the tokens in V with the highest-confidence candidates from S. If |S| < |V| , we only perform partial swaps. Thus, ST-Veto does not force a replacement when no sufficiently stable and grounded alter-native exists. The final mask is updated accordingly for the next step, allowing the model to build subsequent context from tokens that are more reliable across time and more meaningful with respect to the image. 
+
+## 4. Experimental Setup 
+
+Benchmarks. We evaluate our proposed method on four diverse benchmarks: M3CoT (Chen et al., 2024), Sci-enceQA (Lu et al., 2022), MMBench (Liu et al., 2024), and 
+
+V∗Bench (Wu & Xie, 2023). M3CoT is designed to assess multimodal chain-of-thought (CoT) reasoning across broad domains, including science, mathematics, and common-sense. ScienceQA evaluates knowledge-based multimodal reasoning by integrating scientific concepts with visual in-formation. MMBench comprises diverse evaluation splits to measure general visual perception and visual reasoning capabilities. V∗Bench focuses on high-resolution visual question answering (VQA), emphasizing fine-grained visual understanding. We follow the official evaluation protocols and report results on the standard splits for all benchmarks. 5ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding                                                                                                                                                                                        
+
+> Table 1. Main results table. X/Y denotes the generation length Land the number of steps T. Bold indicates the best performance. All experiments were conducted three times with different random seeds, and the reported results are averaged. Model Method M3CoT MMBench SQA-IMG V* Bench 128/64 256/128 128/64 256/128 128/64 256/128 128/64 256/128
+> LaViDa
+> Base-Confidence 27.96 29.55 33.96 31.55 45.81 40.06 35.60 37.17 Base-Margin 27.88 28.22 32.99 31.68 46.01 38.99 35.08 37.70 Base-Entropy 27.91 29.23 32.67 31.92 45.89 39.17 34.55 36.65 DDCoT 26.99 29.11 33.02 30.98 45.99 38.81 35.08 35.60 CCoT 26.57 28.98 33.19 31.04 45.21 38.90 36.65 36.65 SCAFFOLD 26.61 28.81 33.24 31.22 44.98 39.25 35.60 35.08 ICoT 27.82 29.29 33.22 31.43 45.68 39.17 37.17 37.17
+> ST-Veto (Ours) 30.21 31.87 38.05 38.25 47.80 48.54 42.94 41.36
+> MMaDA
+> Base-Confidence 26.32 25.11 33.75 32.04 44.72 41.70 34.03 31.41 Base-Margin 26.22 25.54 33.22 31.25 44.99 41.55 32.98 32.46 Base-Entropy 26.36 25.32 33.53 31.87 44.23 41.98 33.51 31.41 DDCoT 25.44 24.45 33.21 30.04 43.99 39.98 33.51 29.84 CCoT 26.10 24.88 34.01 31.55 44.81 40.12 34.55 29.32 SCAFFOLD 25.88 24.91 33.88 30.98 44.92 40.33 31.41 28.80 ICoT 26.01 24.78 33.93 32.44 44.52 40.47 34.55 31.41
+> ST-Veto (Ours) 27.52 27.74 36.55 36.74 47.25 45.31 41.36 37.17
+> Table 2. Time cost table. The unit is inference per second, and the values are averaged over runs on MMbench. Method MMaDA LaViDa 128/64 256/128 128/64 256/128 Base-Confidence 5.68 11.32 4.87 12.88 Base-Margin 5.65 11.28 4.85 12.84 Base-Entropy 5.68 11.33 4.88 12.89 DDCoT 10.87 19.75 9.89 22.95 CCoT 10.93 19.48 9.92 22.94 SCAFFOLD 10.99 19.43 9.85 22.91 ICoT 10.96 19.89 9.87 22.87 ST-Veto 5.73 11.39 4.89 12.92
+
+Models and Baselines. Our experiments are conducted on two dMLLMs exhibiting strong reasoning capabilities: 
+
+LaViDa-llada-reason (Li et al., 2025) and MMaDA-8B-MixCoT (Yang et al., 2025). Both models are fine-tuned to generate rationales and produce progressive outputs via an unmasking-based generation process. For rigorous com-parisons, we establish two groups of baselines. First, we compare decoding-policy baselines using three remasking strategies: Low-confidence (Low-conf) , Entropy , and 
+
+Margin (Sahoo et al., 2024a). Second, we include CoT-style prompting baselines that have demonstrated strong performance in autoregressive VLMs: CCoT (Mitra et al., 2024) and DDCoT (Zheng et al., 2023), as well as more recent approaches that explicitly enhance vision–language coordination, including ICoT (Gao et al., 2025) and SCAF-FOLD (Lei et al., 2024). For all prompting baselines, we apply their original prompting templates (and visual prompt-ing schemes when applicable) while employing Low-conf remasking as the decoding policy for fair comparison. 
+
+Implementation Details. We evaluate our method by an-alyzing the speed–quality trade-off—a key advantage of dMLLMs—across varying target output lengths and denois-ing timesteps. Specifically, we fix the ratio L/T to a stan-dard setting of 0.5, where L denotes the target generation length and T represents the number of denoising iterations. To ensure strict reproducibility, we perform deterministic de-coding by selecting the argmax token at each denoising step (i.e., no temperature scaling). Unless otherwise specified, Low-conf (Sahoo et al., 2024a) serves as the default remask-ing policy. Additional prompt configurations and detailed experimental settings are provided in Appendix A.1. 
+
+## 5. Results 
+
+5.1. Main Results 
+
+Table 1 presents the main evaluation results across four benchmarks. We report the average performance over three random seeds. Experimental settings are denoted as L/T ,where L represents the target generation length and T in-dicates the number of denoising steps. Unless otherwise specified, “think mode” refers to enabling rationale gener-ation during decoding, with the maximum number of new tokens capped by L.
+
+Performance of Baselines. As detailed in Table 1, both LaViDa and MMaDA struggle to attain competitive perfor-mance when “think mode” is enabled with L ∈ { 128 , 256 }.Notably, they exhibit limited performance even on MM-Bench, a widely adopted benchmark for general VLM eval-6ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+Table 3. Ablation study table. X/Y denotes the generation length L and the number of steps T . Bold indicates the best performance. w/o Taylor and w/o Img apply the same Veto-and-Swap policy. Model Setting M3CoT MMBench SQA-IMG V* Bench 128/64 256/128 128/64 256/128 128/64 256/128 128/64 256/128 
+
+LaViDa 
+
+Base 27.96 29.55 33.96 31.55 45.81 40.06 35.60 37.17 w/o Taylor 28.77 29.64 36.04 35.94 45.86 46.52 38.22 39.27 w/o Img 29.68 29.11 36.22 35.22 47.47 47.89 41.36 38.22 
+
+ST-Veto 30.21 31.87 38.05 38.25 47.80 48.54 42.94 41.36 
+
+MMaDA 
+
+Base 26.32 25.11 33.75 32.04 44.72 41.70 34.03 31.41 w/o Taylor 26.66 25.99 35.12 35.52 47.15 43.99 39.79 32.84 w/o Img 26.88 26.24 34.98 35.10 45.56 43.87 37.17 33.51 
+
+ST-Veto 27.52 27.74 35.55 35.74 47.25 45.31 41.36 37.17 5 10 15 20 25 30 35 40 
+
+> Step
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Selected Token Conf Score
+> Baseline
+> Delta
+> Taylor
+
+(a) LaViDa on MMbench 5 10 15 20 25 30 35 40  
+
+> Step
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> Selected Token Conf Score
+> Baseline
+> Delta
+> Taylor
+
+(b) MMaDA on MMbench 0-16 16-32 32-48 48-64  
+
+> Step Interval
+> Avg Image Attn
+> ST-Veto
+> Baseline
+
+(c) LaViDa on MMbench 0-16 16-32 32-48 48-64  
+
+> Step Interval
+> Avg Image Attn
+> ST-Veto
+> Baseline
+
+(d) MMaDA on MMbench 
+
+Figure 3. (a) and (b) show the confidence scores of tokens selected at each step for different methods. (c) and (d) present the relative values of the Average Image Attention. 
+
+Table 4. Sensitivity to history length on LaViDa. H = 4 provides the best cost-performance trade-off; H = 5 occasionally matches or exceeds it but requires a higher-order finite-difference estimate. Dataset L/T Base Delta 1st 2nd 3rd MMBench 128/64 33.96 36.98 37.38 38.05 38.11 
+
+256/128 31.55 36.89 37.98 38.25 38.12 SQA-IMG 128/64 45.81 46.69 47.25 47.80 47.91 
+
+256/128 40.06 46.36 47.60 48.54 47.55 
+
+M3CoT 128/64 27.96 28.69 29.21 30.21 30.18 256/128 29.55 30.03 30.50 31.87 31.55 V* Bench 128/64 35.60 37.17 41.36 42.94 39.27 256/128 37.17 39.27 39.27 41.36 41.36 
+
+uation. This underscores a critical bottleneck in current dMLLMs: despite instruction tuning for reasoning (e.g., LaViDa-reason and MMaDA-MixCoT), these models often fail to maintain coherent multi-step rationales under the par-allel decoding paradigm. Furthermore, standard remasking strategies (Low-conf, Entropy, Margin) show only marginal performance variance in Table 1, indicating that simple uncertainty-based heuristics are insufficient for complex multimodal reasoning. 
+
+Failure of AR-based Methods. Methods originally de-signed for autoregressive (AR) VLMs—including DDCoT, CCoT, and ICoT—prove ineffective when directly applied to dMLLMs (Table 1). These approaches rely on sequential dependency, generating intermediate contexts (e.g., cap-tions, scene graphs, or rationales) before generating the final answer. However, dMLLMs generate tokens in parallel via iterative refinement, which does not naturally support reusing intermediate tokens as fixed conditioning signals. Consequently, the “generate-then-condition” paradigm of AR methods does not transfer well to diffusion decoding. 
+
+Superiority of ST-Veto. Across all models, benchmarks, and L/T settings, ST-Veto consistently achieves the best performance (Table 1). Unlike baselines hampered by such structural mismatches, ST-Veto delivers substantial and con-sistent gains without requiring additional training, multi-stage generation, or direct modification of attention maps or logits. These results support our hypothesis that effec-tive reasoning control in dMLLMs necessitates mechanisms tailored to the diffusion process rather than direct transplan-tation of AR-based techniques. 
+
+5.2. Efficiency 
+
+Table 2 compares the inference throughput (samples per second) of different methods on MMBench. All methods are evaluated on identical hardware with the same caching mechanisms in a training-free setting. 
+
+Computational Overhead. ST-Veto introduces negligible overhead compared to the base model. The computations for second-order Taylor scoring and visual grounding are 7ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding                                                    
+
+> Table 5. Layer ablation for the image-attention grounding signal on LaViDa. Combining intermediate depths is more robust than using a single layer. Dataset L/T Base L/ 3L/ 22L/ 3All MMBench 128/64 33.96 35.83 37.12 37.68 38.05
+> 256/128 31.55 34.21 36.08 35.74 38.25
+> SQA-IMG 128/64 45.81 46.95 47.40 46.85 47.80
+> 256/128 40.06 44.52 46.71 47.85 48.54
+> M3CoT 128/64 27.96 29.12 29.85 30.37 30.21 256/128 29.55 30.67 31.23 30.85 31.87
+> V* Bench 128/64 35.60 38.74 40.31 41.36 42.94
+> 256/128 37.17 39.27 40.31 41.88 41.36
+
+lightweight and seamlessly integrated into the decoding loop. Comparison with AR Methods. In contrast, adapting AR-based methods to dMLLMs typically incurs significant computational costs. To emulate their intended pipeline (context → answer), we perform two separate inference calls: one to generate the intermediate context and another to generate the final response conditioned on that context. Single-pass attempts cannot reliably reproduce the intended behavior due to the non-sequential nature of diffusion de-coding. As a result, AR-based baselines effectively double the generation cost, whereas ST-Veto operates efficiently within a single diffusion inference process. 
+
+5.3. Ablation Study 
+
+To quantify the contribution of each component, we conduct an ablation study on the Second-Order Taylor Veto and the Visual Grounding Veto (Table 3). Here, w/o Taylor disables the Taylor Veto (using only Visual Grounding), and w/o Img disables the Visual Grounding Veto (using only Taylor); both variants retain the Veto-and-Swap policy. We observe that employing either component individually yields improvements over the base model on most bench-marks, indicating that both Hessian-based confidence (Tay-lor) and visual consistency (Visual Grounding) are bene-ficial for dMLLM reasoning. Crucially, the full ST-Veto achieves the highest performance, demonstrating comple-mentary effects from enforcing both textual logicality and visual grounding. The modular design further facilitates plug-and-play integration with other decoding strategies. Table 4 further examines the temporal order used by the Taylor-based veto on LaViDa. All history-aware variants outperform the baseline, indicating that temporal confidence dynamics are broadly useful for dMLLM decoding. Among them, the proposed second-order setting ( H = 4 ) achieves the strongest overall trade-off: it is best in most settings and avoids the additional higher-order finite-difference estimate required by H = 5 .                                          
+
+> Table 6. Sensitivity to the robust threshold on LaViDa. The de-fault MAD cutoff is consistently strong across benchmarks and generation settings. Dataset L/T Base 0.5MAD MAD 1.5MAD MMBench 128/64 33.96 36.62 38.05 37.24 256/128 31.55 36.45 38.25 36.12 SQA-IMG 128/64 45.81 47.12 47.80 47.80
+> 256/128 40.06 47.45 48.54 47.22
+> M3CoT 128/64 27.96 29.96 30.21 28.88 256/128 29.55 31.22 31.87 31.22 V* Bench 128/64 35.60 39.27 42.94 41.36 256/128 37.17 40.61 41.36 38.22
+
+Table 5 analyzes which layers should be used for the visual grounding signal. Single-layer variants already improve over the baseline in most settings, but no individual depth is uniformly optimal across benchmarks. Averaging the intermediate layers ( L/ 3, L/ 2, and 2L/ 3) gives the most reliable overall behavior, suggesting that different depths provide complementary visual evidence for selecting spa-tially meaningful tokens. Table 6 evaluates the robustness of the MAD-based thresh-olds used in the veto and safe criteria. The relaxed 0.5MAD setting allows more tokens to enter the veto-and-swap pro-cedure, while 1.5MAD is more conservative and can pre-vent useful swaps. The default MAD cutoff achieves the strongest or tied-strongest performance in nearly all settings, supporting a distribution-adaptive threshold that balances correction and stability. 
+
+## 6. Analysis 
+
+6.1. Methodological Analysis 
+
+Table 7 reports, for each model and benchmark, the pro-portions of tokens in the top-k set that are actually selected through the veto-and-swap procedure, as well as the veto and safe ratios among candidate tokens that meet a certain confidence threshold. Specifically, when unmasking k to-kens at each step, the top-k column shows the fraction of tokens that are vetoed and subsequently replaced by can-didate tokens. Both LaViDa and MMaDA exhibit similar trends across all benchmarks. Although the veto-and-swap criteria can be adjusted to increase the number of swapped tokens, excessively overriding the model’s inherent confi-dence estimates is undesirable, as assumed in our method design. The veto ratio among candidate tokens is substantially higher than that in the top-k set. Our analysis reveals a strong correlation between the proposed stability metrics and model confidence: tokens flagged by Taylor residuals or low image attention consistently exhibit lower confidence 8ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding                                                                   
+
+> Table 7. Analysis Table. Metrics are reported for top-k (Veto & Swap) and candidate (Veto / Safe; in percent with Veto+Safe =100) under each configuration (128/64 and 256/128). Candidate ratios for each model/setting are adjusted to be close to the V* Bench ratio. Model Benchmark 128/64 256/128 top-k candidate top-k candidate Veto & Swap Veto Safe Veto & Swap Veto Safe
+> LaViDa
+> M3CoT 4.8±1.618 .2±5.281 .8±5.22.6±0.919 .3±3.980 .7±3.9
+> MMBench 5.3±2.219 .0±6.481 .0±6.43.1±1.320 .1±3.279 .9±3.2
+> SQA-IMG 5.1±2.118 .7±5.681 .3±5.62.9±1.219 .8±3.180 .2±3.1
+> V* Bench 4.8±6.118 .4±5.981 .6±5.92.2±3.019 .5±2.980 .5±2.9
+> MMaDA
+> M3CoT 5.8±1.314 .5±3.085 .5±3.07.4±1.811 .8±3.588 .2±3.5
+> MMBench 5.2±1.014 .2±2.485 .8±2.46.9±1.511 .5±2.788 .5±2.7
+> SQA-IMG 3.9±0.813 .6±2.386 .4±2.35.5±1.210 .9±3.189 .1±3.1
+> V* Bench 6.1±2.914 .7±2.085 .3±2.06.3±3.711 .2±2.888 .8±2.8
+
+scores. Consequently, the candidate set naturally yields a higher veto ratio, as it contains tokens with lower confidence scores than those in the top-k set. When comparing LaViDa and MMaDA, MMaDA shows a higher proportion of safe tokens. This aligns with the larger performance gains ob-served for LaViDa relative to MMaDA in Figure 3 and is likely attributable to differences in their training architec-tures, particularly in how visual information is processed. 
+
+6.2. Temporal Dynamics Analysis 
+
+The core idea of our method is that token unmasking de-cisions at step t should not be made solely based on the instantaneous state at that step, but should instead account for how token confidence evolves over time as diffusion progresses. To demonstrate the effectiveness of this insight, Figure 3 compares the confidence scores of tokens selected at each step by methods that incorporate temporal informa-tion with those that do not. The results show that methods using Taylor-based veto not only outperform the baseline, but even a simple delta veto ,which considers only the confidence difference between the current and the immediately preceding step, achieves higher confidence scores than the baseline. The delta signal serves as a first-order alternative to the Taylor residual. These findings indicate that vetoing temporally unstable tokens and swapping them with more stable ones guides the generation toward output paths with higher overall confidence. This trend is consistently observed in all models, with a stronger effect in LaViDa. Moreover, a veto-and-swap policy based solely on confidence at step t − 1 is less effective than one that leverages second-order Taylor predictions, highlighting the benefit of modeling higher-order temporal dynamics. 
+
+6.3. Spatial Dynamics Analysis 
+
+Figure 3 presents the results of measuring the Average Im-age Attention Ratio for the baseline and ST-Veto. Since outliers may appear at individual steps, we visualize the results by grouping steps into intervals to better capture the overall trend. The results show that ST-Veto consistently achieves higher image attention ratios than the baseline across all steps. This can be interpreted as the effect of vetoing certain tokens that, despite having high confidence scores, exhibit weak visual grounding. As the model progressively generates and conditions on more text tokens, the overall average image attention natu-rally decreases as diffusion steps accumulate. In contrast, the gap between the baseline and ST-Veto widens over time, a pattern that closely mirrors the confidence score dynamics observed in the temporal analysis. These findings suggest that the veto-and-swap policy guides the model toward gen-eration paths that are superior not only in terms of confi-dence scores but also in visual grounding. 
+
+## 7. Conclusion 
+
+In this work, we investigated how to improve the reason-ing capabilities of dMLLMs. Through extensive empirical analysis, we showed that reasoning methods designed for autoregressive models—especially those relying on sequen-tial token dependencies—do not transfer well to diffusion decoding due to fundamental differences in the genera-tion process. To address this gap, we proposed ST-Veto, a training-free decoding-time strategy tailored to dMLLMs. ST-Veto leverages the evolution of token confidence across denoising steps and visual grounding signals to veto unsta-ble or weakly grounded tokens during unmasking, thereby prioritizing more stable and visually supported generations. Experiments across models and benchmarks demonstrate consistent improvements over standard diffusion decoding and adapted VLM reasoning baselines, achieving gains of up to 9% without additional model training or extra de-noising steps. We believe these findings establish a solid foundation for diffusion-native reasoning and encourage future research toward more reliable multimodal inference. 9ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+## Impact Statement 
+
+This paper proposes a training-free inference-time method to improve reasoning in diffusion-based multimodal large language models (dMLLMs) by refining token unmasking decisions. Our contribution is methodological: we intro-duce a veto-and-swap policy that uses temporal confidence dynamics and image-attention–based grounding signals to reject unreliable tokens and replace them with safer candi-dates, improving inference stability without updating model parameters. The method can enable more accurate and better-grounded multimodal outputs without additional training or genera-tion cost. However, it does not eliminate common risks of multimodal generative systems, including incorrect or biased outputs and potential misuse. Because the approach relies on internal signals (confidence and attention) that are imperfect proxies for correctness, responsible deployment should include standard evaluation and safeguards, with human oversight in high-stakes settings. 
+
+## Acknowledgements 
+
+This work was supported by the Institute of Information and Communications Technology Planning and Evaluation (IITP) grants (No. RS-2025-25422680 and No. RS-2020-II201373), and by the National Research Foundation of Korea (NRF) grant (No. RS-2025-00520618), funded by the Korean Government (MSIT). 
+
+## References 
+
+Alayrac, J.-B., Donahue, J., Luc, P., Miech, A., Barr, I., Hasson, Y., Lenc, K., Mensch, A., Millican, K., Reynolds, M., et al. Flamingo: a visual language model for few-shot learning. Advances in neural information processing systems , 35:23716–23736, 2022. Austin, J., Johnson, D. D., Ho, J., Tarlow, D., and Van Den Berg, R. Structured denoising diffusion models in discrete state-spaces. Advances in neural information processing systems , 34:17981–17993, 2021. Chen, Q., Qin, L., Zhang, J., Chen, Z., Xu, X., and Che, W. M3 CoT: A novel benchmark for multi-domain multi-step multi-modal chain-of-thought. arXiv preprint arXiv:2405.16473 , 2024. Favero, A., Zancato, L., Trager, M., Choudhary, S., Perera, P., Achille, A., Swaminathan, A., and Soatto, S. Multi-modal hallucination control by visual information ground-ing. In Proceedings of the IEEE/CVF Conference on Com-puter Vision and Pattern Recognition , pp. 14303–14312, 2024. Fu, C., Chen, P., Shen, Y., Qin, Y., Zhang, M., Lin, X., Yang, J., Zheng, X., Li, K., Sun, X., and Ji, R. MME: A comprehensive evaluation benchmark for multimodal large language models. arXiv preprint arXiv:2306.13394 ,2023. Gao, J., Li, Y., Cao, Z., and Li, W. Interleaved-modal chain-of-thought. In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 19520–19529, 2025. Gong, S., Li, M., Feng, J., Wu, Z., and Kong, L. Diffuseq: Sequence to sequence text generation with diffusion mod-els. arXiv preprint arXiv:2210.08933 , 2022. Ho, J., Jain, A., and Abbeel, P. Denoising diffusion proba-bilistic models. Advances in neural information process-ing systems , 33:6840–6851, 2020. Huang, Q., Dong, X., Zhang, P., Wang, B., He, C., Wang, J., Lin, D., Zhang, W., and Yu, N. OPERA: Alleviat-ing hallucination in multi-modal large language models via over-trust penalty and retrospection-allocation. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024. Ji, Z., Yu, T., Xu, Y., Lee, N., Ishii, E., and Fung, P. Towards mitigating llm hallucination via self reflection. In Find-ings of the Association for Computational Linguistics: EMNLP 2023 , pp. 1827–1843, 2023. Jiang, Z., Chen, J., Zhu, B., Luo, T., Shen, Y., and Yang, X. Devils in middle layers of large vision-language models: Interpreting, detecting and mitigating object hallucina-tions via attention lens. In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 25004– 25014, 2025. Kang, S., Kim, J., Kim, J., and Hwang, S. J. See what you are told: Visual attention sink in large multimodal models. 
+
+arXiv preprint arXiv:2503.03321 , 2025. Kim, K., Kang, M., and Choi, Y. S. Thinking diffusion: Penalize and guide visual-grounded reasoning in diffu-sion multimodal language models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 5154–5164, 2026. Langley, P. Crafting papers on machine learning. In Langley, P. (ed.), Proceedings of the 17th International Conference on Machine Learning (ICML 2000) , pp. 1207–1216, Stan-ford, CA, 2000. Morgan Kaufmann. Lei, X., Yang, Z., Chen, X., Li, P., and Liu, Y. Scaf-folding coordinates to promote vision-language coor-dination in large multi-modal models. arXiv preprint arXiv:2402.12058 , 2024. Li, C., Wong, C., Zhang, S., Usuyama, N., Liu, H., Yang, J., Naumann, T., Poon, H., and Gao, J. Llava-med: Training 10 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+a large language-and-vision assistant for biomedicine in one day. Advances in Neural Information Processing Systems , 36:28541–28564, 2023a. Li, J., Li, D., Savarese, S., and Hoi, S. Blip-2: Bootstrapping language-image pre-training with frozen image encoders and large language models. In International conference on machine learning , pp. 19730–19742. PMLR, 2023b. Li, S., Kallidromitis, K., Bansal, H., Gokul, A., Kato, Y., Kozuka, K., Kuen, J., Lin, Z., Chang, K.-W., and Grover, A. Lavida: A large diffusion language model for multi-modal understanding. arXiv preprint arXiv:2505.16839 ,2025. Li, X., Thickstun, J., Gulrajani, I., Liang, P. S., and Hashimoto, T. B. Diffusion-lm improves controllable text generation. Advances in neural information process-ing systems , 35:4328–4343, 2022. Li, Y., Du, Y., Zhou, K., Wang, J., Zhao, X., and Wen, J.-R. Evaluating object hallucination in large vision-language models. In Proceedings of the 2023 Conference on Em-pirical Methods in Natural Language Processing , 2023c. Liu, Y., Duan, H., Zhang, Y., Li, B., Zhang, S., Zhao, W., Yuan, Y., Wang, J., He, C., Liu, Z., et al. Mmbench: Is your multi-modal model an all-around player? In 
+
+European conference on computer vision , pp. 216–233. Springer, 2024. Lu, P., Mishra, S., Xia, T., Qiu, L., Chang, K.-W., Zhu, S.-C., Tafjord, O., Clark, P., and Kalyan, A. Learn to explain: Multimodal reasoning via thought chains for science question answering. Advances in Neural Infor-mation Processing Systems , 35:2507–2521, 2022. Mitra, C., Huang, B., Darrell, T., and Herzig, R. Composi-tional chain-of-thought prompting for large multimodal models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 14420– 14431, 2024. Nie, S., Zhu, F., You, Z., Zhang, X., Ou, J., Hu, J., Zhou, J., Lin, Y., Wen, J.-R., and Li, C. Large language diffusion models. arXiv preprint arXiv:2502.09992 , 2025. Pan, L., Saxon, M., Xu, W., Nathani, D., Wang, X., and Wang, W. Y. Automatically correcting large lan-guage models: Surveying the landscape of diverse self-correction strategies. arXiv preprint arXiv:2308.03188 ,2023. Rombach, R., Blattmann, A., Lorenz, D., Esser, P., and Ommer, B. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF con-ference on computer vision and pattern recognition , pp. 10684–10695, 2022. Sahoo, S., Arriola, M., Schiff, Y., Gokaslan, A., Marroquin, E., Chiu, J., Rush, A., and Kuleshov, V. Simple and effective masked diffusion language models. Advances in Neural Information Processing Systems , 37:130136– 130184, 2024a. Sahoo, S., Arriola, M., Schiff, Y., Gokaslan, A., Marroquin, E., Chiu, J., Rush, A., and Kuleshov, V. Simple and effective masked diffusion language models. Advances in Neural Information Processing Systems , 37:130136– 130184, 2024b. Sahoo, S. S., Deschenaux, J., Gokaslan, A., Wang, G., Chiu, J., and Kuleshov, V. The diffusion duality. arXiv preprint arXiv:2506.10892 , 2025. Tang, F., Liu, C., Xu, Z., Hu, M., Peng, Z., Yang, Z., Su, J., Lin, M., Peng, Y., Cheng, X., Razzak, I., and Ge, Z. Seeing far and clearly: Mitigating hallucinations in multimodal large language models with attention causal decoding. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2025. Wang, P., Bai, S., Tan, S., Wang, S., Fan, Z., Bai, J., Chen, K., Liu, X., Wang, J., Ge, W., et al. Qwen2-vl: Enhancing vision-language model’s perception of the world at any resolution. arXiv preprint arXiv:2409.12191 , 2024. Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang, S., Chowdhery, A., and Zhou, D. Self-consistency im-proves chain of thought reasoning in language models. 
+
+arXiv preprint arXiv:2203.11171 , 2022. Wei, J., Wang, X., Schuurmans, D., Bosma, M., Xia, F., Chi, E., Le, Q. V., Zhou, D., et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. Wu, P. and Xie, S. V*: Guided visual search as a core mechanism in multimodal llms, 2023. URL https: //arxiv.org/abs/2312.14135 .Xu, G., Jin, P., Wu, Z., Li, H., Song, Y., Sun, L., and Yuan, L. Llava-cot: Let vision language models reason step-by-step. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 2087–2098, 2025. Yang, L., Tian, Y., Li, B., Zhang, X., Shen, K., Tong, Y., and Wang, M. Mmada: Multimodal large diffusion language models. arXiv preprint arXiv:2505.15809 , 2025. Ye, J., Xie, Z., Zheng, L., Gao, J., Wu, Z., Jiang, X., Li, Z., and Kong, L. Dream 7b: Diffusion large language models. arXiv preprint arXiv:2508.15487 , 2025. You, Z., Nie, S., Zhang, X., Hu, J., Zhou, J., Lu, Z., Wen, J.-R., and Li, C. Llada-v: Large language diffusion 11 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+models with visual instruction tuning. arXiv preprint arXiv:2505.16933 , 2025. Yue, X., Ni, Y., Zhang, K., Zheng, T., Liu, R., Zhang, G., Stevens, S., Jiang, D., Ren, W., Sun, Y., et al. MMMU: A massive multi-discipline multimodal understanding and reasoning benchmark for expert AGI. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024. Zhang, J., Huang, J., Jin, S., and Lu, S. Vision-language models for vision tasks: A survey. IEEE transactions on pattern analysis and machine intelligence , 46(8):5625– 5644, 2024a. Zhang, X., Quan, Y., Gu, C., Shen, C., Yuan, X., Yan, S., Cheng, H., Wu, K., and Ye, J. Seeing clearly by layer two: Enhancing attention heads to alleviate hallucination in LVLMs. arXiv preprint arXiv:2411.09968 , 2024b. Zhang, Z., Zhang, A., Li, M., and Smola, A. Automatic chain of thought prompting in large language models. 
+
+arXiv preprint arXiv:2210.03493 , 2022. Zhang, Z., Zhang, A., Li, M., Zhao, H., Karypis, G., and Smola, A. Multimodal chain-of-thought reasoning in lan-guage models. arXiv preprint arXiv:2302.00923 , 2023. Zheng, G., Yang, B., Tang, J., Zhou, H.-Y., and Yang, S. Dd-cot: Duty-distinct chain-of-thought prompting for multi-modal reasoning in language models. Advances in Neural Information Processing Systems , 36:5168–5191, 2023. 12 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding                                      
+
+> Table 8. Instance-level flip analysis for LaViDa at L/T = 256 /128 . W →R and R →W denote examples that change from wrong to right and from right to wrong, respectively. Benchmark Base ST-Veto ∆W→RR→WFlip ratio / Z
+> MMBench 31.55 38.25 +6.70 518 228 2.27 / 10.62 SQA-IMG 40.06 48.53 +8.47 410 239 1.72 / 6.71
+> Table 9. Stagewise distribution of Veto-and-Swap events on LaViDa. Values are percentages over all swap events. Normalized timestep range 64 steps 128 steps 0–17% 18.3 19.6 17–33% 38.3 37.4 33–50% 33.7 33.4 50–67% 8.6 6.9 67–83% 5.4 3.5 83–100% 1.8 1.0
+
+## A. Additional Experiments and Analyses 
+
+This appendix provides additional evidence discussed during the review process. We focus on the robustness of ST-Veto to generation length, the role of early denoising steps, comparisons with additional benchmarks, and diagnostic analyses showing that the gains are not artifacts of output format or random decoding perturbations. 
+
+A.1. Prompt Configurations and Experimental Settings 
+
+For all benchmarks, we follow the official question format and answer extraction protocol whenever available. The base dMLLMs are evaluated in their reasoning mode, where the model is allowed to generate an intermediate rationale before producing the final answer. For CoT-style baselines, we use the original prompt templates proposed by each method and keep the same diffusion remasking policy as the base decoder unless the method explicitly requires an additional visual prompting component. This keeps the comparison focused on the reasoning or decoding strategy rather than on prompt-format differences. All main experiments use deterministic decoding with argmax token selection at each denoising step, without temperature sampling. Unless otherwise specified, Low-confidence remasking is used as the default remasking policy. We evaluate the two generation settings used throughout the paper, L/T = 128 /64 and L/T = 256 /128 , where L is the maximum generation length and T is the number of denoising steps. Additional long-generation results with L/T = 512 /256 are reported in Appendix A.4. 
+
+A.2. Evaluation Protocol and Output Validity 
+
+All reported benchmarks use rule-based or official answer extraction rather than LLM/VLM-as-judge evaluation. Thus, improvements are not caused by stylistic differences in generated rationales. We further verified that both the base decoder and ST-Veto produce zero invalid or unparseable outputs on MMBench and ScienceQA in the settings analyzed below. The gains therefore come from changes in the selected answer option, not from cleaner formatting. Table 8 reports a paired instance-level flip analysis. If ST-Veto merely introduced random perturbations, the numbers of W→R and R →W flips would be approximately balanced. Instead, the flip ratios are strongly asymmetric, with large positive 
+
+Z-scores. We also observe broad category-level consistency: on MMBench, 17 of 20 categories improve; on ScienceQA, 8 of 9 grade levels and all 3 subjects improve. This pattern supports the interpretation that ST-Veto improves token-level selection rather than relying on stochastic answer changes. 
+
+A.3. Stagewise Veto-and-Swap Dynamics 
+
+Table 9 reports where swaps occur during denoising. The swap ratio is larger in early and middle stages, where token commitments can act as anchors for later refinement. ST-Veto is still useful in late stages, but its largest effect comes from avoiding premature commitment to unstable or weakly grounded tokens before they influence subsequent steps. 13 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding                                                         
+
+> Table 10. Longer generation results on LaViDa with L/T = 512 /256 .Dataset Base ST-Veto MMBench 32.54 38.12
+> SQA-IMG 41.22 48.72
+> M3CoT 30.58 31.76
+> V* Bench 36.65 42.20
+> Table 11. Additional benchmark results on LaViDa with L/T = 128 /64 . MME subtasks report the official score; POPE and MMMU report accuracy. Dataset Base CCoT DDCoT ICoT ST-Veto MME Exist. 183.33 185.00 176.67 181.67 187.00
+> MME Count 133.33 126.67 137.22 136.33 143.33
+> MME Pos. 86.67 90.55 81.67 89.33 91.67
+> MME Color 141.67 148.33 149.17 147.67 150.00
+> MME Total 545.00 550.55 544.73 545.00 570.00
+> POPE 84.45 84.95 85.10 84.95 87.65
+> MMMU 30.44 31.13 30.54 31.22 33.41
+
+A.4. Generation Length 
+
+We additionally test a longer generation setting with L = 512 and T = 256 . ST-Veto maintains its advantage, indicating that the policy does not require a larger rejection ratio as output length grows. 
+
+A.5. Additional Benchmarks 
+
+We also evaluate LaViDa at L/T = 128 /64 on MME (Fu et al., 2023), POPE (Li et al., 2023c), and MMMU (Yue et al., 2024). These results use the same reasoning mode as the main experiments; therefore, they are not directly comparable to reports that restrict generation to only a few final-answer tokens. 
+
+A.6. Training-Free Decoding Baselines 
+
+Most existing hallucination-mitigation decoders are designed for autoregressive MLLMs, so they are not protocol-aligned with diffusion decoding. We nevertheless adapt representative training-free baselines, including EAH (Zhang et al., 2024b), OPERA (Huang et al., 2024), and FarSight (Tang et al., 2025). EAH provides the strongest non-ST-Veto gain, suggesting that encouraging image attention is also helpful for dMLLMs. OPERA and FarSight are less compatible because they rely on autoregressive beam search behavior or causal-mask modification. 
+
+A.7. What Tokens Are Vetoed and Swapped? 
+
+To better understand the swap behavior, we analyze the part-of-speech distribution of vetoed top-k tokens and accepted swap tokens. Vetoed tokens are dominated by function words, while swapped tokens are more often content words. This is consistent with the early-anchor interpretation: ST-Veto tends to delay unstable high-probability fillers and instead commits to semantically informative tokens when they are temporally stable and visually grounded. 
+
+A.8. Fine-Grained Category Analysis 
+
+Table 14 reports representative fine-grained MMBench categories. ST-Veto is especially helpful for structured image-text understanding, physical relations, attribute comparison, and recognition tasks. The small number of negative categories indicates that the policy has limited side effects because it does not directly rewrite logits or attention maps. 14 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding                                                                               
+
+> Table 12. Comparison with additional training-free decoding baselines on LaViDa. Dataset L/T Base EAH OPERA FarSight ST-Veto MMBench 128/64 33.96 34.96 34.03 34.23 38.05
+> 256/128 31.55 33.89 31.92 31.67 38.25
+> SQA-IMG 128/64 45.81 45.52 45.75 45.22 47.80
+> 256/128 40.06 43.44 41.12 40.85 48.54
+> M3CoT 128/64 27.96 27.87 28.11 27.88 30.21
+> 256/128 29.55 29.45 29.56 29.65 31.87
+> V* Bench 128/64 35.60 37.17 36.65 35.60 42.94
+> 256/128 37.17 39.27 35.60 36.65 41.36
+> Table 13. Part-of-speech summary for vetoed and swapped tokens. Percentages report the most frequent groups; remaining categories are grouped as Other. Vetoed tokens Swapped tokens Part of speech Ratio Examples Part of speech Ratio Examples Determiner 28.4 the, a, an Noun 29.7 dog, table, color Preposition 19.1 of, in, at, to Verb 18.4 holding, placed, sitting Conjunction 14.6 and, or, but Preposition 14.2 in, on, between Other 37.9 –Other 37.7 –
+
+A.9. Limitations and Future Work 
+
+ST-Veto relies on internal confidence and attention signals, which are useful but imperfect proxies. Non-smooth confidence trajectories can make Taylor-based prediction less reliable, and image attention may be diffuse or semantically misaligned with the visual evidence needed for an answer. Our conservative Veto-and-Swap policy mitigates these issues by requiring a safe near-boundary candidate before replacing a token, but it cannot guarantee correction in every case. The present study focuses on single-image multimodal reasoning with current dMLLMs. Extending the method to multi-image inputs, video understanding, and ultra-long generations will require additional design, particularly for normalizing visual grounding signals across many visual tokens and for handling attention dilution as the generated context grows. We view these settings as important directions for diffusion-native multimodal reasoning. 15 ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding 
+
+Table 14. Representative fine-grained MMBench category results. Category N Base ST-Veto Diff. Structuralized image-text understanding 282 36.88 57.09 +20.21 Physical relation 94 34.04 48.94 +14.89 Image topic 140 31.43 44.29 +12.86 Action recognition 215 28.37 40.47 +12.09 Attribute comparison 141 32.62 44.68 +12.06 Celebrity recognition 396 25.51 27.02 +1.52 Spatial relationship 177 28.25 28.81 +0.56 Attribute recognition 264 35.61 35.23 -0.38 Image emotion 200 40.50 40.00 -0.50 Identity reasoning 176 26.14 25.00 -1.14 
+
+16

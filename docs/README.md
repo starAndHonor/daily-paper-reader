@@ -18,32 +18,32 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-20
-- 运行时间：2026-07-20 20:22:09 UTC
+- 最新运行日期：2026-07-21
+- 运行时间：2026-07-21 20:41:17 UTC
 - 运行状态：成功
 - 本次总论文数：4
 - 精读区：2
 - 速读区：2
 
 ### 今日简报（AI）
-今天聚焦扩散模型高效推理与视频扩散硬件协同，4篇论文各有突破。精读推荐关注掩码扩散LLM的推理加速（Accelerating Masked Diffusion LLMs）和利用时空冗余减少优化扩散Transformer（DSTAR），两者均达8.0高分。建议普通读者先从DSTAR的空间/时间冗余缩减机制入手，再结合CODA的NMP协同设计方案理解边缘部署思路。
-- 详情：[/202607/20/README](/202607/20/README)
+今日精读2篇高分论文，速读2篇，共覆盖扩散LLM缓存、RL生成器、超分路由和视觉剪枝方向。重点推荐《LaCache》（9.0分）的扩散LLM精确缓存与精度自适应推理，以及《MeanFlowNFT》（8.0分）的前向过程强化学习驱动生成器。对普通读者：建议从LaCache入手，了解如何通过缓存机制降低扩散模型推理成本。
+- 详情：[/202607/21/README](/202607/21/README)
 
 ### 精读区论文标签
-1. [Accelerating Masked Diffusion Large Language Models: A Survey of Efficient Inference Techniques](/202607/20/2607.12829v1-accelerating-masked-diffusion-large-language-models-a-survey-of-efficient-inference-techniques)  
+1. [LaCache: Exact Caching and Precision-Adaptive Inference for Diffusion Large Language Models](/202607/21/2607.16339v1-lacache-exact-caching-and-precision-adaptive-inference-for-diffusion-large-language-models)  
+   标签：评分：9.0/10、query:diff-accel
+   evidence：训练无关的缓存框架用于扩散大语言模型
+2. [MeanFlowNFT: Bringing Forward-Process RL to Average-Velocity Generators](/202607/21/2607.15273v1-meanflownft-bringing-forward-process-rl-to-average-velocity-generators)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：扩散大语言模型加速技术综述
-2. [DSTAR: Accelerating Diffusion Transformers via Spatial and Temporal Redundancy Reduction](/202607/20/2607.15846v1-dstar-accelerating-diffusion-transformers-via-spatial-and-temporal-redundancy-reduction)  
-   标签：评分：8.0/10、query:diff-accel
-   evidence：通过减少空间和时间冗余来加速扩散变换器
+   evidence：MeanFlow实现快速少步采样
 
 ### 速读区论文标签
-1. [CODA: Algorithm-Hardware Co-design for Edge Video Diffusion via NMP-Enabled Compute-Cache Operator Disaggregation](/202607/20/2607.14908v1-coda-algorithm-hardware-co-design-for-edge-video-diffusion-via-nmp-enabled-compute-cache-operator-disaggregation)  
+1. [Efficient Difficulty-Aware Dynamic Routing for Diffusion-Based Real-World Image Super-Resolution](/202607/21/2607.15711v1-efficient-difficulty-aware-dynamic-routing-for-diffusion-based-real-world-image-super-resolution)  
    标签：评分：7.0/10、query:diff-accel
-   evidence：跨时间步缓存加速边缘视频扩散推断
-2. [Kaleido: Algorithm-Hardware Co-Design for Video Diffusion Transformers by Exploiting Latent Space Correlations](/202607/20/2607.13770v1-kaleido-algorithm-hardware-co-design-for-video-diffusion-transformers-by-exploiting-latent-space-correlations)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：利用潜在空间相关性的算法-硬件协同设计加速视频扩散变换器
+   evidence：基于困难感知的动态路由加速图像超分辨率扩散推理
+2. [ST-Veto: Spatio-Temporal Token Veto for Diffusion MLLMs via Taylor Prediction and Visual Grounding](/202607/21/2607.17884v1-st-veto-spatio-temporal-token-veto-for-diffusion-mllms-via-taylor-prediction-and-visual-grounding)  
+   标签：评分：7.0/10、query:diff-accel
+   evidence：训练无关的令牌否决方法用于扩散多模态大模型
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
