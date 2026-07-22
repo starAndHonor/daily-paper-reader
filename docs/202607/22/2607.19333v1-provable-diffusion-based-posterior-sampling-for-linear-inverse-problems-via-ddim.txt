@@ -1,0 +1,9447 @@
+Title: Provable diffusion-based posterior sampling for linear inverse problems via DDIM
+
+URL Source: https://arxiv.org/pdf/2607.19333v1
+
+Published Time: Wed, 22 Jul 2026 01:22:13 GMT
+
+Number of Pages: 40
+
+Markdown Content:
+# Provable diffusion-based posterior sampling for linear inverse problems via DDIM 
+
+Yuchen Jiao ∗† Na Li ∗† Changxiao Cai ‡ Yuxin Chen § Gen Li †
+
+July 22, 2026 
+
+Abstract 
+
+Diffusion-based methods have achieved remarkable empirical success in solving inverse problems. However, many existing posterior samplers either lack rigorous theoretical guarantees or incur substan-tial computational overhead. We propose a simple and efficient algorithm, called Posterior-DDIM , for solving linear inverse problems with diffusion priors via a DDIM-type sampler. Our method requires only lightweight, coordinate-wise modifications to the standard DDIM update, while explicitly incorporating the measurement model. The key idea is to perform posterior sampling separately along each singu-lar direction of the measurement operator: for each direction, the sampler follows the learned diffusion prior when the observation signal-to-noise ratio (SNR) is below the corresponding diffusion SNR, and switches to a calibrated measurement-based predictor otherwise. We prove that the proposed sampler converges to the Bayesian posterior conditioned on the measurements. Empirical results show that the proposed sampler performs favorably against existing diffusion-based posterior samplers across a range of image restoration tasks, achieving the best performance on the majority of evaluation metrics considered. Overall, our results convert posterior sampling for noisy linear inverse problems to simple coordinate-wise DDIM updates, yielding an efficient, easy-to-implement algorithm with provable posterior consistency. 
+
+Keywords: diffusion models; linear inverse problems; DDIM; posterior sampling 
+
+# Contents 
+
+1 Introduction 2
+
+1.1 Motivation: inverse problems with diffusion priors . . . . . . . . . . . . . . . . . . . . . . . . 21.2 An overview of our contributions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31.3 Related work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+
+2 Preliminaries 43 Main results 6
+
+3.1 Motivation: SNR-guided partition of singular directions . . . . . . . . . . . . . . . . . . . . . 63.2 Algorithm: Posterior-DDIM . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 73.3 Theoretical guarantees: asymptotic posterior correctness . . . . . . . . . . . . . . . . . . . . . 9
+
+4 Experiments 10 
+
+4.1 Choices of η0 and η1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10 4.2 Empirical comparisons with reference algorithms . . . . . . . . . . . . . . . . . . . . . . . . . 10 
+
+5 Discussion 12 
+
+> ∗
+
+The authors contributed equally. Corresponding author: Gen Li. 
+
+> †
+
+Department of Statistics and Data Science, Chinese University of Hong Kong, Hong Kong 
+
+> ‡
+
+Department of Industrial and Operations Engineering, University of Michigan, Ann Arbor, USA 
+
+> §
+
+Department of Statistics and Data Science, the Wharton School, University of Pennsylvania, PA, USA 
+
+1arXiv:2607.19333v1 [cs.LG] 21 Jul 2026 A Proof of Theorem 1 13 B Proof of auxiliary lemmas and facts 18 
+
+B.1 Proof of (23) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 B.2 Preliminaries . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 B.3 Proof of Lemma 1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 B.4 Proof of Lemma 2 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 B.5 Proof of Lemma 3 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 B.6 Proof of Lemma 4 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28 B.7 Proof of Lemma 6 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30 
+
+C Extension to general A 34 
+
+C.1 Proof of Theorem 2 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34 
+
+# 1 Introduction 
+
+Diffusion models (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2020; Lai et al., 2025) have emerged as one of the most successful paradigms for modern generative modeling, achieving remarkable performance across a wide range of domains, from image synthesis, video generation, to scientific data generation. Beyond sample generation, their ability to capture complex, high-dimensional data distributions makes them particularly well-suited as flexible, expressive, and fully data-driven priors over the signals of interest, offering a versatile framework for Bayesian inference in inverse problems (Song et al., 2022; Chung et al., 2022, 2023a; Kawar et al., 2022; Song et al., 2023a; Rout et al., 2023; Daras et al., 2024). 
+
+1.1 Motivation: inverse problems with diffusion priors 
+
+In an inverse problem, one is asked to infer an unknown random signal X0 ∈ Rd from noisy observations 
+
+Y = A(X0) + ε, (1) where A : Rd → Rn is a known measurement operator, and ε ∈ Rn represents the measurement noise. Such problems are often ill-posed: even in the absence of noise, the observations y alone may be insufficient to uniquely determine the underlying signal X0, particularly when n < d . A principled approach to resolving this ambiguity and improving statistical performance is provided by Bayesian inference, which combines the measurement model with a prior distribution over the unknown signal X0. Specifically, given a prior pX0 , the central objective of Bayesian inference is to characterize, or sample from, the posterior distribution pX0|y .The effectiveness of Bayesian inference therefore depends largely on the choice of prior. Classical ap-proaches typically impose hand-crafted priors, such as sparsity or low-rank structure (Daubechies et al., 2004; Fan and Li, 2001; Candès et al., 2006; Donoho, 2006; Park and Casella, 2008; Ji et al., 2008; Babacan et al., 2009; Donoho et al., 2009; Candes and Recht, 2012; Candès, 2014; Rockova and George, 2018; Chi et al., 2019). While these priors have led to many important advances, they often oversimplify the struc-ture of natural signals. Diffusion models offer a fundamentally different alternative: rather than manually specifying a prior or regularizer, they use a pre-trained generative model as an implicit prior over the signal distribution. This perspective has inspired a rapidly growing line of work on posterior sampling for inverse problems with diffusion priors (Song et al., 2022; Chung et al., 2023a; Kawar et al., 2022; Song et al., 2023a; Xu and Chi, 2024; Wang et al., 2024; Zhang et al., 2025). Moreover, because pre-trained diffusion models can be used as “plug-and-play” priors (Venkatakrishnan et al., 2013; Sreehari et al., 2016; Chan et al., 2017; Xu and Chi, 2024), they often require no task-specific retraining and readily transfer across sensing modalities and application domains. Using diffusion models as priors, however, presents a new suite of algorithmic challenges. Rather than assuming access to an explicit, closed-form expression for the prior distribution, the diffusion-prior framework models the prior implicitly through a pre-trained diffusion model that provides score estimates (i.e., estimates of the Stein score functions) for progressively diffused versions of the prior. A central algorithmic challenge is therefore to combine the learned diffusion prior with the measurement model (2) in order to generate samples 2from the posterior distribution. Existing diffusion-based methods typically address this through heuristic correction steps, projection operators, likelihood-gradient guidance, approximate posterior updates, and so on (Chung et al., 2022; Chung and Ye, 2022; Choi et al., 2021; Kawar et al., 2022). Although these methods have demonstrated strong empirical performance, many lack rigorous guarantees that the generated samples converge to the true Bayesian posterior. Furthermore, some require computationally intensive modifications to the underlying sampling procedure. For example, Chung et al. (2023a); Song et al. (2023a) required computing the gradient of the score functions, while the sequential Monte Carlo approach of Cardoso et al. (2023) may require a prohibitively large number of particles. These considerations can limit their practical applicability in settings where both computational efficiency and statistical reliability are important. These issues highlight the need for diffusion-based inverse problem solvers that achieve rigorous theoretical guarantees and computational efficiency at once. Such properties are particularly important in high-stakes applications such as medical imaging and scientific discovery. At the same time, practical deployment often favors algorithms that preserve the simplicity and efficiency of standard diffusion samplers. 
+
+1.2 An overview of our contributions 
+
+In this paper, we make progress towards developing a theoretically principled, and computationally efficient framework for posterior sampling in linear inverse problems with diffusion priors. Specifically, we consider the following noisy linear measurement model: 
+
+Y = AX 0 + ε, (2) where X0 ∈ Rd is the unknown signal (generated randomly from a data distribution p0), A : Rd → Rn repre-sents a linear measurement operator known a priori , and ε ∼ N (0 , σ 2In) stands for Gaussian measurement noise with σ > 0 the noise standard deviation. Throughout, we assume that the prior distribution of X0 can be represented implicitly by a pre-trained diffusion model. The objective is to generate samples from the posterior distribution of X0 conditioned on the observation y.Our starting point is the observation that, under a linear measurement model, different singular directions of the measurement operator carry different amounts of statistical information. Rather than treating all directions uniformly, we design a DDIM-type posterior sampler, called Posterior-DDIM , that adaptively determines, for each singular direction, whether the update should be based primarily on the learned diffusion prior or the observed data. This results in a simple, lightweight, coordinate-wise modification of the standard DDIM sampler that explicitly exploits the structure of the measurement operator, while preserving the efficiency of DDIM-type sampling. Along directions where the measurements have sufficient signal-to-noise ratio (SNR), the algorithm injects a carefully calibrated noisy version of the observations so that the resulting coordinates have the correct forward-diffusion marginal distribution. In contrast, directions that are either observed with low SNR or entirely unobserved continue to evolve according to the standard DDIM dynamics induced by the prior. Consequently, posterior sampling reduces to a sequence of simple, direction-wise DDIM updates that are both computationally efficient and easy to implement. Theoretically, our main contribution is to establish posterior consistency of the proposed Posterior-DDIM 
+
+sampler. Under an exact diffusion prior and a sufficiently fine time discretization, we prove that the sampler converges to the posterior distribution of the unknown signal conditioned on the measurements. This result provides rigorous theoretical support for DDIM-type samplers in linear inverse problems, and suggests a principled approach to integrating measurement information with diffusion priors in noisy, potentially ill-conditioned or rank-deficient settings. Empirically, we evaluate the proposed sampler on a range of image restoration tasks, including inpainting, super-resolution, Gaussian deblurring, and compressed sensing, using PSNR, SSIM, LPIPS, and FID as evaluation metrics. Across these tasks, our Posterior-DDIM algorithm performs favorably against existing diffusion-based posterior samplers: it achieves the best performance on at least three of the four metrics in most tasks, and on at least two metrics in every task considered. 
+
+1.3 Related work 
+
+Despite their significant empirical success, existing diffusion-based inverse solvers still leave room for im-provement. One prominent class of methods (Song et al., 2020; Chung et al., 2022; Chung and Ye, 2022; 3Choi et al., 2021; Kawar et al., 2022; Chung et al., 2023b) enforces measurement consistency by incor-porating projection steps into unconditional diffusion sampling procedures. While these approaches have demonstrated strong empirical performance, they do not provide theoretical guarantees on the convergence or posterior correctness of the resulting sampling procedures. A second line of work (Chung et al., 2023a; Song et al., 2023a; Kawar et al., 2021; Cardoso et al., 2023; Song et al., 2023b) attempted to approximate the ( intractable ) posterior score and subsequently apply standard diffusion samplers for posterior sampling. Although empirically effective, it remains unclear whether the resulting sampler faithfully yields the true posterior distribution. In addition, Song et al. (2022) proposed ReSample , which promotes measurement con-sistency by repeatedly optimizing the clean image estimate at intermediate time steps and then re-noising it to continue the reserve diffusion process. Similarly, Graikos et al. (2022) proposed to iteratively optimize the clean image via gradient descent in the reverse diffusion process. A different perspective was introduced by Mardani et al. (2023), who formulated inverse problems with diffusion priors as a variational inference problem via direct KL minimization rather than reverse diffusion sampling. Like the aforementioned ap-proaches, these methods currently lack rigorous theoretical guarantees. Another strand of work Trippe et al. (2022); Wu et al. (2023); Dou and Song (2024); Cardoso et al. (2023) combined Sequential Monte Carlo (MC) methods (Doucet et al., 2001) with (unconditional) scores to sample from the correct posterior; in particular, Cardoso et al. (2023); Dou and Song (2024) established convergence guarantees as the number of particles tends to infinity. However, these methods incur a prohibitive computational cost. In particular, (Gupta et al., 2024) showed that polynomially many particles are in general insufficient for the above Se-quential MC approaches to converge. More recently, Xu and Chi (2024) proposed an alternating framework that accommodates even nonlinear inverse problems by interleaving two samplers: a proximal consistency sampler based on the likelihood function of the forward model and a denoising diffusion sampler driven by the learned score function of the prior. They also established rigorous theoretical guarantees for the resulting algorithm. In contrast, our proposed method is built almost entirely upon DDIM-type sampling. Finally, we note that the convergence theory of DDPM-type samplers has been studied extensively in recent years (see, e.g., Chen et al. (2023); Li et al. (2024); Huang et al. (2024); Liang et al. (2025); Tang and Yan (2026); Cai et al. (2026); Jiao et al. (2025); Li and Jiao (2024); Jiao and Li (2024)), validating the efficacy of DDIM-type sampling and paving the way for more refined theoretical analyses in future work. 
+
+# 2 Preliminaries 
+
+In this section, we briefly review the background on diffusion models and their connections to inverse prob-lems, which will be useful throughout the paper. 
+
+Diffusion models. We begin by reviewing the basics of diffusion models. Let X0 ∼ p0 denote a random sample in Rd drawn from an underlying data distribution p0. A diffusion model defines a forward stochastic process (Xt)t∈[0 ,T ] that progressively corrupts X0 by injecting Gaussian noise according to: 
+
+Xt
+
+> d
+
+= αtX0 + σtZt, Zt ∼ N (0 , I d) (3) for all 0 ≤ t ≤ T , where the coefficients αt ≥ 0 and σt ≥ 0 specify the noise schedule. Throughout this paper, we assume that the SNR αt/σ t decreasing monotonically and continuously as t grows, and satisfies 
+
+α0/σ 0 = ∞ and α∞/σ ∞ = 0 . As t increases, the signal component gradually diminishes while the noise level increases, so that, under an appropriate noise schedule, the distribution of Xt transitions smoothly from the data distribution toward an approximately Gaussian distribution. A central goal of a diffusion model is to learn the corresponding reverse process, which starts from a Gaussian sample and progressively removes the injected noise to yield a sample from the data distribution of interest. 
+
+Score functions. A fundamental object governing the reverse process is the (Stein) score function 
+
+st(x) := ∇ log pXt (x), 0 ≤ t ≤ T, (4a) where pXt denotes the marginal distribution of Xt. The score function specifies the direction in which the log-density of Xt increases most rapidly and plays a central role in reversing the forward process (Anderson, 41982; Haussmann and Pardoux, 1986). In practice, the score functions are often parameterized through through equivalent prediction targets, such as the noise predictor 
+
+ϵt(x) := E[Zt | Xt = x] (4b) and the data predictor 
+
+μt(x) := E[X0 | Xt = x]. (4c) These objects are linked through Tweedie’s formula (Efron, 2011), which yields the identities 
+
+ϵt(x) = −σtst(x) and μt(x) = x − σtϵt(x)
+
+αt
+
+. (5) 
+
+Reparameterzed reverse process and DDIM-type sampler. The forward diffusion process (3) admits a reverse-time stochastic differential equation (SDE), originally characterized by Anderson (1982), which forms the basis for diffusion-based generative sampling. It is sometimes convenient to reparameterize time t
+
+using the following parameter concerning the log SNR: 
+
+λt := log αt
+
+σt
+
+. (6) Under this parameterization, the reverse SDE admits the following simple form using the λ-variable (i.e., the log SNR variable) as the “time variable” in place of t:
+
+d
+
+ Xα
+
+
+
+= −2e−λϵλ(X) d λ + √2e−λ dBλ, (7) where Bλ denotes a standard Brownian motion indexed by λ, and we abuse the notation by letting ϵλ be a shorthand for ϵt with λ = λt.Practical sampling procedures like DDPM-type samplers (Ho et al., 2020) can be obtained by approxi-mating this reverse SDE (7) through suitable time discretization. More precisely, for a sequence of decreasing time points 
+
+t0 > t 1 > · · · > t M
+
+with corresponding log SNR values λt0 , · · · , λ tM (cf. (6)), a first-order discretization yields the DDPM-type update 
+
+Xti+1 
+
+αti+1 
+
+= Xti
+
+αti
+
+− 2 e−λti − e−λti+1 
+
+ϵti (Xti ) + 
+
+q
+
+e−2λti − e−2λti+1 Zti , (8) where zti
+
+> i.i.d.
+
+∼ N (0 , I ). In light of the relation (5) between the noise predictor and the data predictor, the same update can be equivalently expressed in terms of μt. Letting 
+
+δi+1 := λti − λti+1 (9) with λt defined in (7), one obtains the first-order SDE-DPMSolver-1 update (Lu et al., 2022) 
+
+Xti+1 
+
+σti+1 
+
+= e−δi+1 Xti
+
+σti
+
++ eλti+1 
+
+ 1 − e−2δi+1  μti (Xti ) + 
+
+p
+
+1 − e−2δi+1 Zti . (10) More generally, DDIM-type samplers (Song et al., 2021) interpolate between deterministic and stochastic reverse updates. For any given parameter 0 ≤ η ≤ 1, the (general) DDIM-type update can be written as (DDIM) : Xti+1 
+
+σti+1 
+
+= Xti
+
+σti
+
+q
+
+1 − η 1 − e−2δi+1 
+
+ + eλti+1 
+
+
+
+1 − e−δi+1 
+
+q
+
+1 − η 1 − e−2δi+1 
+
+
+
+μti (Xti )+
+
+q
+
+η 1 − e−2δi+1 
+
+ Zti . (11) Notably, η controls the stochasticity of the update: the choice η = 0 yields the deterministic DDIM-type update, while η = 1 recovers the stochastic SDE-DPMSolver-1 update in (10). 5Diffusion priors for inverse problems. Next, we briefly describe how diffusion models are commonly used as priors for linear inverse problems. Given a pre-trained diffusion model representing the prior distri-bution of X0, the aim is to generate samples from the posterior distribution pX0|Y =y . In analogy with the unconditional case, consider the conditional data predictor 
+
+μt,y (x) := E[X0 | Xt = x, AX 0 + ε = y]. (12) If this conditional predictor were available, then one could simply replace the unconditional predictor μt
+
+by μt,y in the DDIM-type sampler (11), thereby directly obtaining samples from the posterior distribution 
+
+pX0|y . Consequently, a central challenge in diffusion-based inverse problems is to approximate the conditional predictor μt,y using only the pre-trained unconditional predictor μt together with the measurement y.Many existing methods are built upon this idea. Starting from the unconditional prediction μt(x), they seek to compute a measurement-compatible data predictor μ by balancing two competing objectives: remain-ing faithful to to the diffusion prior that yields the unconditional data predictor μt(·), while simultaneously enforcing consistency with the observed measurements. To approximate the conditional data predictor, ex-isting approaches often rely on heuristic approximations. A common strategy is to combine the unconditional predictor μt(·) and the measurement Y in a simple — often linear — manner (Wang et al., 2022b; Kawar et al., 2022; Song et al., 2022), while another is to use μt(·) directly as a proxy for the unknown signal X0
+
+(Chung et al., 2023a). 
+
+# 3 Main results 
+
+In this section, we develop a posterior-consistent DDIM-type sampler for noisy linear inverse problems, and establish its theoretical guarantees. Before proceeding, we find it convenient to introduce notation associated with the singular value decom-position (SVD) of the measurement matrix A ∈ Rn×d. Suppose that A has rank r, and let 
+
+A = U ΣV ⊤ = US ΣS V ⊤S (13) represent the full and compact singular value decompositions (SVDs) of A, where U ∈ Rn×n and V ∈ Rd×d
+
+are orthonormal matrices, US ∈ Rn×r and VS ∈ Rd×r consist of the left and right singular vectors associated with the nonzero singular values, and Σ ∈ Rn×d and ΣS ∈ Rr×r are the corresponding rectangular diagonal and diagonal matrices of singular values, respectively. We denote by 
+
+S := {s ∈ [min {n, d }] : Σ ss > 0} (14) the indices of the nonzero singular values, and hence the notation US , V S and ΣS .We also write 
+
+US := [ us]s∈S ∈ Rn×r , VS := [ vs]s∈S ∈ Rd×r , and ΣS := diag ([Σ ss ]s∈S ) ∈ Rr×r. (15) 
+
+3.1 Motivation: SNR-guided partition of singular directions 
+
+The SVD (13) of the measurement matrix A naturally decouples the inverse problem into a sequence of scalar inference problems along its singular directions. Indeed, expressing the measurement model Y = AX 0 + ε
+
+(i.e., (2)) in the SVD basis yields 
+
+Σ−1 
+
+> S
+
+U ⊤S Y = V ⊤S X0 + ε′ with ε′ := Σ −1 
+
+> S
+
+U ⊤S ε ∼ N  0, σ 2Σ−2
+
+> S
+
+; (16) or equivalently, for every s ∈ S ,
+
+Σ−1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y = v⊤ 
+
+> s
+
+X0 + ε′ 
+
+> s
+
+with ε′ 
+
+> s
+
+∼ N 
+
+
+
+0, σ2
+
+Σ2
+
+> ss
+
+
+
+. (17) Thus, after transforming into the singular-vector basis, the effective observation SNR along the s-th singular direction is naturally measured by Σss /σ . Meanwhile, projecting the forward diffusion process (3) along the same singular direction gives 
+
+v⊤ 
+
+> s
+
+Xt = αtv⊤ 
+
+> s
+
+X0 + σtZs with Zs ∼ N (0 , 1) , (18) 6whose SNR — which we often refer to as diffusion SNR — is given by αt/σ t. Consequently, the relative mag-nitudes of these two SNRs dictate whether the posterior update should rely primarily on the measurements or on the diffusion prior. This comparison naturally leads to a partition of the singular directions. For each diffusion time t, we partition the singular directions according to 
+
+Smeas  
+
+> t
+
+:= {s ∈ S : αtσ < Σss σt} and Sprior  
+
+> t
+
+:= S \ S meas  
+
+> t
+
+. (19) For each s ∈ S , we define the threshold time τs ∈ R≥0 ∪ {∞} such that 
+
+ατs
+
+στs
+
+= Σss 
+
+σ ,
+
+namely, the diffusion time at which the diffusion SNR matches the observation SNR along the s-th singular direction. When αt/σ t is continuous and strictly decreasing in t, with α0/σ 0 = ∞ and α∞/σ ∞ = 0 , the threshold τs is well defined. It can be easily verified that 
+
+s ∈ S meas  
+
+> t
+
+⇐⇒ t ≥ τs. (20) Therefore, at each diffusion time t, it is natural to partition the singular directions into three groups: 
+
+• Measurement-dominated directions : s ∈ S meas  
+
+> t
+
+, or equivalently, directions obeying t ≥ τs;
+
+• Prior-dominated observed directions : s ∈ S prior  
+
+> t
+
+, or equivalently, directions in S obeying t < τ s;
+
+• Unobserved directions : s ∈ S c := [ d] \ S .Our sampler treats these three groups differently. As we shall see, each case admits a simple DDIM-type update, resulting in an efficient posterior sampler that adapts to the SNR along each singular direction. 
+
+3.2 Algorithm: Posterior-DDIM 
+
+We now describe the proposed sampler, based on the partition of singular directions developed in Section 3.1. The central idea is to exploit the measurements whenever the corresponding observation SNR exceeds the diffusion SNR, and otherwise rely on the learned diffusion prior. This idea gives rise to distinct update rules for the three groups of singular directions, which we describe below. The complete algorithm of the proposed DDIM-based posterior sampler, hereafter referred to as Posterior-DDIM , is summarized in Algorithm 1. 
+
+Measurement-dominated directions. For directions s ∈ S meas  
+
+> t
+
+, the measurements are sufficiently infor-mative to be used directly. To this end, consider the auxiliary forward process 
+
+ξt,s := αtξ0,s +
+
+q
+
+σ2 
+
+> t
+
+− α2 
+
+> t
+
+σ2Σ−2 
+
+> ss
+
+Zs, Zs ∼ N (0 , 1) , (21) where ξ0,s is taken to be 
+
+ξ0,s := Σ −1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y. (22) By construction, this auxiliary forward process ξt,s has the same marginal distribution as the forward diffusion process Xt (cf. (3)) projected onto the direction the s-th singular direction vs, namely, 
+
+ξt,s 
+
+> d
+
+= v⊤ 
+
+> s
+
+Xt = v⊤ 
+
+> s
+
+(αtX0 + σtZ).
+
+Consequently, sampling v⊤ 
+
+> s
+
+bXti at the time point ti can be accomplished by generating 
+
+v⊤ 
+
+> s
+
+bXti = αti Σ−1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y +
+
+q
+
+σ2 
+
+> ti
+
+− α2 
+
+> ti
+
+σ2Σ−2 
+
+> ss
+
+Zti with Zti ∼ N (0 , 1) , (23) provided that s ∈ S meas  
+
+> ti
+
+. A formal proof is given in Appendix B.1. 7Algorithm 1: Posterior-DDIM sampler for the linear inverse problem (2)  
+
+> 1
+
+input: time points t0 > t 1 > · · · > t M , learned data predictor {μti (·)}Mi=1 , schedule {(αti , σ ti )}Mi=1 ,stochasticity parameters η0, η 1. 
+
+> 2
+
+initialize bXt0 ∼ N (0 , I d), Z = [ Zs]1≤s≤d ∼ N (0 , I d). 
+
+> 3
+
+compute the SVD of A (cf. (13)); set S ← { i : Σ ii > 0}.
+
+/* initialize DDPM updates in all directions. */  
+
+> 4
+
+for s = 1 , · · · , d do  
+
+> 5
+
+if s ≤ min {n, d } and αt0 σ < Σss σt0 then  
+
+> 6
+
+set v⊤ 
+
+> s
+
+bXt0 ← αt0 Σ−1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y +
+
+q
+
+σ2 
+
+> t0
+
+− α2 
+
+> t0
+
+σ2Σ−2 
+
+> ss
+
+Zs. 
+
+> 7
+
+else  
+
+> 8
+
+set v⊤ 
+
+> s
+
+bXt0 ← Zs. 
+
+> 9
+
+for i = 0 , . . . , M − 1 do  
+
+> 10
+
+set Smeas  
+
+> ti+1
+
+← { s : αti+1 σ < Σss σti+1 } and Sprior  
+
+> ti+1
+
+← S \ S meas  
+
+> ti+1
+
+. 
+
+> 11
+
+draw Zti+1 ∼ N (0 , I ). 
+
+> 12
+
+for s ∈ S meas  
+
+> ti+1
+
+do 
+
+/* updates for measurement-dominated directions. */  
+
+> 13
+
+compute v⊤ 
+
+> s
+
+bXti+1 ← αti+1 Σ−1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y +
+
+q
+
+σ2 
+
+> ti+1
+
+− α2 
+
+> ti+1
+
+σ2Σ−2 
+
+> ss
+
+Zs. 
+
+> 14
+
+for s ∈ S prior  
+
+> ti+1
+
+do 
+
+/* DDIM for prior-dominated directions. */  
+
+> 15
+
+if all nonzero singular values of A are equal then  
+
+> 16
+
+compute v⊤ 
+
+> s
+
+bXti+1 via (24) with η = η0. 
+
+> 17
+
+else  
+
+> 18
+
+compute v⊤ 
+
+> s
+
+bXti+1 via (25) with η = η0. // add correction for general case.  
+
+> 19
+
+for s ∈ S c do  
+
+> 20
+
+compute v⊤ 
+
+> s
+
+bXti+1 via (24) with η = η1. // DDIM for unobserved directions.  
+
+> 21
+
+output: the generated sample bXtM = P 
+
+> s
+
+vsv⊤ 
+
+> s
+
+bXtM .
+
+Prior-dominated observed directions. For directions s ∈ S prior  
+
+> t
+
+, the measurements are less informative than the diffusion prior. Consequently, rather than directly incorporating the observations, we update these directions using the standard DDIM sampler driven primarily by the learned data predictor. We begin with the special case in which all nonzero singular values of A are identical. In this setting, for 
+
+s ∈ S prior  
+
+> ti+1
+
+, we update v⊤ 
+
+> s
+
+bXt according to the standard DDIM-type update rule (cf. (24)) as follows 
+
+v⊤ 
+
+> s
+
+bXti+1 
+
+σti+1 
+
+= v⊤ 
+
+> s
+
+bXti
+
+σti
+
+q
+
+1 − η(1 − e−2δi+1 ) + eλti+1 
+
+
+
+1 − e−δi+1 
+
+q
+
+1 − η(1 − e−2δi+1 )
+
+
+
+v⊤ 
+
+> s
+
+μti ( bXti )+
+
+q
+
+η(1 − e−2δi+1 ) v⊤ 
+
+> s
+
+Zti+1 , Zti+1 ∼ N (0 , I d), (24) where the stochasticity parameter is set to η = η0.The above update extends naturally to the general setting where A has arbitrary nonzero singular values. The only modification is the addition of a correction term. Specifically, for s ∈ S prior  
+
+> ti
+
+, we replace (24) with 
+
+v⊤ 
+
+> s
+
+bXti+1 
+
+σti+1 
+
+= v⊤ 
+
+> s
+
+bXti
+
+σti
+
+q
+
+1 − η(1 − e−2δi+1 ) + 
+
+q
+
+η(1 − e−2δi+1 ) v⊤ 
+
+> s
+
+Zti+1 
+
++ eλti+1 
+
+
+
+1 − e−δi+1 
+
+q
+
+1 − η(1 − e−2δi+1 )
+
+
+
+v⊤ 
+
+> s
+
+μti ( bXti ) + αti
+
+bXτs − ατs
+
+bXti
+
+ατs αti (e 2( λti −λτs ) − 1) 
+
+| {z }
+
+> correction term
+
+!
+
+, (25) 8where Zti+1 ∼ N (0 , I d). The derivation of this modified update rule is deferred to Appendix C. 
+
+Unobserved directions. For directions s ∈ S c, the measurements contain no information about v⊤ 
+
+> s
+
+X0.Accordingly, these coordinates should be sampled entirely from the learned diffusion prior, given the co-ordinates that are observed. As in the prior-dominated observed case, we employ the DDIM update (24). However, we choose a larger stochasticity parameter η = η1 to encourage sufficient exploration of the unob-served subspace. This is important because the posterior uncertainty along Sc is determined entirely by the learned diffusion prior, rather than by the measurement model. 
+
+Choices of the stochasticity parameters η0 and η1. We take a moment to discuss the roles of the two DDIM stochasticity parameters η0 and η1. Although both parameters control the amount of randomness injected into the DDIM update, they serve fundamentally different purposes because the target conditional distributions differ across the two subspaces. For directions s ∈ S prior  
+
+> t
+
+, the corresponding coordinates are observed, although the measurements are not yet sufficiently informative to be imposed directly. The update should therefore approximate the conditional reverse transition given the current diffusion state and the measurements. This motivates using a relatively small value of η0, so as to keep the update closer to the deterministic DDIM sampler. In contrast, for directions s ∈ S c, no measurements are available. These coordinates must be sampled entirely from the learned conditional prior given the observed coordinates. A larger value of η1 makes the DDIM update more Langevin-like, thereby promoting exploration of the unobserved subspace 
+
+3.3 Theoretical guarantees: asymptotic posterior correctness 
+
+In this subsection, we establish the posterior correctness of the proposed Posterior-DDIM sampler. We begin with the special case in which all nonzero singular values of the measurement matrix A are identical, as this setting captures the main ideas while allowing for cleaner algorithm design analysis. Here and throughout, 
+
+TV (p, q ) denotes the total-variation (TV) distance between two probability measures p and q.
+
+Theorem 1. Consider a sequence of time points t0 > · · · > t M . Recall the definition of δi in (9) , and set 
+
+δ := max 
+
+n
+
+max  
+
+> 1≤i≤M
+
+δi, α t0 , |1 − σt0 |
+
+o
+
+. (26) 
+
+Assume that the support of X0 is bounded, and that all nonzero singular values of A are equal. Suppose further that η0 = 1 . When η1 = δ−p with 1/2 < p < 2/3, the Posterior-DDIM sampler (see Algorithm 1) achieves 
+
+lim   
+
+> tM→0
+
+lim  
+
+> δ→0
+
+TV  p bXtM |Y , p X0|Y
+
+ = 0 . (27) In words, Theorem 1 establishes that, under the assumption that all nonzero singular values of A are identical, the distribution of the output generated by Algorithm 1 converges to the posterior distribution of 
+
+X0 conditioned on the measurements. This guarantee is asymptotic and holds in the regime where (i) the terminal time tM tends to 0, approaching the initial time of the forward diffusion process; (ii) the initial sampling time t0 is chosen such that αt0 → 0 and σt0 → 1, ensuring that the SNR at the initialization stage vanishes; and (iii) the maximum gap between the log-SNRs of consecutive time points vanishes, which in particular requires the number of sampling steps M to tend to infinity. The proof is deferred to Appendix A. The restriction that all nonzero singular values of A are identical is not essential. The proposed approach extends naturally to the general setting with arbitrary nonzero singular values, requiring only a slight mod-ification of the sampling procedure (as already described in (25)). The corresponding theoretical guarantee is stated below. Compared to Theorem 1, the only additional change is a different choice of η0. The proof of this theorem is postponed to Appendix C. 
+
+Theorem 2. Under the assumptions of Theorem 1, except that the nonzero singular values of A are allowed to be arbitrary and η0 = η1 = δ−p for some 1/2 < p < 2/3, the conclusion of Theorem 1, namely (27) ,continues to hold. 
+
+9Table 1: Empirical results for inpainting on CelebA and ImageNet under different η.
+
+η0 η1
+
+CelebA ImageNet PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓ PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓
+
+0 27.22 0.79 27.11 61.46 21.24 0.54 46.72 89.56 1 31.32 0.88 16.97 30.24 26.13 0.78 26.17 37.76 2 32.55 0.90 15.44 26.62 28.76 0.86 16.74 18.60 4 33.16 0.91 15.07 25.42 30.72 0.89 14.45 15.74 
+
+8 33.23 0.91 15.06 25.33 31.06 0.89 14.31 15.86 16 33.23 0.91 15.06 25.33 31.06 0.89 14.31 15.85 032 33.23 0.91 15.06 25.33 31.06 0.89 14.31 15.85 0 33.23 0.91 15.06 25.33 31.06 0.89 14.31 15.85 0.5 33.03 0.90 15.66 26.60 30.86 0.88 15.33 17.89 1 32.84 0.90 16.36 28.42 30.67 0.88 16.61 20.85 216 32.51 0.89 17.89 33.21 30.26 0.86 19.52 28.71 
+
+# 4 Experiments 
+
+In this section, we conduct extensive empirical evaluations of the proposed Posterior-DDIM algorithm on a diverse range of image restoration tasks, including inpainting, super-resolution, Gaussian deblurring, and compressed sensing. We begin by describing the common experimental setup. Unless otherwise stated, the experiments are run with the NFE (number of function evaluations) set to 100, except for DPS , for which we follow Zhang et al. (2024) and set the NFE to be 1000 . To justify our default choice, we also investigate the effect of NFE and find that the reconstruction quality largely saturates once the NFE exceeds 80 (see Figure 2). All experiments are conducted on a server equipped with NVIDIA A100-PCIE-40GB GPUs and Intel Xeon (Cascade Lake) CPUs. 
+
+4.1 Choices of η0 and η1
+
+We evaluate the influence of the hyperparameters η0 and η1 in Posterior-DDIM , which govern the DDIM updates on Sc and Sprior  
+
+> t
+
+, respectively. Experiments are conducted on two image restoration tasks: 50% random inpainting and 4× super-resolution with average pooling, using the CelebA (Liu et al., 2015) and ImageNet (Deng et al., 2009) datasets. We set the noise standard deviation to σ = 0 .05 (doubled when pixels are rescaled to [−1, 1] ). For ImageNet, we use the pretrained 256 × 256 model without classifier guidance from Dhariwal and Nichol (2021). For CelebA, we use the pretrained model released with SDEdit (Meng et al., 2021). Following Wang et al. (2022a); Zhang et al. (2024), we evaluate on the 1K ImageNet sub-test set and the CelebA test set provided by Wang et al. (2022a). Performance is measured using PSNR (peak SNR), SSIM (Wang et al., 2004), LPIPS (Zhang et al., 2018), and FID (Heusel et al., 2017). For readability, all reported LPIPS values are multiplied by 100. We vary η1 from 0 to 32 while fixing η0 = 0 , and vary η0 from 0 to 2 while fixing η1 = 16 . The results for inpainting and super-resolution are reported in Tables 1 and 2, respectively. For fixed η0, increasing η1
+
+generally improves performance across most evaluation metrics, although the improvement is not strictly monotone and small fluctuations are observed. This overall trend is consistent with our theoretical analysis that requires η1 to be sufficiently large. Turning to the second set of experiments, where η1 is fixed and η0 is varied, we find that fine-tuning η0 can yield additional, albeit modest, performance gains. Empirically, the best empirical performance is attained at η0 = 0 , which corresponds to the deterministic DDIM update. 
+
+4.2 Empirical comparisons with reference algorithms 
+
+Next, we compare Posterior-DDIM against several representative diffusion-based image restoration algo-rithms, including DDRM (Kawar et al., 2022), DDNM+ (Wang et al., 2022a), DPS (Chung et al., 2023a), RED-diff 
+
+10 Table 2: Empirical results for super-resolution on CelebA and ImageNet under different η.
+
+η0 η1
+
+CelebA ImageNet PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓ PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓
+
+0 27.77 0.78 22.49 32.97 22.48 0.56 38.50 53.08 1 28.39 0.80 21.09 31.24 24.81 0.70 31.22 39.94 
+
+2 28.92 0.82 21.31 32.56 25.67 0.72 32.03 45.74 4 29.59 0.83 21.85 33.49 25.93 0.73 32.73 49.06 8 29.83 0.84 22.02 34.13 25.90 0.73 32.84 49.99 16 29.84 0.84 22.02 34.16 25.90 0.73 32.84 49.99 032 29.84 0.84 22.02 34.16 25.90 0.73 32.84 49.99 0 29.84 0.84 22.02 34.16 25.90 0.73 32.84 49.99 0.5 29.48 0.83 22.86 35.35 25.64 0.72 34.11 52.27 1 29.21 0.82 23.57 37.15 25.44 0.70 35.23 55.03 216 28.82 0.81 24.89 41.79 25.13 0.69 37.24 61.86 (Mardani et al., 2023), and ProjDiff (Zhang et al., 2024). 1 As a classical baseline, we also include the least-squares estimator, bXls = A†Y . In addition to the inpainting and super-resolution tasks considered in Section 4.1, we further evaluate all methods on Gaussian deblurring and compressed sensing. For Gaussian deblurring, we use a one-dimensional Gaussian blur kernel of size 5 with standard deviation 10 . For com-pressed sensing, we employ a Walsh–Hadamard sampling matrix with a sampling ratio of 0.5. Throughout all experiments, the observation noise standard deviation is fixed at σ = 0 .05 .In addition, note that the posterior mean can be approximately computed via Monte Carlo sampling, i.e, 
+
+E[X0 | Y ] ≈ 1
+
+n
+
+> N
+
+X
+
+> i=1
+
+bX(i),
+
+where bX(i) i.i.d.
+
+∼ pX0 | Y . As is well-known, the posterior mean achieves the optimal reconstruction accuracy under the mean squared estimation error metric. Consequently, reconstruction fidelity can be improved by averaging samples generated from independent noise realizations. We observe, however, that this approach may sometimes degrade quality as measured by FID. To illustrate this effect, we report both single-sample results and posterior-mean results, where the latter are obtained by averaging 4 independent trials. The results are reported in Tables 3–6. Boldface indicates the best overall result, while underlining indicates the best sampling-based result. Across all tasks and datasets, the proposed Posterior-DDIM 
+
+method consistently delivers strong performance. For super-resolution, it achieves the best performance on three and two of the four evaluation metrics on CelebA and ImageNet datasets respectively. For inpainting, it outperforms the reference algorithms on all four metrics for CelebA and on two metrics for ImageNet. For Gaussian deblurring, Posterior-DDIM achieves the best performance on three metrics for CelebA and two metrics for ImageNet. For compressed sensing, Posterior-DDIM outperforms DDNM+ across all of the four evaluation metrics. Overall, whereas existing methods typically achieve the best result on only one or two metrics in most settings, our method attains the best performance on at least two evaluation metrics across all tasks and datasets, demonstrating its efficacy and robustness across a diverse range of inverse problems. Figure 1 shows the performance of Posterior-DDIM , DDNM+ , and ProjDiff under different numbers of Monte Carlo samples used to estimate the posterior mean. As discussed previously, increasing the number of samples improves reconstruction fidelity, as reflected by PSNR, SSIM, and LPIPS, but comes at the expense of reduced sample diversity, leading to worse FID scores. Furthermore, among all reference algorithms considered, our method achieves the best trade-off between fidelity and diversity on this task. Figure 2 illustrates the effect of the NFE on the super-resolution task using the ImageNet dataset. As the NFE increases, the performance improves, and becomes stable once NFE exceeds 80 , suggesting that our default choice of NFE=100 provides a favorable balance between computational cost and reconstruction quality.       
+
+> 1In addition to our algorithm, we also implement ProjDiff and DDNM+ .The remaining results reported in this section are taken from Zhang et al. (2024).
+> 2When reproducing DDNM+ on the Gaussian deblurring task, we observe that the obtained results are substantially inferior
+
+11 Table 3: Empirical results for super-resolution on CelebA and ImageNet. Method CelebA ImageNet PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓ PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓
+
+Single-sample 
+
+A†y 23.64 0.49 68.72 147.89 21.85 0.45 65.34 183.32 
+
+DPS 27.98 0.78 23.10 39.91 24.44 0.67 31.81 36.17 
+
+DDRM 29.20 0.82 21.92 40.14 25.66 0.72 34.88 55.71 
+
+RED-diff 24.98 0.55 50.59 73.89 22.74 0.49 53.24 96.26 
+
+DDNM+ 29.20 0.82 21.91 39.96 25.62 0.72 34.39 53.78 
+
+ProjDiff 29.49 0.83 20.89 36.61 25.73 0.72 33.03 49.70 
+
+Posterior-DDIM (Ours) 29.84 0.84 22.02 34.16 25.90 0.73 32.84 49.99 Posterior mean 
+
+DDNM+ 30.22 0.85 21.97 43.54 26.11 0.73 34.38 54.27 
+
+ProjDiff 30.31 0.85 22.55 38.34 26.10 0.74 33.13 50.27 
+
+Posterior-DDIM (Ours) 30.35 0.85 22.55 40.62 26.13 0.74 33.35 52.91 Table 4: Empirical results for inpainting on CelebA and ImageNet. Method CelebA ImageNet PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓ PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓
+
+Single-sample 
+
+A†y 13.70 0.19 76.07 226.28 14.21 0.24 67.42 176.52 
+
+DPS 32.80 0.90 16.32 32.80 30.15 0.86 17.76 22.03 
+
+DDRM 32.81 0.90 16.78 35.28 29.99 0.87 17.11 19.88 
+
+RED-diff 7.96 0.18 78.27 192.32 9.85 0.17 83.92 281.65 
+
+DDNM+ 32.81 0.90 16.78 35.33 30.00 0.87 17.07 19.92 
+
+ProjDiff 33.44 0.91 15.32 31.13 31.32 0.89 13.87 14.97 
+
+Posterior-DDIM (Ours) 33.23 0.91 15.06 25.33 31.06 0.89 14.31 15.85 Posterior mean 
+
+DDNM+ 33.98 0.92 16.06 37.64 31.22 0.89 16.44 22.07 
+
+ProjDiff 34.22 0.92 14.41 32.40 32.07 0.90 13.78 16.57 
+
+Posterior-DDIM (Ours) 34.24 0.92 13.81 27.15 32.04 0.90 13.67 16.75 
+
+# 5 Discussion 
+
+In this work, we have proposed a novel DDIM-type posterior sampler for solving linear inverse problems with diffusion priors. In contrast to many existing methods that rely on heuristic projection steps or approximate posterior scores, our approach follows a different route by treating different singular directions of the mea-surement operator differently according to the relative strengths of the observation noise and the diffusion noise. This leads to a simple, easy-to-implement, DDIM-type sampling procedure that is both practically effective and theoretically principled. In particular, we have established that, under mild conditions, the proposed Posterior-DDIM sampler converges to the true posterior distribution of the signal given the mea-surement. Empirically, our experiments on a range of real-world image restoration tasks have shown that the proposed method consistently performs favorably against existing diffusion-based posterior samplers, achieving the best performance on the majority of evaluation metrics across all tasks. Several directions merit further investigation. For instance, the present work has focused on linear inverse problems, and a fundamentally important next step is to extend the proposed framework to broader nonlinear inverse problems, which naturally arise in wide-ranging real-world applications. In addition, while our theoretical analysis has established asymptotic convergence to the true posterior distribution, it falls short of characterizing the rate of convergence, which would be of interest to quantify. It would also be valuable to understand how the convergence behavior and sampling quality depend on additional factors such as the noise level, the properties of the measurement operator, and the choice of time discretization of the diffusion process.        
+
+> to those reported in Zhang et al. (2024). Consequently, we adopt the results from Zhang et al. (2024); since only the published single-sample results are available, posterior-mean results for DDNM+ .
+> 3Results for the compressed sensing task are not implemented in Zhang et al. (2024); therefore, we compare only with DDNM+ .We note that Wang et al. (2022a) reported that DDNM+ outperforms DDRM with PSNR, SSIM, and FID metrics, and our algorithm outperforms DDNM+ .
+
+12 32.75 33.00 33.25 33.50 33.75 34.00 34.25 
+
+PSNR 
+
+> 26
+> 28
+> 30
+> 32
+> 34
+> 36
+> 38
+> FID
+> Ours
+> DDNM+
+> ProjDiff
+> DDRM
+> GDM
+> Resample
+
+FID vs. PSNR     
+
+> 0.900 0.905 0.910 0.915 0.920
+
+SSIM 
+
+> 26
+> 28
+> 30
+> 32
+> 34
+> 36
+> 38
+> FID
+> Ours
+> DDNM+
+> ProjDiff
+> DDRM
+> GDM
+> Resample
+
+FID vs. SSIM      
+
+> 0.140 0.145 0.150 0.155 0.160 0.165
+
+LPIPS 
+
+> 26
+> 28
+> 30
+> 32
+> 34
+> 36
+> 38
+> FID
+> Ours
+> DDNM+
+> ProjDiff
+> DDRM
+> GDM
+> Resample
+
+FID vs. LPIPS Figure 1: FID versus PSNR, SSIM, and LPIPS for different inpainting algorithms on the CelebA dataset. 50 100 150 200 
+
+NFE    
+
+> 50.0
+> 50.5
+> 51.0
+> 51.5
+> 52.0
+> FID
+> 50 100 150 200
+
+NFE    
+
+> 25.4
+> 25.5
+> 25.6
+> 25.7
+> 25.8
+> 25.9
+> PSNR
+> 50 100 150 200
+
+NFE    
+
+> 0.705
+> 0.710
+> 0.715
+> 0.720
+> 0.725
+> 0.730
+> SSIM
+> 50 100 150 200
+
+NFE 
+
+> 0.330
+> 0.335
+> 0.340
+> 0.345
+> LPIPS
+
+Figure 2: Effect of the NFE on the ImageNet super-resolution task. 
+
+# Acknowledgments 
+
+Y. Chen is supported in part by the Alfred P. Sloan Research Fellowship, the ONR grant N00014-25-1-2344, the NSF grants 2221009 and 2218773, the Wharton AI & Analytics Initiative’s AI Research Fund, and the Amazon Research Award. G. Li is supported in part by the Chinese University of Hong Kong Direct Grant for Research and the Hong Kong Research Grants Council ECS 24305724 and GRF 14307525. C. Cai is supported in part by the NSF grants CAREER award CCF-2541600 and DMS-2515333. 
+
+# A Proof of Theorem 1 
+
+For convenience, we introduce the following notations: for any vector Xti ∈ Rd, denote 
+
+Xst 
+
+ti := V ⊤Smeas 
+
+> ti
+
+Xti , Xsc 
+
+ti := V ⊤Sprior 
+
+> ti
+
+Xti , Xc
+
+ti := V ⊤Sc Xti , Xs
+
+ti := V ⊤S Xti ,
+
+the projection of observation Y ti := Σ −1
+
+Smeas 
+
+> ti
+
+U ⊤Smeas 
+
+> ti
+
+Y , and the noise Zti := [ Zs]s∈S meas 
+
+> ti
+
+used to update V ⊤Smeas 
+
+> ti
+
+bXti .Additionally, throughout this paper, we denote by KL (p ∥ q) the Kullback-Leibler (KL) divergence between two probability measures p and q.We intend to establish the following stronger conclusion than Theorem 1: for any ti, conditioned on 
+
+V ⊤Smeas 
+
+> ti
+
+bXti and v⊤
+
+s bXτs for all τs > t i, we have 
+
+TV  p bXti |V ⊤Smeas 
+
+> ti
+
+bXti =V ⊤Smeas 
+
+> ti
+
+xti ,v ⊤ 
+
+> s
+
+bXτs =v⊤ 
+
+> s
+
+xτs 
+
+, p Xti |V ⊤Smeas 
+
+> ti
+
+Xti =V ⊤Smeas 
+
+> ti
+
+xti ,v ⊤ 
+
+> s
+
+Xτs =v⊤ 
+
+> s
+
+xτs ) → 0.
+
+When tM is sufficiently close to 0, the set Smeas 
+
+tM becomes empty, and we obtain 
+
+TV  p bXtM |v⊤ 
+
+> s
+
+bXτs =v⊤ 
+
+> s
+
+xτs 
+
+, p XtM |v⊤ 
+
+> s
+
+Xτs =v⊤ 
+
+> s
+
+xτs ) → 0.
+
+13 Table 5: Empirical results for Gaussian deblurring on CelebA and ImageNet. 2
+
+Method CelebA ImageNet PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓ PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓
+
+Single-sample 
+
+A†y 23.64 0.49 68.72 147.89 17.78 0.29 60.25 100.05 
+
+DPS 27.98 0.78 23.10 39.91 24.26 0.64 37.03 50.17 
+
+DDRM 29.20 0.82 21.92 40.14 27.82 0.79 28.62 45.96 
+
+DDNM+ 29.19 0.82 21.89 40.20 27.90 0.79 28.63 46.54 
+
+RED-diff 24.98 0.55 50.59 73.89 23.74 0.50 48.12 68.23 
+
+ProjDiff 31.41 0.87 18.12 34.89 27.91 0.79 23.85 29.12 
+
+Posterior-DDIM (Ours) 30.18 0.84 18.90 27.70 26.99 0.76 23.71 24.54 Posterior mean 
+
+ProjDiff 31.44 0.87 18.22 35.96 27.96 0.79 23.93 29.41 
+
+Posterior-DDIM (Ours) 31.44 0.87 18.18 27.15 27.28 0.77 23.05 23.69 
+
+Table 6: Empirical results for compressed sensing on CelebA and ImageNet. 3
+
+Method CelebA ImageNet PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓ PSNR ↑ SSIM ↑ LPIPS ↓ FID ↓
+
+Single-sample 
+
+A†y 14.96 0.34 66.48 397.50 15.08 0.37 60.45 257.70 
+
+DDNM+ 29.05 0.88 18.46 36.43 23.64 0.81 21.10 25.38 
+
+Posterior-DDIM (Ours) 28.94 0.88 16.91 26.69 23.39 0.82 18.67 19.85 
+
+Posterior mean 
+
+DDNM+ 30.10 0.90 17.72 39.07 24.40 0.83 20.02 25.54 
+
+Posterior-DDIM (Ours) 30.35 0.90 15.20 28.57 24.70 0.85 16.68 18.73 
+
+Moreover, noticing that v⊤ 
+
+> s
+
+bXτs = Σ −1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y , and (XtM , v ⊤ 
+
+> s
+
+Xτs ) have the same joint distribution as (XtM , Σ−1 
+
+> ss
+
+u⊤ 
+
+> s
+
+Y ),we can complete the proof of Theorem 1. 
+
+Step 1. construct auxiliary sequences. We begin with introducing some auxiliary sequences. Note that PM −1 
+
+> i=1
+
+δi = Θ(1) . Denote 
+
+γi := η1(1 − e−2δi+1 )2 σ2 
+
+> ti+1
+
+, pλi (·, ·) := pXc  
+
+> ti,X sc
+> ti|Xst
+> ti
+
+(·, ·| αti Y ti + bσti Zti ), (28) where bσti is defined in (21). We have for δi+1 ≤ 1/2,
+
+12 η1δi+1 σ2 
+
+> ti+1
+
+= η1δi+1 
+
+2 σ2 
+
+> ti+1
+
+≤ γi ≤ η1 · 2δi+1 
+
+2 σ2 
+
+> ti+1
+
+= η1δi+1 σ2 
+
+> ti+1
+
+. (29) An auxiliary sequence eXk with initialization eX0 = bXt0 is iteratively defined as 
+
+eXst  
+
+> k+1
+
+= αtk+1 Y tk+1 + bσtk+1 Ztk+1 ,
+
+eXsc  
+
+> k+1
+
+= αtk+1 
+
+αtk
+
+eXsc  
+
+> tk
+
++ αtk+1 σ2
+
+> tk
+
+αtk
+
+ 1 − e−2δk+1 
+
+ ∇ eXsc 
+
+> k
+
+log pλk ( eXc
+
+> k
+
+, eXsc  
+
+> k
+
+) + σtk+1 
+
+p
+
+1 − e−2δk+1 Zsc  
+
+> k
+
+,
+
+eXc 
+
+> k+1
+
+= eXc 
+
+> k
+
++ γk∇ eXc
+
+> k
+
+log pλk+1 ( eXc
+
+> k
+
+, eXsc 
+
+> k+1
+
+) + p2γkZc
+
+> k
+
+, (30a) where Zsc  
+
+> k
+
+and Zc 
+
+> k
+
+are independent Gaussian random processes. Another auxiliary sequence is defined as 
+
+Xst  
+
+> k+1
+
+= αtk+1 Y tk+1 + bσtk+1 Ztk+1 , Xsc  
+
+> k+1
+
+∼ pXsc  
+
+> k+1 |Xk
+
+(· | Xk), Xc 
+
+> k+1
+
+∼ pXc 
+
+> k+1 |Xs
+> k+1
+
+(· | Xs
+
+> k+1
+
+). (31) Based on these sequences, we have the following lemma, whose proof is postponed to Section B.3. 
+
+Lemma 1. The auxiliary sequence defined in (30) satisfies 
+
+KL (p eX0: M | Y,Z ∥ p bXt0: M | Y,Z ) → 0, as η41 δ3 → 0, and η1 → ∞ . (32) 
+
+This implies that conditioned on observation Y and Gaussian noise Z, random variables eX0: M converges to the same distribution with bXt0: M if this limit exists. Moreover, the sequence defined in (31) satisfies 
+
+pXk | V ⊤Smeas   
+
+> tk
+> Xk,v ⊤
+> sXkτs
+
+= pXtk | V ⊤Smeas    
+
+> tk
+> Xtk,v ⊤
+> sXτs
+
+, where kτs satisfies tkτs = τs.
+
+14 This lemma tells us that the marginal distribution TV  p eXk | Y,Z , p bXk | Y,Z 
+
+ → 0. Denote Zc
+
+ti = [ Zs]s∈S prior 
+
+> ti
+
+.The convergence of marginal distribution leads to 
+
+TV  p eXk | V ⊤Smeas 
+
+> tk
+
+eXk ,v ⊤ 
+
+> s
+
+eXτs 
+
+(·, x st , v ⊤
+
+s xτs ), p bXtk | V ⊤Smeas 
+
+> tk
+
+bXtk ,v ⊤ 
+
+> s
+
+bXτs 
+
+(·, x st , v ⊤
+
+s xτs )
+
+≤ EY tk ,Z c 
+
+> tk
+
+|V ⊤Smeas 
+
+> tk
+
+eXk [TV  p eXk | V ⊤Smeas 
+
+> tk
+
+eXk ,v ⊤ 
+
+> s
+
+eXτs ,Y tk ,Z c
+
+> tk
+
+(· | xst , v ⊤
+
+s xτs , y tk , bz),p bXtk | V ⊤Smeas 
+
+> tk
+
+bXtk ,v ⊤ 
+
+> s
+
+bXτs ,Y tk ,Z c
+
+> tk
+
+(· | xst , v ⊤
+
+s xτs , y tk , bz)]= EY tk ,Z c 
+
+> tk
+
+|V ⊤Smeas 
+
+> tk
+
+eXk [TV  p eXk | Y,Z (· | y, z ), p bXtk | Y,Z (· | y, z )] → 0, (33) where v⊤
+
+s xτs = Σ −1
+
+ss u⊤
+
+s y, ztk = bσ−1
+
+tk (xst −αtk ytk ), and the last equation holds since p eXk | V ⊤Smeas 
+
+> tk
+
+eXk ,v ⊤ 
+
+> s
+
+eXτs ,Y tk ,Z c
+
+> tk
+
+=
+
+p eXk | Y,Z and p bXk | V ⊤Smeas 
+
+> tk
+
+bXtk ,v ⊤ 
+
+> s
+
+bXτs ,Y tk ,Z c
+
+> tk
+
+= p bXtk | Y,Z . Based on Lemma 1 and (33), it suffices to prove that for any xst and xτs ,
+
+TV  p eXk | eXst  
+
+> k
+
+,v ⊤ 
+
+> s
+
+eXτs 
+
+(· | xst , v ⊤
+
+s xτs ), p Xtk | Xst  
+
+> tk
+
+,v ⊤ 
+
+> s
+
+Xτs 
+
+(· | xst , v ⊤
+
+s xτs ) → 0.
+
+By a similar argument as in (33), it suffices to prove that for any y, z,
+
+TV  p eXk | Y,Z (· | y, z ), p Xtk | Y,Z (· | y, z ) → 0.
+
+Step 2. transform to the analysis of auxiliary sequences. We begin with the decomposition that 
+
+p eXk | Y,Z (x|y, z ) = p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (xc|xs, y, z )p eXsc  
+
+> k
+
+| Y,Z (xsc |y, z ),pXk | Y,Z (x | y, z ) = pXc 
+
+> k
+
+| Xs 
+
+> k
+
+,Y,Z (xc | xs, y, z )pXsc  
+
+> k
+
+| Y,Z (xsc | y, z )
+
+Then the total variation distance can be decomposed by 
+
+TV 
+
+
+
+p eXk | Y,Z , p Xk | Y,Z 
+
+
+
+≤ TV 
+
+
+
+p eXsc  
+
+> k
+
+| Y,Z , p Xsc  
+
+> k
+
+| Y,Z 
+
+
+
++ Exsc ∼pfXsc   
+
+> k|Y,Z
+
+
+
+TV 
+
+
+
+p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (·| xs, y, z ), p Xc 
+
+> k
+
+| Xs 
+
+> k
+
+,Y,Z (·| xs, y, z )
+
+ 
+
+. (34) The convergence of the second terms comes from the following lemma: 
+
+Lemma 2. Suppose that η1 is large enough and δ small enough. As η1δ log 1
+
+δ → 0 and η21 δ/ log 1
+
+δ → ∞ , for any x,
+
+Ex∼pcXt
+
+TV 
+
+
+
+pV ⊤Sc bXt|V ⊤S bXt (· | V ⊤S x), p V ⊤Sc Xt|V ⊤S Xt (· | V ⊤S x)
+
+  → 0.
+
+The proof is postponed to Appendix B.4. Here we use a more strong conclusion than Lemma 2, i.e., for any y, z,
+
+Exsc ∼ eXsc  
+
+> k
+
+| Y,Z 
+
+TV 
+
+
+
+p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (· | xs, y, z ), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs)
+
+  → 0. (35) The proof is postponed to Section B.4 (cf. (61)). Then the second term goes to zero: 
+
+Exsc ∼pfXsc   
+
+> k|Y,Z
+
+
+
+TV 
+
+
+
+p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (·| xs, y, z ), p Xc 
+
+> k
+
+| Xs 
+
+> k
+
+,Y,Z (·| xs, y, z )
+
+ 
+
+(i) 
+
+= Exsc ∼pfXsc   
+
+> k|Y,Z
+
+
+
+TV 
+
+
+
+p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (·| xs, y, z ), p Xc 
+
+> tk
+
+| Xs
+
+> tk
+
+(·| xs)
+
+ 
+
+→ 0, (36) where (i) arises from the fact that pXc 
+
+> k
+
+| Xs 
+
+> k
+
+,Y,Z = pXc 
+
+> k
+
+| Xs 
+
+> k
+
+. It suffices to prove the first term goes to zero, i.e., 
+
+TV  p eXsc  
+
+> k
+
+| Y,Z , p Xsc  
+
+> k
+
+| Y,Z 
+
+ → 0. (37) 15 Step 3. decompose the error terms. By virtue of Pinsker’s inequality, we further decompose the total variation distance as 
+
+TV  p eXsc  
+
+> k
+
+| Y,Z , p Xsc  
+
+> k
+
+| Y,Z 
+
+2
+
+≤ KL 
+
+
+
+p eXsc  
+
+> k
+
+| Y,Z ∥ pXsc  
+
+> k
+
+| Y,Z 
+
+
+
+≤
+
+kX
+
+i=1 
+
+Exsc 
+
+> i−1
+
+∼pfXsc 
+
+> i−1
+
+| Y,Z 
+
+
+
+KL 
+
+
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (· | xs
+
+i−1, y, z ) ∥ pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+,Y,Z (· | xs
+
+i−1, y, z )
+
+ 
+
++ KL (p eXsc 
+
+> 0
+
+∥ pXsc 
+
+> 0
+
+)=
+
+kX
+
+i=1 
+
+Exsc 
+
+> i−1
+
+∼pfXsc 
+
+> i−1
+
+| Y,Z 
+
+
+
+KL 
+
+
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (·| xs
+
+i−1, y, z )∥pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+(·| xs
+
+i−1)
+
+ 
+
++ KL (p eXsc 
+
+> 0
+
+∥ pXsc 
+
+> 0
+
+), (38) where xs
+
+i−1 satisfies xst 
+
+i−1 = αti−1 Σ−1
+
+Sti−1
+
+U ⊤Sti−1
+
+y+bσti−1 [Zs]s∈S ti−1 , and the last line holds since pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+,Y,Z =
+
+pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+. According to the definition of Xi, we further have 
+
+KL 
+
+
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (·| xs
+
+i−1, y, z ) ∥ pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+(·| xs
+
+i−1)
+
+
+
+(i) 
+
+= KL 
+
+
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (·| xs
+
+i−1, y, z ) ∥ pXsc  
+
+> ti
+
+| Xs
+
+> ti−1
+
+(·| xs
+
+i−1)
+
+
+
+=
+
+Z
+
+log 
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )
+
+pXsc  
+
+> ti
+
+| Xs
+
+> ti−1
+
+(xsc 
+
+i | xs
+
+i−1) p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i , (39) where (i) holds since 
+
+pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+(xsc 
+
+i | xs
+
+i−1) = 
+
+Z
+
+pXsc  
+
+> i
+
+| Xi−1 (xsc 
+
+i | xi−1)pXc 
+
+> i−1
+
+| Xs
+
+> i−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+=
+
+Z
+
+pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1 = pXsc  
+
+> ti
+
+| Xs
+
+> ti−1
+
+(xsc 
+
+i | xs
+
+i−1).
+
+We further decompose the KL divergence in (39) as 
+
+KL 
+
+
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (·| xs
+
+i−1, y, z ) ∥ pXsc  
+
+> i
+
+| Xs
+
+> i−1
+
+(·| xs
+
+i−1)
+
+
+
+=
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+=
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+R pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
++
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i .
+
+(40) The first term is further decomposed by 
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+R pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+=
+
+Z
+
+f (xsc 
+
+i , x s
+
+i−1)
+
+Z
+
+p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1dxsc 
+
+i
+
++
+
+Z
+
+f (xsc 
+
+i , x s
+
+i−1)
+
+Z
+
+p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )
+
+16 ·
+
+
+
+p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z ) − pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)
+
+
+
+dxc
+
+i−1dxsc 
+
+i , (41) where 
+
+f (xsc 
+
+i , x s
+
+i−1) := log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+R pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+.
+
+By using (35), the second term in the right-hand-side of (41) satisfies 
+
+Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+h Z
+
+f (xsc 
+
+i , x s
+
+i−1)
+
+Z
+
+p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )
+
+·
+
+
+
+p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z ) − pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)
+
+
+
+dxc
+
+i−1dxsc 
+
+i
+
+i
+
+= Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+h Z Z 
+
+f (xsc 
+
+i , x s
+
+i−1)p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )d xsc 
+
+i
+
+
+
+·
+
+
+
+p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z ) − pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)
+
+
+
+dxc
+
+i−1
+
+i
+
+≤ Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+h Z Z 
+
+f (xsc 
+
+i , x s
+
+i−1)p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )d xsc 
+
+i
+
+2
+
+· p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z ) − pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1) dxc
+
+i−1
+
+i1/2
+
+· Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+h Z
+
+p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z ) − pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1) dxc
+
+i−1
+
+i1/2
+
+→ 0.
+
+(42) For the first term in the right-hand-side of (41), note that it is the KL divergence between the marginal distribution of xsc 
+
+i , and it is smaller than the KL divergence of the joint distribution of xsc 
+
+i and xc
+
+i−1. Therefore we have 
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+R pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+·
+
+Z
+
+p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1dxsc 
+
+i
+
+≤
+
+Z Z 
+
+log 
+
+p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)
+
+pXsc  
+
+> ti
+
+| Xti−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)
+
+× p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1dxsc 
+
+i
+
+= Exc
+
+> i−1
+
+∼Xc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+KL (p eXsc  
+
+> i
+
+| eXi−1,Y,Z (· | xi−1, y, z ) ∥ pXsc  
+
+> ti
+
+| Xti−1 (· | xi−1)) . (43) Substituting (43) and (42) into (41), we have 
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+R pXsc  
+
+> ti
+
+| Xti−1 ,Y,Z (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+→ Exc
+
+> i−1
+
+∼Xc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+KL (p eXsc  
+
+> i
+
+| eXi−1,Y,Z (· | xi−1, y, z ) ∥ pXsc  
+
+> ti
+
+| Xti−1 (· | xi−1)) . (44) Combining (38), (40) and (44), we have 
+
+lim TV 
+
+
+
+p eXsc  
+
+> k
+
+| Y,Z , p Xsc  
+
+> k
+
+| Y,Z 
+
+2
+
+≤ lim 
+
+kX
+
+i=1 
+
+Exs
+
+> i−1
+
+∼ eXs 
+
+> i−1
+
+| Y,Z 
+
+
+
+Exc
+
+> i−1
+
+∼Xc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+KL (p eXsc  
+
+> i
+
+| eXi−1,Y,Z (· | xi−1, y, z ) ∥ pXsc  
+
+> ti
+
+| Xti−1 (· | xi−1)) 
+
+17 + lim 
+
+kX
+
+i=1 
+
+Exs
+
+> i−1
+
+∼ eXs 
+
+> i−1
+
+| Y,Z 
+
+ Z 
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1,Y,Z (xsc 
+
+i | xi−1, y, z )pXc 
+
+> ti−1
+
+| Xs 
+
+> ti−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+× p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+
+
+. (45) 
+
+Step 4. control error terms. Particularly, with η0 = 1 which corresponds to DDPM, we have the following result, whose proof is postponed to Appendix B.5. 
+
+Lemma 3. Suppose that η0 = 1 and δ small enough. For any x,
+
+KL 
+
+
+
+pV ⊤Sprior 
+
+> ti
+
+bXti | bXti−1 =x ∥ pV ⊤Sprior 
+
+> ti
+
+Xti |Xti−1 =x
+
+
+
+= o(δi). (46) By using Lemma 3, and notice that eXsc 
+
+i | eXi−1, Y, Z shares the same transition probability as bXsc 
+
+ti | bXti−1 ,we have 
+
+kX
+
+i=1 
+
+Exs
+
+> i−1
+
+∼ eXs 
+
+> i−1
+
+| Y,Z 
+
+
+
+Exc
+
+> i−1
+
+∼Xc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+KL (p eXsc  
+
+> i
+
+| eXi−1,Y,Z (· | xi−1, y, z ) ∥ pXsc  
+
+> ti
+
+| Xti−1 (· | xi−1)) 
+
+=
+
+kX
+
+i=1 
+
+Exs
+
+> i−1
+
+∼ eXs 
+
+> i−1
+
+| Y,Z ; xc
+
+> i−1
+
+∼Xc 
+
+> ti−1
+
+| Xs 
+
+> ti−1
+
+=xs
+
+> i−1
+
+
+
+KL (p bXsc  
+
+> ti
+
+| bXti−1
+
+(· | xi−1) ∥ pXsc  
+
+> ti
+
+| Xti−1 (· | xi−1)) 
+
+
+
+=
+
+kX
+
+i=1 
+
+o(δi) → 0, as δ → 0. (47) The second term describes the influence of the sampling error of xc
+
+i−1 on the distribution of xsc 
+
+i . It is given by the following lemma, whose proof is postponed to Section B.6. 
+
+Lemma 4. If p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+(xc
+
+i−1 | xs
+
+i−1) → pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1) in distribution, then we have 
+
+kX
+
+i=1 
+
+Exs
+
+> i−1
+
+∼ eXs 
+
+> i−1
+
+| Y,Z 
+
+ Z 
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+× p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+
+
+→ 0. (48) Combining (47) and Lemma 4 together with (45), we have 
+
+TV  p eXsc  
+
+> k
+
+| Y,Z , p Xsc  
+
+> k
+
+| Y,Z 
+
+ → 0. (49) Thus we complete the proof. 
+
+# B Proof of auxiliary lemmas and facts 
+
+B.1 Proof of (23) 
+
+We first present the conclusion as the following lemma, and then prove it. 
+
+Lemma 5. The update rule (23) is equivalent to applying DDIM with η = 0 by taking (21) as forward process. That is, 
+
+v⊤
+
+s bXti+1 
+
+bσti+1 
+
+= v⊤
+
+s bXti
+
+bσti
+
++ e bλti (1 − e−bδi+1 )v⊤
+
+s μti ( bXti ), (50) 
+
+where bαti = αti , bσ2
+
+ti = σ2
+
+ti −α2
+
+ti σ2Σ−1
+
+ss , bλti = log( bαti /bσti ) and bδi+1 = bλti+1 − bλti , and v⊤
+
+s μti ( bXti ) = Σ −1
+
+s u⊤
+
+s Y .
+
+18 Proof. By simplification, the update rule (50) is equivalent to 
+
+v⊤
+
+s bXti+1 = bσti+1 
+
+bσti
+
+v⊤
+
+s bXti +
+
+bαti+1 − bσti+1 bαti
+
+bσti
+
+
+
+v⊤
+
+s μti ( bXti ). (51) Assume that v⊤
+
+s bXti = αti Σ−1
+
+s U ⊤Y + ( σ2
+
+ti − α2
+
+ti σ2Σ−2
+
+Sti
+
+)1/2v⊤
+
+s Z. Instituting into (51) leads to 
+
+v⊤
+
+s bXti+1 = bσti+1 
+
+bσti
+
+
+
+αti Σ−1
+
+s U ⊤Y + ( σ2
+
+ti − α2
+
+ti σ2Σ−2
+
+Sti
+
+)1/2v⊤
+
+s Z
+
+
+
++
+
+bαti+1 − bσti+1 bαti
+
+bσti
+
+
+
+Σ−1
+
+s u⊤
+
+s Y
+
+= bαti+1 Σ−1
+
+s u⊤
+
+s Y + bσti+1 
+
+bσti
+
+(σ2
+
+ti − α2
+
+ti σ2Σ−2
+
+s ) 12 v⊤
+
+s Z = αti+1 Σ−1
+
+s u⊤
+
+s Y + ( σ2
+
+ti+1 − α2
+
+ti+1 σ2Σ−2
+
+s ) 12 v⊤
+
+s Z, 
+
+where the last equation arises from the definition of bσti and bαti .
+
+B.2 Preliminaries 
+
+Throughout the proof, we redefine η1 as η for ease of notations. We begin with approximating the update rule (24) for bXc
+
+ti . We have 
+
+bXc
+
+ti+1 = σti+1 
+
+σti
+
+q
+
+1 − η(1 − e−2δi+1 ) bXc
+
+ti + αti+1 
+
+ 1 − e−δi+1 
+
+q
+
+1 − η(1 − e−2δi+1 )μc
+
+ti ( bXti )+ σti+1 
+
+q
+
+η(1 − e−2δi+1 )Zc
+
+ti . (52) For the first term, we have 
+
+σti+1 
+
+σti
+
+q
+
+1 − η(1 − e−2δi+1 ) bXc
+
+ti =
+
+q
+
+1 − η(1 − e−2δi+1 ) bXc
+
+ti +
+
+ σti+1 
+
+σti
+
+− 1
+
+ q 
+
+1 − η(1 − e−2δi+1 ) bXc
+
+ti
+
+=: 
+
+q
+
+1 − η(1 − e−2δi+1 ) bXc
+
+ti + eti,1( bXc
+
+ti ). (53) For the second term, we have 
+
+αti+1 
+
+ 1 − e−δi+1 
+
+q
+
+1 − η(1 − e−2δi+1 )μc
+
+ti ( bXti )= αti
+
+ 1 −
+
+q
+
+1 − η(1 − e−2δi+1 )μc
+
+ti ( bXti )+     αti+1 − αti
+
+ +  αti+1 e−δi+1 − αti
+
+ q
+
+1 − η(1 − e−2δi+1 )μc
+
+ti ( bXti )
+
+| {z }
+
+eti,2( bXti )
+
+=  1 − e−δi+1 
+
+q
+
+1 − η(1 − e−2δi+1 )  bXc
+
+ti − σti ϵc
+
+ti ( bXti )
+
+
+
++ eti,2( bXti )=  1 −
+
+q
+
+1 − η(1 − e−2δi+1 )  bXc
+
+ti − σti+1 ϵc
+
+ti+1 ( bXest 
+
+ti+1 )
+
+
+
++ eti,2( bXti )+  1 −
+
+q
+
+1 − η(1 − e−2δi+1 )  σti ϵc
+
+ti ( bXti ) − σti+1 ϵc
+
+ti+1 ( bXest 
+
+ti+1 )| {z }
+
+eti,3( bXti , bXs 
+
+> ti+1
+
+)
+
+, (54) where bXest 
+
+ti+1 is defined by V ⊤Sc bXest 
+
+ti+1 = bXc
+
+ti and V ⊤S bXest 
+
+ti+1 = bXs
+
+ti+1 . Note that 
+
+ϵc
+
+ti (x) := 1
+
+σti
+
+E[xc − αti Xc
+
+0 | Xti = x] = −σti ∇xc log pXc 
+
+> ti
+
+|Xs
+
+> ti
+
+(xc|xs), (55) where Xti
+
+d
+
+= αti X0 + σti N (0 , I d), and the second equation holds because 
+
+∇xc log pXc 
+
+> ti
+
+|Xs
+
+> ti
+
+(xc|xs) = ∇xc log pXti (x) = − 1
+
+σ2
+
+ti
+
+E[xc − αti Xc
+
+0|Xti = x]. (56) 19 Combining (53) and (54) together with (52), we have 
+
+bXc
+
+ti+1 = bXc
+
+ti − σti+1 
+
+ 1 −
+
+q
+
+1 − η(1 − e−2δi+1 )ϵc
+
+ti+1 ( bXest 
+
+ti+1 ) + σti+1 
+
+q
+
+η(1 − e−2δi+1 )Zc
+
+ti
+
++ eti,1( bXc
+
+ti ) + eti,2( bXti ) + eti,3( bXti , bXs
+
+ti+1 )=: bXc
+
+ti − η(1 − e−2δi+1 )2 σti+1 ϵc
+
+ti+1 ( bXest 
+
+ti+1 ) + σti+1 
+
+q
+
+η(1 − e−2δi+1 )Zc
+
+ti + eti ( bXti , bXs
+
+ti+1 ) (57) where eti ( bXti , bXs
+
+ti+1 ) is defined as 
+
+eti ( bXti , bXs
+
+ti+1 ) := eti,1( bXc
+
+ti ) + eti,2( bXti ) + eti,3( bXti , bXs
+
+ti+1 )+ 1 −
+
+q
+
+1 − η(1 − e−2δi+1 ) − η(1 − e−2δi+1 )2
+
+!
+
+σti+1 ϵc
+
+ti+1 ( bXest 
+
+ti+1 ). (58) We have the following lemma, whose proof is postponed to Appendix B.7. 
+
+Lemma 6. In (57) , we have 
+
+E bXsc  
+
+> ti+1
+
+| bXti ,Y,Z [∥eti ( bXti , bXsc 
+
+ti+1 )∥22] ≲
+
+
+
+∥ bXc
+
+ti ∥2 + ∥ bXsc 
+
+ti ∥2 + ∥Z∥2 + 1 
+
+2
+
+(δ2
+
+i+1 + γ4
+
+i ) + δi+1 γ2
+
+i .
+
+Next, we rewrite the update rule (24) for bXsc 
+
+ti . When η0 = 1 , it is equivalent to 
+
+bXsc 
+
+ti+1 = σti+1 
+
+σti
+
+e−δi+1 bXsc 
+
+ti + σti+1 eλti+1 
+
+ 1 − e−2δi+1 μsc 
+
+ti ( bXti ) + σti+1 
+
+p
+
+1 − e−2δi+1 Zsc 
+
+ti
+
+= σti+1 
+
+σti
+
+e−δi+1 bXsc 
+
+ti + αti+1 
+
+αti
+
+ 1 − e−2δi+1 ( bXsc 
+
+ti − σti ϵsc 
+
+ti ) + σti+1 
+
+p
+
+1 − e−2δi+1 Zsc 
+
+ti
+
+=
+
+ σti+1 
+
+σti
+
+e−δi+1 + αti+1 
+
+αti
+
+− αti+1 
+
+αti
+
+e−2δi+1 
+
+bXsc 
+
+ti − αti+1 
+
+αti
+
+ 1 − e−2δi+1 σti ϵsc 
+
+ti + σti+1 
+
+p
+
+1 − e−2δi+1 Zsc 
+
+ti
+
+= αti+1 
+
+αti
+
+bXsc 
+
+ti − αti+1 
+
+
+
+e−λti − e−2λti+1 +λti
+
+
+
+ϵsc 
+
+ti + σti+1 
+
+p
+
+1 − e−2δi+1 Zsc 
+
+ti
+
+= αti+1 
+
+αti
+
+bXsc 
+
+ti − αti+1 σti
+
+αti
+
+ 1 − e−2δi+1  ϵsc 
+
+ti + σti+1 
+
+p
+
+1 − e−2δi+1 Zsc 
+
+ti . (59) 
+
+B.3 Proof of Lemma 1 
+
+Combining (23), (57) and (59), the update rule of bXtk can be rewritten as 
+
+bXst 
+
+tk+1 = αtk+1 Y tk+1 + bσtk+1 Ztk+1 ,
+
+bXsc 
+
+tk+1 = αtk+1 
+
+αtk
+
+bXsc 
+
+tk + αtk+1 
+
+
+
+e−λtk − e−2λtk+1 +λtk
+
+ ∇ bXsc 
+
+> tk
+
+log pλk ( bXc
+
+tk , bXsc 
+
+tk )
+
+σtk
+
++ σtk+1 
+
+p
+
+1 − e−2δk+1 Zsc 
+
+tk ,
+
+bXc
+
+tk+1 = bXc
+
+tk + γk∇ log pλk+1 ( bXc
+
+tk , bXsc 
+
+tk+1 ) + σtk+1 
+
+q
+
+η(1 − e−2δk+1 )Zc
+
+tk + etk ( bXtk , bXsc 
+
+tk+1 ). (60) The KL divergence between bXt0: M and eX0: M conditoned on Y and Z can be decomposed as 
+
+KL (p eX0: M | Y,Z ∥p bXt0: M | Y,Z ) = KL (p eX0 | Y,Z ∥p bXt0 | Y,Z ) + 
+
+M −1X
+
+i=0 
+
+Ex∼pfXti | Y,Z KL  p eXsc 
+
+> i+1
+
+| eXi (·| x)∥p bXsc  
+
+> ti+1
+
+| bXti
+
+(·| x)
+
++
+
+M −1X
+
+i=0 
+
+Ex,x ′∼pfXsc     
+
+> i+1 ,fXi|Y,Z
+
+KL  p eXc
+
+> i+1
+
+| eXsc 
+
+> i+1
+
+, eXi (·| x, x ′)∥p bXc 
+
+> ti+1
+
+| bXsc  
+
+> ti+1
+
+, bXti
+
+(·| x, x ′)
+
+=
+
+M −1X
+
+i=0 
+
+Ex,x ′∼pfXsc     
+
+> i+1 ,fXi|Y,Z
+
+KL  p eXc
+
+> i+1
+
+| eXsc 
+
+> i+1
+
+, eXi (·| x, x ′)∥p bXc 
+
+> ti+1
+
+| bXsc  
+
+> ti+1
+
+, bXti
+
+(·| x, x ′).
+
+20 Note that the both of the above conditional distributions are Gaussian ditributions with variance 2γi and mean vector (x′)c + γi∇ log pλi+1 (( x′)c, x sc ) + eti (x′, x sc ) and (x′)c + γi∇ log pλi+1 (( x′)c, x sc ), respectively. Combining with Lemma 6, we finally get 
+
+Ex,x ′∼pfXsc    
+
+> i+1 ,fXi|Y,Z
+
+KL  p eXc
+
+> i+1
+
+| eXsc 
+
+> i+1
+
+, eXi (·| x, x ′)∥p bXc 
+
+> ti+1
+
+| bXsc  
+
+> ti+1
+
+, bXti
+
+(·| x, x ′) 
+
+=
+
+Ex,x ′∼pfXsc   
+
+> i+1 ,fXi
+
+| Y,Z 
+
+∥eti (x′, x )∥22
+
+
+
+4γi
+
+≲ 1
+
+γi
+
+E
+
+ 
+
+∥ eXc
+
+i ∥2 + ∥ eXsc 
+
+i ∥2 + ∥Z∥2 + 1 
+
+2!
+
+(δ2
+
+i+1 + γ4
+
+i ) + δi+1 γi.
+
+Summarizing from i = 0 to M − 1 yields 
+
+M −1X
+
+i=0 
+
+Ex,x ′∼pfXsc    
+
+> i+1 ,fXi|Y,Z
+
+KL  p eXc
+
+> i+1
+
+| eXsc 
+
+> i+1
+
+, eXi (·| x, x ′)∥p bXc 
+
+> ti+1
+
+| bXsc  
+
+> ti+1
+
+, bXti
+
+(·| x, x ′) 
+
+(i) 
+
+≲ max δi+1 
+
+γi
+
++ η max γ2
+
+i + max γi
+
+(ii) 
+
+≲ 1
+
+η + η max γ2
+
+i + max γi
+
+= O η−1 + O(η3δ2) + O(ηδ ),
+
+where (i) uses PM −1
+
+i=0 δi+1 = O(1) , PM −1
+
+i=0 γi = O(η), and E[∥ eXc
+
+i ∥22 + ∥ eXsc 
+
+i ∥22 + ∥Z∥22] = O(1) , and (ii) uses (29). As η3δ2 → 0 and η → ∞ , which is satisfied by η = Θ( δ−7/12 ), we have KL  p eX0: M | Y,Z ∥p bXt0: M | Y,Z 
+
+ → 0
+
+and complete the proof. Next, we intend to prove that pXk | V ⊤Smeas 
+
+> tk
+
+Xk ,v ⊤ 
+
+> s
+
+Xkτs 
+
+= pXtk | V ⊤Smeas 
+
+> tk
+
+Xtk ,v ⊤ 
+
+> s
+
+Xτs . When σtk > α tk Σ−1
+
+ss σ, we have Smeas 
+
+tk = S and Sprior 
+
+tk is empty. Thus we have 
+
+pXk | V ⊤Smeas 
+
+> tk
+
+Xk ,v ⊤ 
+
+> s
+
+Xkτs 
+
+= pXk | V ⊤Smeas 
+
+> tk
+
+Xk = pXtk | V ⊤Smeas 
+
+> tk
+
+Xtk
+
+= pXtk | V ⊤Smeas 
+
+> tk
+
+Xtk ,v ⊤ 
+
+> s
+
+Xτs ,
+
+which makes Lemma 1 hold obviously. In particular, this leads to the following equation when ti = τs:
+
+pXkτs | V ⊤S Xkτs 
+
+= pXτs | V ⊤S Xτs .
+
+When σtk ≤ αtk Σ−1
+
+ss σ, we have Sprior 
+
+tk = S and Smeas 
+
+tk is empty. Thus we have 
+
+pXk | Xk−1 = pXc 
+
+> k
+
+| Xs
+
+> k
+
+pXs 
+
+> k
+
+| Xk−1 = pXc 
+
+> tk
+
+| Xs
+
+> tk
+
+pXs 
+
+> tk
+
+| Xtk−1 = pXtk | Xtk−1 .
+
+Therefore we have 
+
+pXk | V ⊤Smeas 
+
+> tk
+
+Xk ,v ⊤ 
+
+> s
+
+Xkτs 
+
+(xk | · , x s
+
+τs ) = pXk | V ⊤S Xkτs 
+
+(xk | xs
+
+τs )=
+
+Z kY
+
+j=kτs +1 
+
+pXj | Xj−1 (xj | xj−1)pXkτs | V ⊤S Xkτs 
+
+(xτs | xs
+
+τs )
+
+k−1Y
+
+j=kτs +1 
+
+dxj dxc
+
+τs
+
+=
+
+Z kY
+
+j=kτs +1 
+
+pXtj | Xtj−1 (xj | xj−1)pXτs | V ⊤S Xτs (xτs | xs
+
+τs )
+
+k−1Y
+
+j=kτs +1 
+
+dxj dxc
+
+τs
+
+= pXtk | V ⊤S Xτs (xk | xs
+
+τs ) = pXtk | V ⊤Smeas 
+
+> tk
+
+Xtk ,v ⊤ 
+
+> s
+
+Xτs (xk | · , x s
+
+τs ).
+
+B.4 Proof of Lemma 2 
+
+According to Lemma 1, it sufficies to prove that 
+
+EV ⊤S eXk | Y,Z 
+
+TV (pV ⊤Sc eXk |V ⊤S eXk ,Y,Z , ∥pV ⊤Sc Xtk |V ⊤S Xtk
+
+) → 0 as δη log 1
+
+δ → 0 and δη 2
+
+log 1
+
+δ
+
+→ ∞ . (61) 21 Then by using Lemma 1, we have 
+
+Exs 
+
+> k
+
+∼ bXs
+
+> tk
+
+TV (pV ⊤Sc bXtk |V ⊤S bXtk
+
+(· | xs
+
+k), p V ⊤Sc Xtk |V ⊤S Xtk
+
+(· | xs
+
+k)) 
+
+= Exs 
+
+> k
+
+∼ bXs
+
+> tk
+
+TV (p bXc 
+
+> tk
+
+| bXs
+
+> tk
+
+(· | xs
+
+k), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k)) 
+
+= EY,Z 
+
+h
+
+Exs 
+
+> k
+
+∼ bXs 
+
+> tk
+
+| Y,Z 
+
+TV (p bXc 
+
+> tk
+
+| bXs 
+
+> tk
+
+,Y,Z (· | xs
+
+k, y, z ), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k)) i
+
+≤ EY,Z 
+
+h
+
+Exs 
+
+> k
+
+∼ bXs 
+
+> tk
+
+| Y,Z 
+
+TV (p bXc 
+
+> tk
+
+| bXs 
+
+> tk
+
+,Y,Z (· | xs
+
+k, y, z ), p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (· | xs
+
+k, y, z )) i
+
++ EY,Z 
+
+h
+
+Exs 
+
+> k
+
+∼ bXs 
+
+> tk
+
+| Y,Z 
+
+TV (p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (· | xs
+
+k, y, z ), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k)) i
+
+≤ EY,Z 
+
+h
+
+TV (p bXtk | Y,Z , p eXk | Y,Z ) + TV (p bXs 
+
+> tk
+
+| Y,Z , p eXs 
+
+> k
+
+| Y,Z )
+
+i
+
++ EY,Z 
+
+h
+
+Exs 
+
+> k
+
+∼ bXs 
+
+> tk
+
+| Y,Z 
+
+TV (p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (· | xs
+
+k, y, z ), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k)) i
+
+≤ EY,Z 
+
+h
+
+TV (p bXtk | Y,Z , p eXk | Y,Z ) + 2 TV (p bXs 
+
+> tk
+
+| Y,Z , p eXs 
+
+> k
+
+| Y,Z )
+
+i
+
++ EY,Z 
+
+h
+
+Exs 
+
+> k
+
+∼ eXs 
+
+> k
+
+| Y,Z 
+
+TV (p eXc 
+
+> k
+
+| eXs 
+
+> k
+
+,Y,Z (· | xs
+
+k, y, z ), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k)) i
+
+→ 0. (62) We introduce an auxiliary sequence as below: for k − N ≤ i < k , with initilization ˘Xk−N ∼ p eXk−N , and iterates as 
+
+˘Xst 
+
+i+1 = eXst 
+
+i+1 , (63a) 
+
+˘Xsc 
+
+i+1 = αti+1 
+
+αti
+
+˘Xsc 
+
+i + αti+1 σ2
+
+tk
+
+αti
+
+ 1 − e−2δi+1  ∇ ˘Xsc 
+
+> i
+
+log pλi ( ˘Xc
+
+i−N , ˘Xsc 
+
+i ) + σti+1 
+
+p
+
+1 − e−2δi+1 Zsc 
+
+i , (63b) 
+
+˘Xc
+
+i+1 = ˘Xc
+
+i + γi∇ ˘Xc
+
+> i
+
+log pλi+1 ( ˘Xc
+
+i , ˘Xsc 
+
+i+1 ) + p2γiZc
+
+i . (63c) We choose N satisfying Pki=k−N δi+1 = Θ( δ 12 ). For any y, z , we have 
+
+TV (p ˘Xk | Y,Z , p eXk | Y,Z ) → 0. (64) The proof is postponed to the end of this subsection. Armed with this auxiliary sequence, we prove (61) via establishing 
+
+E eXs 
+
+> k
+
+| Y,Z 
+
+TV (p ˘Xc 
+
+> k
+
+| ˘Xs 
+
+> k
+
+,Y,Z , ∥pXc 
+
+> tk
+
+|Xs
+
+> tk
+
+) → 0 as δη log 1
+
+δ → 0 and δη 2
+
+log 1
+
+δ
+
+→ ∞ . (65) which implies that 
+
+Exsc  
+
+> k
+
+∼ eXsc  
+
+> k
+
+| Y,Z [TV (p eXc 
+
+> k
+
+| eXsc  
+
+> k
+
+,Y,Z (· | xsc 
+
+k , y, z ), p Xc 
+
+> tk
+
+| Xsc 
+
+> tk
+
+(· | xsc 
+
+k ))] 
+
+≤ Exsc  
+
+> k
+
+∼ eXsc  
+
+> k
+
+| Y,Z [TV (p ˘Xc 
+
+> k
+
+| ˘Xsc  
+
+> k
+
+,Y,Z (· | xsc 
+
+k , y, z ), p Xc 
+
+> tk
+
+| Xsc 
+
+> tk
+
+(· | xsc 
+
+k ))] + Exsc  
+
+> k
+
+∼ eXsc  
+
+> k
+
+| Y,Z [TV (p ˘Xc 
+
+> k
+
+| ˘Xsc  
+
+> k
+
+,Y,Z (· | xsc 
+
+k , y, z ), p eXc 
+
+> k
+
+| eXsc  
+
+> k
+
+,Y,Z (· | xsc 
+
+k , y, z ))] 
+
+≤ Exsc  
+
+> k
+
+∼ eXsc  
+
+> k
+
+| Y,Z [TV (p ˘Xc 
+
+> k
+
+| ˘Xsc  
+
+> k
+
+,Y,Z (· | xsc 
+
+k , y, z ), p Xc 
+
+> tk
+
+| Xsc 
+
+> tk
+
+(· | xsc 
+
+k ))] + TV (p ˘Xk | Y,Z (· | y, z ), p eXk | Y,Z (· | y, z )) + TV (p ˘Xsc  
+
+> k
+
+| Y,Z (· | y, z ), p eXsc  
+
+> k
+
+| Y,Z (· | y, z )) → 0.
+
+To establish (65), we begin with considering given ˘Xsc 
+
+1: k = ˘ xsc 
+
+1: k, which satisfies 
+
+Ek := ∥˘xsc 
+
+i+1 − ˘xsc 
+
+i ∥2 ≲ δi+1 log 1
+
+δ , ∀i ≤ k − 1 . (66) For ease of notation, denote the distribution (pdf) of ˘Xc
+
+k under given ˘Xs
+
+1: k = ˘ xsc 
+
+1: k as ψk. Denote the target conditional distribution 
+
+pc
+
+k(x) := pXc 
+
+> tk
+
+|Xs
+
+> tk
+
+(x|˘xs
+
+k).
+
+22 By deifnition of pλk , we have ∇x log pλk (x, ˘xsc  
+
+> k
+
+) = ∇x log pc
+
+> k
+
+(x). Moreover, denote Pγk as the transition probability of the following SDE from t to t + γk:
+
+dX(t) = ∇ log pc
+
+> k
+
+(X(t))d t + √2d Wt, (67) where Wt denotes the Brownian motion. According to the analysis of Langevin, we have 
+
+KL (Pγk ψk∥pc
+
+> k+1
+
+) ≤ e−2κγ k KL (ψk∥pc
+
+> k+1
+
+),
+
+where κ < ∞ is a constant. Therefore, we have 
+
+KL (ψk+1 ∥pc
+
+> k+1
+
+) = KL (Pγk ψk∥pc
+
+> k+1
+
+) + KL (ψk+1 ∥pc
+
+> k+1
+
+) − KL (Pγk ψk∥pc
+
+> k+1
+
+)
+
+≤ e−2κγ k KL (ψk∥pc
+
+> k+1
+
+) + KL (ψk+1 ∥pc
+
+> k+1
+
+) − KL (Pγk ψk∥pc
+
+> k+1
+
+)= e −2κγ k KL (ψk∥pc
+
+> k
+
+) + e −2κγ k
+
+ KL (ψk∥pc
+
+> k+1
+
+) − KL (ψk∥pc
+
+> k
+
+)
+
++ KL (ψk+1 ∥pc
+
+> k+1
+
+) − KL (Pγk ψk∥pc
+
+> k+1
+
+). (68) Next, we control the two error terms in the right-hand-side of (68) separately. 
+
+• Control the term KL (ψk∥pc
+
+> k+1
+
+) − KL (ψk∥pc
+
+> k
+
+). According to the definition of KL divergence, we have 
+
+KL (ψk∥pc
+
+> k+1
+
+) − KL (ψk∥pc
+
+> k
+
+) = 
+
+Z
+
+log pc
+
+> k
+
+(x)
+
+pc
+
+> k+1
+
+(x) ψk(x)d x. (69) According to the definition of pc
+
+> k+1
+
+(x), we have 
+
+pc
+
+> k
+
+(x) = pXtk (x)
+
+pXs
+
+> tk
+
+(˘ xs
+
+> k
+
+)
+
+Then we have 
+
+∂ log pc
+
+> k
+
+(x)
+
+∂α ti
+
+= ∂ log pXtk (x)
+
+∂α tk
+
+− ∂ log pXs
+
+> tk
+
+(˘ xs
+
+> k
+
+)
+
+∂α tk
+
+= 1
+
+σ2
+
+> tk
+
+E[( x − αtk Xc
+
+> 0
+
+)⊤Xc 
+
+> 0
+
++ (˘ xk − αtk Xs
+
+> 0
+
+)⊤Xs
+
+> 0
+
+|Xc 
+
+> tk
+
+= x, X s 
+
+> tk
+
+= ˘ xs
+
+> k
+
+]
+
+− 1
+
+σ2
+
+> tk
+
+E[(˘ xs 
+
+> k
+
+− αtk Xs
+
+> 0
+
+)⊤Xs
+
+> 0
+
+|Xs 
+
+> tk
+
+= ˘ xs
+
+> k
+
+].
+
+Recalling that X0 is bounded, we further have 
+
+∂ log pc
+
+> k
+
+(x)
+
+∂α tk
+
+≲ (∥x∥2 + ∥˘xs
+
+> k
+
+∥2 + 1) .
+
+By similar calculation, we have 
+
+∂ log pc
+
+> k
+
+(x)
+
+∂σ ti
+
+≲ (∥x∥22 + ∥˘xs
+
+> k
+
+∥2 + 1) , ∥∇ xs log pc
+
+> k
+
+(x)∥2 ≲ (∥x∥2 + ∥˘xs
+
+> k
+
+∥2 + 1) .
+
+Thus we have 
+
+log pc
+
+> k+1
+
+(x)
+
+pc
+
+> k
+
+= O(|αtk+1 − αtk |
+
++ |σtk+1 − σtk |)( ∥x∥22 + ∥˘xs
+
+> k
+
+∥2 + 1) + O(∥˘xs 
+
+> k+
+
+− ˘xs
+
+> k
+
+∥2)( ∥x∥2 + ∥˘xs
+
+> k
+
+∥2 + 1) = ( ∥x∥22 + ∥˘xs
+
+> k
+
+∥2 + 1) O
+
+
+
+δk+1 +
+
+r
+
+δk+1 log 1
+
+δ
+
+
+
+,
+
+23 where the last line arises from (94), (91), and (66). Based on this observation, we have 
+
+Z
+
+log pc
+
+> k
+
+(x)
+
+pc
+
+> k+1
+
+(x) ψc
+
+> k
+
+(x)d x = −
+
+Z
+
+log pc
+
+> k+1
+
+(x)
+
+pc
+
+> k
+
+(x) ψc
+
+> k
+
+(x)d x
+
+= O(pδk+1 log δ−1) E[∥ ˘Xc
+
+> k
+
+∥22 | ˘Xs 
+
+> k
+
+= ˘ xsc 
+
+> 1: k
+
+] + ∥˘xsc  
+
+> k
+
+∥2 + 1 
+
+= O(pδk+1 log δ−1),
+
+where the last line uses E[∥ ˘Xc
+
+> k
+
+∥22 | ˘Xs 
+
+> k
+
+= ˘ xsc 
+
+> 1: k
+
+] < ∞. Combining these with (69) yields 
+
+KL (ψk∥pc
+
+> k+1
+
+) − KL (ψk∥pc
+
+> k+1
+
+) ≲ pδk+1 log δ−1. (70) 
+
+• Control the term KL (ψk+1 ∥pc
+
+> k+1
+
+) − KL (Pγk ψk∥pc
+
+> k+1
+
+). For any smooth function f , we have 
+
+E ˘Xc
+
+> k+1
+
+[f ( ˘Xc
+
+> k+1
+
+)] = E ˘Xc 
+
+> k,Z c
+> k
+
+f   ˘Xc 
+
+> k
+
++ γk∇ log pc
+
+> k+1
+
+( ˘Xc
+
+> k
+
+) + p2γkZc
+
+> k
+
+ 
+
+= Ef   ˘Xc
+
+> k
+
+ + γk∇f ( ˘Xc
+
+> k
+
+)⊤∇ log pc
+
+> k+1
+
+( ˘Xc
+
+> k
+
+) + γk∆f ( ˘Xc
+
+> k
+
+) + O(γ2 
+
+> k
+
+), (71) where ∆f (x) := Tr (∇2
+
+> x
+
+f (x)) . In contrast, by using the geneator operator of Langevin proccess L =
+
+∇ log p⊤
+
+> k+1
+
+∇ + ∆ , we have 
+
+EX∼Pγk ψk [f (X)] = EX∼ψk [f (X) + γk(Lf )( X) + O(γ2 
+
+> k
+
+)] = EX∼ψk [f (X) + γk∇ log p⊤
+
+> k+1
+
+(X)∇f (X) + γk∆f (X) + O(γ2 
+
+> k
+
+)] (72) Combining (71) and (72), we have 
+
+EX∼ψk+1 [f (X)] − EX∼Pγk ψk [f (X)] = O(γ2 
+
+> k
+
+). (73) Armed with this, we have 
+
+KL (ψk+1 ∥pc
+
+> k+1
+
+) − KL (Pγk ψk∥pc
+
+> k+1
+
+)= EX∼ψk+1 
+
+h
+
+log ψk+1 (X)
+
+pc
+
+> k+1
+
+(X)
+
+i
+
+− EX∼Pγk ψk
+
+h
+
+log Pγk ψk(X)
+
+pc
+
+> k+1
+
+(X)
+
+i
+
+= EX∼ψk+1 
+
+h
+
+log ψk+1 (X)
+
+pc
+
+> k+1
+
+(X)
+
+i
+
+− EX∼Pγk ψk
+
+h
+
+log ψk+1 (X)
+
+pc
+
+> k+1
+
+(X)
+
+i
+
+− EX∼Pγk ψk
+
+h
+
+log Pγk ψk(X)
+
+ψk+1 (X)
+
+i
+
+.
+
+Notice that as the KL divergence between Pγk ψk and ψk+1 is non-negative, i.e., 
+
+EX∼Pγk ψk
+
+h
+
+log Pγk ψk(X)
+
+ψk+1 (X)
+
+i
+
+≥ 0.
+
+By using (73), we have 
+
+KL (ψk+1 ∥pc
+
+> k+1
+
+) − KL (Pγk ψk∥pc
+
+> k+1
+
+) ≤ EX∼ψk+1 
+
+h
+
+log ψk+1 (X)
+
+pc
+
+> k+1
+
+(X)
+
+i
+
+− EX∼Pγk ψk
+
+h
+
+log ψk+1 (X)
+
+pc
+
+> k+1
+
+(X)
+
+i
+
+= O(γ2 
+
+> k
+
+). (74) Substituting (70) and (74) into (68), we have 
+
+KL (ψk+1 ∥pc
+
+> k+1
+
+) ≤ e−2κγ k KL (ψk∥pc
+
+> k
+
+) + O p δk+1 log δ−1 + O(γ2 
+
+> k
+
+)
+
+≤ e−2κ Pki=k−N γi KL (ψk−N ∥pc 
+
+> k−N
+
+) + O
+
+ √δ log δ−1
+
+δη 
+
+
+
++ O(max  
+
+> k
+
+γk)
+
+≲ e−2Θ( √δ)η + log δ−1
+
+√δη + max  
+
+> k
+
+γk → 0, as δη 2
+
+log δ−1 → ∞ , δη → 0, (75) 24 where we have used the assumption that Pki=k−N γi ≍ √δη → ∞ . Futhermore, notice that 
+
+P(Ec
+
+k) ≤
+
+k+1 X
+
+i=1 
+
+P
+
+
+
+O(δi+1 ) + pδi+1 ∥Zsc 
+
+ti ∥2 ≤ O(pδi+1 log δ−1)
+
+
+
+≤ δ10 → 0, as δ → 0. (76) We have 
+
+TV (p ˘Xc 
+
+> k
+
+| ˘Xs
+
+> k
+
+(· | ˘xs
+
+k), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | ˘xs
+
+k)) 
+
+≤ E˘xs
+
+> 1: k−1
+
+∼ ˘Xs 
+
+> 1: k−1
+
+| ˘Xs
+
+> k
+
+TV (p ˘Xc 
+
+> k
+
+| ˘Xs
+
+> 1: k
+
+(· | ˘xs
+
+1: k), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k)) 
+
+≤ E˘xs
+
+> 1: k−1
+
+∼ ˘Xs 
+
+> 1: k−1
+
+| ˘Xs 
+
+> k
+
+,˘xs
+
+> 1: k−1
+
+∈E k
+
+TV (p ˘Xc 
+
+> k
+
+| ˘Xs
+
+> 1: k
+
+(· | ˘xs
+
+1: k), p Xc 
+
+> tk
+
+|Xs
+
+> tk
+
+(· | xs
+
+k))  + P(Ec
+
+k) → 0.
+
+We complete the proof. 
+
+Proof of (64) . By Pinsker’s inequality, we have 
+
+TV (p ˘Xk | Y,Z , p eXk | Y,Z )2 ≤ KL (p eXk | Y,Z ∥p ˘Xk | Y,Z )
+
+≤
+
+k−1X
+
+i=k−N
+
+Exsc  
+
+> i
+
+∼ eXsc  
+
+> i
+
+,x c
+
+> i
+
+∼ eXc 
+
+> i
+
+,x c 
+
+> i−N
+
+∼ eXc
+
+> i−N
+
+h
+
+KL (p eXsc  
+
+> i+1
+
+| eXsc  
+
+> i
+
+, eXc
+
+> i
+
+(· | xsc 
+
+i , x c
+
+i )∥p ˘Xsc  
+
+> i+1
+
+| ˘Xsc  
+
+> i
+
+, ˘Xc
+
+> i−N
+
+(· | xsc 
+
+i , x c
+
+i−N )) 
+
+i
+
++
+
+k−1X
+
+i=k−N
+
+Exc
+
+> i
+
+∼ eXc 
+
+> i
+
+,x sc 
+
+> i+1
+
+∼ eXsc 
+
+> i+1
+
+h
+
+KL (p eXc 
+
+> i+1
+
+| eXc 
+
+> i
+
+, eXsc 
+
+> i+1
+
+(· | xc
+
+i , x sc 
+
+i+1 )∥p ˘Xc 
+
+> i+1
+
+| ˘Xc 
+
+> i
+
+, ˘Xsc 
+
+> i+1
+
+(· | xc
+
+i , x sc 
+
+i+1 )) 
+
+i
+
+=
+
+k−1X
+
+i=k−N
+
+Exsc  
+
+> i
+
+∼ eXsc  
+
+> i
+
+,x c
+
+> i
+
+∼ eXc 
+
+> i
+
+,x c 
+
+> i−N
+
+∼ eXc
+
+> i−N
+
+h
+
+KL (p eXsc  
+
+> i+1
+
+| eXsc  
+
+> i
+
+, eXc
+
+> i
+
+(· | xsc 
+
+i , x c
+
+i )∥p ˘Xsc  
+
+> i+1
+
+| ˘Xsc  
+
+> i
+
+, ˘Xc
+
+> i−N
+
+(· | xsc 
+
+i , x c
+
+i−N )) 
+
+i
+
+,
+
+where the last equation holds since p eXc 
+
+> i+1
+
+| eXc 
+
+> i
+
+, eXsc 
+
+> i+1
+
+(· | xc
+
+i , x sc 
+
+i+1 ) = p ˘Xc 
+
+> i+1
+
+| ˘Xc 
+
+> i
+
+, ˘Xsc 
+
+> i+1
+
+(· | xc
+
+i , x sc 
+
+i+1 ) by (63c). Accord-ing to (63b), both p eXs 
+
+> i+1
+
+| eXs
+
+> i
+
+, eXc
+
+> i
+
+(· | xs
+
+i, x c
+
+i ) and p ˘Xsc  
+
+> i+1
+
+| ˘Xsc  
+
+> i
+
+, ˘Xc
+
+> i−N
+
+(· | xs
+
+i, x c
+
+i−N ) are Gaussian distributions with the same variance σ2
+
+ti+1 (1 − e−2δi+1 )Id and different mean vectors. We have 
+
+KL 
+
+
+
+p eXs 
+
+> i+1
+
+| eXs
+
+> i
+
+, eXc
+
+> i
+
+(· | xs
+
+i, x c
+
+i )∥p ˘Xsc  
+
+> i+1
+
+| ˘Xsc  
+
+> i
+
+, ˘Xc
+
+> i−N
+
+(· | xs
+
+i, x c
+
+i−N )
+
+
+
+= α2
+
+ti+1 σ4
+
+ti (1 − e−2δi+1 )2
+
+2α2
+
+ti σ2
+
+ti+1 (1 − e−2δi+1 ) ∇xsc  
+
+> i
+
+log pλi (xc
+
+i−N , x sc 
+
+i ) − ∇ xsc  
+
+> i
+
+log pλi (xc
+
+i , x sc 
+
+i ) 22
+
+≲ δi+1 ∇xsc  
+
+> i
+
+log pλi (xc
+
+i−N , x sc 
+
+i ) − ∇ xsc  
+
+> i
+
+log pλi (xc
+
+i , x sc 
+
+i ) 22 .
+
+Therefore, we have 
+
+TV (p ˘Xk | Y,Z , p eXk | Y,Z )2 ≲
+
+k−1X
+
+i=k−N
+
+δi+1 Exsc  
+
+> i
+
+∼ eXsc  
+
+> i
+
+,x c
+
+> i
+
+∼ eXc 
+
+> i
+
+,x c 
+
+> i−N
+
+∼ eXc
+
+> i−N
+
+h
+
+∇xsc  
+
+> i
+
+log pλi (xc
+
+i−N , x sc 
+
+i ) − ∇ xsc  
+
+> i
+
+log pλi (xc
+
+i , x sc 
+
+i ) 22
+
+i
+
+≲
+
+k−1X
+
+i=k−N
+
+δi+1 ≍ δ1/2 → 0, as δ → 0.
+
+Thus we complete the proof. 
+
+B.5 Proof of Lemma 3 
+
+It suffices to prove that 
+
+KL (p bXsc  
+
+> ti
+
+| bXti−1
+
+∥pXsc  
+
+> ti
+
+| Xti−1 ) = o(δi). (77) 25 According to the update rule, p bXsc  
+
+> ti
+
+| bXti−1
+
+is a Gaussian distribution. We consider the following density function: 
+
+bpi(xi|xi−1) := (2 πϱ 2)−d/ 2 exp 
+
+
+
+− 12ϱ2 ∥xi − μ0 − ∆∥22
+
+
+
+, (78) where variance ϱ2 = σ2
+
+ti (1 − e−2δi ) and the mean vecotr μ0 + ∆ is given by 
+
+μ0 = αti
+
+αti−1
+
+bXti−1 , ∆ = αti σti−1
+
+
+
+e−λti−1 − e−2λti +λti−1
+
+
+
+∇xi−1 log pXti−1 (xi−1).
+
+By noticing that V ⊤Sprior 
+
+> ti
+
+∇xi−1 log pXti−1 (xi−1) = ∇xsc  
+
+> i−1
+
+log pλi−1 (xsc 
+
+i−1, x c
+
+i−1), we conclude that bpi(xi|xi−1) has the same marginal distribution on directions Sprior 
+
+ti as p bXsc  
+
+> ti
+
+| bXti−1
+
+. It suffices to prove that 
+
+KL (p bXsc  
+
+> ti
+
+| bXti−1
+
+∥pXsc  
+
+> ti
+
+| Xti−1 ) ≤ KL (bpi∥pXti | Xti−1 ) = o(δi). (79) Towards this, we decompose bpi and pXti | Xti−1 seperately. 
+
+• Decomposition of bpi(xi|xi−1). Expanding the exponent expression in (78) yields 
+
+bpi(xi|xi−1) = (2 πϱ 2)−d/ 2 exp 
+
+
+
+− 12ϱ2 ∥xi − μ0∥22 + 1
+
+ϱ2 ∆⊤(xi − μ0) + 12ϱ2 ∥∆∥22
+
+
+
+. (80) Note that 
+
+1
+
+ϱ2 ∆⊤(xi − μ0) = 1
+
+ϱ2 αti σti−1
+
+
+
+e−λti−1 − e−2λti +λti−1
+
+
+
+∇xi−1 log pXti−1 (xi−1)⊤(xi − μ0)= 1
+
+ϱ2 αti σti−1 e−λti−1
+
+ 1 − e−2δi  ∇xi−1 log pXti−1 (xi−1)⊤(xi − μ0)= 1
+
+ϱ2
+
+α2
+
+ti σ2
+
+ti−1
+
+α2
+
+ti−1
+
+ 1 − e−2δi  ∇xi−1 log pXti−1 (xi−1)⊤  αti−1
+
+αti
+
+xi − bXti−1
+
+
+
+= e 2δi ∇xi−1 log pXti−1 (xi−1)⊤  αti−1
+
+αti
+
+xi − bXti−1
+
+.
+
+By denoting bxi = αti−1 xi/α ti , and noticing that ∥∆∥2 = O(δi), we have 
+
+bpi(xi|xi−1) = (2 πϱ 2)−d/ 2 exp 
+
+
+
+− 12ϱ2 ∥xi − μ0∥22 + e 2δi ∇xi−1 log pXti−1 (xi−1)⊤ bxi − bXti−1
+
+ + O(δi)
+
+
+
+(81) 
+
+• Decomposition of pXti | Xti−1 (xi|xi−1).
+
+pXti | Xti−1 (xi|xi−1) = pXti−1 | Xti (xi−1|xi) pXti (xi)
+
+pXti−1 (xi−1) . (82) Furthermore, according to the forward process 
+
+Xti−1 = αti−1
+
+αti
+
+Xti +
+
+
+
+σ2
+
+ti−1 − αti−1
+
+αti
+
+σ2
+
+ti
+
+
+
+N (0 , I d) = αti−1
+
+αti
+
+Xti + σti−1
+
+ 1 − e−2δi 1/2 N (0 , I d)= αti−1
+
+αti
+
+Xti + σti−1
+
+σti
+
+ϱN (0 , I d),
+
+we have 
+
+pXti−1 | Xti (xi−1|xi) = (2 πϱ 2)−d/ 2
+
+ σti
+
+σti−1
+
+d
+
+exp − σ2
+
+ti
+
+2ϱ2σ2
+
+ti−1
+
+bXti−1 − αti−1
+
+αti
+
+bXti
+
+22
+
+!
+
+26 = (2 πϱ 2)−d/ 2
+
+ σti
+
+σti−1
+
+d
+
+exp − σ2
+
+ti α2
+
+ti−1
+
+2ϱ2σ2
+
+ti−1 α2
+
+ti
+
+αti
+
+αti−1
+
+bXti−1 − bXti
+
+22
+
+!
+
+= (2 πϱ 2)−d/ 2
+
+ σti
+
+σti−1
+
+d
+
+exp 
+
+
+
+− e−2δi
+
+2ϱ2 bXti − μ0
+
+22
+
+
+
+. (83) For the ratio pXti (xi)
+
+pXti−1 (xi−1) , we have 
+
+pXti (xi)
+
+pXti−1 (xi−1) = pXti (xi)
+
+pXti−1 (bxi)
+
+pXti−1 (bxi)
+
+pXti−1 (xi−1) = pXti (xi)
+
+pXti−1 (bxi) exp 
+
+
+
+log pXti−1 (bxi) − log pXti−1 (xi−1)
+
+
+
+= pXti (xi)
+
+pXti−1 (bxi) exp 
+
+
+
+∇ log pXti−1 (xi−1)⊤(bxi − xi−1)
+
+
+
+. (84) Furthermore, we have 
+
+pXti (xi)
+
+pXti−1 (bxi)=
+
+ σti−1
+
+σti
+
+d
+
+R pX0 (x0) exp 
+
+
+
+− 12σ2
+
+> ti
+
+∥xi − αti x0∥22
+
+
+
+dx0
+
+R pX0 (x0) exp 
+
+
+
+− e−2δi
+
+2σ2
+
+> ti
+
+∥xi − αti x0∥22
+
+
+
+dx0
+
+=
+
+ σti−1
+
+σti
+
+d
+
+R pX0 (x0) exp 
+
+
+
+− e−2δi
+
+2σ2
+
+> ti
+
+∥xi − αti x0∥22
+
+  
+
+1 − (1 −e−2δi )2σ2
+
+> ti
+
+∥xi − αti x0∥22 + O(δ2
+
+i )
+
+
+
+dx0
+
+R pX0 (x0) exp 
+
+
+
+− e−2δi
+
+2σ2
+
+> ti
+
+∥xi − αti x0∥22
+
+
+
+dx0
+
+,
+
+where the first equation comes from 
+
+pXti (xi) = (2 πσ 2
+
+ti )−d/ 2
+
+Z
+
+pX0 (x0) exp 
+
+
+
+− 12σ2
+
+ti
+
+∥xi − αti x0∥22
+
+
+
+dx0
+
+pXti−1 (bxi) = (2 πσ 2
+
+ti−1 )−d/ 2
+
+Z
+
+pX0 (x0) exp − 12σ2
+
+ti−1
+
+αti−1
+
+αti
+
+xi − αti−1 x0
+
+22
+
+!
+
+dx0
+
+= (2 πσ 2
+
+ti−1 )−d/ 2
+
+Z
+
+pX0 (x0) exp − α2
+
+ti−1
+
+2σ2
+
+ti−1 α2
+
+ti
+
+xi−1 − αti x0
+
+22
+
+!
+
+dx0
+
+= (2 πσ 2
+
+ti−1 )−d/ 2
+
+Z
+
+pX0 (x0) exp 
+
+
+
+− e−2δi
+
+2σ2
+
+ti
+
+xi − αti x0
+
+22
+
+
+
+dx0.
+
+Thus we have 
+
+ σti−1
+
+σti
+
+−d pXti (xi)
+
+pXti−1 (bxi) − 1
+
+≤
+
+R pX0 (x0) exp 
+
+
+
+− e−2δi
+
+2σ2
+
+> ti
+
+∥xi − αti x0∥22
+
+  2δi
+
+2σ2
+
+> ti
+
+∥xi − αti x0∥22 + O(δ2
+
+i )
+
+
+
+dx0
+
+R pX0 (x0) exp 
+
+
+
+− e−2δi
+
+2σ2
+
+> ti
+
+∥xi − αti x0∥22
+
+
+
+dx0
+
+= O(δi)( ∥xi∥22 + 1) .
+
+Instituting into (84), we have 
+
+pXti (xi)
+
+pXti−1 (xi−1) =
+
+ σti−1
+
+σti
+
+−d
+
+exp 
+
+
+
+∇ log pXti−1 (xi−1)⊤(bxi − xi−1)
+
+  1 + O(δi)(1 + ∥xi∥22) (85) 27 Combining this with (83) and (82) yields 
+
+pXti | Xti−1 (xi|xi−1) = (2 πϱ 2)−d/ 2 exp 
+
+
+
+− e−2δi
+
+2ϱ2 bXti − μ0
+
+> 22
+
+
+
+· exp 
+
+
+
+∇ log pXti−1 (xi−1)⊤(bxi − xi−1)
+
+  1 + O(δi)(1 + ∥xi∥22)
+
+= (2 πϱ 2)−d/ 2 exp 
+
+
+
+− e−2δi
+
+2ϱ2 bXti − μ0 
+
+> 22
+
++ ∇ log pXti−1 (xi−1)⊤(bxi − xi−1)
+
+
+
+·  1 + O(δi)(1 + ∥xi∥22) (86) Combining (81) and (86) leads to 
+
+pXti | Xti−1 (xi|xi−1)
+
+bpi(xi|xi−1) = exp 
+
+ (1 − e−2δi )2ϱ2 xi − μ0 
+
+> 22
+
+− (e 2δi − 1) ∇ log pXti−1 (xi−1)⊤(bxi − xi−1) + O(δi)
+
+
+
+· (1 + O(δi)(1 + ∥xi∥22)) 
+
+and 
+
+pXti | Xti−1 (xi|xi−1)
+
+bpi(xi|xi−1) − 1 = O(δi) ∥xi − μ0∥22
+
+ϱ2 + O(δi)∥bxi − xi−1∥2 + O(δi)∥xi∥2 + O(δi).
+
+By using the definition of KL divergence, we have 
+
+KL (bpi∥pXti | Xti−1 ) = 
+
+Z
+
+log bpi(xi|xi−1)
+
+pXti | Xti−1 (xi|xi−1) bpi(xi|xi−1)d xi
+
+= −
+
+Z
+
+log pXti | Xti−1 (xi|xi−1)
+
+bpi(xi|xi−1) bpi(xi|xi−1)d xi
+
+= −
+
+Z pXti | Xti−1 (xi|xi−1)
+
+bpi(xi|xi−1) − 1
+
+!bpi(xi|xi−1)d xi
+
++ 12
+
+Z pXti | Xti−1 (xi|xi−1)
+
+bpi(xi|xi−1) − 1
+
+!2
+
+bpi(xi|xi−1)d xi
+
+= 12
+
+Z pXti | Xti−1 (xi|xi−1)
+
+bpi(xi|xi−1) − 1
+
+!2
+
+bpi(xi|xi−1)d xi
+
+= O(δ2 
+
+> i
+
+)Exi∼bpi(· | xi−1)
+
+"
+
+∥xi − μ0∥22
+
+ϱ2 + ∥bxi − xi−1∥2 + ∥xi∥2 + 1 
+
+#
+
+= O(δ2 
+
+> i
+
+),
+
+where the last equation holds since by (78), 
+
+∥xi − μ0∥22
+
+ϱ2 = ∥∆∥22 + ϱ2
+
+ϱ2 = O(1) .
+
+Combining with (79), we complete the proof. 
+
+B.6 Proof of Lemma 4 
+
+We start from the observation that p eXsc    
+
+> i|eXi−1
+
+(xsc  
+
+> i
+
+| xi−1) is a Gaussian distribution and xc 
+
+> i−1
+
+influences the mean vector: 
+
+p eXsc    
+
+> i|eXi−1
+
+(xsc  
+
+> i
+
+| xi−1) = ϕ(xsc  
+
+> i
+
+; μ0 + ∆( xc
+
+> i−1
+
+), σ 2 
+
+> ti
+
+(1 − e−2δi )) ,
+
+28 where ϕ(·; μ, σ 2) denotes the density function of Gaussian distribution with mean vector μ and variance σ2,and 
+
+μ0 := αti
+
+αti−1
+
+xsc 
+
+i−1,
+
+∆( xc
+
+i−1) := αti σti−1
+
+
+
+e−λti−1 − e−2λti +λti−1
+
+
+
+∇xsc  
+
+> i−1
+
+log pλi−1 (xc
+
+i−1, x sc 
+
+i−1). (87) It can be immediately check that 
+
+∥∆( xc
+
+i−1)∥2 ≲ O(δ). (88) By Taylor expansion and denoting the variance as ϱ2 = σ2
+
+ti (1 − e−2δi ), we have 
+
+p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1) = ϕ(xsc 
+
+i ; μ0, ϱ 2) 1 + (xsc 
+
+i − μ0)⊤∆( xc
+
+i−1)
+
+ϱ2 − ∥∆( xc
+
+i−1)∥22
+
+ϱ2 + (( xsc 
+
+i − μ0)⊤∆( xc
+
+i−1)) 2
+
+ϱ2
+
+!
+
++ O(∥∆( xc
+
+i−1)∥32).
+
+Thus we have 
+
+Z
+
+p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)pXsc  
+
+> ti
+
+| Xti−1 (xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+=
+
+Z
+
+ϕ(xsc 
+
+i ; μ0, ϱ 2) 1 + (xsc 
+
+i − μ0)⊤∆( xc
+
+i−1)
+
+ϱ2 − ∥∆( xc
+
+i−1)∥22
+
+ϱ2 + (( xsc 
+
+i − μ0)⊤∆( xc
+
+i−1)) 2
+
+ϱ2
+
+!
+
+· pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
++ O(EXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+[∥∆( Xc
+
+ti−1 )∥32]) = ϕ(xsc 
+
+i ; μ0, ϱ 2)
+
+
+
+1 + ϱ−2(xsc 
+
+i − μ0)⊤EXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+[∆( Xc
+
+ti−1 )] − ϱ−2EXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+[∥∆( Xc
+
+ti−1 )∥22]+ ϱ−2EXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+[(( xsc 
+
+i − μ0)⊤∆( Xc
+
+ti−1 )) 2]
+
+
+
++ O(EXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+[∥∆( Xc
+
+ti−1 )∥32]) .
+
+Similarly, we have 
+
+Z
+
+p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+= ϕ(xsc 
+
+i ; μ0, ϱ 2)
+
+
+
+1 + ϱ−2(xsc 
+
+i − μ0)⊤E eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+[∆( eXc
+
+i−1)] − ϱ−2E eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+[∥∆( eXc
+
+i−1)∥22]+ ϱ−2E eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+[(( xsc 
+
+i − μ0)⊤∆( eXc
+
+i−1)) 2]
+
+
+
++ O(E eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+[∥∆( eXc
+
+i−1)∥32]) .
+
+These lead to 
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+= log 1 + ϱ−2(xsc 
+
+i − μ0)⊤E[∆( eXc
+
+i−1)] − ϱ−2E[∥∆( eXc
+
+i−1)∥22] + ϱ−2E[(( xsc 
+
+i − μ0)⊤∆( eXc
+
+i−1)) 2]1 + ϱ−2(xsc 
+
+i − μ0)⊤E[∆( Xc
+
+ti−1 )] − ϱ−2E[∥∆( Xc
+
+ti−1 )∥22] + ϱ−2E[(( xsc 
+
+i − μ0)⊤∆( Xc
+
+ti−1 )) 2] + O(δ3)
+
+≤ ϱ−2(xsc 
+
+i − μ0)⊤ E[∆( eXc
+
+i−1) − ∆( Xc
+
+ti−1 )]  − ϱ−2 E[∥∆( eXc
+
+i−1)∥22 − ∥ ∆( Xc
+
+ti−1 )∥22]
+
+1 + ϱ−2(xsc 
+
+i − μ0)⊤E[∆( Xc
+
+ti−1 )] − ϱ−2E[∥∆( Xc
+
+ti−1 )∥22] + ϱ−2E[(( xsc 
+
+i − μ0)⊤∆( Xc
+
+ti−1 )) 2]+ ϱ−2E[(( xsc 
+
+i − μ0)⊤∆( eXc
+
+i−1)) 2 − (( xsc 
+
+i − μ0)⊤∆( Xc
+
+ti−1 )) 2]1 + ϱ−2(xsc 
+
+i − μ0)⊤E[∆( Xc
+
+ti−1 )] − ϱ−2E[∥∆( Xc
+
+ti−1 )∥22] + ϱ−2E[(( xsc 
+
+i − μ0)⊤∆( Xc
+
+ti−1 )) 2] .
+
+29 Therefore, the term considered in (48) is bounded by 
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+≲
+
+Z 
+
+ϱ−2(xsc 
+
+i − μ0)⊤ E[∆( eXc
+
+i−1) − ∆( Xc
+
+ti−1 )]  − ϱ−2 E[∥∆( eXc
+
+i−1)∥22 − ∥ ∆( Xc
+
+ti−1 )∥22]
+
++ ϱ−2E[(( xsc 
+
+i − μ0)⊤∆( eXc
+
+i−1)) 2 − (( xsc 
+
+i − μ0)⊤∆( Xc
+
+ti−1 )) 2]
+
+
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+(xsc 
+
+i | xs
+
+i−1)d xsc 
+
+i
+
+≤ ϱ−2∥E[xsc 
+
+i − μ0]∥⊤
+
+2 ∥E[∆( Xc
+
+ti−1 ) − ∆( eXc
+
+i−1)] ∥2 + ϱ−2 E[∥∆( Xc
+
+ti−1 )∥22 − ∥ ∆( eXc
+
+i−1)∥22]
+
++ ϱ−2E[∥xsc 
+
+i − μ0∥22] E[∆( Xc
+
+ti−1 )∆( Xc
+
+ti−1 )⊤ − ∆( eXc
+
+i−1)∆( eXc
+
+i−1)⊤] op . (89) According to the update rule of eXsc 
+
+i , the expectation of eXsc 
+
+i − μ0 conditioned on eXs
+
+i−1 = xs
+
+i−1 is bounded by 
+
+ϱ−2∥E[exsc 
+
+i − μ0]∥2 = ϱ−2∥E[∆( eXc
+
+i−1) | eXs
+
+i−1 = xs
+
+i−1]∥2
+
+= αti σti−1 e−λti−1 (1 − e−2δi )
+
+σ2
+
+ti (1 − e−2δi ) ∥E[∇xsc  
+
+> i−1
+
+log pλi−1 ( eXc
+
+i−1, x sc 
+
+i−1) | eXs
+
+i−1 = xs
+
+i−1]∥2 = O(1) .
+
+Similarly, we have 
+
+ϱ−2E[∥xsc 
+
+i − μ0∥22] = α2
+
+ti σ2
+
+ti−1 e−2λti−1 (1 − e−2δi )2
+
+σ2
+
+ti (1 − e−2δi ) E[∥∇ xsc  
+
+> i−1
+
+log pλi−1 ( eXc
+
+i−1, x sc 
+
+i−1)∥22 | eXs
+
+i−1 = xs
+
+i−1] + d = O(1) .
+
+Morever, define 
+
+∆( xc
+
+i−1) := δ−1
+
+i ∆( xc
+
+i−1).
+
+We have E[∥∆( Xc
+
+ti−1 )∥2] < ∞ and E[∥∆( eXc
+
+i−1)∥2] < ∞. Instituting into (89), we have 
+
+Z
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+,Y,Z (xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+≲ δi∥E[∆( Xc
+
+ti−1 ) − ∆( eXc
+
+i−1)] ∥2 + δi|E[∥∆( Xc
+
+ti−1 )∥22 − ∥ ∆( eXc
+
+i−1)∥22]|
+
++ δ2
+
+i ∥E[∆( Xc
+
+ti−1 )∆( Xc
+
+ti−1 )⊤ − ∆( eXc
+
+i−1)∆( eXc
+
+i−1)⊤]∥op . (90) Thus we have 
+
+kX
+
+i=1 
+
+Exs
+
+> i−1
+
+∼ eXs 
+
+> i−1
+
+| Y,Z 
+
+ Z 
+
+log 
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)p eXc 
+
+> i−1
+
+| eXs
+
+> i−1
+
+,Y,Z (xc
+
+i−1 | xs
+
+i−1, y, z )d xc
+
+i−1
+
+R p eXsc  
+
+> i
+
+| eXi−1 (xsc 
+
+i | xi−1)pXc 
+
+> ti−1
+
+| Xs
+
+> ti−1
+
+(xc
+
+i−1 | xs
+
+i−1)d xc
+
+i−1
+
+· p eXsc  
+
+> i
+
+| eXs
+
+> i−1
+
+(xsc 
+
+i | xs
+
+i−1, y, z )d xsc 
+
+i
+
+
+
+≲ max 
+
+i Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+∥E[∆( Xc
+
+ti−1 ) − ∆( eXc
+
+i−1) | eXsc 
+
+i−1 = Xsc 
+
+ti−1 = xsc 
+
+i−1]∥2
+
+
+
++ max 
+
+i Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+|E[∥∆( Xc
+
+ti−1 )∥22 − ∥ ∆( eXc
+
+i−1)∥22 | eXsc 
+
+i−1 = Xsc 
+
+ti−1 = xsc 
+
+i−1]|
+
++ δ max 
+
+i Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+∥E[∆( Xc
+
+ti−1 )∆( Xc
+
+ti−1 )⊤ − ∆( eXc
+
+i−1)∆( eXc
+
+i−1)⊤ | eXsc 
+
+i−1 = Xsc 
+
+ti−1 = xsc 
+
+i−1]∥op 
+
+ → 0,
+
+as Lemma 2 implies that the following limit holds for any function f with finite expectation: 
+
+Exsc 
+
+> i−1
+
+∼pfXsc   
+
+> i−1|Y,Z
+
+E[f (Xc
+
+ti−1 ) − f ( eXc
+
+i−1) | eXsc 
+
+i−1 = Xsc 
+
+ti−1 = xsc 
+
+i−1] → 0.
+
+B.7 Proof of Lemma 6 
+
+We will bound the norm of ∥eti,j ∥2 for j = 1 , 2, 3 separately. We start from ∥eti,1∥2, which is controlled by 
+
+| σti+1 
+
+σti
+
+− 1|∥ bXc
+
+ti ∥2 according to its definition. Note that σti+1 ≤ σti and αti+1 ≥ αti . Thus we have 
+
+σti+1 
+
+σti
+
+− 1 = 1 − σti+1 
+
+σti
+
+≤ 1 − αti
+
+αti+1 
+
+σti+1 
+
+σti
+
+= 1 − e−λti+1 
+
+e−λti
+
+= 1 − e−δi+1 ≤ δi+1 . (91) 30 Thus we have 
+
+∥eti,1(xc
+
+ti )∥22 =
+
+ σti+1 
+
+σti
+
+− 1
+
+ q 
+
+1 − η(1 − e−2δi+1 )xc
+
+ti
+
+22
+
+≤ δ2
+
+i+1 ∥xc
+
+ti ∥22. (92) For the error term ∥eti,2∥2, recalling that x0 is bounded, which implies that μc
+
+ti is also bounded by some constant B as it is a conditional expectation of x0. Thus we have 
+
+∥eti,2(xc
+
+ti )∥2 =     αti+1 − αti
+
+ +  αti+1 e−δi+1 − αti
+
+ q
+
+1 − η(1 − e−2δi+1 )μc
+
+ti (xti ) 2
+
+≤ B  αti+1 − αti + |αti+1 e−δi+1 − αti | ≤ B  2αti+1 − 2αti + αti+1 (1 − e−δi+1 ) . (93) Note that 
+
+αti+1 − αti = αti+1 
+
+
+
+1 − αti
+
+αti+1 
+
+
+
+≤ αti+1 
+
+
+
+1 − σti+1 
+
+σti
+
+αti
+
+αti+1 
+
+
+
+= αti+1 
+
+ 1 − e−δi+1  ≤ αti+1 δi+1 . (94) Inserting into (93), we have 
+
+∥eti,2(xc
+
+ti )∥22 ≤ B2α2
+
+ti+1 (2 δi+1 + δi+1 )2 = O(δ2
+
+i+1 ). (95) For the error term ∥eti,3∥2, we have 
+
+∥eti,3(xti , x s
+
+ti+1 )∥2 =  1 −
+
+q
+
+1 − η(1 − e−2δi+1 )  σti ϵc
+
+ti (Xti ) − σti+1 ϵc
+
+ti+1 (xest 
+
+ti+1 )
+
+2
+
+(i) 
+
+≤ σ−2
+
+ti+1 γi σti ϵc
+
+ti − σti+1 ϵc
+
+ti+1 2
+
+= σ−2
+
+ti+1 γi σ2
+
+ti ∇ log pXc 
+
+> ti
+
+,X sc  
+
+> ti
+
+|Xs
+
+> ti
+
+(xc
+
+ti , x sc 
+
+ti |αti Y ti + ˆ σti Zti )
+
+− σ2
+
+ti+1 ∇ log pXc 
+
+> ti+1
+
+,X sc  
+
+> ti+1
+
+|xs
+
+> ti+1
+
+(xc
+
+ti , x sc 
+
+ti+1 |αti+1 Y ti + ˆ σti+1 Zti ) ,
+
+where xest 
+
+ti+1 is defined by V ⊤Sc xest 
+
+ti+1 = xc
+
+ti and V ⊤S xest 
+
+ti+1 = xs
+
+ti+1 , (i) arises from 
+
+1 −
+
+q
+
+1 − η(1 − e−2δi+1 ) ≤ η(1 − e−2δi+1 ) = σ−2
+
+ti+1 γi.
+
+and the last equation comes from (55). Combining with (56), we have 
+
+∥eti,3(xti , x s
+
+ti+1 )∥2
+
+≤ σ−2
+
+ti+1 γi EXc 
+
+> 0
+
+[xc
+
+ti − αti Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ]
+
+− EXc 
+
+> 0
+
+[xc
+
+ti − αti+1 Xc
+
+0|Xc
+
+ti+1 = xc
+
+ti , X sc 
+
+ti+1 = xsc 
+
+ti+1 , X s
+
+ti+1 = αti+1 Y ti+1 + ˆ σti+1 Zti+1 ] 2
+
+= σ−2
+
+ti+1 γi EXc 
+
+> 0
+
+[αti Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ]
+
+− EXc 
+
+> 0
+
+[αti+1 Xc
+
+0|Xc
+
+ti+1 = xc
+
+ti , X sc 
+
+ti+1 = xsc 
+
+ti+1 , X s
+
+ti+1 = αti+1 Y ti+1 + ˆ σti+1 Zti+1 ] 2
+
+≤ σ−2
+
+ti+1 γi(αti+1 − αti ) EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ] 2
+
++ σ−2
+
+ti+1 γiαti+1 EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ]
+
+− EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti+1 = xc
+
+ti , X sc 
+
+ti+1 = xsc 
+
+ti+1 , X s
+
+ti+1 = αti+1 Y ti+1 + ˆ σti+1 Zti+1 ] 2
+
+. (96) Recall that X0 is bounded. By using (94), the first term is bounded by 
+
+(αti+1 − αti ) EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ] 2
+
+= O(δi+1 ). (97) 31 We claim that the second term is bounded by the following inequality, whose proof is postponed to the end of this section. 
+
+EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ]
+
+− EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti+1 = xc
+
+ti , X sc 
+
+ti+1 = xsc 
+
+ti+1 , X st 
+
+ti+1 = αti+1 Y ti+1 + ˆ σti+1 Zti+1 ] 2
+
+≲
+
+
+
+∥xc
+
+ti ∥2 + ∥xsc 
+
+ti ∥2 + ∥Z∥2 + 1 
+
+
+
+δi+1 + ∥xsc 
+
+ti+1 − xsc 
+
+ti ∥2. (98) Combining (98) and (97) together with (96), we have 
+
+∥eti, 3 (xti , x s
+
+ti+1 )∥2 ≲
+
+
+
+∥xc
+
+ti ∥2 + ∥xsc 
+
+ti ∥2 + ∥Z∥2 + 1 
+
+
+
+δi+1 γi + γi∥xsc 
+
+ti+1 − xsc 
+
+ti ∥2. (99) For the last term in the right-hand-side of (58), we have 
+
+1 −
+
+q
+
+1 − η(1 − e−2δi+1 ) − η(1 − e−2δi+1 )2
+
+!
+
+σti+1 ϵc
+
+ti+1 
+
+2
+
+≤ 1 −
+
+q
+
+1 − η(1 − e−2δi+1 ) − η(1 − e−2δi+1 )2 σti+1 ∥ϵc
+
+ti+1 ∥2
+
+≲ γ2
+
+i
+
+∥ϵc
+
+ti+1 ∥2
+
+σ3
+
+ti+1 
+
+≤ γ2
+
+i
+
+σ4
+
+ti+1 
+
+(∥xc
+
+ti ∥2 + αti B). (100) Combining (92), (95), (99), and (100), we have 
+
+∥eti (xti , x s
+
+ti+1 )∥22 ≲
+
+
+
+∥xc
+
+ti ∥2 + ∥xsc 
+
+ti ∥2 + ∥Z∥2 + 1 
+
+2
+
+δ2
+
+i+1 + ( ∥xc
+
+ti ∥22 + 1) γ4
+
+i + γ2
+
+i ∥xsc 
+
+ti+1 − xsc 
+
+ti ∥22.
+
+It suffices to prove that 
+
+E bXsc  
+
+> ti+1
+
+| bXti =xti
+
+[∥ bXsc 
+
+ti+1 − bXsc 
+
+ti ∥22] = O(δ2
+
+i+1 )( ∥xti ∥22 + 1) + O(δi).
+
+According to the update rule of bXsc 
+
+ti+1 , we have 
+
+E bXsc  
+
+> ti+1
+
+| bXti =xti
+
+[∥ bXsc 
+
+ti+1 − bXsc 
+
+ti ∥22] ≲
+
+ σti+1 
+
+σti
+
+e−δi+1 − 1
+
+2
+
+∥xsc 
+
+ti ∥22 + δ2
+
+i+1 + δi+1 E[∥zsc 
+
+ti ∥22]= δ2
+
+i+1 (∥xsc 
+
+ti ∥22 + 1) .
+
+and complete the proof. 
+
+Proof of (98) . For the second term, we introduce the following notation qλi (x0|x′) to simplify the expres-sion: 
+
+qλi (x0|x′) := pX0|Xti (x0|x′) = ϕ(x′|αti x0, σ ti )pX0 (x0)
+
+pXti (x′) ,
+
+where ϕ(·| μ, σ ) denotes the Gaussian density functon with mean vector μ and covariance matrix σ2I. Armed with this notation, we can control the second term as 
+
+EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti = xc
+
+ti , X sc 
+
+ti = xsc 
+
+ti , X s
+
+ti = αti Y ti + ˆ σti Zti ]
+
+− EXc 
+
+> 0
+
+[Xc
+
+0|Xc
+
+ti+1 = xc
+
+ti , X sc 
+
+ti+1 = xsc 
+
+ti+1 , X s
+
+ti+1 = αti+1 Y ti+1 + ˆ σti+1 Zti+1 ] 2
+
+=
+
+Z
+
+x0
+
+ qλi (x0|˜xti ) − qλi+1 (x0|˜xti+1 ) dx0
+
+2
+
+≤ B
+
+Z
+
+|qλi (x0|˜xti ) − qλi+1 (x0|˜xti+1 )|dx0, (101) 32 where ˜xti := [ xc 
+
+> ti
+
+, x sc  
+
+> ti
+
+, α ti Y ti + ˆ σti Zti ] and ˜xti+1 := [ xc 
+
+> ti
+
+, x sc  
+
+> ti+1
+
+, α ti+1 Y ti+1 + ˆ σti+1 Zti+1 ]. According to the definition of qλi , we have 
+
+1
+
+qλi (x|x′)
+
+∂q λi (x|x′)
+
+∂α ti
+
+= ∂ log qλi (x|x′)
+
+∂α ti
+
+= ∂ log ϕ(x′|αti x, σ ti )
+
+∂α ti
+
+− ∂ log pXti (x′)
+
+∂α ti
+
+= − 12
+
+∂∂α ti
+
+1
+
+σ2
+
+> ti
+
+∥x′ − αti x∥22 − ∂ log pXti (x′)
+
+∂α ti
+
+. (102) Moreover, we have 
+
+∂ log pXti (x′)
+
+∂α ti
+
+= 12σ2
+
+> ti
+
+Z ∂∂α ti
+
+∥x′ − αti x∥22
+
+ϕ(x′|αti x, σ ti )pX0 (x)
+
+pXti (x′) dx
+
+= 1
+
+σ2
+
+> ti
+
+Z
+
+(x′ − αti x)⊤x ϕ(x′|αti x, σ ti )pX0 (x)
+
+pXti (x′) dx
+
+= 1
+
+σ2
+
+> ti
+
+Z
+
+(x′ − αti x)⊤xq λi (x|x′)d x
+
+≲ O(∥x′∥2 + 1) .
+
+Substituting into (102), we have 
+
+1
+
+qλi (x|x′)
+
+∂q λi (x|x′)
+
+∂α ti
+
+≲ O(∥x′∥2 + 1) .
+
+Furthermore, we have the following inequality in a similar way 
+
+1
+
+qλi (x|x′)
+
+∂q λi (x|x′)
+
+∂σ ti
+
+= − 12
+
+∂∂σ ti
+
+1
+
+σ2
+
+> ti
+
+∥x′ − αti x∥22 − dσti
+
+− ∂ log pXti (x′)
+
+∂σ ti
+
+> (i)
+
+= σ−3 
+
+> ti
+
+∥x′ − αti x∥22 −
+
+Z
+
+σ−3 
+
+> ti
+
+∥x′ − αti x∥22qλi (x|x′)d x, (103) where (i) comes from 
+
+∂ log pXti (x′)
+
+∂σ ti
+
+=
+
+Z
+
+σ−3 
+
+> ti
+
+∥x′ − αti x∥22qλi (x|x′)d x − dσti
+
+.
+
+By using the bounded property of X0 again, we have 
+
+1
+
+qλi (x|x′)
+
+∂q λi (x|x′)
+
+∂σ ti
+
+= O(∥x′∥2 + 1) .
+
+In addition, we have 
+
+∇x′ log qλi (x|x′) = −∇ x′
+
+12σ2
+
+> ti
+
+∥x′ − αti x∥22 − ∇ x′ log pXti (x′)= − 1
+
+σ2
+
+> ti
+
+(x′ − αti x) + 1
+
+σ2
+
+> ti
+
+E[x′ − αti X0|Xti = x′],
+
+∥∇ x′ log qλi (x|x′)∥2 = O(∥x′∥2).
+
+Moreover, we have 
+
+∥˜xti+1 − ˜xti ∥2 ≤ (αti+1 − αti )∥yti ∥2 + ( σti+1 − σti )∥Zti ∥2 + ∥xsc  
+
+> ti+1
+
+− xsc  
+
+> ti
+
+∥2.
+
+Combining these together, we have 
+
+|qλi (x|˜xti ) − qλi+1 (x|˜xti+1 )|
+
+33 ≲ qλi (x|˜xti )( ∥xc
+
+ti ∥2 + ∥xsc 
+
+ti ∥2 + ∥Z∥2 + 1)( |αti − αti+1 | + |σti − σti+1 |)+ qλi (x|˜xti )∥xsc 
+
+ti+1 − xsc 
+
+ti ∥2 + O(( |αti − αti+1 | + |σti − σti+1 |)2) + O(∥xsc 
+
+ti+1 − xsc 
+
+ti ∥22)
+
+According to (94) and (91), we have |αti − αti+1 | = O(δi+1 ) and |σti − σti+1 | = O(δi+1 ), and thus 
+
+|qλi (x|˜xti ) − qλi+1 (x|˜xti+1 )| ≲ qλi (x|˜xti )
+
+
+
+∥xc
+
+ti ∥2 + ∥xsc 
+
+ti ∥2 + ∥Z∥2 + 1 
+
+
+
+δi+1 
+
++ qλi (x|˜xti )∥xsc 
+
+ti+1 − xsc 
+
+ti ∥2 + O(δ2
+
+i+1 ) + O(∥xsc 
+
+ti+1 − xsc 
+
+ti ∥22). (104) Substituting (104) into (101), we complete the proof. 
+
+# C Extension to general A
+
+For V ⊤Sc xti , V ⊤Sprior 
+
+> ti
+
+xti , we aim to approximately generate them according to the following conditional distribu-tion: 
+
+V ⊤Sc bXti , V ⊤Sprior 
+
+> ti
+
+bXti | V ⊤Smeas 
+
+> ti
+
+bXti , V ⊤Sprior 
+
+> ti
+
+bXτ ∼ pV ⊤Sc Xti ,V ⊤Sprior 
+
+> ti
+
+Xti | V ⊤Smeas 
+
+> ti
+
+Xti ,V ⊤Sprior 
+
+> ti
+
+Xτ
+
+Towards this, we need to calculate the score function, i.e., the log gradient of the above conditional density with respect to V ⊤Sc xti and V ⊤Sprior 
+
+> ti
+
+xti . In particular, the gradient with respect to V ⊤Sc xti is given by 
+
+∇V ⊤Sc xti
+
+log pV ⊤Sc Xti ,V ⊤Sprior 
+
+> ti
+
+Xti | V ⊤Smeas 
+
+> ti
+
+Xti ,V ⊤Sprior 
+
+> ti
+
+Xτ (V ⊤Sc xti , V ⊤Sprior 
+
+> ti
+
+xti | V ⊤Smeas 
+
+> ti
+
+xti , V ⊤Sprior 
+
+> ti
+
+xτ )= ∇V ⊤Sc xti
+
+log pV ⊤Sc Xti ,V ⊤Sprior 
+
+> ti
+
+Xti ,V ⊤Smeas 
+
+> ti
+
+Xti
+
+(V ⊤Sc xti , V ⊤Sprior 
+
+> ti
+
+xti , V ⊤Smeas 
+
+> ti
+
+xti ) = − 1
+
+σti
+
+V ⊤Sc ϵti (xti ),
+
+which is the same as previously used score function defined in (12). the gradient with respect to V ⊤Sprior 
+
+> ti
+
+xti is given by 
+
+∇V ⊤Sprior 
+
+> ti
+
+xti
+
+log pV ⊤Sc Xti ,V ⊤Sprior 
+
+> ti
+
+Xti | V ⊤Smeas 
+
+> ti
+
+Xti ,V ⊤Sprior 
+
+> ti
+
+Xτ (V ⊤Sc xti , V ⊤Sprior 
+
+> ti
+
+xti | V ⊤Smeas 
+
+> ti
+
+xti , V ⊤Sprior 
+
+> ti
+
+xτ )= ∇V ⊤Sprior 
+
+> ti
+
+xti
+
+log pV ⊤Sc Xti ,V ⊤Sprior 
+
+> ti
+
+Xti ,V ⊤Smeas 
+
+> ti
+
+Xti
+
+(V ⊤Sc xti , V ⊤Sprior 
+
+> ti
+
+xti , V ⊤Smeas 
+
+> ti
+
+xti )+ ∇V ⊤Sprior 
+
+> ti
+
+xti
+
+log pV ⊤Sprior 
+
+> ti
+
+Xτ | V ⊤Sprior 
+
+> ti
+
+Xti
+
+(V ⊤Smeas 
+
+> ti
+
+xτ , V ⊤Smeas 
+
+> ti
+
+xti )= − 1
+
+σti
+
+V ⊤Sprior 
+
+> ti
+
+ϵti (xti ) + 1
+
+σ2
+
+ti (e 2( λti −λτ ) − 1) 
+
+ αti
+
+ατ
+
+V ⊤Sprior 
+
+> ti
+
+xτ − V ⊤Sprior 
+
+> ti
+
+xti
+
+
+
+.
+
+Compared to previously used score function, an additional term is introduced to capture the condition information between V ⊤Sprior 
+
+> ti
+
+bXti and V ⊤Sprior 
+
+> ti
+
+bXτ . Inserting this score function into the DDIM update rule yields the update formula in (25). 
+
+C.1 Proof of Theorem 2 
+
+Akin to the proof of Theorem 1, we first construct the following auxiliary sequence: 
+
+Xst 
+
+k+1 = αtk+1 Y tk+1 + bσtk+1 Ztk+1 , Xsc 
+
+k+1 , X c
+
+k+1 ∼ pXsc 
+
+> k+1
+
+,X c
+
+> k+1
+
+|Xst 
+
+> k+1
+
+,X sc ,t k+1 
+
+> τs
+
+(·, · | Xst 
+
+k+1 , X sc ,t k+1 
+
+kτs ), (105a) 
+
+eXst 
+
+k+1 = αtk+1 Y tk+1 + bσtk+1 Ztk+1 , (105b) 
+
+eXsc 
+
+k+1 = eXsc 
+
+k + γk∇ eXsc 
+
+> k
+
+log qλk+1 ( eXc
+
+k, eXsc 
+
+k , eXst 
+
+k+1 ) + p2γkZsc 
+
+k , (105c) 
+
+eXc
+
+k+1 = eXc
+
+k + γk∇ eXc
+
+> k
+
+log qλk+1 ( eXc
+
+k, eXsc 
+
+k , eXst 
+
+k+1 ) + p2γkZc
+
+k, (105d) 34 where qλk (xc
+
+k, x sc 
+
+k , x st 
+
+k+1 ) is defined as 
+
+qλk+1 (xc
+
+k, x sc 
+
+k , x st 
+
+k ) := pXsc  
+
+> tk+1
+
+,X c 
+
+> tk+1
+
+| Xst  
+
+> tk+1
+
+,X sc ,t k+1 
+
+> τs
+
+(xc
+
+k, x sc 
+
+k | xst 
+
+k+1 , x sc ,t k+1 
+
+kτs 
+
+),
+
+and Xsc ,t k+1 
+
+τs = {v⊤
+
+s Xτs }s∈S c
+
+> tk+1
+
+, Xsc ,t k+1 
+
+kτs = {v⊤
+
+s Xkτs }s∈S c
+
+> tk+1
+
+By a similar argument with Lemma 1, we have 
+
+KL (p eX0: M | Y,Z ∥p bXt0: M | Y,Z ) → 0, as η3δ2 → 0, and η → ∞ . (106) Moreover, the sequence defined in (31) satisfies pXk | V ⊤Stk
+
+Xk ,v ⊤ 
+
+> s
+
+Xkτs 
+
+= pXtk | V ⊤Stk
+
+Xtk ,v ⊤ 
+
+> s
+
+Xτs . By a similar argument as in (33), it suffices to prove that for any y, z,
+
+TV  p eXk | Y,Z (· | y, z ), p Xk | Y,Z (· | y, z ) → 0.
+
+By decomposition, we have 
+
+TV  p eXk | Y,Z (· | y, z ), p Xk | Y,Z (· | y, z ) ≤ TV  p eXst  
+
+> k
+
+, eXsc ,t kkτs | Y,Z (· | y, z ), p Xst  
+
+> k
+
+,X sc ,t kkτs | Y,Z (· | y, z )
+
++ TV  p eXk | eXst  
+
+> k
+
+, eXsc ,t kkτs ,Y,Z (· | xst 
+
+k , x τ , y, z ), p Xk | Xst  
+
+> k
+
+,X sc ,t kkτs ,Y,Z (· | xst 
+
+k , x τ , y, z )
+
+= TV  p eXk | eXst  
+
+> k
+
+, eXsc ,t kkτs ,Y,Z (· | xst 
+
+k , x τ , y, z ), p Xtk | Xst  
+
+> tk
+
+,X sc ,t kτs 
+
+(· | xst 
+
+k , x τ ),
+
+where xst 
+
+k = αtk y+bσtk z, and the last equation uses pXk | Xst  
+
+> k
+
+,X sc ,t kkτs ,Y,Z (· | xst 
+
+k , x τ , y, z ) = pXtk | Xst  
+
+> tk
+
+,X sc ,t kτs 
+
+(· | xst 
+
+k , x τ ).The remaining proof is similar to the proof of Lemma 2. Specificially, we define a new random variable 
+
+eXstc 
+
+k := [ eXsc 
+
+k , eXc
+
+k] and Xstc 
+
+tk := [ Xsc 
+
+tk , X c
+
+tk ]. Then the update rule in (105c) - (105d) can be integrated as 
+
+eXstc 
+
+k+1 = eXstc 
+
+k + γk∇ eXstc 
+
+> k
+
+log qλk+1 ( eXc
+
+k, eXsc 
+
+k , eXst 
+
+k+1 ) + p2γk[Zsc 
+
+k , Z c
+
+k].
+
+For convenience, denote distributions 
+
+pstc 
+
+k (xstc 
+
+tk ) := pXstc  
+
+> tk
+
+| Xst 
+
+> tk
+
+(xstc 
+
+tk | xst 
+
+tk ), ψk(xstc 
+
+tk ) := p eXstc  
+
+> k
+
+| eXst  
+
+> k
+
+, eXsc ,t kkτs ,Y,Z (xstc 
+
+tk | xst 
+
+k , x τ , y, z )
+
+and denote Pγk as the transition probability of the following SDE from t to t + γk:
+
+dX(t) = ∇ log pstc 
+
+k+1 (X(t))d t + √2d Wt, (107) where Wt denotes the Brownian motion. According to the analysis of Langevin, we have 
+
+KL (ψk+1 ∥pstc 
+
+k+1 ) ≤ KL (Pγk ψk∥pstc 
+
+k+1 ) + KL (ψk+1 ∥pstc 
+
+k+1 ) − KL (Pγk ψk∥pstc 
+
+k+1 )
+
+≤ e−2κγ k KL (ψk∥pstc 
+
+k ) + e −2κγ k
+
+ KL (ψk∥pstc 
+
+k+1 ) − KL (ψk∥pstc 
+
+k )
+
++ KL (ψk+1 ∥pstc 
+
+k+1 ) − KL (Pγk ψk∥pstc 
+
+k+1 )
+
+where κ < ∞ is a constant. We claim that 
+
+KL (ψk∥pstc 
+
+k+1 ) − KL (ψk∥pstc 
+
+k ) = O(δk+1 ). (108) By similar argument as in (71) - (74), we have 
+
+KL (ψk+1 ∥pstc 
+
+k+1 ) − KL (Pγk ψk∥pstc 
+
+k+1 ) = O(γ2
+
+k ).
+
+Therefore, we have 
+
+KL (ψk+1 ∥pstc 
+
+k+1 ) ≤ e−2κγ k KL (ψk∥pstc 
+
+k ) + O(δk+1 + γ2
+
+k ) ≲ 1
+
+η + max 
+
+k γk → 0, as η → ∞ , δη → 0.
+
+Finally applying Pinsker’s inequality, we complete the proof. 35 Proof of (108) . According to the definition of KL divergence, we have 
+
+KL (ψk∥pstc 
+
+> k+1
+
+) − KL (ψk∥pstc  
+
+> k
+
+) = 
+
+Z
+
+log pstc  
+
+> k
+
+(x)
+
+pstc 
+
+> k+1
+
+(x) ψk+1 (x)d x. 
+
+It suffices to prove that 
+
+log pstc  
+
+> k
+
+(x) − log pstc 
+
+> k+1
+
+(x) = O(δk+1 ),
+
+which is implied by 
+
+∂∂α k
+
+log pstc  
+
+> k
+
+(x) = O(∥x∥2 + 1) , ∂∂σ k
+
+log pstc  
+
+> k
+
+(x) = O(∥x∥2 + 1) ,
+
+∥∇ xst 
+
+> tk
+
+log pXstc   
+
+> tk|Xst
+> tk
+
+(xstc  
+
+> tk
+
+| xst  
+
+> tk
+
+)∥2 = O(∥xst  
+
+> tk
+
+∥2 + 1) .
+
+To this end, by the definition of pstc  
+
+> k
+
+(x), we have 
+
+∂∂α tk
+
+log pstc  
+
+> k
+
+(x) ≤ ∂∂α k
+
+log pXstc  
+
+> tk,X st
+> tk
+
+(xstc , x st ) + ∂∂α k
+
+log pXst 
+
+> tk
+
+(xst )
+
+= E[( xstc − αtk Xstc  
+
+> 0
+
+)⊤Xstc  
+
+> 0
+
+| Xtk = x]
+
+σ2
+
+> tk
+
++ E[( xst − αtk Xst  
+
+> 0
+
+)⊤Xst  
+
+> 0
+
+| Xtk = x]
+
+σ2
+
+> tk
+
++ E[( xst − αtk Xst  
+
+> 0
+
+)⊤Xst  
+
+> 0
+
+| Xst  
+
+> tk
+
+= xst ]
+
+σ2
+
+> tk
+
+∂∂σ tk
+
+log pstc  
+
+> k
+
+(x) ≤ E[∥xstc − αtk Xstc  
+
+> 0
+
+∥22 | Xtk = x]
+
+σ3
+
+> tk
+
++ E[∥xst − αtk Xst  
+
+> 0
+
+∥22 | Xtk = x]
+
+σ3
+
+> tk
+
++ E[∥xst − αtk Xst  
+
+> 0
+
+∥22 | Xst  
+
+> tk
+
+= xst ]
+
+σ3
+
+> tk
+
+− |S c 
+
+> t
+
+∪ S c|
+
+σtk
+
+,
+
+∥∇ xst 
+
+> tk
+
+log pXstc   
+
+> tk|Xst
+> tk
+
+(xstc  
+
+> tk
+
+| xst  
+
+> tk
+
+)∥2 ≤ ∥∇ xst 
+
+> tk
+
+log pXstc  
+
+> tk,X st
+> tk
+
+(xstc  
+
+> tk
+
+, x st  
+
+> tk
+
+)∥2 + ∥∇ xst 
+
+> tk
+
+log pXst 
+
+> tk
+
+(xst  
+
+> tk
+
+)∥2
+
+≤ E[∥xst − αtk Xst  
+
+> 0
+
+∥2 | Xtk = x]
+
+σ2
+
+> tk
+
++ E[∥xst − αtk Xst  
+
+> 0
+
+∥2 | Xst  
+
+> tk
+
+= xst ]
+
+σ2
+
+> tk
+
+.
+
+Therefore, we complete the proof. 
+
+# References 
+
+Anderson, B. D. (1982). Reverse-time diffusion equation models. Stochastic Processes and their Applications ,12(3):313–326. Babacan, S. D., Molina, R., and Katsaggelos, A. K. (2009). Bayesian compressive sensing using laplace priors. IEEE Transactions on image processing , 19(1):53–63. Cai, C., Jiao, Y., and Li, G. (2026). Diffusion models adapt to low-dimensional structure under flexible coefficient choices. arXiv preprint arXiv:2606.23627 .Candes, E. and Recht, B. (2012). Exact matrix completion via convex optimization. Communications of the ACM , 55(6):111–119. Candès, E. J. (2014). Mathematics of sparsity (and a few other things). In Proceedings of the International Congress of Mathematicians, Seoul, South Korea , volume 123, pages 235–258. Citesee. Candès, E. J., Romberg, J., and Tao, T. (2006). Robust uncertainty principles: Exact signal reconstruction from highly incomplete frequency information. IEEE Transactions on information theory , 52(2):489–509. Cardoso, G., Idrissi, Y. J. E., Corff, S. L., and Moulines, E. (2023). Monte carlo guided diffusion for bayesian linear inverse problems. arXiv preprint arXiv:2308.07983 .36 Chan, S. H., Wang, X., and Elgendy, O. A. (2017). Plug-and-play admm for image restoration: Fixed-point convergence and applications. IEEE Transactions on Computational Imaging , 3(1):84–98. Chen, S., Daras, G., and Dimakis, A. (2023). Restoration-degradation beyond linear diffusions: A non-asymptotic analysis for ddim-type samplers. In International Conference on Machine Learning , pages 4462–4484. PMLR. Chi, Y., Lu, Y. M., and Chen, Y. (2019). Nonconvex optimization meets low-rank matrix factorization: An overview. IEEE Transactions on Signal Processing , 67(20):5239–5269. Choi, J., Kim, S., Jeong, Y., Gwon, Y., and Yoon, S. (2021). Ilvr: Conditioning method for denoising diffusion probabilistic models. arXiv preprint arXiv:2108.02938 .Chung, H., Kim, J., McCann, M. T., Klasky, M. L., and Ye, J. C. (2023a). Diffusion posterior sampling for general noisy inverse problems. In International Conference on Learning Representations .Chung, H., Lee, S., and Ye, J. C. (2023b). Fast diffusion sampler for inverse problems by geometric decom-position. arXiv preprint arXiv:2303.05754 .Chung, H., Sim, B., and Ye, J. C. (2022). Come-closer-diffuse-faster: Accelerating conditional diffusion models for inverse problems through stochastic contraction. In Conference on Computer Vision and Pattern Recognition (CVPR) , pages 12413–12422. Chung, H. and Ye, J. C. (2022). Score-based diffusion models for accelerated mri. Medical image analysis ,80:102479. Daras, G., Chung, H., Lai, C.-H., Mitsufuji, Y., Ye, J. C., Milanfar, P., Dimakis, A. G., and Delbracio, M. (2024). A survey on diffusion models for inverse problems. arXiv preprint arXiv:2410.00083 .Daubechies, I., Defrise, M., and De Mol, C. (2004). An iterative thresholding algorithm for linear inverse problems with a sparsity constraint. Communications on Pure and Applied Mathematics: A Journal Issued by the Courant Institute of Mathematical Sciences , 57(11):1413–1457. Deng, J., Dong, W., Socher, R., Li, L.-J., Li, K., and Fei-Fei, L. (2009). Imagenet: A large-scale hierarchical image database. In 2009 IEEE conference on computer vision and pattern recognition , pages 248–255. Ieee. Dhariwal, P. and Nichol, A. (2021). Diffusion models beat gans on image synthesis. Advances in neural information processing systems , 34:8780–8794. Donoho, D. L. (2006). Compressed sensing. IEEE Transactions on information theory , 52(4):1289–1306. Donoho, D. L., Maleki, A., and Montanari, A. (2009). Message-passing algorithms for compressed sensing. 
+
+Proceedings of the National Academy of Sciences , 106(45):18914–18919. Dou, Z. and Song, Y. (2024). Diffusion posterior sampling for linear inverse problem solving: A filtering perspective. In The Twelfth International Conference on Learning Representations .Doucet, A., De Freitas, N., and Gordon, N. (2001). An introduction to sequential monte carlo methods. In 
+
+Sequential Monte Carlo methods in practice , pages 3–14. Springer. Efron, B. (2011). Tweedie’s formula and selection bias. Journal of the American Statistical Association ,106(496):1602–1614. Fan, J. and Li, R. (2001). Variable selection via nonconcave penalized likelihood and its oracle properties. 
+
+Journal of the American statistical Association , 96(456):1348–1360. Graikos, A., Malkin, N., Jojic, N., and Samaras, D. (2022). Diffusion models as plug-and-play priors. arXiv preprint arXiv:2206.09012 .37 Gupta, S., Jalal, A., Parulekar, A., Price, E., and Xun, Z. (2024). Diffusion posterior sampling is computa-tionally intractable. arXiv preprint arXiv:2402.12727 .Haussmann, U. G. and Pardoux, E. (1986). Time reversal of diffusions. The Annals of Probability , pages 1188–1205. Heusel, M., Ramsauer, H., Unterthiner, T., Nessler, B., and Hochreiter, S. (2017). Gans trained by a two time-scale update rule converge to a local nash equilibrium. Advances in neural information processing systems , 30. Ho, J., Jain, A., and Abbeel, P. (2020). Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851. Huang, D. Z., Huang, J., and Lin, Z. (2024). Convergence analysis of probability flow ODE for score-based generative models. arXiv preprint arXiv:2404.09730 .Ji, S., Xue, Y., and Carin, L. (2008). Bayesian compressive sensing. IEEE Transactions on signal processing ,56(6):2346–2356. Jiao, Y. and Li, G. (2024). Instance-dependent convergence theory for diffusion models. arXiv preprint arXiv:2410.13738 .Jiao, Y., Zhou, Y., and Li, G. (2025). Optimal convergence analysis of ddpm for general distributions. arXiv preprint arXiv:2510.27562 .Kawar, B., Elad, M., Ermon, S., and Song, J. (2022). Denoising diffusion restoration models. In Advances in Neural Information Processing Systems , volume 35. Kawar, B., Vaksman, G., and Elad, M. (2021). Snips: Solving noisy inverse problems stochastically. Advances in Neural Information Processing Systems , 34:21757–21769. Lai, C.-H., Song, Y., Kim, D., Mitsufuji, Y., and Ermon, S. (2025). The principles of diffusion models. arXiv preprint arXiv:2510.21890 .Li, G. and Jiao, Y. (2024). Improved convergence rate for diffusion probabilistic models. arXiv preprint arXiv:2410.13738 .Li, G., Wei, Y., Chi, Y., and Chen, Y. (2024). A sharp convergence theory for the probability flow odes of diffusion models. arXiv preprint arXiv:2408.02320 .Liang, J., Huang, Z., and Chen, Y. (2025). Low-dimensional adaptation of diffusion models: Convergence in total variation. arXiv preprint arXiv:2501.12982 .Liu, Z., Luo, P., Wang, X., and Tang, X. (2015). Deep learning face attributes in the wild. In Proceedings of the IEEE international conference on computer vision , pages 3730–3738. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., and Zhu, J. (2022). Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. arXiv preprint arXiv:2211.01095 .Mardani, M., Song, J., Kautz, J., and Vahdat, A. (2023). A variational perspective on solving inverse problems with diffusion models. arXiv preprint arXiv:2305.04391 .Meng, C., Song, Y., Song, J., Wu, J., Zhu, J.-Y., and Ermon, S. (2021). Sdedit: Image synthesis and editing with stochastic differential equations. arXiv preprint arXiv:2108.01073 .Park, T. and Casella, G. (2008). The Bayesian lasso. Journal of the american statistical association ,103(482):681–686. Rockova, V. and George, E. I. (2018). The spike-and-slab lasso. Journal of the American Statistical Associ-ation , 113(521):431–444. 38 Rout, L., Raoof, N., Daras, G., Caramanis, C., Dimakis, A., and Shakkottai, S. (2023). Solving linear inverse problems provably via posterior sampling with latent diffusion models. Advances in Neural Information Processing Systems , 36:49960–49990. Sohl-Dickstein, J., Weiss, E., Maheswaranathan, N., and Ganguli, S. (2015). Deep unsupervised learning using nonequilibrium thermodynamics. In International conference on machine learning , pages 2256–2265. pmlr. Song, J., Meng, C., and Ermon, S. (2021). Denoising diffusion implicit models. In International Conference on Learning Representations .Song, J., Vahdat, A., Mardani, M., and Kautz, J. (2023a). Pseudoinverse-guided diffusion models for inverse problems. In International conference on learning representations .Song, J., Zhang, Q., Yin, H., Mardani, M., Liu, M.-Y., Kautz, J., Chen, Y., and Vahdat, A. (2023b). Loss-guided diffusion models for plug-and-play controllable generation. In International Conference on Machine Learning , pages 32483–32498. PMLR. Song, Y., Shen, L., Xing, L., and Ermon, S. (2022). Solving inverse problems in medical imaging with score-based generative models. International Conference on Learning Representations .Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. (2020). Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 .Sreehari, S., Venkatakrishnan, S. V., Wohlberg, B., Buzzard, G. T., Drummy, L. F., Simmons, J. P., and Bouman, C. A. (2016). Plug-and-play priors for bright field electron tomography and sparse interpolation. 
+
+IEEE Transactions on Computational Imaging , 2(4):408–423. Tang, J. and Yan, Y. (2026). Adaptivity and convergence of probability flow odes in diffusion generative models. Information and Inference: A Journal of the IMA , 15(2):iaag020. Trippe, B. L., Yim, J., Tischer, D., Baker, D., Broderick, T., Barzilay, R., and Jaakkola, T. (2022). Diffu-sion probabilistic modeling of protein backbones in 3d for the motif-scaffolding problem. arXiv preprint arXiv:2206.04119 .Venkatakrishnan, S. V., Bouman, C. A., and Wohlberg, B. (2013). Plug-and-play priors for model based reconstruction. In 2013 IEEE global conference on signal and information processing , pages 945–948. IEEE. Wang, H., Zhang, X., Li, T., Wan, Y., Chen, T., and Sun, J. (2024). Dmplug: A plug-in method for solving inverse problems with diffusion models. Advances in Neural Information Processing Systems , 37:117881– 117916. Wang, Y., Yu, J., and Zhang, J. (2022a). Zero-shot image restoration using denoising diffusion null-space model. arXiv preprint arXiv:2212.00490 .Wang, Z., Bovik, A. C., Sheikh, H. R., and Simoncelli, E. P. (2004). Image quality assessment: from error visibility to structural similarity. IEEE transactions on image processing , 13(4):600–612. Wang, Z., Hunt, J. J., and Zhou, M. (2022b). Diffusion policies as an expressive policy class for offline reinforcement learning. arXiv preprint arXiv:2208.06193 .Wu, L., Trippe, B., Naesseth, C., Blei, D., and Cunningham, J. P. (2023). Practical and asymptotically exact conditional sampling in diffusion models. Advances in Neural Information Processing Systems ,36:31372–31403. Xu, X. and Chi, Y. (2024). Provably robust score-based diffusion posterior sampling for plug-and-play image reconstruction. arXiv preprint arXiv:2403.17042 .39 Zhang, J., Liu, Z., Yan, L., Li, G., and Gu, Y. (2025). Improving diffusion-based inverse algorithms under few-step constraint via learnable linear extrapolation. arXiv preprint arXiv:2503.10103 .Zhang, J., Zhuang, J., Jin, C., Li, G., and Gu, Y. (2024). Unleashing the denoising capability of diffusion prior for solving inverse problems. arXiv preprint arXiv:2406.06959 .Zhang, R., Isola, P., Efros, A. A., Shechtman, E., and Wang, O. (2018). The unreasonable effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 586–595. 40
