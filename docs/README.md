@@ -18,32 +18,35 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-22
-- 运行时间：2026-07-22 21:36:27 UTC
+- 最新运行日期：2026-07-23
+- 运行时间：2026-07-23 21:32:03 UTC
 - 运行状态：成功
-- 本次总论文数：3
-- 精读区：3
-- 速读区：0
+- 本次总论文数：5
+- 精读区：4
+- 速读区：1
 
 ### 今日简报（AI）
-今日精读两篇9分论文，聚焦扩散模型推理时对齐与单步生成。  
-最值得关注的两个方向：DiFA通过前向过程对齐提升扩散模型质量；ROMS-IMLE实现极简且具竞争力的单步生成。  
-建议读者跟进这两种方法的实现细节与性能对比，尤其关注其在图像生成效率上的突破。
-- 详情：[/202607/22/README](/202607/22/README)
+今日精读两篇高分论文，聚焦自回归视频生成的高效注意力机制与扩散模型的剪枝方法。最值得关注：HeadCast通过投射注意力头加速视频生成，以及Importance-Aware OBS剪枝在保持质量下减少模型冗余。建议普通读者重点关注注意力优化与模型压缩方向，以实现在有限算力下更高效的生成应用。
+- 详情：[/202607/23/README](/202607/23/README)
 
 ### 精读区论文标签
-1. [DiFA: Inference-Time Forward-Process Alignment for Diffusion Models](/202607/22/2607.17972v1-difa-inference-time-forward-process-alignment-for-diffusion-models)  
+1. [HeadCast: Casting Attention Heads for Efficient Autoregressive Video Generation](/202607/23/2607.20125v1-headcast-casting-attention-heads-for-efficient-autoregressive-video-generation)  
+   标签：评分：10.0/10、query:diff-accel
+   evidence：免训练即插即用自回归视频扩散模型加速框架
+2. [Importance-Aware OBS Pruning for Diffusion Models](/202607/23/2607.20048v1-importance-aware-obs-pruning-for-diffusion-models)  
    标签：评分：9.0/10、query:diff-accel
-   evidence：训练无关框架通过聚合历史预测来精炼数据预测，减少推断步骤。
-2. [ROMS-IMLE: A Minimalist Approach to Competitive Single-Step Generative Modelling](/202607/22/2607.19332v1-roms-imle-a-minimalist-approach-to-competitive-single-step-generative-modelling)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：提出单步生成模型，绕过多步扩散，实现有竞争力的性能。
-3. [Provable diffusion-based posterior sampling for linear inverse problems via DDIM](/202607/22/2607.19333v1-provable-diffusion-based-posterior-sampling-for-linear-inverse-problems-via-ddim)  
+   evidence：免训练剪枝加速扩散模型
+3. [OSVE: One Step Video Editing with One Step Diffusion Models](/202607/23/2607.19895v1-osve-one-step-video-editing-with-one-step-diffusion-models)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：提出基于DDIM的高效后验采样算法用于线性逆问题，降低计算开销
+   evidence：单步视频编辑加速扩散模型推理
+4. [Evolving Cache Schedules for Fast Diffusion Policy Inference](/202607/23/2607.20293v1-evolving-cache-schedules-for-fast-diffusion-policy-inference)  
+   标签：评分：8.0/10、query:diff-accel
+   evidence：免训练缓存调度加速扩散推理
 
 ### 速读区论文标签
-- 本次无速读推荐。
+1. [Multi-Mask Diffusion Language Models for Few-Step Generation](/202607/23/2607.19686v1-multi-mask-diffusion-language-models-for-few-step-generation)  
+   标签：评分：7.0/10、query:diff-accel
+   evidence：多掩码扩散用于少步生成，加速文本扩散模型
 
 
 <div class="dpr-home-promo-card dpr-home-panel">

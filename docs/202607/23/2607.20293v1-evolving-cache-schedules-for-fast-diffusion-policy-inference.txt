@@ -1,0 +1,637 @@
+Title: Evolving Cache Schedules for Fast Diffusion Policy Inference
+
+URL Source: https://arxiv.org/pdf/2607.20293v1
+
+Published Time: Thu, 23 Jul 2026 01:06:36 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# Evolving Cache Schedules for Fast Diffusion Policy Inference 
+
+Siying Wang 1, Kangye Ji 3, Di Wang 2, and Fei Cheng 2,4⋆ 
+
+> 1
+
+School of Telecommunications Engineering, Xidian University, Xi’an, China  
+
+> 2
+
+School of Computer Science and Technology, Xidian University, Xi’an, China  
+
+> 3
+
+Tsinghua Shenzhen International Graduate School, Tsinghua University, Shenzhen, China  
+
+> 4
+
+National Experimental Teaching Demonstration Center for Computer Network and Information Security, Xidian University, Xi’an, China 
+
+feicheng@xidian.edu.cn 
+
+Abstract. Diffusion policies achieve strong visuomotor control by it-eratively denoising action chunks, but repeated denoising makes real-time deployment computationally demanding. Cache-based methods re-duce inference cost by reusing intermediate activations, but existing training-free schedules typically allocate computation uniformly across blocks, ignoring heterogeneous redundancy across blocks and leading to a suboptimal performance–efficiency trade-off. To bridge this gap, we introduce Evolving Cache Schedules (EVO), a training-free accelera-tion framework that globally schedules cache refreshes via evolutionary search. EVO represents each candidate as a complete schedule over the block–timestep lattice. Thus, redundant transformer computations dur-ing iterative denoising can be skipped through cache reuse while preserv-ing closed-loop rollout performance. To make the search practical, EVO introduces redundancy-aware initialization, which seeds the population with promising schedules, and target-conditioned early stopping, which verifies and terminates once a desired performance target is reached. The offline-optimized schedule can be directly plugged into pretrained dif-fusion policies without retraining. Extensive manipulation benchmarks show that EVO preserves near-full performance while substantially re-ducing computation, achieving up to 8 .05 × action-generation speedup and reducing FLOPs from 15.77G to as low as 1.96G. Source code is available at https://github.com/pillom/EVO. 
+
+Keywords: Diffusion Policy · Feature Caching · Evolutionary Search 
+
+## 1 Introduction 
+
+Diffusion policies have garnered substantial attention in robotic control for their ability to model multimodal action distributions through conditional denoising processes [3, 32, 6, 8]. With scalable transformer denoisers, this formulation has  
+
+> ⋆
+
+Corresponding author. arXiv:2607.20293v1 [cs.CV] 22 Jul 2026 2 S. Wang et al. 1 25 50 74 99         
+
+> Timestep
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Block
+> Self Attention
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 125 50 74 99
+> Timestep
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Block
+> Cross Attention
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 125 50 74 99
+> Timestep
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Block
+> FFN
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+
+Fig. 1. Cross-step feature dissimilarity of transformer modules on Push-T. Higher dissimilarity indicates larger feature variation between denoising steps and therefore weaker temporal redundancy. The heatmaps show that different blocks exhibit distinct temporal distributions of high-dissimilarity regions as well as different overall dissim-ilarity levels, revealing heterogeneous redundancy patterns and degrees across blocks. FFN denotes the feed-forward network. 
+
+become an expressive action-generation module for high-dimensional visuomotor policies and increasingly complex manipulation settings [18, 1, 28]. However, the iterative denoising loop also imposes a heavy inference burden that directly limits the achievable action frequency, making it difficult for diffusion policies to satisfy the low-latency requirements of real-time, smooth robotic control [10]. Recently, cache-based acceleration methods provide a natural training-free approach to reducing the inference cost of diffusion policies. These methods exploit temporal redundancy along the denoising trajectory by caching intermediate activations and reusing them at skipped positions, so that only selected block–timestep positions need to be recomputed [16, 14, 11, 34, 35]. Existing training-free methods typically allocate computation across blocks uniformly, which ignores heterogeneous redundancy across blocks and leads to a suboptimal trade-off between performance and efficiency. EfficientVLA, for ex-ample, refreshes all blocks synchronously with a fixed temporal interval, while BAC chooses block-specific update timesteps but still assigns a fixed refresh budget to each block [30, 9]. To examine whether such uniform allocation is justified, we measure cross-step feature dissimilarity across transformer blocks. Higher dissimilarity indicates larger feature variation between denoising steps and therefore weaker computation redundancy. As shown in Fig. 1, blocks dif-fer not only in the temporal distribution of high-dissimilarity regions, but also in their overall dissimilarity levels, revealing distinct redundancy patterns and degrees across blocks. This observation motivates a global cache scheduling strategy that allocates one fixed refresh budget over the entire block–timestep lattice, allowing com-putation to move from redundant blocks to sensitive ones. For concreteness, we view training-free acceleration as a fixed-budget cache-scheduling problem. Given cacheable blocks B, denoising steps T , and a budget K, a schedule se-lects K block–step positions to refresh and reuses cached activations for the rest. A naive solution is exhaustive search, but enumerating K refreshes over Evolving Cache Schedules for Fast Diffusion Policy Inference 3
+
+the |B||T | block–step grid yields an exponential search space. Alternatively, one might extend similarity-based approximation [9] to global scheduling, using fea-ture similarity to estimate cache-induced errors without exhaustive evaluation. However, under coupled block schedules, inter-block error propagation makes update-induced errors difficult to formulate as a tractable optimization objec-tive [9], limiting its applicability in global cache scheduling. To bridge this gap, we propose EVO, a training-free framework that searches global cache schedules with an evolutionary algorithm. EVO represents each candidate as a complete refresh schedule and optimizes it through selection, crossover, mutation, and elitism, using closed-loop rollout performance as the fitness. While rollout-based fitness provides a direct estimate of deployment per-formance, its high computational cost limits the practicality of large-scale search. EVO therefore proposes two lightweight mechanisms to make search practical. Specifically, redundancy-aware initialization uses activation dissimilarity only as a soft prior, biasing the initial population toward less redundant block–step posi-tions while keeping random individuals and full-space mutation for exploration. Meanwhile, target-conditioned early stopping turns search into a goal-driven pro-cedure: once a quick evaluation finds a candidate that reaches a baseline-relative target, EVO confirms it with an independent formal evaluation before termina-tion. The final schedule is then deployed as an offline-optimized cache plugin, without altering the policy parameters, diffusion sampler, or action interface. In summary, our contributions are: 
+
+– We reveal heterogeneous redundancy in Diffusion Policy that different trans-former blocks exhibit distinct temporal redundancy patterns and degrees, motivating a global cache scheduling strategy. 
+
+– We propose EVO, a training-free evolutionary framework that searches for complete global cache schedules using closed-loop rollout performance as the optimization objective. 
+
+– We develop redundancy-aware initialization and target-conditioned early stopping to reduce the cost of rollout-driven evolutionary search while pre-serving global exploration. 
+
+– We validate EVO on multiple robotic manipulation benchmarks, showing that it preserves near-full policy performance while achieving up to 8.05 ×
+
+action-generation speedup. 
+
+## 2 Related Work 
+
+Diffusion Policies. Diffusion models were first popularised for image synthesis for their ability to generate high-quality and diverse samples [6, 20]. They were later introduced to visuomotor control because conditional denoising provides a natu-ral way to model multimodal action distributions [3]. Diffusion Policy formulates action generation as conditional denoising and supports both U-Net and trans-former backbones [3]. The transformer variant often performs better on complex or high-action-rate tasks, but repeated transformer computation across denoising steps makes inference latency more pronounced, making it difficult to meet the 4 S. Wang et al. 
+
+low-latency requirements of real-time robotic control [17]. Existing acceleration methods either reduce the number of denoising steps through faster samplers [25, 12, 13, 33], or reduce computation through pruning and distillation [28, 21, 10, 26]. However, they typically alter the sampling process or require additional training. In contrast, our method accelerates transformer-based diffusion poli-cies by reducing inference computation through caching, without retraining the model or modifying the original sampler. 
+
+Cache-based Acceleration. Feature caching stores and reuses intermediate fea-tures across denoising steps to avoid redundant computation. Existing methods have shown strong acceleration for image generation in both U-Net diffusion models and diffusion transformers [16, 29, 22, 35, 24, 15]. These methods typically rely on fixed refresh rules, token-wise or feature-wise update strategies, or learned routing networks, and they are mainly evaluated with image quality metrics such as Fr´ echet Inception Distance (FID). In action generation, EfficientVLA applies feature caching to the diffusion-based action head of Vision-Language-Action (VLA) models [30], but its cache refresh still follows a fixed-interval rule and does not capture redundancy differences across blocks and denoising steps. Block-wise Adaptive Caching (BAC) further selects refresh times for each block based on feature similarity [9], but its refresh budget remains constrained within each block. Existing cache-based methods therefore still lack global budget allocation over the block–timestep lattice. Our method addresses this limitation by formu-lating cache scheduling as a global allocation problem and directly optimizing rollout success rate. 
+
+Evolutionary Search. Evolutionary algorithms and other black-box optimisers are well suited to discrete combinatorial problems where gradients are unavail-able [31, 19, 7, 27]. They have been applied to policy search and neural archi-tecture optimisation for robotic tasks [23, 4, 5], where candidate architectures or policies are often evaluated by empirical task performance. This setting is closely related to our cache scheduling problem: each schedule is a discrete sub-set of block–timestep refresh positions under a fixed budget, and its quality is determined by closed-loop rollout performance rather than a differentiable ob-jective. We therefore use evolutionary search as an offline optimizer for complete cache schedules. Since black-box search with task-level evaluation often incurs high evaluation cost, EVO further incorporates redundancy-aware initialization and target-conditioned early stopping to reduce unnecessary evaluations. 
+
+## 3 Method 
+
+EVO accelerates a pretrained transformer-based diffusion policy by optimizing where cache refreshes are performed during iterative denoising. Rather than as-signing a uniform or per-block refresh budget, EVO searches for a globally con-strained subset of block–timestep positions under a fixed computation budget. Evolving Cache Schedules for Fast Diffusion Policy Inference 5(a) EVO Framework Population Set …Schedule Population Dedup & Refill Evolutionary Schedule Search Selection Crossover Mutation Produce new candidate schedules   
+
+> Iterative Evolution Top as Elite Schedules …Keep high-fitness Schedules Rollout Fitness Evaluation Candidate Schedule Simulated Rollouts …01Fitness=Success Rate
+> Best Verified Schedule Output Initial Schedule Population Next Generation
+
+Evaluate candidates 9
+
+> × Block
+> Temporal features
+> Dissimilarity matrices …Initial Schedule Population Guided Individuals Random Individuals
+
+(b) Population Initialization (c) Target-conditioned Early Stopping Stop & Output Best Verified Pass Continue Search Residual Transformer Block Updated Features Skipped Features Candidate Cache Schedule 1-th N-th Formal Evaluation   
+
+> • More rollouts • Independent seed • High-confidence test 12121212
+> Best Quick Fitness Success Rate Target Threshold Trigger Evaluated Generations
+
+Fig. 2. Framework of EVO, a training-free acceleration framework for global cache scheduling via evolutionary search. (a) EVO searches for a globally budgeted cache schedule, using rollout fitness as the selection criterion. (b) Redundancy-aware and random individuals are combined to initialize the schedule population. (c) Target-conditioned early stopping performs formal verification for promising schedules and terminates once the desired performance target is reached. 
+
+As illustrated in Fig. 2, the method formulates cache scheduling as a subset-selection problem over the block–timestep lattice and optimizes complete sched-ules with evolutionary search, using closed-loop rollout performance as the fit-ness. Redundancy-aware initialization and target-conditioned early stopping are introduced to reduce the cost of this offline search. The resulting schedule is then utilized by the pretrained policy without retraining or modifying the diffusion sampler. 
+
+3.1 Global Cache Scheduling 
+
+Let πθ denote a pretrained diffusion policy. For each action query, the policy starts from initial noise and performs T reverse denoising steps, indexed by 
+
+T = {0, . . . , T − 1}. At each denoising step, the transformer denoiser propagates the action representation through a sequence of cacheable computation units. For an L-layer transformer decoder, the self-attention, cross-attention, and feed-forward residual branches in each layer are used as cacheable units, yielding 
+
+B = 3 L units indexed by B = {1, . . . , B }. The cacheable computations of one 6 S. Wang et al. 1 2 3 4 5 6 7 8
+
+> Layer
+> SA
+> CA
+> FFN
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Success Rate Drop
+
+(a) Single-block cache stress test 0.94 0.96 0.98 1.00     
+
+> Mean Adjacent-step Cosine Similarity
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> Success Rate Drop  Spearman ρ= -0.053 Module Type
+> SA
+> CA
+> FFN
+
+(b) Feature similarity vs. task sensitivity 
+
+Fig. 3. Motivation for rollout-driven global cache scheduling. (a) Under the same sparse update pattern, different transformer blocks cause different success drops, indicating non-uniform task sensitivity across layers and module types. (b) The weak correlation between adjacent-step feature similarity and success drop suggests that feature simi-larity is useful as a prior but insufficient as the final scheduling objective. 
+
+action query can therefore be represented as a two-dimensional block–timestep lattice B × T .Each lattice position ( b, t ) corresponds to the residual-branch computation of unit b at denoising step t. EVO maintains one residual cache cb for each unit and resets all caches before the next action query. Let rb,t be the residual output of unit b at denoising step t. Given a cache schedule S, the residual ˜ rb,t used by the accelerated policy is ˜rb,t =
+
+(
+
+rb,t , (b, t ) ∈ S ,cb, (b, t ) /∈ S , cb ← rb,t if ( b, t ) ∈ S . (1) Thus, selected positions evaluate the original residual branch and refresh the cache, whereas unselected positions reuse the most recently cached residual of the same unit. Cache scheduling only changes which residual computations are executed, while the policy parameters, observation encoder, diffusion sampler, and action interface remain unchanged. Per-block scheduling constrains different blocks to receive comparable refresh allocations, although their effects on closed-loop control may differ substantially. This assumption is evaluated by applying the same sparse update pattern to each block individually while keeping all other blocks fully computed. As shown in Fig. 3(a), the resulting success drop varies across blocks, indicating clear block-dependent task sensitivity. This motivates a global allocation strategy in which refreshes are assigned over the full lattice rather than fixed within each block. Motivated by this non-uniformity, EVO defines a cache schedule as a fixed-budget subset of the block–timestep lattice: 
+
+S ⊆ B × T , |S| = K, (2) where K denotes the total refresh budget, i.e., the number of lattice positions at which the original residual computation is executed. Unlike per-block schedul-ing, this formulation does not pre-assign a fixed number of refreshes to each Evolving Cache Schedules for Fast Diffusion Policy Inference 7
+
+block, allowing the budget to be allocated globally according to downstream performance. 
+
+3.2 Evolutionary Search over Schedules 
+
+The fixed-budget search space contains  BT 
+
+> K
+
+ feasible schedules, making exhaus-tive enumeration impractical. EVO therefore employs evolutionary search to optimize complete cache schedules in this large, discrete, and non-differentiable space. In the evolutionary algorithm, we represent each schedule S by an indi-vidual x, which contains K unique refresh positions: 
+
+x = {(bi, t i)}Ki=1 , (bi, t i) ∈ B × T , |x| = K. (3) Feature similarity is commonly used as a proxy objective for cache scheduling, based on the intuition that similar activations across adjacent denoising steps can be reused with limited error. In closed-loop control, however, activation sim-ilarity is not necessarily aligned with task-level sensitivity. Fig. 3(b) shows that blocks with comparable similarity scores can induce different success drops, and the overall correlation between feature similarity and task sensitivity is weak. Additional analysis across Kitchen, Square MH, Tool PH, Transport MH, and Push-T shows a similar trend. Detailed results are provided in Sec. A.4 of the supplementary material. EVO therefore uses feature similarity only for initial-ization and adopts rollout success rate as the fitness for schedule optimization. Given a candidate schedule S, EVO applies the corresponding cached exe-cution to the pretrained policy, denoted by πθ (S), and estimates its empirical success rate over evaluation episodes: 
+
+F (S) = 1
+
+Neval 
+
+> Neval
+
+X
+
+> n=1
+
+1{Success( τn; S)}, τn ∼ πθ (S). (4) This fitness evaluates the effect of a cache schedule on the closed-loop behav-ior of the accelerated policy. EVO optimizes the schedule by maximizing the downstream rollout success rate under the fixed refresh budget: 
+
+S∗ = argmax 
+
+> |S| =K
+
+F (S), S ⊆ B × T . (5) The evolutionary procedure iteratively applies tournament selection, set-level crossover, mutation, repair, and elitism. Tournament selection samples parent schedules according to their rollout fitness. Set-level crossover exchanges refresh positions between two parents, while mutation resamples a subset of positions from the full block–timestep lattice. The repair operator removes duplicate po-sitions and fills missing positions so that each child remains a feasible schedule with exactly K unique refreshes. Elitism preserves the best-performing schedules across generations, and evaluated schedules are stored using canonical signatures to avoid repeated rollouts. These operators maintain the fixed-budget constraint while allowing refresh allocations to move freely across blocks and denoising steps. 8 S. Wang et al. 
+
+3.3 Practical Search Mechanisms 
+
+Although rollout-based fitness directly reflects closed-loop control performance, it is expensive because each candidate must be evaluated through environ-ment rollouts. EVO reduces this offline cost with two search-time mechanisms. Redundancy-aware initialization improves the starting population, and target-conditioned early stopping limits unnecessary rollout evaluations. Both mech-anisms affect only the search process; schedule selection remains governed by rollout fitness. 
+
+Redundancy-aware Initialization. Feature similarity is not used as the final op-timization objective, but it provides a useful prior for constructing the initial population. While uniformly random initialization provides broad exploration, it may allocate early refresh positions to highly redundant parts of the lattice. EVO therefore uses activation redundancy to bias part of the initial population toward less redundant block–timestep positions. Residual activations are collected from a small set of rollout steps generated by the uncached policy. Let ar,b,t denote the activation for rollout index r, unit 
+
+b, and denoising step t. Each block–timestep position is assigned the following dissimilarity score: 
+
+db,t = Er
+
+ 1
+
+T − 1
+
+X 
+
+> t′̸=t
+
+
+
+1 − ⟨ar,b,t , a r,b,t ′ ⟩∥ar,b,t ∥2∥ar,b,t ′ ∥2
+
+ . (6) A larger db,t indicates that the activation at position ( b, t ) is less similar to other denoising steps within the same module, and hence has lower feature re-dundancy. After normalizing db,t into wb,t , guided individuals sample refresh positions according to 
+
+pb,t = (ϵ + wb,t )γ
+
+P 
+
+> (b′,t ′)∈B×T
+
+(ϵ + wb′,t ′ )γ . (7) This distribution assigns larger initial sampling probabilities to less redundant positions. The prior is used only for initialization: the initial population also contains random schedules, and subsequent mutation and repair can sample any position in B × T . Rollout fitness remains the only selection criterion. 
+
+Target-conditioned Early Stopping. To avoid unnecessary evaluations after a satisfactory schedule has been found, EVO terminates search once a candidate reaches the prescribed performance target. Let qbase denote the formal rollout score of the uncached policy. During evolution, candidate schedules are first screened with a low-cost quick evaluation. When a schedule satisfies 
+
+qquick (S) ≥ qbase , (8) EVO performs an independent formal evaluation using a larger rollout budget and independent random seeds. The schedule is accepted, and search terminates only if 
+
+qformal (S) ≥ qbase − δacc , (9) Evolving Cache Schedules for Fast Diffusion Policy Inference 9
+
+where δacc is the allowed absolute performance drop. The quick evaluation there-fore serves as a screening stage for promising candidates, while the formal eval-uation provides the final acceptance criterion and mitigates the effect of noisy quick rollouts. Representative search trajectories in Sec. A.6 of the supplemen-tary material illustrate that this mechanism reduces unnecessary evaluations while avoiding premature termination. 
+
+3.4 Offline-Optimized Deployment 
+
+After search, EVO fixes the best verified schedule and removes the optimizer from the inference loop. At test time, the deployment wrapper loads S∗, resets the residual caches at the beginning of each action query, and follows Eq. 1 to determine whether each block–timestep position is refreshed or replaced by cache reuse. The policy weights, observation encoder, diffusion sampler, and action interface remain unchanged. The search is performed offline only once for a given task. The resulting schedule is reused across subsequent episodes drawn from the same environment distribution, without online adaptation or repeated search. Further analysis is provided in Sec. 4.3. 
+
+## 4 Experiments 
+
+This section evaluates whether EVO can reduce diffusion-policy inference cost while preserving closed-loop control performance, without retraining or modify-ing the pretrained policy. We first introduce the experimental setup, including benchmark tasks, policy backbones, evaluation metrics, and implementation de-tails. We then compare EVO with representative training-free acceleration base-lines to evaluate the trade-off between task success rate and inference speed. Finally, we conduct ablation studies to analyze how global block-step scheduling and similarity-guided initialization contribute to the overall performance. 
+
+Table 1. Benchmark on Proficient Human (PH) demonstration data. Success rates are evaluated by mean ± standard deviation over three evaluation seeds, and speedups are measured with full DP-T inference. EVO achieves a favorable trade-off between task success rate and inference speed, maintaining an average success rate of 0.78 while reaching up to 8 .05 × speedup. Method Success Rate ↑ AVG FLOPs Speed ×                                                                                                                                                              
+
+> Lift Can Square Transport Tool Push-T Full Precision 1.00 ±0.00 0.99 ±0.01 0.85 ±0.04 0.82 ±0.00 0.45 ±0.05 0.66 ±0.02 0.80 15.77G –EfficientVLA ( M= 8) 1.00 ±0.00 0.79 ±0.06 0.85 ±0.05 0.69 ±0.07 0.25 ±0.10 0.64 ±0.02 0.70 1.64G 9.62 EfficientVLA ( M= 10) 0.89 ±0.05 0.10 ±0.05 0.40 ±0.04 0.23 ±0.05 0.00 ±0.00 0.59 ±0.03 0.37 1.95G 8.09 BAC ( M= 8) 1.00 ±0.00 0.63 ±0.03 0.86 ±0.05 0.77 ±0.08 0.37 ±0.09 0.66 ±0.03 0.72 2.33G 6.77 BAC ( M= 10) 1.00 ±0.00 0.63 ±0.02 0.91 ±0.05 0.81 ±0.04 0.48 ±0.09 0.66 ±0.01 0.75 2.72G 5.80 EVO ( M= 8) 1.00 ±0.00 0.98 ±0.04 0.88 ±0.02 0.74 ±0.02 0.39 ±0.08 0.66 ±0.03 0.78 1.96G 8.05 EVO ( M= 10) 1.00 ±0.00 0.97 ±0.01 0.87 ±0.02 0.76 ±0.04 0.41 ±0.05 0.69 ±0.03 0.78 2.33G 6.77
+
+10 S. Wang et al. 
+
+Table 2. Benchmark on Mixed Human (MH) demonstration data. Success rates are evaluated by mean ± standard deviation over three evaluation seeds, and speedups are measured with full DP-T inference. EVO preserves the full-model average success rate of 0.79 while achieving up to 7 .92 × speedup. Method Success Rate ↑ AVG FLOPs Speed ×                                                                                                                  
+
+> Lift Can Square Transport Full Precision 1.00 ±0.00 0.94 ±0.02 0.69 ±0.14 0.51 ±0.01 0.79 15.77G –EfficientVLA ( M= 8) 1.00 ±0.00 0.72 ±0.09 0.53 ±0.06 0.00 ±0.00 0.56 1.64G 9.62 EfficientVLA ( M= 10) 0.75 ±0.05 0.09 ±0.04 0.02 ±0.02 0.00 ±0.00 0.22 1.95G 8.09 BAC ( M= 8) 1.00 ±0.00 0.73 ±0.08 0.61 ±0.06 0.45 ±0.06 0.70 2.32G 6.80 BAC ( M= 10) 1.00 ±0.00 0.94 ±0.02 0.75 ±0.06 0.47 ±0.10 0.79 2.71G 5.82 EVO ( M= 8) 1.00 ±0.00 0.96 ±0.02 0.71 ±0.06 0.47 ±0.03 0.79 1.99G 7.92 EVO ( M= 10) 1.00 ±0.00 0.93 ±0.03 0.77 ±0.05 0.47 ±0.03 0.79 2.34G 6.74
+
+4.1 Experimental Setup Models, Benchmarks, and Metrics. Following the standard setting of Dif-fusion Policy, we adopt the Transformer-based Diffusion Policy (DP-T) as the base policy and evaluate EVO by publicly released pretrained checkpoints. We conduct experiments on multiple robotic manipulation benchmarks, including RoboMimic tasks, Push-T, Block Push, and Kitchen. For the multi-stage re-sults in Table 3, BP and Kit denote Block Push and Kitchen, respectively, and AVG denotes the average over all reported success-rate metrics. The demon-stration data comprises mixed proficient/non-proficient human (MH) teleopera-tion demonstrations, proficient human (PH) teleoperation demonstrations, and expert trajectories generated by scripted Markovian policies for several low-dimensional tasks. For most manipulation tasks, we treat success rate as the primary performance metric, while Push-T is evaluated by target-area cover-age. To measure inference efficiency, we report the FLOPs required for action generation alongside the speedup relative to the full DP-T model. 
+
+Baselines. We leverage the full DP-T policy as the full-precision baseline and subsequently compare EVO with two representative training-free caching meth-ods. EfficientVLA refreshes features at fixed denoising intervals as a static schedul-ing paradigm, while BAC achieves local adaptive scheduling through a block-wise update policy and an error-propagation repair mechanism. Distinct from prior works, EVO globally searches for cache schedules over the full block-timestep lattice with more adaptive and fast performance. 
+
+Implementation Details. All methods are evaluated by the final checkpoint of the publicly released pretrained DP-T policy, with the denoising process set to 100 steps. EVO adopts a unified genetic-search configuration with population size, number of elites, and maximum number of generations set to 30, 10, and 30, respectively. Unless otherwise specified, we evaluate two cache-budget settings, 
+
+M = 8 and M = 10, where M denotes the average number of refresh steps per cacheable module. Since DP-T contains 24 cacheable modules, these settings Evolving Cache Schedules for Fast Diffusion Policy Inference 11 
+
+correspond to total budgets of K = 192 and K = 240 block-timestep update positions, respectively. During the search, each candidate schedule S is first evaluated by 20 rollout episodes. Candidates satisfying the target trigger are then confirmed by 50 rollout episodes with independent random seeds. Search stops early when the confirmed score satisfies the target performance criterion. Following the search phase, the selected cache schedule is frozen and deployed for the final inference evaluation. Final results are evaluated over three random seeds, with 50 test episodes per seed. All experiments run on a workstation equipped with an NVIDIA GeForce RTX 4090D GPU. 
+
+Table 3. Benchmark on multi-stage manipulation tasks. For Block Push, px denotes the frequency of pushing x blocks into the targets. For Kitchen, px denotes the fre-quency of interacting with x or more objects. Method Success Rate ↑ AVG FLOPs Speed ×                                                                                                                                                              
+
+> BP p1BP p2Kit p1Kit p2Kit p3Kit p4
+> Full Precision 0.99 ±0.01 0.95 ±0.01 1.00 ±0.00 1.00 ±0.00 1.00 ±0.00 0.99 ±0.01 0.99 15.77G –EfficientVLA ( M= 8) 0.99 ±0.01 0.93 ±0.01 0.18 ±0.04 0.04 ±0.02 0.02 ±0.00 0.00 ±0.00 0.36 1.64G 9.62 EfficientVLA ( M= 10) 0.98 ±0.02 0.91 ±0.08 0.29 ±0.02 0.00 ±0.00 0.00 ±0.00 0.00 ±0.00 0.36 1.95G 8.09 BAC ( M= 8) 0.99 ±0.01 0.93 ±0.02 0.99 ±0.01 0.99 ±0.01 0.98 ±0.02 0.90 ±0.02 0.97 2.33G 6.77 BAC ( M= 10) 1.00 ±0.00 0.97 ±0.03 1.00 ±0.00 1.00 ±0.00 1.00 ±0.00 0.96 ±0.04 0.99 2.67G 5.91 EVO ( M= 8) 0.97 ±0.03 0.95 ±0.06 0.99 ±0.01 0.98 ±0.02 0.98 ±0.02 0.93 ±0.03 0.97 1.97G 8.01 EVO ( M= 10) 0.99 ±0.01 0.97 ±0.03 1.00 ±0.00 0.99 ±0.01 0.99 ±0.01 0.97 ±0.02 0.99 2.24G 7.06
+
+4.2 Main Results 
+
+Tables 1, 2, and 3 show that EVO substantially accelerates DP-T inference while preserving closed-loop control performance close to the full model. We control the computational budget by the number of cache update steps M . On the PH, MH, and multi-stage tasks, EVO achieves peak average success rates of 0.78, 0.79, and 0.99, respectively, close to the full DP-T results of 0.80, 0.79, and 0.99. Meanwhile, EVO consistently achieves stable acceleration rates above 6.7 ×
+
+across most of the tasks, while reducing the FLOPs of action-generation from 15.77G to about 1.96G–2.34G. Wall-clock measurements on five representative tasks further show that EVO reduces the average policy inference time from 448.91 ms to 132.17 ms, increasing the corresponding inference frequency from 2.23 Hz to 7.57 Hz. Detailed results are provided in Sec. A.7 of the supplementary material. Compared with EfficientVLA, EVO substantially reduces performance col-lapse on challenging tasks such as Transport, Tool, and Kitchen. Moreover, EVO achieves comparable or better average success rates of BAC with lower FLOPs, especially on PH and MH tasks, exhibiting a much stronger trade-off between task performance and inference efficiency. These results indicate that rollout-driven global block-timestep search allocates the fixed cache-update budget more effectively than fixed-interval refreshing or local adaptive updating schedules. Representative refresh schedules for BAC and EVO are reported in Sec. A.5 of the supplementary material. 12 S. Wang et al. 
+
+Table 4. Ablation study on EVO. Method Success Rate ↑ AVG Speed × GPU-days Search Steps Lift ph Can ph Square ph Lift mh Can mh                                                                             
+
+> Block-wise GA 0.95 ±0.05 0.90 ±0.02 0.81 ±0.05 0.95 ±0.02 0.76 ±0.10 0.87 8.17 1.48 358 Block-Step GA 1.00 ±0.00 0.95 ±0.01 0.82 ±0.00 0.97 ±0.01 0.83 ±0.09 0.91 8.05 1.00 242 Block-wise GA + RI 0.99 ±0.01 0.91 ±0.02 0.86 ±0.04 1.00 ±0.00 0.89 ±0.05 0.93 8.26 1.40 226 Block-Step GA + RI 1.00 ±0.00 0.98 ±0.04 0.88 ±0.02 1.00 ±0.00 0.96 ±0.02 0.96 8.01 0.96 222
+
+4.3 Ablation Study 
+
+To validate EVO’s key design choices, we conduct ablation studies on represen-tative PH and MH tasks, with results in Table 4. Since EVO optimizes cache schedules by an offline genetic algorithm (GA), we report GPU-days [2] and Search Steps as search-cost metrics in addition to final task performance and inference speed. Notably, Search Steps abbreviates Search Steps to Target and denotes the average number of candidate schedules evaluated before reaching the target performance. 
+
+Ablation Study Methods. We consider three variants of EVO to evaluate two key designs: global block–timestep budget allocation and redundancy-aware initialization (RI). All variants follow the same genetic search procedure and differ only in the schedule-space constraint and initialization strategy. To eval-uate the effect of global block–timestep budget allocation, we define Block-wise GA , which keeps the genetic search unchanged but requires exactly eight refresh steps per cacheable block, thereby assigning the same budget to each block. We then define Block-Step GA , which removes the constraint of per-block budget and allows the same total budget to be freely distributed over the full block– timestep lattice. To evaluate the effectiveness of RI, we apply redundancy-aware initialization to the above two search spaces, yielding Block-wise GA + RI and 
+
+Block-Step GA + RI . The latter corresponds to the full EVO design. 
+
+Effectiveness of Global Block-timestep Allocation. To validate the role of global block–timestep budget reallocation, we compare Block-wise GA and 
+
+Block-Step GA . The results show that Block-Step GA improves the average suc-cess rate from 0.87 to 0.91, while reducing the search cost from 1.48 to 1.00 GPU-days and decreasing Search Steps from 358 to 242. This indicates that equal per-block budget limit schedule quality, whereas full block–timestep allo-cation utilize the fixed update budget more effectively. 
+
+Effectiveness of Redundancy-aware Initialization. To validate the role of RI, we add redundancy-aware initialization to both search spaces. RI improves the average success rate of Block-wise GA from 0.87 to 0.93 and that of Block-Step GA from 0.91 to 0.96. The full EVO design, corresponding to Block-Step GA + RI , achieves the highest average success rate, the lowest search cost of 0.96 GPU-days, and the fewest Search Steps of 222. This shows that RI provides more effective initial candidates for genetic search, and combining it with cross-block budget reallocation yields the best overall performance. We further investigate the choice of feature dissimilarity metric and the role of random individuals dur-ing the initialization procedure. Specificly, the methods with cosine dissimilarity Evolving Cache Schedules for Fast Diffusion Policy Inference 13 
+
+achieve the highest average success rate of 0.79, while retaining random individ-uals slightly improves average performance and reduces the average number of search steps from 270 to 240. Detailed results are provided in Secs. A.2 and A.3 of the supplementary material. 
+
+Offline Search Cost and Amortization. As reported in Table 4, full EVO achieves the lowest offline search cost and the fewest Search Steps among all variants. The search is performed once per task, with all candidates evaluated offline in simulation using their mean performance over multiple environment seeds. For real-world applications, this procedure can be completed before de-ployment, and the selected schedule can then be deployed on the robot without additional online search or optimization overhead. Therefore, the selected sched-ule is robust to different initializations and can be reused across episodes without online search or adaptation. Its one-time cost is amortized over deployment be-cause every action query benefits from reduced FLOPs and latency. 
+
+## 5 Conclusion 
+
+In this paper, we propose EVO, a novel training-free acceleration method for transformer-based diffusion policy inference. EVO formulates cache scheduling as a global resource allocation problem over the block–timestep lattice, and op-timizes cache update positions through evolutionary search according to down-stream rollout performance. With redundancy-aware initialization and target-conditioned early stopping, EVO efficiently finds reliable offline cache schedules. Extensive experiments show that EVO substantially reduces the computation cost of action generation while maintaining near-full DP-T control performance, achieving up to about 8 × inference speedup. 
+
+## 6 Acknowledgements 
+
+This work was supported in part by the Fundamental Research Funds for the Central Universities (No. XJSJ25005), the Outstanding Youth Science Founda-tion of Shaanxi Province under Grant 2025JC-JCQN-083, the Natural Science Foundation of Xi’an under Grant 2025JH-ZRKX-0540, and the Fundamental Research Funds for the Central Universities under Grant QTZX26145. Thanks to the help provided by the National Experimental Teaching Demonstration Center for Computer Network and Information Security affiliated with Xidian University. 
+
+## References 
+
+> 1. Brohan, A., Brown, N., Carbajal, J., Chebotar, Y., Dabis, J., Finn, C., Gopalakr-ishnan, K., Hausman, K., Herzog, A., Hsu, J., et al.: Rt-1: Robotics transformer for real-world control at scale. Robotics: Science and Systems XIX (2023)
+
+14 S. Wang et al. 2. Chen, X., Xie, L., Wu, J., Tian, Q.: Progressive differentiable architecture search: Bridging the depth gap between search and evaluation. In: Proceedings of the IEEE/CVF international conference on computer vision. pp. 1294–1303 (2019) 3. Chi, C., Xu, Z., Feng, S., Cousineau, E., Du, Y., Burchfiel, B., Tedrake, R., Song, S.: Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research 44 (10-11), 1684–1704 (2025) 4. Guo, J., Zheng, X., Chen, Y., Zhang, X.: Neural architecture search-based meta-reinforcement learning in robotic simulation environments. In: 2025 International Joint Conference on Neural Networks (IJCNN). pp. 1–10. IEEE (2025) 5. Hegde, S., Sukhatme, G.S.: Efficiently learning small policies for locomotion and manipulation. In: 2023 IEEE International Conference on Robotics and Automa-tion (ICRA). pp. 5909–5915. IEEE (2023) 6. Ho, J., Jain, A., Abbeel, P.: Denoising diffusion probabilistic models. Advances in neural information processing systems 33 , 6840–6851 (2020) 7. Holland, J.H.: Adaptation in natural and artificial systems: an introductory anal-ysis with applications to biology, control, and artificial intelligence. MIT Press (1992) 8. Janner, M., Du, Y., Tenenbaum, J., Levine, S.: Planning with diffusion for flexible behavior synthesis. In: International Conference on Machine Learning. pp. 9902– 9915. PMLR (2022) 9. Ji, K., Meng, Y., Cui, H., Li, Y., Zhou, J., Hua, S., Chen, L., Wang, Z.: Block-wise adaptive caching for accelerating diffusion policy. In: The Fourteenth International Conference on Learning Representations (2026) 10. Ji, K., Meng, Y., Jianbo, Z., Li, Y., Cui, H., Wang, Z.: Sparse actiongen: Accel-erating diffusion policy with real-time pruning. arXiv preprint arXiv:2601.12894 (2026) 11. Liu, H., Zhang, W., Xie, J., Faccio, F., Xu, M., Xiang, T., Shou, M.Z., Perez-Rua, J.M., Schmidhuber, J.: Faster diffusion through temporal attention decomposition. Transactions on Machine Learning Research (2025) 12. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., Zhu, J.: Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in neural information processing systems 35 , 5775–5787 (2022) 13. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., Zhu, J.: Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. Machine Intelligence Research 
+
+22 (4), 730–751 (2025) 14. Lyu, Z., Si, C., Song, J., Yang, Z., Qiao, Y., Liu, Z., Wong, K.Y.K.: Fastercache: Training-free video diffusion model acceleration with high quality. In: International Conference on Learning Representations. vol. 2025, pp. 33132–33156 (2025) 15. Ma, X., Fang, G., Bi Mi, M., Wang, X.: Learning-to-cache: Accelerating diffusion transformer via layer caching. Advances in Neural Information Processing Systems 
+
+37 , 133282–133304 (2024) 16. Ma, X., Fang, G., Wang, X.: Deepcache: Accelerating diffusion models for free. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recog-nition. pp. 15762–15772 (2024) 17. Mandlekar, A., Xu, D., Wong, J., Nasiriany, S., Wang, C., Kulkarni, R., Fei-Fei, L., Savarese, S., Zhu, Y., Mart´ ın-Mart´ ın, R.: What matters in learning from offline hu-man demonstrations for robot manipulation. In: Proceedings of the 5th Conference on Robot Learning. pp. 1678–1690 (2022) 18. Peebles, W., Xie, S.: Scalable diffusion models with transformers. In: Proceedings of the IEEE/CVF international conference on computer vision. pp. 4195–4205 (2023) Evolving Cache Schedules for Fast Diffusion Policy Inference 15 19. Real, E., Aggarwal, A., Huang, Y., Le, Q.V.: Regularized evolution for image clas-sifier architecture search. In: Proceedings of the AAAI Conference on Artificial Intelligence. vol. 33, pp. 4780–4789 (2019) 20. Rombach, R., Blattmann, A., Lorenz, D., Esser, P., Ommer, B.: High-resolution image synthesis with latent diffusion models. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. pp. 10684–10695 (2022) 21. Salimans, T., Ho, J.: Progressive distillation for fast sampling of diffusion models. In: International Conference on Learning Representations (2022) 22. Selvaraju, P., Ding, T., Chen, T., Zharkov, I., Liang, L.: Fora: Fast-forward caching in diffusion transformer acceleration. arXiv preprint arXiv:2407.01425 (2024) 23. Silva, F., Urbano, P., Correia, L., Christensen, A.L.: odneat: An algorithm for decentralised online evolution of robotic controllers. Evolutionary Computation 
+
+23 (3), 421–449 (2015) 24. Son, B., Jeon, J., Choi, J., Ham, B.: Relational feature caching for accelerating diffusion transformers. In: The Fourteenth International Conference on Learning Representations (2026) 25. Song, J., Meng, C., Ermon, S.: Denoising diffusion implicit models. In: International Conference on Learning Representations (2021) 26. Song, Y., Dhariwal, P., Chen, M., Sutskever, I.: Consistency models. In: Proceed-ings of the 40th International Conference on Machine Learning. Proceedings of Machine Learning Research, vol. 202, pp. 32211–32252. PMLR (23–29 Jul 2023) 27. Stanley, K.O., Miikkulainen, R.: Evolving neural networks through augmenting topologies. Evolutionary computation 10 (2), 99–127 (2002) 28. Wang, Z., Li, M., Mandlekar, A., Xu, Z., Fan, J., Narang, Y., Fan, L., Zhu, Y., Balaji, Y., Zhou, M., et al.: One-step diffusion policy: Fast visuomotor policies via diffusion distillation. In: International Conference on Machine Learning. pp. 63399–63416. PMLR (2025) 29. Wimbauer, F., Wu, B., Schoenfeld, E., Dai, X., Hou, J., He, Z., Sanakoyeu, A., Zhang, P., Tsai, S., Kohler, J., et al.: Cache me if you can: Accelerating diffusion models through block caching. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. pp. 6211–6220 (2024) 30. Yang, Y., Wang, Y., Wen, Z., Zhongwei, L., Zou, C., Zhang, Z., Wen, C., Zhang, L.: Efficientvla: Training-free acceleration and compression for vision-language-action models. Advances in Neural Information Processing Systems 38 , 40891– 40914 (2026) 31. Zames, G.: Genetic algorithms in search, optimization and machine learning. Inf Tech J 3(1), 301 (1981) 32. Ze, Y., Zhang, G., Zhang, K., Hu, C., Wang, M., Xu, H.: 3D Diffusion Policy: Generalizable Visuomotor Policy Learning via Simple 3D Representations. In: Pro-ceedings of Robotics: Science and Systems. Delft, Netherlands (July 2024) 33. Zhao, W., Bai, L., Rao, Y., Zhou, J., Lu, J.: Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. Advances in Neural Information Processing Systems 36 , 49842–49869 (2023) 34. Zhao, X., Jin, X., Wang, K., You, Y.: Real-time video generation with pyramid attention broadcast. In: International Conference on Learning Representations. vol. 2025, pp. 3296–3319 (2025) 35. Zou, C., Liu, X., Liu, T., Huang, S., Zhang, L.: Accelerating diffusion transformers with token-wise feature caching. In: The Thirteenth International Conference on Learning Representations (2025) 1
+
+## A Supplemental Material 
+
+In this supplemental material, we provide additional experimental details and analyses to support the main conclusions of the paper. In Appendix A.1, we intro-duce the benchmark tasks and pretrained checkpoints used in our experiments, including RoboMimic, Push-T, Block Push, and Kitchen. In Appendix A.2, we present additional experiments on the choice of similarity metrics for redundancy-aware initialization, analyzing how different feature dissimilarity measures affect the quality of the initial population and the subsequent search process. Ap-pendix A.3 further investigates the role of random individuals in the initial-ization stage, discussing the balance between guided sampling and population diversity. We then provide additional visual analyses to further support the motiva-tion of rollout-driven global cache scheduling. Appendix A.4 presents single-block cache stress tests and the relationship between feature similarity and task sen-sitivity on representative tasks. These results show that task sensitivity is non-uniform across transformer blocks and module types, and that feature similarity, although useful as an initialization prior, is insufficient as the final scheduling ob-jective. Finally, Appendix A.5 compares the update locations obtained by BAC and EVO under comparable cache budgets, illustrating how EVO distributes refresh positions over the block–timestep lattice through rollout-driven global search. 
+
+A.1 Additional Benchmark Details A.1.1 Datasets Push-T. Push-T is adapted from the implicit behavioral cloning benchmark and is used as a contact-rich planar pushing benchmark in Diffusion Policy. The dataset contains human demonstrations for pushing a T-shaped block under visual observations. Following the standard protocol, we evaluate Push-T by target-area coverage rather than binary success rate. 
+
+Block Push. Block Push is adapted from the Behavior Transformer and IBC benchmarks. The dataset contains scripted demonstrations for pushing two blocks into two target regions. Since the two blocks can be pushed in different valid orders, this benchmark is commonly used to evaluate multi-modal action pre-diction. 
+
+Kitchen. Kitchen is adapted from the Relay Policy Learning benchmark. It contains multi-step manipulation demonstrations in a simulated kitchen envi-ronment, where the policy interacts with multiple objects within a long-horizon rollout. We report px, which denotes the frequency of completing at least x
+
+subtasks. 
+
+RoboMimic. RoboMimic is a robot learning benchmark built from human tele-operation demonstrations. We evaluate EVO on five image-based tasks: Lift, Can, Square, Transport, and Tool-Hang. The benchmark provides Proficient Human (PH) demonstrations for these tasks and Mixed Human (MH) demon-strations for four of them. Compared with PH demonstrations, MH demonstra-2
+
+tions contain both proficient and non-proficient human demonstrations, leading to more diverse data distributions. 
+
+A.1.2 Pre-trained Checkpoints and Evaluation Protocol 
+
+We use the publicly released diffusion policy transformer checkpoints provided by Diffusion Policy. All experiments are conducted in simulation using the final checkpoint of each pre-trained policy. We do not train or fine-tune the original policies. EVO only modifies the inference-time cache schedule, while keeping the policy weights and the denoising sampler unchanged. For the offline search stage, each task is searched with one search seed. Can-didate schedules are first evaluated using a lightweight quick evaluation, and schedules satisfying the target-trigger condition are further verified by a confir-mation evaluation using an independent seed. After search, the selected cache schedule is fixed for final evaluation. For the reported results, we use three testing seeds and run 50 test episodes for each seed. We report the mean performance and the standard deviation across the three testing seeds. 
+
+A.2 Additional Experiments on Different Similarity Metrics 
+
+In this experiment, we evaluate how the choice of feature dissimilarity metric affects the redundancy-aware initialization in EVO. Specifically, we consider four commonly used metrics: Mean Squared Error (MSE), L1 distance, Wasserstein-1 distance (Wa), and Cosine dissimilarity (Cosine). These metrics are used only to construct the dissimilarity scores for initializing the population, while the subsequent genetic search configuration and cache budget are kept unchanged for a fair comparison. Due to the computational cost of offline search, we conduct this analysis on four representative tasks covering both Proficient Human (PH) and Mixed Hu-man (MH) demonstrations. Table 1 reports the success rate as mean ± standard deviation over three evaluation seeds, together with the average success rate, inference FLOPs, and Search Steps. The results show that the similarity metric used for initialization can affect both the quality of the searched schedule and the efficiency of the search pro-cess. A more suitable metric provides higher-quality initial candidates, allowing the evolutionary search to reach effective schedules with fewer evaluated candi-dates while preserving downstream task performance. Since all variants use the same cache budget, their inference FLOPs remain comparable, and the main differences come from the final searched schedules and the search cost. 3
+
+Table 1: Benchmark results on four representative tasks using different similarity metrics for similarity-guided initialization.                                                                     
+
+> Method Success Rate ↑AVG FLOPs Search Steps Lift ph Can ph Square mh Transport mh
+> EVO (MSE) 0.99 ±0.01 0.95 ±0.03 0.68 ±0.02 0.37 ±0.10 0.75 1.96G 240 EVO ( L1)0.99 ±0.01 0.94 ±0.02 0.45 ±0.07 0.35 ±0.07 0.68 1.96G 363 EVO (Wa) 0.99 ±0.01 0.95 ±0.03 0.53 ±0.02 0.41 ±0.04 0.72 1.98G 463 EVO (Cosine) 1.00 ±0.00 0.98 ±0.04 0.71 ±0.06 0.47 ±0.03 0.79 2.05G 240
+
+A.3 Effect of Random Individuals in Initialization 
+
+We further evaluate the effect of random individuals in the redundancy-aware ini-tialization of EVO. The purpose of this experiment is to examine whether guided sampling alone is sufficient for constructing the initial population. We compare the full initialization strategy with a variant that removes random individuals, while keeping the cache budget and genetic search configuration unchanged. Table 2 reports the results on four representative PH and MH tasks. We report success rates as mean ± standard deviation over three evaluation seeds, together with AVG, FLOPs, and Search Steps. The comparison shows that ran-dom individuals help preserve population diversity and improve the robustness of the search process. This suggests that redundancy-aware initialization ben-efits from both biasing the population toward less redundant block–timestep positions and retaining random individuals for exploration. Table 2: Effect of random individuals in redundancy-aware initialization on four representative tasks.                                       
+
+> Method Success Rate ↑AVG FLOPs Search Steps Lift ph Can ph Square mh Transport mh
+> EVO w/o Random 1.00 ±0.00 0.99 ±0.01 0.71 ±0.04 0.41 ±0.09 0.78 2.02 270 EVO w/ Random 1.00 ±0.00 0.98 ±0.04 0.71 ±0.06 0.47 ±0.03 0.79 2.05G 240
+
+A.4 Additional Motivation Analysis 
+
+We provide additional visualizations on five representative tasks to support the motivation of rollout-driven global cache scheduling. For each task, we include a single-block cache stress test and a comparison between adjacent-step fea-ture similarity and task sensitivity. The stress-test results show that applying the same sparse update pattern to different transformer blocks leads to dif-ferent success rate drops, indicating non-uniform task sensitivity across layers and module types. The similarity-sensitivity plots further show that adjacent-step feature similarity is only weakly correlated with downstream performance degradation. These observations suggest that feature similarity can serve as a 4
+
+useful prior for initialization, but is not sufficient as the final scheduling ob-jective. This motivates EVO to combine redundancy-aware initialization with rollout-performance-driven global search. 1 2 3 4 5 6 7 8
+
+Layer 
+
+> SA
+> CA
+> FFN
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Success Rate Drop
+
+(a) Single-block cache stress test 0.94 0.95 0.96 0.97 0.98 0.99 1.00 
+
+Mean Adjacent-step Cosine Similarity 
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Success Rate Drop
+
+Spearman ρ = -0.037 Module Type  
+
+> SA
+> CA
+> FFN
+
+(b) Feature similarity vs. task sensitivity 
+
+Fig. 1: Additional motivation analysis on Kitchen. 1 2 3 4 5 6 7 8
+
+Layer 
+
+> SA
+> CA
+> FFN
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Success Rate Drop
+
+(a) Single-block cache stress test 0.94 0.96 0.98 1.00 
+
+Mean Adjacent-step Cosine Similarity 
+
+> −0.04
+> −0.02
+> 0.00
+> 0.02
+> 0.04
+> Success Rate Drop
+
+Spearman ρ = 0.425 Module Type  
+
+> SA
+> CA
+> FFN
+
+(b) Feature similarity vs. task sensitivity 
+
+Fig. 2: Additional motivation analysis on Square MH. 1 2 3 4 5 6 7 8
+
+Layer 
+
+> SA
+> CA
+> FFN
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Success Rate Drop
+
+(a) Single-block cache stress test 0.94 0.95 0.96 0.97 0.98 0.99 1.00 
+
+Mean Adjacent-step Cosine Similarity 
+
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> Success Rate Drop
+
+Spearman ρ = -0.174 Module Type  
+
+> SA
+> CA
+> FFN
+
+(b) Feature similarity vs. task sensitivity 
+
+Fig. 3: Additional motivation analysis on Tool PH. 51 2 3 4 5 6 7 8
+
+> Layer
+> SA
+> CA
+> FFN
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Success Rate Drop
+
+(a) Single-block cache stress test 0.96 0.97 0.98 0.99 1.00     
+
+> Mean Adjacent-step Cosine Similarity
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> Success Rate Drop  Spearman ρ= 0.294 Module Type
+> SA
+> CA
+> FFN
+
+(b) Feature similarity vs. task sensitivity 
+
+Fig. 4: Additional motivation analysis on Transport MH. 1 2 3 4 5 6 7 8
+
+> Layer
+> SA
+> CA
+> FFN
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Success Rate Drop
+
+(a) Single-block cache stress test 0.94 0.96 0.98 1.00     
+
+> Mean Adjacent-step Cosine Similarity
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> Success Rate Drop  Spearman ρ= -0.053 Module Type
+> SA
+> CA
+> FFN
+
+(b) Feature similarity vs. task sensitivity 
+
+Fig. 5: Additional motivation analysis on Push-T. 
+
+A.5 Comparison of BAC and EVO Refresh Schedules 
+
+Both BAC and EVO determine fixed update schedules offline and use the result-ing schedules during inference. To provide concrete details of the schedules used in our experiments, we report the update steps obtained by BAC and EVO on representative tasks under comparable cache budgets. In Tables 3, 4, and 5, each row corresponds to a cacheable transformer block, and the two columns under Steps list the update timesteps selected by BAC and EVO, respectively. This side-by-side comparison shows that BAC follows a block-wise adaptive update pattern, while EVO searches refresh positions over the full block–timestep lattice and therefore produces more flexible schedules across layers, module types, and denoising steps. 6
+
+Table 3: Update schedules of BAC and EVO on Push-T. 
+
+## Block Steps BAC EVO 
+
+layers.0.SA 0, 4, 8, 14, 25, 32, 42, 52, 64, 73 12, 22, 24, 30, 38, 40, 42, 46, 49, 51, 57, 68, 73, 74, 77, 80, 83, 84, 86, 87 layers.0.CA 0, 28, 49, 54, 65, 73, 79, 85, 91, 96 12, 18, 31, 32, 70, 76, 88, 99 layers.0.FFN 0, 1, 4, 5, 7, 8, 14, 18, 26, 30, 31, 33, 34, 42, 51, 63, 64, 71, 76, 80, 81, 82, 86, 87, 88, 90, 91, 92, 94, 95, 97, 98 10, 14, 15, 16, 19, 20, 21, 25, 26, 30, 45, 64, 70, 72, 81, 83, 85, 89, 97 layers.1.SA 0, 4, 15, 25, 32, 41, 52, 71, 81, 92 11, 26, 32, 35, 50, 65, 81, 82, 93 layers.1.CA 0, 20, 32, 40, 46, 52, 60, 69, 86, 92 0, 11, 16, 17, 19, 21, 42, 44, 49, 60, 74, 83, 88, 90 layers.1.FFN 0, 5, 14, 26, 34, 42, 51, 71, 81, 92 1, 2, 3, 8, 12, 13, 15, 21, 22, 32, 38, 51, 56, 58, 80, 83, 89, 91, 95 layers.2.SA 0, 2, 13, 26, 41, 53, 63, 73, 81, 93 12, 41, 63, 69, 87 layers.2.CA 0, 3, 23, 30, 41, 47, 56, 63, 73, 92 0, 6, 17, 81, 90, 96, 99 layers.2.FFN 0, 1, 7, 31, 51, 63, 71, 80, 86, 92 1, 12, 18, 21, 28, 34, 37, 39, 43, 53, 57, 59, 78, 90, 91, 93, 95 layers.3.SA 0, 9, 30, 42, 53, 66, 75, 83, 92, 97 19, 69, 95, 97, 99 layers.3.CA 0, 10, 24, 29, 39, 46, 61, 73, 83, 92 1, 2, 4, 8, 12, 14, 29, 82, 84, 90, 95 layers.3.FFN 0, 7, 33, 51, 71, 76, 81, 86, 92, 97 9, 10, 16, 19, 34, 41, 43, 45, 51, 54, 60, 62, 63, 76, 77 layers.4.SA 0, 8, 41, 52, 71, 83, 90, 93, 96, 98 16, 40, 95, 98, 99 layers.4.CA 0, 16, 24, 32, 42, 50, 63, 71, 85, 93 9, 10, 18, 47, 74, 83, 96, 98 layers.4.FFN 0, 1, 7, 18, 26, 30, 51, 63, 64, 71, 76, 81, 82, 87, 88, 90, 91, 92, 94, 95, 97, 98 1, 4, 8, 21, 48, 49, 76, 82, 86, 95, 98 layers.5.SA 0, 28, 62, 73, 83, 89, 92, 94, 96, 98 25, 31, 50, 99 7
+
+## Block Steps BAC EVO 
+
+layers.5.CA 0, 14, 26, 41, 49, 62, 71, 83, 90, 96 16, 17, 37, 93, 95, 96 layers.5.FFN 0, 1, 7, 18, 26, 30, 63, 64, 71, 76, 81, 82, 87, 88, 90, 92, 94, 95, 97, 98 3, 8, 17, 21, 35, 37, 38, 46, 53, 91, 93, 95, 98 layers.6.SA 0, 29, 62, 76, 85, 90, 93, 95, 97, 98 29, 69, 97, 98, 99 layers.6.CA 0, 9, 18, 26, 38, 44, 54, 63, 77, 90 14, 40, 66, 69, 90 layers.6.FFN 0, 1, 7, 18, 30, 63, 81, 82, 88, 90, 92, 94, 95, 97 2, 5, 11, 18, 20, 27, 70, 78, 91, 95, 97, 99 layers.7.SA 0, 10, 52, 71, 83, 89, 92, 94, 96, 98 19, 24, 91, 97, 98, 99 layers.7.CA 0, 11, 33, 42, 53, 63, 73, 86, 93, 97 16, 96, 97, 98, 99 layers.7.FFN 0, 1, 7, 18, 30, 81, 88, 92, 95, 97 0, 10, 13, 26, 67, 68, 77, 87, 95, 98, 99 Table 4: Update schedules of BAC and EVO on Kitchen. 
+
+## Block Steps BAC EVO 
+
+layers.0.SA 0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 18, 19, 21, 25, 27, 29, 30, 38, 41, 42, 43, 44, 46, 47, 54, 59, 64, 68, 70, 78, 79, 80, 83, 84, 86, 87, 89, 91, 92, 95, 97, 98 0, 3, 5, 9, 13, 19, 23, 24, 28, 29, 33, 40, 41, 47, 56, 57, 64, 68, 70, 71, 75, 78, 87, 92, 95, 97 layers.0.CA 0, 1, 6, 18, 29, 41, 54, 68, 84, 94 16, 17, 25, 57, 59, 65, 68, 90, 98 layers.0.FFN 0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 18, 21, 25, 27, 29, 30, 38, 41, 42, 44, 46, 47, 54, 59, 64, 68, 70, 78, 79, 80, 84, 86, 87, 89, 91, 92, 95, 97, 98 2, 4, 21, 44, 47, 60, 67, 73, 76, 78, 87, 91 layers.1.SA 0, 4, 10, 19, 29, 42, 53, 62, 75, 87 3, 5, 13, 15, 20, 29, 49, 64, 94, 97 8
+
+## Block Steps BAC EVO 
+
+layers.1.CA 0, 1, 4, 8, 11, 19, 30, 41, 55, 71 21, 28, 36, 72, 82 layers.1.FFN 0, 5, 10, 21, 30, 42, 54, 68, 78, 87 1, 11, 21, 23, 24, 25, 36, 39, 48, 52, 56, 60, 64, 80, 85 layers.2.SA 0, 4, 10, 19, 30, 41, 54, 72, 84, 92 4, 5, 7, 20, 21, 23, 81, 87, 90 layers.2.CA 0, 2, 7, 13, 19, 30, 41, 54, 70, 87 2, 5, 11, 32, 34, 76, 89, 93, 98 layers.2.FFN 0, 1, 5, 10, 18, 29, 47, 59, 78, 91 1, 3, 5, 16, 21, 24, 40, 45, 61, 74, 85, 86, 94 layers.3.SA 0, 1, 7, 13, 19, 29, 41, 59, 82, 93 0, 2, 3, 5, 11, 18, 40, 57, 76, 86, 93, 94, 96 layers.3.CA 0, 3, 5, 9, 13, 19, 33, 46, 68, 92 6, 14, 16, 19, 23, 54, 74, 79, 92, 94, 96 layers.3.FFN 0, 2, 5, 8, 11, 18, 27, 41, 59, 78 0, 1, 9, 37, 40, 50, 61, 62, 89, 90 layers.4.SA 0, 3, 8, 15, 25, 40, 59, 70, 81, 92 9, 14, 15, 17, 21, 26, 73, 76, 81, 99 layers.4.CA 0, 3, 10, 18, 31, 42, 53, 62, 70, 82 1, 9, 32, 41, 49, 81, 92, 93 layers.4.FFN 0, 2, 5, 9, 13, 18, 27, 41, 59, 79 1, 3, 17, 31, 33, 37, 43, 90, 95 layers.5.SA 0, 3, 8, 15, 25, 37, 49, 62, 79, 91 1, 18, 30, 73, 74, 89, 91 layers.5.CA 0, 2, 8, 17, 23, 32, 42, 53, 62, 72 3, 4, 7, 11, 13, 37, 85, 90 layers.5.FFN 0, 1, 5, 6, 11, 18, 25, 27, 29, 38, 44, 47, 59, 64, 68, 80, 86, 89, 92, 95, 97, 98 3, 4, 7, 11, 16, 20, 22, 26, 46, 63, 74, 79, 93 layers.6.SA 0, 8, 24, 36, 48, 58, 70, 84, 92, 98 16, 20, 24, 30, 76, 92 layers.6.CA 0, 7, 17, 21, 29, 35, 41, 57, 80, 93 2, 3, 6, 32, 74 layers.6.FFN 0, 1, 5, 6, 11, 25, 29, 38, 47, 59, 68, 86, 89, 95, 97, 98 0, 5, 8, 30, 67, 83, 93, 94, 98 layers.7.SA 0, 1, 2, 6, 11, 25, 27, 38, 41, 59, 68, 75, 89, 90, 94, 95, 96, 98 41, 73, 97, 99 layers.7.CA 0, 1, 7, 16, 29, 51, 60, 76, 88, 97 3, 10, 28, 31, 63, 74 9
+
+## Block Steps BAC EVO 
+
+layers.7.FFN 0, 1, 6, 11, 25, 38, 59, 68, 89, 95 9, 15, 18, 20, 35, 45, 54, 68, 74, 80, 83, 93, 96 Table 5: Update schedules of BAC and EVO on Lift ph .
+
+## Block Steps BAC EVO 
+
+layers.0.SA 0, 5, 14, 26, 43, 61, 80, 87, 93, 96 16, 92, 97 layers.0.CA 0, 18, 28, 40, 53, 68, 80, 88, 94, 98 0, 8, 9, 19, 38, 48, 50, 51, 63, 91, 96 layers.0.FFN 0, 3, 4, 5, 7, 8, 10, 11, 14, 16, 19, 21, 28, 29, 36, 42, 43, 46, 53, 56, 59, 62, 64, 66, 68, 69, 70, 71, 73, 75, 79, 80, 81, 83, 84, 86, 88, 90, 91, 92, 94, 96, 97, 98, 99 12, 14, 22, 44, 47, 54, 61, 77, 82, 95 layers.1.SA 0, 3, 4, 5, 7, 8, 10, 11, 14, 16, 19, 26, 28, 29, 36, 42, 43, 46, 53, 56, 59, 62, 64, 65, 66, 68, 69, 71, 73, 75, 79, 80, 81, 83, 84, 86, 88, 90, 91, 92, 94, 96, 97, 98, 99 9, 14, 29, 39, 55, 57, 71, 85, 91, 95 layers.1.CA 0, 10, 21, 34, 43, 53, 65, 81, 86, 94 13, 17, 36, 63, 65, 74, 88, 94 layers.1.FFN 0, 4, 10, 19, 29, 42, 53, 64, 81, 90 2, 13, 25, 36, 56, 65, 72, 78, 89 layers.2.SA 0, 5, 10, 20, 29, 42, 54, 69, 81, 93 6, 18, 34, 43, 59, 67, 81, 93 layers.2.CA 0, 6, 11, 18, 28, 40, 50, 63, 80, 90 22, 41, 43, 45, 50, 70, 76, 77, 78, 85, 89 layers.2.FFN 0, 5, 16, 28, 43, 56, 69, 81, 92, 97 9, 13, 22, 28, 39, 45, 51, 54, 63, 73, 76, 83, 97 layers.3.SA 0, 12, 29, 41, 53, 69, 80, 89, 96, 98 9, 17, 34, 73, 74, 82, 83 layers.3.CA 0, 6, 20, 30, 40, 52, 68, 80, 88, 96 6, 15, 38, 41, 48, 79, 81, 85, 93 10 
+
+## Block Steps BAC EVO 
+
+layers.3.FFN 0, 3, 11, 28, 43, 68, 80, 86, 94, 97 21, 27, 33, 36, 50, 54, 68, 74, 77, 79, 82 layers.4.SA 0, 11, 26, 40, 55, 69, 81, 89, 95, 98 1, 8, 16, 17, 27, 40, 43, 46, 69, 79, 85, 90 layers.4.CA 0, 4, 16, 21, 29, 39, 49, 58, 77, 91 3, 8, 21, 24, 38, 39, 41, 45, 48, 50, 54, 67, 94 layers.4.FFN 0, 8, 29, 46, 62, 73, 84, 88, 92, 97 0, 16, 26, 50, 52, 67, 74, 84, 88, 92 layers.5.SA 0, 19, 42, 61, 74, 83, 89, 93, 96, 98 43, 46, 72, 77, 83, 89, 91, 92 layers.5.CA 0, 11, 28, 36, 47, 59, 74, 81, 88, 94 10, 22, 40, 46, 51, 53, 59, 72 layers.5.FFN 0, 19, 36, 42, 43, 59, 64, 66, 71, 75, 79, 80, 83, 84, 88, 91, 92, 94, 96, 97, 98, 99 4, 6, 8, 9, 21, 32, 53, 54, 78, 85, 89 layers.6.SA 0, 42, 67, 81, 87, 91, 93, 95, 97, 99 2, 8, 10, 14, 15, 43, 47, 54, 57, 64, 70, 77, 84, 96 layers.6.CA 0, 6, 19, 42, 62, 75, 81, 86, 91, 95 4, 19, 33, 35, 42, 54, 66, 72, 75, 78, 79, 83, 88, 96 layers.6.FFN 0, 19, 42, 43, 64, 66, 71, 75, 79, 80, 83, 88, 92, 94, 96, 97, 98 14, 23, 29, 41, 49, 65, 69, 70, 76, 84, 88 layers.7.SA 0, 23, 46, 67, 80, 87, 91, 93, 95, 97 5, 22, 24, 41, 54, 55, 58, 66, 68, 77, 84, 85, 86 layers.7.CA 0, 6, 17, 38, 64, 79, 86, 91, 94, 97 4, 20, 41, 48, 71, 72, 81 layers.7.FFN 0, 42, 64, 71, 75, 79, 83, 88, 94, 97 5, 20, 22, 27, 30, 45, 63, 93, 99 
+
+A.6 Search Trajectories under Target-conditioned Early Stopping 
+
+We further visualize the target-conditioned early-stopping process on two repre-sentative tasks: Can-PH and Square-MH. The trajectories record the best quick-evaluation score during evolutionary search, together with the triggered formal evaluations and the final search termination point. As shown in Fig. 6, EVO terminates the search once a candidate passes formal evaluations, leaving part of the maximum search budget unused. When formal evaluations fails, the search continues until another candidate satisfies the ac-ceptance criterion. These trajectories demonstrate that the proposed mechanism 11 Best quick-evaluation score   
+
+> Formal evaluation accepted
+> qbase
+> Formal evaluation rejected
+> qbase −δacc
+> Search termination
+> Formal-evaluation trigger
+> Saved search budget
+
+0 50 100 150 200 250 300 
+
+Search Steps 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Best Quick-Evaluation Score
+
+(a) Can-PH 0 50 100 150 200 250 300 
+
+Search Steps 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Best Quick-Evaluation Score
+
+(b) Square-MH 
+
+Fig. 6: Search trajectories under target-conditioned early stopping on represen-tative tasks. EVO terminates the search once a candidate schedule passes formal evaluation, while a rejected formal evaluation allows the search to continue. reduces unnecessary evaluations while avoiding premature termination caused by noisy quick-evaluation results. 
+
+A.7 Runtime Analysis on Representative Tasks 
+
+To complement the FLOPs-based analysis, we measure the wall-clock inference time of a full policy inference call on five representative tasks. Timing begins im-mediately before calling policy.predict action with observations already resi-dent on the GPU and ends when the call returns the predicted action tensor. The measurement therefore covers the full execution of policy.predict action , in-cluding visual encoding, diffusion sampling, cache operations, and action post-processing. Table 6: Wall-clock inference time on representative tasks. 
+
+Method Inference Time (ms) ↓ AVG Transport PH Transport MH Kitchen Tool PH Square PH Full Precision 446.77 440.09 466.19 437.55 453.97 448.91 EfficientVLA ( M = 8) 124.16 130.79 118.29 119.99 115.52 121.75 EfficientVLA ( M = 10) 118.98 133.50 126.17 111.55 117.65 121.57 BAC ( M = 8) 153.96 148.85 144.46 144.09 138.51 145.97 BAC ( M = 10) 163.13 152.64 154.10 146.56 153.10 153.90 EVO ( M = 8) 132.87 131.30 129.27 134.32 133.07 132.17 
+
+EVO ( M = 10) 143.50 120.46 144.37 137.63 145.20 138.23 12 
+
+All methods are evaluated on the same NVIDIA GeForce RTX 4090D GPU with a batch size of 1. For each setting, we conduct three independent runs sequentially on this GPU, each in a fresh process. Each run consists of 10 warm-up calls followed by 50 timed calls, yielding 150 measurements in total. CUDA execution is synchronized immediately before and after each timed call, and the mean inference time over all measurements is reported. As shown in Table 6, EVO reduces the average inference time of Full Precision from 448.91 ms to 132.17 ms and 138.23 ms for M = 8 and M = 10, respectively. The corresponding policy inference frequencies, computed as the reciprocals of the average inference time, increase from 2.23 Hz to 7.57 Hz and 7.23 Hz. Al-though EfficientVLA achieves a lower inference time, the main results show that it incurs greater degradation in task performance. Taken together, these results indicate that EVO achieves a more favorable trade-off between inference effi-ciency and task performance.

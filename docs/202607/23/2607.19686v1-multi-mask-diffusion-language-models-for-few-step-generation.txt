@@ -1,0 +1,2945 @@
+Title: Multi-Mask Diffusion Language Models for Few-Step Generation
+
+URL Source: https://arxiv.org/pdf/2607.19686v1
+
+Published Time: Thu, 23 Jul 2026 00:24:42 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# Multi-Mask Diffusion Language Models for Few-Step Generation 
+
+Sijin Chen 1,2,∗,†,‡, Yinuo Ren 1,3,∗,†,‡, Heyang Zhao 1,4,†, Ziheng Cheng 1,5,†, Quanquan Gu 4,
+
+Lexing Ying 1,‡
+
+> 1
+
+ByteDance Seed , 2Princeton University , 3Stanford University , 4UCLA , 5UC Berkeley 
+
+> ∗
+
+Equal contribution, listed alphabetically. †Work done during an internship at ByteDance Seed. ‡Corresponding author. 
+
+## Abstract 
+
+Masked diffusion models (MDMs) are a promising family of language generators, but achieving high-quality few-step generation remains challenging. In MDMs, all forward trajectories collapse to a single fully masked state, leaving no terminal entropy for consistency-style few-step generation. While recent few-step alternatives based on uniform-state diffusion avoid this degeneracy, it becomes harder to distinguish clean tokens from noise than MDMs, which usually harms modeling quality and training efficiency. In this work, we propose a multi-mask diffusion model ( MultiMDM )that preserves the masking structure towards few-step generation. In the forward process, each clean token is first pushed towards a designated mask and then gradually mixes over the mask set. As a result, the backward process has a drafting capability by predicting a designated mask before refining to a clean token. We derive a closed-form ELBO training objective for MultiMDM 
+
+that supports continual training from pretrained MDMs. In addition, we formulate a purely discrete-state consistency distillation scheme, with a shared-Gumbel coupling to reduce pathwise entropy. Experiments on pretraining and distillation show that MultiMDM provides an effective foundation for principled few-step generation. 
+
+Correspondence: Lexing Ying 〈lexing.ying@bytedance.com 〉; Sijin Chen 〈chensj@princeton.edu 〉; Yinuo Ren 〈yinuoren@stanford.edu 〉                              
+
+> t
+> 1
+> 0.8
+> 0.6
+> 0.4
+> 0.2
+> 0
+> life man judge rich day wine
+> it love the london storm day
+> it man the rage law queen
+> it child the best judge day
+> it was the best of man
+> it was the best of times
+
+(a) Uniform-state diffusion.                               
+
+> [M] [M] [M] [M] [M] [M]
+> [M] was [M] [M] [M] [M]
+> [M] was [M] [M] [M] [M]
+> [M] was [M] [M] of [M]
+> it was the best of [M]
+> it was the best of times
+
+(b) Masked diffusion.                               
+
+> [M 2][M 3][M 1][M 3][M 3][M 2]
+> [M 1][M 2][M 2][M 1][M 2][M 3]
+> [M 1][M 3]the [M 1][M 2][M 1]
+> it [M 3]the best [M 2][M 3]
+> it was the best of [M 3]
+> it was the best of times
+
+(c) MultiMDM (Ours) .
+
+Figure 1 Schematic illustration of three discrete diffusion variants. From clean tokens to corrupted tokens , MultiMDM ’s trajectory traverses designated intermediate states to encode more information for generation and consistency distillation. For this example, the designated mapping is { it , best }7→ [M 1] , { the , of }7→ [M 2] , { was , times }7→ [M 3] .
+
+1arXiv:2607.19686v1 [cs.CL] 22 Jul 2026 1 Introduction 
+
+Flow- [ 1, 25 , 26 ] and diffusion- [ 18 , 44 , 47 , 48 ] based generative models learn data distributions by transporting simple reference randomness to structured samples along a time-indexed path. The appeal comes from their principled training objectives, modular model design, and superior generation quality across image [ 37 ], video [19], and scientific [51, 52] domains. In discrete domains including text and biological sequences, these ideas are usually instantiated with continuous-time Markov chains on a finite state space [ 2, 3, 7, 13 , 20 , 27 , 31 , 39 , 43 , 55 ]. Another variant, masked diffusion model (MDM), instead introduces an absorbing state and has emerged as a particularly effective variant due to the simplicity and strong alignment of the reconstruction target with language modeling [ 15 , 30 , 50 , 53 ]. Recent work has further improved this paradigm [8, 9, 12, 16, 17, 21, 23, 33, 57]. Motivated by the advances in the acceleration and consistency distillation of continuous diffusion [ 5, 28 , 41 , 42 ,45 , 46 , 49 ], interests grow in the few-step generation of discrete diffusion models [ 4, 6, 11 , 35 , 40 , 58 ]. However, there are two main obstacles to build discrete consistency models: (1) intrinsic stochasticity of jump processes: unlike in the continuous setting where SDE is paired with a probability-flow ODE that shares the same marginals, the stochasticity of jump processes cannot be fully eliminated; (2) terminal degeneracy for masked models : unlike Gaussian in continuous spaces, the masked diffusion converges to a single fully-masked state of zero entropy, signaling a poor starting point for few-step generation. Existing works only partially address these issues: Uniform-state diffusion model (USDM) corrupts tokens within the vocabulary and recovers stochastic terminal states [ 40 ], but compared to MDM it weakens the distinction between genuinely noisy and semantically meaningful states. Continuous embedding approaches recover deterministic flows only after leaving the native discrete state space and entirely re-training a continuous [22 , 24 , 38 ] or hybrid [ 33 , 54 , 56 ]model from scratch, which may compromise the training efficiency and scalability. In this work, we propose MultiMDM , a new discrete diffusion model paradigm to address both obstacles with a multi-mask design. In MultiMDM , the state space contains multiple masks instead of a single one. Each clean token is assigned a designated mask, and the forward marginal is designed so that masked mass remains biased toward that designated mask before mixing across the mask subspace (cf., Fig. 1c). As such, each mask token bears information and addresses the entropy-collapse issue. We formulate this multi-mask process precisely, derive its ELBO training objective in closed form, and then develop a discrete consistency-distillation construction based on low-entropy shared-Gumbel couplings and posterior targets along the coupled path. 
+
+1.1 Our Contributions 
+
+• We introduce MultiMDM , a new family of discrete diffusion models rooted in the masked-diffusion paradigm.  
+
+> MultiMDM
+
+comes with richer geometry than MDM, clearer data-noise distinction than USDM, and conve-nience in converting from pretrained MDMs. 
+
+• We derive the corresponding discrete KL objective/ELBO in closed form consisting of a clean-token reconstruction and an intra-mask identification term. Moreover, it enables continual training recipe initialized from pretrained MDMs. 
+
+• We formulate a discrete low-entropy coupling for consistency distillation by sharing Gumbel noise across time, identify the consistency target as the future-filtration posterior over clean tokens, and provide the corresponding few-step generation algorithm. 
+
+• We demonstrate the superior performance of MultiMDM on few-step generation after pretraining and consistency distillation on LM1B and OpenWebText, and provide preliminary evidence that continual multi-mask adaptation transfers to an 8B pretrained MDM on code and math benchmarks. 
+
+## 2 Preliminaries 
+
+We begin by recalling the standard formulation of discrete diffusion models. 22.1 Discrete Diffusion Models 
+
+Let V denote the vocabulary of non-mask tokens, with V := |V| , and let p0 denote the data distribution over clean sequences x0 = ( x10, . . . , x L 
+
+> 0
+
+) ∈ V L. A discrete diffusion model defines a noising process (pt(xt | x0)) t∈[0 ,1] 
+
+on a finite state space and learns a reverse-time model that reconstructs x0 from partially corrupted states xt.In virtually all discrete diffusion variants, the forward process factorizes across coordinates, as 
+
+pt(xt | x0) = 
+
+> L
+
+Y
+
+> ℓ=1
+
+pt(xℓt | xℓ
+
+> 0
+
+). (2.1) Two canonical choices are uniform-state and masked diffusion. In uniform-state diffusion, the corrupted token remains in V and is driven toward the uniform distribution 
+
+puni  
+
+> t
+
+(xt | x0) = αt1{xt = x0} + (1 − αt)uV (xt), xt ∈ V , with uV (x) := 1 /V. (2.2) In masked diffusion, one adjoins a single absorbing mask token [M] and uses 
+
+pmask  
+
+> t
+
+(xt | x0) = αt1{xt = x0} + (1 − αt)1{xt = [ M]}, xt ∈ V ∪ { [M]}. (2.3) USDM has a stochastic terminal law, but it does not mark which coordinates are noisy. MDM makes this distinction explicit and usually leads to stronger modeling performance together with a cleaner mathematical formulation [39, 43]. 
+
+2.2 Toward Discrete Consistency Models 
+
+A consistency model aims to replace a long reverse-time simulation by a small number of NN evaluations (NFEs), ideally approaching a deterministic map from a simple reference to clean sequences, as pioneered in the continuous space by [ 5 , 49 ]. However, its extension to the discrete setting faces the following two main obstacles. The first obstacle is terminal entropy, especially for MDM. Converging to a single all-mask state, the terminal distribution possesses no information with H(x1) = 0 and thus no signal to start with in consistency models. Although USDM resembles a fix by ending uniformly over vocabulary, noisy tokens are indistinguishable from clean ones, possibly leading to inferior generation quality [3, 29]. The second obstacle is path stochasticity. In continuous diffusion, one can derive from the stochastic backward SDE a deterministic probability-flow ODE while preserving time marginals. No immediate analogy exists on finite-state spaces: when admissible dynamics are jump processes, the path itself remains stochastic. One may embed discrete states into a continuous space and then train a continuous flow [ 24 , 38 ], but at the expense of increasing pretraining and consistency training cost. Moreover, the training and distillation is unable to directly make use of high-quality pretrained MDM, which has already shown scalability in language modeling [30, 50, 53]. Our goal is therefore to design a discrete diffusion process that keeps the reconstruction advantages of masking while mitigating both issues above. 
+
+## 3 Methodology 
+
+In this section, we introduce the methodological contributions of MultiMDM , including a designated-entry multi-mask process, its corresponding training and inference algorithm, and consistency distillation on top of pretrained models. Simply put, MultiMDM fixes terminal degeneracy by replacing the delta law with a uniform law over multiple masks, and it helps few-step distillation by yielding lower-entropy coupled paths and sharper posteriors. 
+
+3.1 Multi-Mask Forward Process 
+
+We augment the single-mask state space by a set M of mask tokens, with M := |M| ≪ |V| , and write the time-t sequence as xt = ( x1 
+
+> t
+
+, . . . , x Lt ) ∈ (V ∪ M )L. Each clean token x ∈ V is assigned a designated mask 3mx ∈ M , represented by an assignment matrix T ∈ { 0, 1}M ×V with exactly one nonzero entry in each column such that, for one-hot representations ex ∈ { 0, 1}V and emx ∈ { 0, 1}M , we have T e x = emx . We also write 
+
+uM := 1/M for the uniform distribution on mask states with convention uM(x) := 0 for all x ∈ V .Let αt and βt be differentiable decreasing schedules with α0 = β0 = 1 , α1 = β1 = 0 , and 0 < α t, β t < 1 for 
+
+t ∈ (0 , 1) . For a clean token x0 ∈ V , define the mask-side distribution 
+
+rx0 
+
+> t
+
+(k) := βt1{k = mx0 } + (1 − βt)uM(k), k ∈ M . (3.1) The single-token forward marginal is 
+
+pt(xt | x0) = αt1{xt = x0} + (1 − αt)rx0 
+
+> t
+
+(xt), xt ∈ V ∪ M . (3.2) This parameterization separates two effects: αt controls how quickly a clean token disappears from the visible vocabulary, while βt controls how concentrated the masked mass remains on the designated mask mx0 .
+
+Forward and backward kernels. The representation in (3.2) yields closed-form forward and posterior kernels. As in (2.1) , the sequence-level process factorizes coordinatewise, so all subsequent derivations reduce to the single-token case. For 0 ≤ s < t ≤ 1, define αt|s := αt/α s and βt|s := βt/β s. The forward two-time kernel is 
+
+pt|s(xt | xs) = 
+
+(αt|s1{xt = xs} + (1 − αt|s)rxs 
+
+> t
+
+(xt), xs ∈ V ,βt|s1{xt = xs} + (1 − βt|s)uM(xt), xs ∈ M , (3.3) where the second line is supported only on xt ∈ M . It can be shown that the corresponding conditional backward kernel given the clean token x0 is 
+
+ps|t(xs | xt, x 0) = 
+
+
+
+1{xs = x0}, xt = x0, 
+
+> αs−αt
+> 1−αt
+
+1{xs = x0} + 1−αs 
+
+> 1−αt
+> rx0
+> s(xs)
+
+βt|s1{xt=xs}+(1 −βt|s)uM(xt)
+
+  
+
+> rx0
+> t(xt)
+
+1{xs ∈ M} , xt ∈ M .
+
+(3.4) We refer to Prop. A.1 and Thm. A.2 for the proof details. 
+
+Designated-entry interpretation. Under the closed-form kernel (3.3) , the masked marginal is biased toward the mask class associated with the clean token. Prop. A.5 shows that the same one-time marginals also admit a more intuitive entrance-and-mixing interpretation: there is another CTMC in which a clean token x0 first jumps to mx0 with rate λt and then, after entering the mask subspace, refreshes uniformly among masks with total rate γt, with 
+
+λt = − ˙αt
+
+αt
+
+, and γt = − ˙αt(1 − βt) − (1 − αt) ˙βt
+
+(1 − αt)βt
+
+.
+
+This is exactly the type of partial information that is useful for later few-step distillation. While this alternative realization is conceptually useful, its two-time kernel is less explicit because it requires averaging over the unknown entry time into the mask sector. We therefore adopt the simpler kernel (3.3) in our implementation, as explained in Remark A.7. 
+
+Number of masks. This construction is motivated by the two consistency-model difficulties from Sec. 2.2. First, because α1 = β1 = 0 , the terminal law is exactly p1 = uL
+
+> M
+
+. As a rough rule of thumb, if a dataset contains N sequences of length L, then matching the terminal entropy to the crude dataset entropy scale 
+
+log N suggests 
+
+H(uL
+
+> M
+
+) = L log M ≳ log N ≈ H(p0) or equivalently M ≳ N 1/L .
+
+On practical datasets, this suggests a modest mask number M , incurring minimal computational overhead. We empirically observe M ∈ [5 , 100] spans the useful regime (cf., Tab. 2). 43.2 Model Parametrization, Training, and Inference 
+
+For each coordinate ℓ, the network predicts a clean-token distribution xℓt,θ (· | xt) ∈ ∆V −1 conditioned on the full noisy sequence xt at time t. We also group this prediction by designated mask classes, mℓt,θ (· | xt) := 
+
+T xℓt,θ (· | xt) ∈ ∆M −1.
+
+Training objective. The training objective of MultiMDM is summarized below. 
+
+Proposition 3.1 (Discrete KL objective) . Whenever the current token is masked, xℓt = k ∈ M , the per-coordinate loss density ℓℓt (θ; x0, xt) is defined as 
+
+− ˙αt
+
+1 − αt
+
+log 1 
+
+> xℓt,θ (xℓ
+> 0|xt)
+
+| {z }
+
+> clean-token reconstruction term
+
+− ˙βt
+
+M β t
+
+X
+
+> j∈M\{ k}
+
+"
+
+ψxℓ 
+
+> 0
+> t
+
+(j | k) log ψxℓ   
+
+> 0
+> t(j|k)
+> ψℓt,θ (j|xt)
+
++ ψℓt,θ (j | xt) − ψxℓ 
+
+> 0
+> t
+
+(j | k)
+
+#| {z }
+
+> intra-mask identification term
+
+, (3.5) 
+
+where, for j ∈ M \ { k}, ψat (j | k) := rat (j)  
+
+> rat(k)
+
+, and ψℓt,θ (j | xt) := P 
+
+> a∈V
+
+xℓt,θ (a | xt) ψat (j | k). Visible current states contribute zero. Consequently, the full training objective is 
+
+Ldisc (θ) := Et∼Unif(0 ,1) , x0∼p0, xt∼pt(·| x0)
+
+" LX
+
+> ℓ=1
+
+1{xℓt ∈ M} ℓℓt (θ; x0, xt)
+
+#
+
+. (3.6) The first term in (3.5) is the clean-token reconstruction term weighted by the rate at which visible tokens disappear, which is also the exact loss for the single-mask diffusion model. The second is a new KL-type penalty responsible for mixing within the mask subspace. Thm. A.12 derives the masked-coordinate density directly from the forward generator and the concrete score, and Cor. A.14 lifts it to the full sequence objective. 
+
+Theorem 3.2 (KL upper bound) . Let bpθ 
+
+> 0
+
+denote the marginal at time 0 obtained by running the learned backward process from the exact terminal uL
+
+> M
+
+. Then DKL (p0 ∥ bpθ
+
+> 0
+
+) ≤ L disc (θ).
+
+Prop. 3.1 yields a straightforward stochastic training procedure: sample a time, draw xt from the exact forward marginal (3.2) , evaluate the clean-token predictor xt,θ , and accumulate the masked-coordinate loss in (3.6) , which is given in Alg. 1. Thm. 3.2 further identifies the KL objective (3.6) as a KL upper bound of the generation quality. 
+
+Algorithm 1 MultiMDM Pretraining 
+
+Require: Initial parameters θ, training data p0, minibatch size 
+
+B, learning rate η, training steps K 
+
+> 1:
+
+for k = 1 to K do  
+
+> 2:
+
+{x(i)0 }Bi=1 i.i.d.
+
+∼ p0, {t(i)}Bi=1 i.i.d.
+
+∼ Unif(0 , 1) . 
+
+> 3:
+
+x(i) 
+
+> t
+
+∼ pt(i) (· | x(i)0 ), i ∈ [B], using (3.2).  
+
+> 4:
+
+Evaluate minibatch loss bLdisc (θ) using (3.6).  
+
+> 5:
+
+θ ← θ − η ∇θ bLdisc (θ).
+
+Algorithm 2 MultiMDM Inference 
+
+Require: Trained model θ, reverse-time grid 
+
+{tk}Kk=0 with tK = 1 and t0 = 0  
+
+> 1:
+
+bxtK ∼ uL
+
+> M
+
+. 
+
+> 2:
+
+for k = K down to 1 do  
+
+> 3:
+
+bxtk−1 ∼ pθtk−1|tk (· | bxtk )
+
+using (3.7).  
+
+> 4:
+
+return bxt0 .
+
+Continual adaptation from a pretrained MDM. The multi-mask parameterization can be initialized from a pretrained MDM. In the DiT [ 32 ] backbone, the output head over clean tokens is unchanged, and the only new state-specific parameters are the embeddings associated with the extra mask tokens. A simple warm start is therefore to copy the pretrained single-mask embedding into every mask embedding in M at initialization. This makes all masks identical at the training start, after which the model learns to distinguish them under the multi-mask objective (3.5). The decomposition in (3.5) also suggests a practical learning recipe: warm-start with the clean-token reconstruction term before gradually introducing the intra-mask identification term. Empirically, we find this 5curriculum helps improve the model’s generation quality significantly (cf., Tab. 1). 
+
+Inference algorithm. Reverse-time inference uses the conditional backward kernel (3.4) . If the current state is already visible, the backward kernel is deterministic and keeps that token fixed. If the current state is masked, we replace the unknown clean-token posterior with the model prediction and define the model-induced backward kernel by posterior averaging, 
+
+pθs|t(xs | xt) ≈
+
+> L
+
+Y
+
+> ℓ=1
+
+pθs|t(xℓs | xℓt , xt), with pθs|t(xℓs | xℓt , xt) = 
+
+(1{xℓs = xℓt }, xℓt ∈ V ,
+
+P 
+
+> xℓ
+> 0∈V
+
+xℓt,θ (xℓ 
+
+> 0
+
+| xt)ps|t(xℓs | xℓt , x ℓ
+
+> 0
+
+), xℓt ∈ M ,
+
+(3.7) The only approximation in (3.7) is the product factorization across coordinates. The single-coordinate kernel is obtained by exact posterior averaging once the true clean-token posterior is replaced by the model prediction 
+
+xℓt,θ (· | xt).
+
+3.3 Consistency Distillation 
+
+The multi-mask teacher is particularly well suited to discrete consistency distillation. Relative to the single-mask teacher, it preserves explicit noise markers while providing a non-degenerate terminal distribution and a richer hierarchy of intermediate masked states. The remaining challenge is that the backward path is still a stochastic jump process. Our distillation strategy therefore has two ingredients: a low-entropy shared-Gumbel coupling, and a consistency objective that aligns clean-token posteriors along that coupled path.          
+
+> Figure 2 Conditional entropy H(x0|xt, ω )for different couplings with noise source ωon a synthetic Zipf dataset (cf. App. C.1). Unconditional entropy refers to H(x0|
+> xt).
+
+Low-entropy shared-Gumbel coupling. For any time 
+
+t, the conditional entropy H(x0 | xt) quantifies the posterior uncertainty of the process, where the ideal is 
+
+H(x0 | xt) = 0 under a purely deterministic coupling. However, once the teacher one-time marginals pt(· | 
+
+x0) are fixed, H(x0 | xt) is fixed as well. What can still be reduced is the residual pathwise randomness 
+
+H(x0 | xt, ω ) ≤ H(x0 | xt) after conditioning on an auxiliary noise source ω.Following the consistency-model perspective of match-ing two points that lie on the same trajectory [ 5, 49 ], but staying entirely in the discrete-state space, we construct a shared-noise coupling with Gumbel noises. For each coordinate ℓ and state z ∈ V ∪ M , sample an i.i.d. standard Gumbel random variable gℓz and fix it for all t. With the convention log 0 = −∞ , define 
+
+exℓt := arg max 
+
+> z∈V∪M
+
+log pt(z | xℓ
+
+> 0
+
+) + gℓz , t ∈ [0 , 1] . (3.8) By the Gumbel-max trick, exℓt ∼ pt(· | xℓ
+
+> 0
+
+) for every t, so ext has exactly the same marginals as the teacher model. Conditioned on ω := {gℓz }ℓ,z , the map t 7 → ext is deterministic. This contrasts with DUO-DCD by Sahoo et al. [40] , which constructs coupled discrete trajectories by projecting a shared-Gaussian path in a continuous latent space to discrete states. In fact, they can also be rewritten in a shared-Gumbel form with the same one-time marginals (cf. Thm. B.2). Our construction is therefore a natural analogue, extending immediately to both single-mask and multi-mask diffusion families without introducing auxiliary continuous latent processes. In uniform-state diffusion, the shared-Gaussian path jumps at most once. In the present multi-mask setting, an analogous at-most-two-jumps statement holds under mild conditions on αt and βt (cf. Prop. B.1). Fig. 2 visualizes the conditional entropy H(x0 | xt, ω ) as a function of time t and shows that our coupling reduces the pathwise uncertainty compared to the original Gaussian coupling, with a larger reduction for larger numbers of masks M . We refer to App. C.1 for its detailed settings. 6Algorithm 3 MultiMDM Consistency Distillation 
+
+Require: Initial parameters θ from Alg. 1, data distribution p0, minibatch size B, training steps K, step size schedule {δk}Kk=1 , EMA parameter μ, learning rate η 
+
+> 1:
+
+Set target parameters θ ← θ 
+
+> 2:
+
+for k = 1 to K do  
+
+> 3:
+
+{x(i)0 }Bi=1 i.i.d.
+
+∼ p0, {t(i)}Bi=1 i.i.d.
+
+∼ Unif( δk, 1) , and set s(i) ← t(i) − δk, for i ∈ [B]. 
+
+> 4:
+
+gℓ, (i) 
+
+> zi.i.d.
+
+∼ Gumbel(0 , 1) for all i ∈ [B], ℓ ∈ [L], and z ∈ V ∪ M . 
+
+> 5:
+
+exℓ, (i) 
+
+> •
+
+= arg max 
+
+> z∈V∪M
+
+log p•(z | xℓ, (i)0 ) + gℓ, (i) 
+
+> z
+
+, for • ∈ { s(i), t (i)}, i ∈ [B], and ℓ ∈ [L]. 
+
+> 6:
+
+Evaluate minibatch loss bLδk
+
+> CD
+
+(θ, θ ) using (3.11).  
+
+> 7:
+
+θ ← θ − η ∇θ bLδk
+
+> CD
+
+(θ, θ ), θ ← μθ + (1 − μ)θ.
+
+Consistency objective and target. We parameterize the consistency model with the same clean-token head as the diffusion model and write f ℓt,θ (· | ext) ∈ ∆V −1 for its posterior prediction at coordinate ℓ with the boundary condition f ℓ 
+
+> 0,θ
+
+(· | x0) = exℓ 
+
+> 0
+
+.
+
+Theorem 3.3 (Future-filtration consistency target) . Let Gt := σ(exu : u ∈ [t, 1]) denote the future filtration of the coupled path. Fix a coordinate ℓ and 0 ≤ s < t ≤ 1. Let f ℓs ∈ ∆V −1 be any Gs-measurable predictor. Among all simplex-valued, Gt-measurable predictors f ℓt , the unique minimizer of EDKL (f ℓs ∥f ℓt )
+
+is f ℓ,⋆ t = E[f ℓs | G t]. In particular, if f ℓs = E[exℓ 
+
+> 0
+
+| G s], then 
+
+f ℓ,⋆ t = E[exℓ 
+
+> 0
+
+| G t] = Pr( xℓ 
+
+> 0
+
+= · | ex[t, 1] ). (3.9) Thm. 3.3, with proof shown in App. B.2, shows that the reverse-time posterior martingale family E[exℓ 
+
+> 0
+
+| G t]
+
+is the canonical fixed point of the pairwise objective Ex0∼p0, 0≤s<t ≤1[DKL (f ℓs ∥ f ℓt )] , which is the precise sense in which it provides the natural consistency target along the coupled path. Towards practical implementation, we impose the following two approximations. 
+
+Approximation 1: Backward Markov compression. The ideal target in (3.9) depends on the path ex[t, 1] . In practice, we compress the future-filtration posterior (3.9) to a backward Markov predictor, i.e., a tractable model observing only the current sequence ext so that 
+
+f ℓt (· | ext) ≈ f ℓ,⋆ t = Pr( xℓ 
+
+> 0
+
+= · | ex[t, 1] ). (3.10) We train it with an EMA target network, exactly as in consistency distillation [ 40 , 49 ]. A practical adjacent-pair specialization for a step size δ ∈ (0 , 1] is 
+
+Lδ
+
+> CD
+
+(θ, θ ) := Ex0∼p0, ω, t ∼Unif( δ, 1) 
+
+" LX
+
+> ℓ=1
+
+DKL 
+
+
+
+sg f ℓt−δ,θ (· | ext−δ ) f ℓt,θ (· | ext)
+
+#
+
+. (3.11) where sg [·] denotes stop-gradient. In practice, distillation starts from a model pretrained by Alg. 1; we initialize both the online network and EMA target with these weights. 
+
+Algorithm 4 MultiMDM Few-Step Generation 
+
+Require: θ, {tk}Kk=0 , t K = 1 , t 0 = 0  
+
+> 1:
+
+bxtK ∼ uL
+
+> M
+
+. 
+
+> 2:
+
+for k = K down to 1 do  
+
+> 3:
+
+bxtk−1 ∼ epθtk−1|tk (· | bxtk ) using (3.12).  
+
+> 4:
+
+return bxt0 .7Approximation 2: Posterior-backward ansatz. To obtain a few-step sampler, we treat the posterior predictor 
+
+ft,θ as a proxy for the clean-token posterior in light of the approximation (3.10) and plug it into the exact conditional backward kernel (3.4). The induced backward kernel is thus defined as 
+
+epθs|t(bxs | bxt) ≈
+
+> L
+
+Y
+
+> ℓ=1
+
+epθs|t(bxℓs | bxℓt , bxt), with epθs|t(bxℓs | bxℓt , bxt) = 
+
+(1{bxℓs = bxℓt }, bxℓt ∈ V ,
+
+P 
+
+> a∈V
+
+f ℓt,θ (a | bxt)ps|t(bxℓs | bxℓt , a ), bxℓt ∈ M .
+
+(3.12) Equivalently, on masked coordinates one first samples a clean-token hypothesis baℓ ∼ f ℓt,θ (· | bxt) and then samples bxℓs ∼ ps|t(· | bxℓt , baℓ). The resulting few-step algorithm is given in Alg. 4. The rationale behind this few-step distillation strategy is that given the low-entropy shared-Gumbel paths (3.8) ,the consistency loss (3.11) learns an approximation of the posterior likelihood (3.10) . Given more information observed from xt about its own latent history, the approximate posterior becomes more concentrated and thus less correlated among coordinates, yielding a better approximation in (3.12) with larger step size than the original (3.7) that permits fewer-step generation. 
+
+## 4 Experiments 
+
+In this section, we present experimental results of MultiMDM and showcase its superior performance on both pretraining and few-step generation after consistency distillation. Baselines include DUO (uniform-state) [ 40 ], MDLM (single-mask) [ 39 ], and CANDI (hybrid discrete-continuous) [ 33 ]. We train MultiMDM on OpenWebText [ 14 ] and LM1B [ 10 ] datasets. Main evaluation metrics are (1) average generative perplexity (GenPPL) evaluated by GPT-2, (2) sample entropy, following the common practice of the literature [ 2, 40 ]. Unless otherwise specified, these controlled experiments use a 170M-parameter diffusion transformer (DiT) [ 32 ]. We additionally study continual multi-mask adaptation of LLaDA-8B-Base in Sec. 4.4. We refer to App. C.2 for details. 
+
+4.1 Pretraining 
+
+We first compare the pretraining performance of our MultiMDM model, i.e., training with the loss (3.6) as described in Alg. 1, with several baselines. In Tab. 1, we present pretraining results after 200K steps. Specifically, we consider two training recipes: (1) MultiMDM -rand, training with 200K steps from random initialization; (2) MultiMDM -cont, the continual training of MultiMDM for 50K steps initialized from an MDLM trained for 150K steps. Unless otherwise noted, all baselines use the same 170M DiT backbone, tokenizer, and training budget.  
+
+> Perplexity-entropy trade-off.
+
+As observed by prior works such as [ 33 ], GenPPL is highly correlated with the generated sample entropy. For a comprehensive evaluation, we vary τ to draw the Pareto front of the perplexity-entropy trade-off, as depicted later in Figs. 6 and 7. The farther a curve lies toward the lower right, the better the perplexity-entropy trade-off. In Table 1, we report GenPPL in two scenarios: (1) entropy-aligned, where the sample entropy is aligned by adjusting the sampling temperature τ (cf. App. C.2.3); (2) temperature-aligned, the classical setting with τ = 1 . In both scenarios, MultiMDM -rand achieves competitive results on its own, and 
+
+> MultiMDM
+
+-cont pushes its performance further with a margin particularly on the larger dataset OpenWebText. At matched OpenWebText entropy, MultiMDM -cont lowers GenPPL over MDLM from 721 .1 to 558 .8 at K = 4 .
+
+4.2 Consistency Distillation 
+
+We next present the few-step generation results obtained by our proposed consistency distillation algorithm. In Fig. 4, we compare the Pareto front of MultiMDM distilled with shared-Gumbel paths (3.8) with its counterparts, DUO-DCD with shared-Gaussian paths [ 40 ], and MDLM with shared-Gumbel paths, another new algorithm enabled by our Gumbel-coupling design. MultiMDM also works synergistically with other consistency distillation methods, e.g., SDTT [ 11 ], which forms a more informative teacher by simulating the teacher model and gathering logits for multiple steps, at the cost of increased NFEs in training. Across both settings, distilled MultiMDM models achieve favorable final Pareto fronts. These results reflect the combined 8Method Entropy-aligned Temperature-aligned 
+
+K = 4 8 16 32 64 K = 4 8 16 32 64 DUO [40] 995.3 509.4 193.6 ∗ 110.1 ∗ 70.9 ∗ 1926.5 595.7 193.6 126.8 117.8 MDLM [39] 721.1 280.1 117.0 76.5 65.9 1741.9 599.9 285.4 153.1 100.5 CANDI [33] 666.5 237.5 126.8 89.0 69.6 2251.3 773.1 375.9 230.7 189.8 
+
+MultiMDM-rand 669.6 244.2 114.6 85.0 71.4 1603.4 606.8 258.8 142.7 102.1 
+
+MultiMDM-cont 558.8 219.1 102.8 68.4 59.7 1652.9 527.5 183.6 128.9 86.2 (1) OpenWebText: entropy-aligned at dataset entropy ( H = 5 .44 ); temperature-aligned at τ = 1 .
+
+Method Entropy-aligned Temperature-aligned 
+
+K = 2 4 8 16 32 K = 2 4 8 16 32 DUO [40] 679.1 318.5 178.6 122.8 99.3 555.8 233.2 144.9 109.9 104.5 MDLM [39] 730.3 359.8 203.4 142.3 112.5 840.1 406.7 212.6 149.6 121.8 
+
+MultiMDM-rand 727.6 365.8 213.6 140.8 114.8 885.4 424.4 242.7 153.3 143.0 
+
+MultiMDM-cont 400.0 289.6 174.8 137.1 98.8 151.8 182.6 171.7 131.2 100.4 (2) LM1B: entropy-aligned at dataset entropy ( H = 4 .31 ); temperature-aligned at τ = 1 . CANDI is omitted. †
+
+Table 1 Comparisons of unconditional GenPPL ( ↓) after pretraining (Alg. 1) with varying numbers of steps K. The number of masks M is 50. 
+
+benefits of a stronger pretrained teacher and distillation, rather than uniformly larger relative gains from distillation. 
+
+(a) DCD/Gumbel (b) SDTT 
+
+Figure 4 Perplexity-entropy Pareto fronts of distilled models sampled with 4 steps by SDTT and DCD/Gumbel. 
+
+Figure 5 Perplexity-entropy Pareto fronts of MultiMDM at 4 steps under different M .
+
+4.3 Ablation Studies 
+
+We conduct ablation studies on the number of masks M to study the impact of the multi-mask design. Tab. 2 reflects that introducing more masks generally improves performance with gains saturating around M = 50 .Fig. 5 provides a closer look into how multi-mask evidently helps amplify the pretraining performance gain further in consistency distillation. This clearly demonstrates the effective improvement of MultiMDM over MDM. Further experiment results and ablation studies are presented in App. C.3.   
+
+> ∗We observe that DUO cannot attain the prescribed entropy by varying temperature τ. Thus we report GenPPL at the closest attainable entropy instead.
+> †CANDI is omitted because its official implementation does not provide an LM1B setup.
+
+9Method K = 4 8 16 32 64 MDLM ( M = 1 ) 721.1 280.1 117.0 76.5 65.9                                          
+
+> MultiMDM ,M= 5 676.7 280.7 118.1 80.2 62.6
+> MultiMDM ,M= 10 673.6 268.3 103.5 74.3 61.4
+> MultiMDM ,M= 20 698.0 247.1 114.0 75.6 57.3 MultiMDM ,M= 50 558.8 219.1 102.8 68.4 59.7
+> MultiMDM ,M= 100 564.8 239.0 125.3 112.0 96.7
+> Table 2 GenPPL ( ↓) of pretrained MultiMDM under different Mon OpenWebText, aligned at dataset entropy (H= 5 .44 ).
+
+4.4 Multi-Mask Adaptation of Larger Models 
+
+To test whether the multi-mask construction transfers beyond the controlled 170M unconditional language-modeling setting, we continually adapt LLaDA-8B-Base [ 30 ] into a model with M = 50 masks, which we call 
+
+> MultiLLaDA
+
+. The adaptation preserves the pretrained clean-token output head while learning the additional mask-token embeddings and low-rank model updates. We then evaluate the original and adapted models on MATH500, GSM8K, HumanEval, and MBPP at 1, 2, and 4 generated tokens per sampling step (TPS).                                   
+
+> Benchmark Model TPS=1 2TPS=4 MATH500 LLaDA 27.0 28.6 17.5
+> MultiLLaDA 30.2 30.2 20.6
+> GSM8K LLaDA 73.9 70.9 54.6
+> MultiLLaDA 72.7 71.5 57.0
+> HumanEval LLaDA 47.6 28.6 14.3 MultiLLaDA 47.6 33.3 9.5 MBPP LLaDA 31.7 28.6 11.1
+> MultiLLaDA 33.3 28.6 14.9 Table 3 Math accuracy ( ↑; MATH500/GSM8K) and code Pass@1 ( ↑; HumanEval/MBPP) for LLaDA and MultiLLaDA
+> at different TPS.
+
+As shown in Tab. 3, MultiLLaDA improves the benchmark score in a majority of the settings. The results provide preliminary evidence that continual multi-mask adaptation applies to larger pretrained MDMs and to code and math reasoning tasks, beyond unconditional text generation. This experiment uses LoRA rather than the full-parameter adaptation used in our 170M experiments and does not apply shared-Gumbel distillation at the 8B scale; matched full-parameter, fully instruction-tuned, and large-scale distilled evaluations remain future work. App. C.4 provides the complete adaptation and evaluation setup. 
+
+## 5 Discussion 
+
+We proposed MultiMDM , a multi-mask discrete diffusion framework that retains the masking structure of mask diffusion while replacing the single absorbing state with a stochastic mask subspace. This improves the suitability of masked diffusion for few-step distillation without giving up the reconstruction advantages of masking. Experiments demonstrate the superior performance of MultiMDM on both pretraining and few-step generation after consistency distillation, improving upon state-of-the-art discrete diffusion baselines. As the first utilization of the multi-mask flexibility, we expect further improvements through more carefully semantically optimized design of the designated mapping between clean and mask tokens, and its combination with other acceleration and distillation techniques. 10 Acknowledgments 
+
+This work was completed during Sijin Chen, Yinuo Ren, Heyang Zhao, and Ziheng Cheng’s internships at ByteDance Seed. We thank our colleagues at ByteDance Seed for helpful discussions and feedback throughout this project. 
+
+## References 
+
+[1] Michael Albergo, Nicholas M Boffi, and Eric Vanden-Eijnden. Stochastic interpolants: A unifying framework for flows and diffusions. Journal of Machine Learning Research, 26(209):1–80, 2025. [2] Marianne Arriola, Subham Sekhar Sahoo, Aaron Gokaslan, Zhihan Yang, Zhixuan Qi, Jiaqi Han, Justin T Chiu, and Volodymyr Kuleshov. Block diffusion: Interpolating between autoregressive and diffusion language models. In The Thirteenth International Conference on Learning Representations, 2025. URL https://openreview.net/ forum?id=tyEyYT267x .[3] Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg. Structured denoising diffusion models in discrete state-spaces. Advances in neural information processing systems, 34:17981–17993, 2021. [4] Heli Ben-Hamu, Itai Gat, Daniel Severo, Niklas Nolte, and Brian Karrer. Accelerated sampling from masked diffusion models via entropy bounded unmasking. In The Thirty-ninth Annual Conference on Neural Information Processing Systems, 2025. URL https://openreview.net/forum?id=WBcBhT1NKO .[5] Nicholas Matthew Boffi, Michael Samuel Albergo, and Eric Vanden-Eijnden. How to build a consistency model: Learning flow maps via self-distillation. In The Thirty-ninth Annual Conference on Neural Information Processing Systems, 2025. URL https://openreview.net/forum?id=Di5apl8HSH .[6] Andrew Campbell, Valentin De Bortoli, Jiaxin Shi, and Arnaud Doucet. Self-speculative masked diffusions. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/ forum?id=ogMTEtHO6M .[7] Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T Freeman. Maskgit: Masked generative image transformer. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp. 11315–11325, 2022. [8] Chen-Hao Chao, Wei-Fang Sun, Hanwen Liang, Chun-Yi Lee, and Rahul Krishnan. Beyond masked and unmasked: Discrete diffusion models via partial masking. In The Thirty-ninth Annual Conference on Neural Information Processing Systems, 2025. URL https://openreview.net/forum?id=nqpbbvEZwF .[9] Chen-Hao Chao, Wei-Fang Sun, Junwei Quan, Chun-Yi Lee, and Rahul G Krishnan. Mdm-prime-v2: Binary encoding and index shuffling enable compute-optimal scaling of diffusion language models. arXiv preprint arXiv:2603.16077, 2026. [10] Ciprian Chelba, Tomas Mikolov, Mike Schuster, Qi Ge, Thorsten Brants, Phillipp Koehn, and Tony Robinson. One billion word benchmark for measuring progress in statistical language modeling. arXiv preprint arXiv:1312.3005, 2013. [11] Justin Deschenaux and Caglar Gulcehre. Beyond autoregression: Fast LLMs via self-distillation through time. In The Thirteenth International Conference on Learning Representations, 2025. URL https://openreview.net/ forum?id=uZ5K4HeNwd .[12] Fangyu Ding, Ding Ding, Sijin Chen, Kaibo Wang, Peng Xu, Zijin Feng, Haoli Bai, Kai Han, Youliang Yan, Binhang Yuan, and Jiacheng Sun. Beyond masks: Efficient, flexible diffusion language models via deletion-insertion processes. In The Fourteenth International Conference on Learning Representations, 2026. URL 
+
+https://openreview.net/forum?id=VbvXjs5f72 .[13] Itai Gat, Tal Remez, Neta Shaul, Felix Kreuk, Ricky TQ Chen, Gabriel Synnaeve, Yossi Adi, and Yaron Lipman. Discrete flow matching. Advances in Neural Information Processing Systems, 37:133345–133385, 2024. [14] Aaron Gokaslan, Vanya Cohen, Ellie Pavlick, and Stefanie Tellex. Openwebtext corpus. http://Skylion007. github.io/OpenWebTextCorpus , 2019. 
+
+11 [15] Shansan Gong, Shivam Agarwal, Yizhe Zhang, Jiacheng Ye, Lin Zheng, Mukai Li, Chenxin An, Peilin Zhao, Wei Bi, Jiawei Han, et al. Scaling diffusion language models via adaptation from autoregressive models. In International Conference on Learning Representations, volume 2025, pp. 5046–5073, 2025. [16] Marton Havasi, Brian Karrer, Itai Gat, and Ricky TQ Chen. Edit flows: Flow matching with edit operations. arXiv preprint arXiv:2506.09018, 2025. [17] Michael Hersche, Samuel Moor-Smith, Thomas Hofmann, and Abbas Rahimi. Soft-masked diffusion lan-guage models. In The Fourteenth International Conference on Learning Representations, 2026. URL https: //openreview.net/forum?id=Gba02UMvrG .[18] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems, 33:6840–6851, 2020. [19] Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, Mohammad Norouzi, and David J Fleet. Video diffusion models. Advances in Neural Information Processing Systems, 35:8633–8646, 2022. [20] Emiel Hoogeboom, Didrik Nielsen, Priyank Jaini, Patrick Forré, and Max Welling. Argmax flows and multinomial diffusion: Learning categorical distributions. Advances in neural information processing systems, 34:12454–12465, 2021. [21] Emiel Hoogeboom, David Ruhe, Jonathan Heek, Thomas Mensink, and Tim Salimans. Beyond single tokens: Distilling discrete diffusion models via discrete mmd. arXiv preprint arXiv:2603.20155, 2026. [22] Jaehyeong Jo and Sung Ju Hwang. Continuous diffusion model for language modeling. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum?id= VGv5y60sXC .[23] Jaeyeon Kim, Lee Cheuk-Kit, Carles Domingo-Enrich, Yilun Du, Sham Kakade, Timothy Ngotiaoco, Sitan Chen, and Michael Albergo. Any-order flexible length masked diffusion. arXiv preprint arXiv:2509.01025, 2025. [24] Chanhyuk Lee, Jaehoon Yoo, Manan Agarwal, Sheel Shah, Jerry Huang, Aditi Raghunathan, Seunghoon Hong, Nicholas M Boffi, and Jinwoo Kim. One-step language modeling via continuous denoising. arXiv preprint arXiv:2602.16813, 2026. [25] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Representations, 2023. URL 
+
+https://openreview.net/forum?id=PqvMRDCJT9t .[26] Xingchao Liu, Chengyue Gong, and qiang liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In The Eleventh International Conference on Learning Representations, 2023. URL 
+
+https://openreview.net/forum?id=XVjTT1nw5z .[27] Aaron Lou, Chenlin Meng, and Stefano Ermon. Discrete diffusion modeling by estimating the ratios of the data distribution. In International Conference on Machine Learning, pp. 32819–32848. PMLR, 2024. [28] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in neural information processing systems, 35:5775–5787, 2022. [29] Jinjie Ni, Qian Liu, Chao Du, Longxu Dou, Hang Yan, Zili Wang, Tianyu Pang, and Michael Qizhe Shieh. Training optimal large diffusion language models. arXiv preprint arXiv:2510.03280, 2025. [30] Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, JUN ZHOU, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. Large language diffusion models. In The Thirty-ninth Annual Conference on Neural Information Processing Systems, 2025. URL https://openreview.net/forum?id=KnqiC0znVF .[31] Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Jiacheng Sun, Zhenguo Li, and Chongxuan Li. Your absorbing discrete diffusion secretly models the conditional distributions of clean data. In The Thirteenth International Conference on Learning Representations, 2025. URL https://openreview.net/forum?id=sMyXP8Tanm .[32] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision, pp. 4195–4205, 2023. [33] Patrick Pynadath, Jiaxin Shi, and Ruqi Zhang. Candi: Hybrid discrete-continuous diffusion models. arXiv preprint arXiv:2510.22510, 2025. 
+
+12 [34] Yinuo Ren, Haoxuan Chen, Grant M. Rotskoff, and Lexing Ying. How discrete and continuous diffusion meet: Com-prehensive analysis of discrete diffusion models via a stochastic integral framework. In The Thirteenth International Conference on Learning Representations, 2025. URL https://openreview.net/forum?id=6awxwQEI82 .[35] Yinuo Ren, Haoxuan Chen, Yuchen Zhu, Wei Guo, Yongxin Chen, Grant M. Rotskoff, Molei Tao, and Lexing Ying. Fast solvers for discrete diffusion models: Theory and applications of high-order algorithms. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum?id= OuklL6Q3sO .[36] Yinuo Ren, Grant M Rotskoff, and Lexing Ying. A unified approach to analysis and design of denoising markov models. Journal of Machine Learning Research, 27(105):1–69, 2026. [37] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp. 10684–10695, 2022. [38] Daan Roos, Oscar Davis, Floor Eijkelboom, Michael Bronstein, Max Welling, İsmail İlkan Ceylan, Luca Ambrogioni, and Jan-Willem van de Meent. Categorical flow maps. arXiv preprint arXiv:2602.12233, 2026. [39] Subham Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin Chiu, Alexander Rush, and Volodymyr Kuleshov. Simple and effective masked diffusion language models. Advances in Neural Information Processing Systems, 37:130136–130184, 2024. [40] Subham Sekhar Sahoo, Justin Deschenaux, Aaron Gokaslan, Guanghan Wang, Justin T Chiu, and Volodymyr Kuleshov. The diffusion duality. In International Conference on Machine Learning, pp. 52584–52619. PMLR, 2025. [41] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. In International Conference on Learning Representations, 2022. URL https://openreview.net/forum?id=TIdIXIpzhoI .[42] Axel Sauer, Dominik Lorenz, Andreas Blattmann, and Robin Rombach. Adversarial diffusion distillation. In European Conference on Computer Vision, pp. 87–103. Springer, 2024. [43] Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis Titsias. Simplified and generalized masked diffusion for discrete data. Advances in neural information processing systems, 37:103131–103167, 2024. [44] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In International Conference on Machine Learning, pp. 2256–2265. PMLR, 2015. [45] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In International Conference on Learning Representations, 2021. URL https://openreview.net/forum?id=St1giarCHLP .[46] Yang Song and Prafulla Dhariwal. Improved techniques for training consistency models. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id= WNzy9bRDvG .[47] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution. Advances in neural information processing systems, 32, 2019. [48] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations, 2021. URL https://openreview.net/forum?id=PxTIG12RRHS .[49] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. In International Conference on Machine Learning, pp. 32211–32252. PMLR, 2023. [50] Yuxuan Song, Zheng Zhang, Cheng Luo, Pengyang Gao, Fan Xia, Hao Luo, Zheng Li, Yuehang Yang, Hongli Yu, Xingwei Qu, et al. Seed diffusion: A large-scale diffusion language model with high-speed inference. arXiv preprint arXiv:2508.02193, 2025. [51] Joseph L Watson, David Juergens, Nathaniel R Bennett, Brian L Trippe, Jason Yim, Helen E Eisenach, Woody Ahern, Andrew J Borst, Robert J Ragotte, Lukas F Milles, et al. De novo design of protein structure and function with rfdiffusion. Nature, 620(7976):1089–1100, 2023. 
+
+13 [52] Minkai Xu, Lantao Yu, Yang Song, Chence Shi, Stefano Ermon, and Jian Tang. Geodiff: A geometric diffusion model for molecular conformation generation. In International Conference on Learning Representations, 2022. URL https://openreview.net/forum?id=PzcvxEMzvQC .[53] Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. Dream 7b: Diffusion large language models. arXiv preprint arXiv:2508.15487, 2025. [54] Huangjie Zheng, Shansan Gong, Ruixiang Zhang, Tianrong Chen, Jiatao Gu, Mingyuan Zhou, Navdeep Jaitly, and Yizhe Zhang. Continuously augmented discrete diffusion model for categorical generative modeling. arXiv preprint arXiv:2510.01329, 2025. [55] Kaiwen Zheng, Yongxin Chen, Hanzi Mao, Ming-Yu Liu, Jun Zhu, and Qinsheng Zhang. Masked diffu-sion models are secretly time-agnostic masked models and exploit inaccurate categorical sampling. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum? id=CTC7CmirNr .[56] Cai Zhou, Chenxiao Yang, Yi Hu, Chenyu Wang, Chubin Zhang, Muhan Zhang, Lester Mackey, Tommi Jaakkola, Stephen Bates, and Dinghuai Zhang. Coevolutionary continuous discrete diffusion: Make your diffusion language model a latent reasoner. arXiv preprint arXiv:2510.03206, 2025. [57] Cai Zhou, Chenyu Wang, Dinghuai Zhang, Shangyuan Tong, Yifei Wang, Stephen Bates, and Tommi Jaakkola. Next semantic scale prediction via hierarchical diffusion language models. Advances in Neural Information Processing Systems, 38:41496–41531, 2026. [58] Yuanzhi Zhu, Xi Wang, Stéphane Lathuilière, and Vicky Kalogeiton. Di [m] o: Distilling masked diffusion models into one-step generator. In Proceedings of the IEEE/CVF International Conference on Computer Vision, pp. 18606–18618, 2025. 
+
+14 A Mathematical Formulation of MultiMDM 
+
+In this appendix, we give the full mathematical formulation of the MultiMDM stochastic process and prove the main statements used in Sec. 3. We work first at the single-token level, where the forward and backward kernels admit explicit closed forms, and then lift the construction to sequences through coordinatewise factorization, culminating in the full training objective. 
+
+A.1 Forward Kernel 
+
+In this subsection, we verify that the proposed two-time kernel indeed induces the desired one-time forward marginal used in the main text. This provides the basic consistency check for the MultiMDM forward construction at the single-token level. For 0 ≤ s < t ≤ 1, define αt|s := αt/α s and βt|s := βt/β s. The two-time kernel on V ∪ M used in MultiMDM 
+
+is defined as 
+
+pt|s(xt | xs) = 
+
+(αt|s1{xt = xs} + (1 − αt|s)rxs 
+
+> t
+
+(xt), xs ∈ V ,βt|s1{xt = xs} + (1 − βt|s)uM(xt), xs ∈ M , (A.1) where the first line uses the notation from (3.1). 
+
+Proposition A.1 (Consistency of the forward kernel) . For the kernel in (A.1) , the single-token marginal started from a clean token x0 ∈ V is exactly (3.2) , i.e., 
+
+pt(xt | x0) = αt1{xt = x0} + (1 − αt)rx0 
+
+> t
+
+(xt), xt ∈ V ∪ M .
+
+Proof. Let x0 ∈ V . The only visible state reachable from x0 is x0 itself, so 
+
+pt(x0 | x0) = Pr( xt = x0 | x0) = αt.
+
+Now fix k ∈ M and use (A.1) at an intermediate time s < t :
+
+pt(k | x0) = ps(x0 | x0) pt|s(k | x0) + X
+
+> j∈M
+
+ps(j | x0) pt|s(k | j)= αs(1 − αt|s)rx0 
+
+> t
+
+(k) + (1 − αs) X
+
+> j∈M
+
+rx0 
+
+> s
+
+(j)
+
+
+
+βt|s1{k = j} + (1 − βt|s)uM(k)
+
+
+
+.
+
+The sum over j equals 
+
+βt|srx0 
+
+> s
+
+(k) + (1 − βt|s)uM(k) = βt1{k = mx0 } + (1 − βt)uM(k) = rx0 
+
+> t
+
+(k),
+
+so 
+
+pt(k | x0) =  αs(1 − αt|s) + 1 − αs
+
+rx0 
+
+> t
+
+(k) = (1 − αt)rx0 
+
+> t
+
+(k).
+
+Combining the visible and masked parts proves (3.2). 
+
+A.2 Backward Kernel 
+
+In this subsection, we derive the exact conditional backward kernel associated with the forward process in Sec. A.1. This closed-form reverse-time expression is the basis for both the training objective and the inference procedure used in the main text. The forward kernel (A.1) yields a closed-form conditional backward kernel as summarized by the following theorem. 
+
+Theorem A.2 (Conditional backward kernel) . Fix a clean token x0 ∈ V and times 0 ≤ s < t ≤ 1. Then 
+
+15 the conditional backward kernel is exactly (3.4) . In particular, when xt = k ∈ M ,
+
+ps|t(xs | k, x 0) = 
+
+
+
+αs − αt
+
+1 − αt
+
+, xs = x0,
+
+1 − αs
+
+1 − αt
+
+rx0 
+
+> s
+
+(xs)βt|s1{k = xs} + (1 − βt|s)uM(k)
+
+rx0 
+
+> t
+
+(k) , xs ∈ M ,
+
+0, otherwise. 
+
+(A.2) 
+
+If xt = x0, then ps|t(xs | x0, x 0) = 1{xs = x0}.
+
+Proof. The case xt = x0 is immediate because the only visible state reachable from x0 is x0 itself. Now fix 
+
+k ∈ M . By Bayes’ rule, 
+
+ps|t(xs | k, x 0) = ps(xs | x0)pt|s(k | xs)
+
+pt(k | x0) .
+
+For xs = x0, use ps(x0 | x0) = αs, pt|s(k | x0) = (1 − αt|s)rx0 
+
+> t
+
+(k), and pt(k | x0) = (1 − αt)rx0 
+
+> t
+
+(k) to obtain 
+
+ps|t(x0 | k, x 0) = αs(1 − αt|s)1 − αt
+
+= αs − αt
+
+1 − αt
+
+.
+
+For xs = j ∈ M , use ps(j | x0) = (1 − αs)rx0 
+
+> s
+
+(j) and the masked branch of (A.1) to get 
+
+ps|t(j | k, x 0) = (1 − αs)rx0 
+
+> s
+
+(j)βt|s1{k = j} + (1 − βt|s)uM(k)
+
+(1 − αt)rx0 
+
+> t
+
+(k) ,
+
+which is exactly (A.2). No other states have non-zero probability. 
+
+A.3 CTMC Formulation 
+
+The forward process is a time-inhomogeneous CTMC on the finite state space V ∪ M . Writing pt for a generic marginal distribution on this state space, the forward Kolmogorov equation takes the form 
+
+∂tpt = Rtpt, (A.3) where the generator Rt satisfies 1. Rt has nonnegative off-diagonal entries, 2. Rt has diagonal entries chosen so that every column sums to zero. 
+
+Proposition A.3 (Forward rate matrix) . Assume αt and βt are differentiable on (0 , 1) . Then the off-diagonal entries of the generator in (A.3) are 
+
+Rt(k, i ) = − ˙αt
+
+αt
+
+rit(k), i ∈ V , k ∈ M , (A.4) 
+
+between clean and masked states, and 
+
+Rt(j, k ) = − ˙βt
+
+M β t
+
+, j, k ∈ M , j ̸ = k, (A.5) 
+
+between masked states, and all other off-diagonal entries are zero. 
+
+Proof. Fix i ∈ V . For ϵ → 0, we have 
+
+αt+ϵ|t = αt+ϵ
+
+αt
+
+= 1 + ˙αt
+
+αt
+
+ϵ + o(ϵ).
+
+16 Hence, for any k ∈ M ,
+
+pt+ϵ|t(k | i) = (1 − αt+ϵ|t)rit+ϵ(k) = − ˙αt
+
+αt
+
+rit(k)ϵ + o(ϵ),
+
+which yields (A.4). Likewise, we also have 
+
+βt+ϵ|t = βt+ϵ
+
+βt
+
+= 1 + ˙βt
+
+βt
+
+ϵ + o(ϵ),
+
+so for distinct j, k ∈ M ,
+
+pt+ϵ|t(j | k) = 1 − βt+ϵ|t
+
+M = − ˙βt
+
+M β t
+
+ϵ + o(ϵ),
+
+which gives (A.5). No other off-diagonal transitions are allowed by (A.1). For a single-token prior p0 on V, let 
+
+pt(y) = X
+
+> x0∈V
+
+p0(x0)pt(y | x0), y ∈ V ∪ M ,
+
+be the corresponding marginal at time t. The concrete score is the marginal ratio 
+
+st(y)y′ := pt(y′)
+
+pt(y) , pt(y) > 0. (A.6) 
+
+Proposition A.4 (Conditional ratios) . Fix a clean token x0 ∈ V and a current masked state k ∈ M . Then 
+
+pt(i | x0)
+
+pt(k | x0) = αt
+
+(1 − αt)rx0 
+
+> t
+
+(k) 1{i = x0}, i ∈ V , (A.7) 
+
+and, for j ∈ M \ { k},
+
+pt(j | x0)
+
+pt(k | x0) = rx0 
+
+> t
+
+(j)
+
+rx0 
+
+> t
+
+(k) := ψx0 
+
+> t
+
+(j | k). (A.8) 
+
+If the current state is visible, then it must equal x0, and every off-diagonal incoming rate into that visible state is zero. 
+
+Proof. For i ∈ V , (3.2) gives 
+
+pt(i | x0) = αt1{i = x0}, pt(k | x0) = (1 − αt)rx0 
+
+> t
+
+(k),
+
+which proves (A.7). Likewise, for j ∈ M \ { k},
+
+pt(j | x0)
+
+pt(k | x0) = (1 − αt)rx0 
+
+> t
+
+(j)(1 − αt)rx0 
+
+> t
+
+(k) = ψx0 
+
+> t
+
+(j | k).
+
+The final statement follows from (A.4) and (A.5). 
+
+Proposition A.5 (Marginal equivalence to a designated-entry CTMC) . Consider the time-inhomogeneous CTMC on V ∪ M with off-diagonal rate matrix 
+
+eRt(z, y ) = 
+
+
+
+λt, y ∈ V , z = my ,γt/M, y ∈ M , z ∈ M , z ̸ = y, 
+
+0, otherwise, 
+
+(A.9) 17 where 
+
+λt = − ˙αt
+
+αt
+
+, γt = − ˙αt(1 − βt) − (1 − αt) ˙βt
+
+(1 − αt)βt
+
+.
+
+Then, started from x0 ∈ V , this CTMC has one-time marginal 
+
+ept(z | x0) = pt(z | x0), z ∈ V ∪ M ,
+
+where pt(· | x0) is the forward law in (3.2) . In general, however, its two-time transition kernel does not coincide with (A.1) ; the equivalence holds only at the level of one-time marginals. 
+
+Proof. Let ept(· | x0) denote the law of the CTMC generated by (A.9) , started from x0. We verify that the target marginal 
+
+pt(z | x0) = αt1{z = x0} + (1 − αt)rx0 
+
+> t
+
+(z)
+
+solves the corresponding forward equation with the same initial condition. Since the only visible state reachable from x0 is x0 itself, the forward equation for the visible component is 
+
+∂t ept(x0 | x0) = eRt(x0, x 0)ept(x0 | x0) = −λt ept(x0 | x0).
+
+For the candidate marginal pt(x0 | x0) = αt, we therefore have 
+
+∂tpt(x0 | x0) = ˙ αt = −λtαt = −λtpt(x0 | x0),
+
+using λt = − ˙αt/α t. Also p0(x0 | x0) = 1 .Now fix k ∈ M . By (A.9), 
+
+∂t ept(k | x0) = eRt(k, x 0)ept(x0 | x0) + X
+
+> j∈M\{ k}
+
+eRt(k, j )ept(j | x0) + eRt(k, k )ept(k | x0)= λt ept(x0 | x0)1{k = mx0 } + γt
+
+M
+
+X
+
+> j∈M\{ k}
+
+ept(j | x0) − M − 1
+
+M γt ept(k | x0)= λt ept(x0 | x0)1{k = mx0 } + γt
+
+M
+
+ 1 − ept(x0 | x0) − γt ept(k | x0),
+
+where we used P 
+
+> j∈M
+
+ept(j | x0) = 1 − ept(x0 | x0).For the candidate marginal, 
+
+pt(k | x0) = (1 − αt)
+
+h
+
+βt1{k = mx0 } + (1 − βt) 1
+
+M
+
+i
+
+= (1 − αt)βt1{k = mx0 } + (1 − αt)(1 − βt)
+
+M .
+
+Differentiating yields 
+
+∂tpt(k | x0) = − ˙αtβt + (1 − αt) ˙βt
+
+1{k = mx0 } + − ˙αt(1 − βt) − (1 − αt) ˙βt
+
+M .
+
+On the other hand, substituting pt(x0 | x0) = αt and the above expression for pt(k | x0) into the mask forward equation gives 
+
+λtpt(x0 | x0)1{k = mx0 } + γt
+
+M
+
+ 1 − pt(x0 | x0) − γtpt(k | x0)= λtαt − γt(1 − αt)βt
+
+1{k = mx0 } + γt(1 − αt)βt
+
+M .
+
+Using λtαt = − ˙αt and 
+
+γt(1 − αt)βt = − ˙αt(1 − βt) − (1 − αt) ˙βt,
+
+this becomes exactly 
+
+− ˙αtβt + (1 − αt) ˙βt
+
+1{k = mx0 } + − ˙αt(1 − βt) − (1 − αt) ˙βt
+
+M = ∂tpt(k | x0).
+
+18 Also p0(k | x0) = 0 for every k ∈ M . Hence pt(· | x0) and ept(· | x0) solve the same finite-state Kolmogorov forward equation with the same initial condition, so they coincide for every t.
+
+Remark A.6. Prop. A.5 does not assert that (A.9) and the original generator in Prop. A.3 induce the same Markov evolution on all initial laws, nor that they have the same two-time transition kernels. The statement is only that, for the fixed clean initial state x0 ∈ V , the resulting one-time marginal curve 
+
+t 7 −→ pt(· | x0)
+
+can be realized by a different time-inhomogeneous CTMC. This does not contradict uniqueness of the generator associated with a given propagator, i.e., if two processes had the same evolution from every initial distribution. Here the equivalence is much weaker: it is only a realization of the same marginal path started from a clean token x0 ∈ V . In particular, the two processes differ at the path level, and this difference is already visible in their two-time kernels. 
+
+Remark A.7 (Two-time kernel of the designated-entry process) . Although the CTMC (A.9) reproduces the correct one-time marginals, its two-time kernel is less convenient than that of the original process. Write 
+
+Λs,t := 
+
+Z ts
+
+λu du, Γs,t := 
+
+Z ts
+
+γu du, 0 ≤ s ≤ t ≤ 1.
+
+Since the process can leave x0 only once and never return, 
+
+ept|s(x0 | x0) = e−Λs,t , ept|s(x0 | k) = 0 for k ∈ M .
+
+Inside the mask sector, the chain refreshes to a uniformly chosen mask at total rate γt, so for j, k ∈ M ,
+
+ept|s(j | k) = e−Γs,t 1{j = k} +  1 − e−Γs,t  1
+
+M .
+
+The nontrivial part is the kernel from x0 into the mask sector. To reach j ∈ M at time t, the chain must first jump from x0 to mx0 at some intermediate time u ∈ [s, t ], and then evolve within M from u to t. Therefore 
+
+ept|s(j | x0) = 
+
+Z ts
+
+λue−Λs,u 
+
+
+
+e−Γu,t 1{j = mx0 } +  1 − e−Γu,t  1
+
+M
+
+
+
+du. 
+
+Thus, unlike the original kernel (A.1) , the transition law of the designated-entry process is not parameterized solely by endpoint schedule values such as αs, α t, β s, β t. It involves an additional integration over the unknown entry time u into the mask sector. As a consequence, the corresponding backward posterior kernel eps|t(· | k, x 0)
+
+obtained by Bayes’ rule is also less explicit. This makes the designated-entry realization conceptually useful for understanding the one-time marginal structure, but less attractive for training and sampling procedures that require clean two-time or reverse-time formulas. 
+
+A.4 KL Objective 
+
+The diffusion-weighted denoising score-entropy objective can be written directly in terms of the forward generator and the concrete score. We first record the generic finite-state path-space KL bound and then specialize it to the present single-token process. 
+
+Proposition A.8 (Marginal score identity) . For any states y, y ′ ∈ V ∪ M with pt(y) > 0 and pt(y | x0) > 0
+
+on the support of p0(x0 | y),
+
+pt(y′)
+
+pt(y) = X
+
+> x0∈V
+
+p0(x0 | y) pt(y′ | x0)
+
+pt(y | x0) . (A.10) 19 Proof. Using Bayes’ rule, 
+
+p0(x0 | y) = p0(x0)pt(y | x0)
+
+pt(y) .
+
+Therefore X
+
+> x0∈V
+
+p0(x0 | y) pt(y′ | x0)
+
+pt(y | x0) = X
+
+> x0∈V
+
+p0(x0)pt(y | x0)
+
+pt(y)
+
+pt(y′ | x0)
+
+pt(y | x0)= 1
+
+pt(y)
+
+X
+
+> x0∈V
+
+p0(x0)pt(y′ | x0) = pt(y′)
+
+pt(y) .
+
+Theorem A.9 (Path-space KL upper bound [ 34 , Theorem 3.3]) . Consider a time-inhomogeneous CTMC on a finite state space Y with forward generator Rt in the column-sum-zero convention, forward kernel 
+
+pt(y | y0), and initial distribution p0 on Y. We denote the path measure of this jump process as P and its counterpart of the approximate backward process with the true score function st(y) replaced by the neural network θ-approximated score function st,θ (y) as bP. Under the path-space change-of-measure theorem, 
+
+DKL (P∥bP) ≤
+
+Z 10
+
+Jt(θ; p0) d t, (A.11) 
+
+where 
+
+Jt(θ; p0) := 
+
+Ey0∼p0, y ∼pt(·| y0)
+
+ X 
+
+> y′̸=y
+
+Rt(y, y ′) st,θ (y)y′ − pt(y′ | y0)
+
+pt(y | y0) log st,θ (y)y′ + K
+
+ pt(y′ | y0)
+
+pt(y | y0)
+
+ ! , (A.12) 
+
+with K(a) = a log a − a.
+
+Proof. By Ren et al. [34, Theorem 3.3], the path-space change-of-measure theorem gives 
+
+DKL (P∥bP) = 
+
+Z 10
+
+eJt(θ; p0) d t, 
+
+where 
+
+eJt(θ; p0) := Ey∼pt
+
+ X 
+
+> y′̸=y
+
+Rt(y, y ′)
+
+
+
+st,θ (y)y′ − pt(y′)
+
+pt(y) log st,θ (y)y′ + K
+
+ pt(y′)
+
+pt(y)
+
+  .
+
+Using Proposition A.8, 
+
+pt(y′)
+
+pt(y) = Ey0∼p0(·| y)
+
+ pt(y′ | y0)
+
+pt(y | y0)
+
+
+
+.
+
+Since st,θ (y)y′ depends only on (y, t ), the first two terms may be rewritten exactly under the conditional expectation: 
+
+st,θ (y)y′ − pt(y′)
+
+pt(y) log st,θ (y)y′ = Ey0∼p0(·| y)
+
+
+
+st,θ (y)y′ − pt(y′ | y0)
+
+pt(y | y0) log st,θ (y)y′
+
+
+
+.
+
+Moreover, since K(a) = a log a − a is convex, Jensen’s inequality yields 
+
+K
+
+ pt(y′)
+
+pt(y)
+
+
+
+≤ Ey0∼p0(·| y)
+
+
+
+K
+
+ pt(y′ | y0)
+
+pt(y | y0)
+
+ 
+
+.
+
+Substituting these two relations into eJt(θ; p0) and then using the tower property to rewrite 
+
+Ey∼pt Ey0∼p0(·| y)[·] = Ey0∼p0, y ∼pt(·| y0)[·],
+
+20 we obtain eJt(θ; p0) ≤ J t(θ; p0),
+
+where Jt(θ; p0) is exactly (A.12). Therefore 
+
+DKL (P∥bP) ≤
+
+Z 10
+
+Jt(θ; p0) d t. 
+
+This is the time-local integrand written in the column-sum-zero convention used here. We also refer readers to Ren et al. [36, Section 4.2] for a related discussion. 
+
+Theorem A.10 (KL upper bound [ 34 , Corollary 3.4]) . Let bpθ 
+
+> 0
+
+denote the time-0 marginal produced by an approximate backward process whose terminal distribution matches the exact terminal law p1. Then we have 
+
+DKL (p0 ∥ bpθ
+
+> 0
+
+) ≤
+
+Z 10
+
+Jt(θ; p0) d t, (A.13) 
+
+Proof. Equation (A.11) implies (A.13) by data processing, since p0 and bpθ 
+
+> 0
+
+are the time-0 marginals of P and 
+
+bP, respectively. We also refer to Lou et al. [27, Theorem 3.6] for similar results. 
+
+Proposition A.11 (Model-induced scores) . For a current masked state k ∈ M , define the model-induced score by replacing the unknown posterior p0(· | k) in (A.10) with the model prediction xt,θ (· | k). Then, for 
+
+i ∈ V ,
+
+st,θ (k)i := X
+
+> x0∈V
+
+xt,θ (x0 | k) pt(i | x0)
+
+pt(k | x0) = αt
+
+(1 − αt)rit(k) xt,θ (i | k), (A.14) 
+
+and, for j ∈ M \ { k},
+
+st,θ (k)j := X
+
+> x0∈V
+
+xt,θ (x0 | k) pt(j | x0)
+
+pt(k | x0) = ψt,θ (j | k) := X
+
+> x0∈V
+
+xt,θ (x0 | k)ψx0 
+
+> t
+
+(j | k). (A.15) 
+
+Moreover, if mt,θ (· | k) = T xt,θ (· | k), then 
+
+ψt,θ (j | k) = 1 − βt
+
+βt + (1 − βt)/M mt,θ (k | k) + M β t
+
+1 − βt
+
+mt,θ (j | k). (A.16) 
+
+Proof. The definition is exactly the marginal-score identity (A.10) with the posterior p0(· | k) replaced by its model approximation. Using Thm. A.4, 
+
+st,θ (k)i = X
+
+> x0∈V
+
+xt,θ (x0 | k) αt
+
+(1 − αt)rx0 
+
+> t
+
+(k) 1{i = x0} = αt
+
+(1 − αt)rit(k) xt,θ (i | k),
+
+which proves (A.14). Likewise, 
+
+st,θ (k)j = X
+
+> x0∈V
+
+xt,θ (x0 | k)ψx0 
+
+> t
+
+(j | k),
+
+which is exactly (A.15). For the simplified form, note that ψx0 
+
+> t
+
+(j | k) depends on x0 only through its designated mask mx0 . Writing the posterior mass on mask classes as mt,θ (· | k) = T xt,θ (· | k), we obtain 
+
+ψt,θ (j | k) = X
+
+> m∈M
+
+mt,θ (m | k) βt1{j = m} + (1 − βt)/M βt1{k = m} + (1 − βt)/M .
+
+21 Because j̸ = k, the terms m = k, m = j, and m / ∈ { j, k } contribute 
+
+mt,θ (k | k) (1 − βt)/M βt + (1 − βt)/M ,mt,θ (j | k) βt + (1 − βt)/M 
+
+(1 − βt)/M ,
+
+and X
+
+> m∈M\{ j,k }
+
+mt,θ (m | k) = 1 − mt,θ (k | k) − mt,θ (j | k),
+
+respectively. Summing these three contributions and simplifying gives 
+
+ψt,θ (j | k) = 1 − βt
+
+βt + (1 − βt)/M mt,θ (k | k) + M β t
+
+1 − βt
+
+mt,θ (j | k),
+
+which is (A.16). 
+
+Theorem A.12 (Single-token closed form) . Fix a clean token x0 ∈ V and a current masked state k ∈ M .For j ∈ M \ { k}, define 
+
+ψx0 
+
+> t
+
+(j | k) := rx0 
+
+> t
+
+(j)
+
+rx0 
+
+> t
+
+(k) , ψt,θ (j | k) := X
+
+> a∈V
+
+xt,θ (a | k) ψat (j | k).
+
+Then substituting Thms. A.3, A.4 and A.11 into (A.12) yields the single-token loss density 
+
+ℓt(θ; x0, k ) := − ˙αt
+
+1 − αt
+
+log 1
+
+xt,θ (x0 | k)
+
+− ˙βt
+
+M β t
+
+X
+
+> j∈M\{ k}
+
+
+
+ψx0 
+
+> t
+
+(j | k) log ψx0 
+
+> t
+
+(j | k)
+
+ψt,θ (j | k) + ψt,θ (j | k) − ψx0 
+
+> t
+
+(j | k)
+
+
+
+.
+
+(A.17) 
+
+If the current state is visible, the contribution is zero. 
+
+Proof. Fix a masked current state k ∈ M . Then (A.12) becomes 
+
+ℓt(θ; x0, k ) = X
+
+> i∈V
+
+Rt(k, i )
+
+
+
+st,θ (k)i − pt(i | x0)
+
+pt(k | x0) log st,θ (k)i + K
+
+ pt(i | x0)
+
+pt(k | x0)
+
+ 
+
++ X
+
+> j∈M\{ k}
+
+Rt(k, j )
+
+
+
+st,θ (k)j − pt(j | x0)
+
+pt(k | x0) log st,θ (k)j + K
+
+ pt(j | x0)
+
+pt(k | x0)
+
+ 
+
+.
+
+We evaluate the two sums separately. For the clean states, Thms. A.3, A.4 and A.11 gives 
+
+Rt(k, i ) = − ˙αt
+
+αt
+
+rit(k), pt(i | x0)
+
+pt(k | x0) = αt
+
+(1 − αt)rx0 
+
+> t
+
+(k) 1{i = x0},st,θ (k)i = αt
+
+(1 − αt)rit(k) xt,θ (i | k).
+
+Therefore the clean contribution equals 
+
+X
+
+> i∈V
+
+Rt(k, i )
+
+
+
+st,θ (k)i − pt(i | x0)
+
+pt(k | x0) log st,θ (k)i + K
+
+ pt(i | x0)
+
+pt(k | x0)
+
+ 
+
+= − ˙αt
+
+1 − αt
+
+X
+
+> i∈V
+
+xt,θ (i | k) + ˙αt
+
+1 − αt
+
+log 
+
+ αt
+
+(1 − αt)rx0 
+
+> t
+
+(k) xt,θ (x0 | k)
+
+
+
+− ˙αt
+
+1 − αt
+
+
+
+log αt
+
+(1 − αt)rx0 
+
+> t
+
+(k) − 1
+
+
+
+.
+
+22 Since P 
+
+> i∈V
+
+xt,θ (i | k) = 1 , the terms involving αt/((1 − αt)rx0 
+
+> t
+
+(k)) cancel exactly, leaving 
+
+− ˙αt
+
+1 − αt
+
+log 1
+
+xt,θ (x0 | k) .
+
+For the mask states, Thms. A.3, A.4 and A.11 gives 
+
+Rt(k, j ) = − ˙βt
+
+M β t
+
+, pt(j | x0)
+
+pt(k | x0) = ψx0 
+
+> t
+
+(j | k), st,θ (k)j = ψt,θ (j | k).
+
+Hence the mask contribution is 
+
+X
+
+> j∈M\{ k}
+
+Rt(k, j )
+
+
+
+st,θ (k)j − pt(j | x0)
+
+pt(k | x0) log st,θ (k)j + K
+
+ pt(j | x0)
+
+pt(k | x0)
+
+ 
+
+= − ˙βt
+
+M β t
+
+X
+
+> j∈M\{ k}
+
+
+
+ψx0 
+
+> t
+
+(j | k) log ψx0 
+
+> t
+
+(j | k)
+
+ψt,θ (j | k) + ψt,θ (j | k) − ψx0 
+
+> t
+
+(j | k)
+
+
+
+.
+
+Combining the clean and mask parts proves (A.17) . If the current state is visible, then every off-diagonal multiplier is zero, so the contribution vanishes. 
+
+Proposition A.13 (Sequence-local ratio identity) . Let pt denote the sequence marginal induced by p0 and the coordinatewise forward process (2.1) . For x = ( x1, . . . , x L) ∈ (V ∪ M )L, an index ℓ ∈ { 1, . . . , L }, and a state z ∈ V ∪ M , write xℓ←z for the sequence obtained by replacing the ℓth coordinate of x by z. Whenever 
+
+pt(x | x0) > 0,
+
+pt(xℓ←z | x0)
+
+pt(x | x0) = pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+) . (A.18) 
+
+If moreover pt(x) > 0, then 
+
+pt(xℓ←z )
+
+pt(x) = X
+
+> a∈V
+
+p0(xℓ 
+
+> 0
+
+= a | x) pt(z | a)
+
+pt(xℓ | a) . (A.19) 
+
+Proof. By (2.1), 
+
+pt(x | x0) = 
+
+> L
+
+Y
+
+> r=1
+
+pt(xr | xr
+
+> 0
+
+), pt(xℓ←z | x0) = pt(z | xℓ
+
+> 0
+
+) Y 
+
+> r̸=ℓ
+
+pt(xr | xr
+
+> 0
+
+).
+
+Cancelling the common factors proves (A.18). For (A.19), use Bayes’ rule: 
+
+p0(x0 | x) = p0(x0)pt(x | x0)
+
+pt(x) .
+
+Therefore, 
+
+X
+
+> a∈V
+
+p0(xℓ 
+
+> 0
+
+= a | x) pt(z | a)
+
+pt(xℓ | a) = X
+
+> x0∈V L
+
+p0(x0 | x) pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+)= X
+
+> x0∈V L
+
+p0(x0)pt(x | x0)
+
+pt(x)
+
+pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+)= 1
+
+pt(x)
+
+X
+
+> x0∈V L
+
+p0(x0)pt(xℓ←z | x0) = pt(xℓ←z )
+
+pt(x) ,
+
+where the third step uses (A.18). 23 Corollary A.14 (Sequence objective) . Under the coordinatewise factorization (2.1) , the sequence-level time-local objective decomposes into the sum of the coordinate losses in (3.5) , even when each predictor 
+
+xℓt,θ (· | xt) is conditioned on the full noisy sequence xt. Consequently, 
+
+DKL (p0 ∥ bpθ
+
+> 0
+
+) ≤ L disc (θ). (A.20) 
+
+Proof. Let S := ( V ∪ M )L be the sequence state space. Because the forward process factorizes across coordinates, the sequence transition kernel over an infinitesimal interval also factorizes: 
+
+pt+ϵ|t(y | x) = 
+
+> L
+
+Y
+
+> r=1
+
+pt+ϵ|t(yr | xr ).
+
+Hence transitions that change two or more coordinates have probability O(ϵ2) and therefore zero instantaneous rate. If x and y differ only at coordinate ℓ, then 
+
+pt+ϵ|t(y | x) = pt+ϵ|t(yℓ | xℓ) Y 
+
+> r̸=ℓ
+
+pt+ϵ|t(xr | xr ) = pt+ϵ|t(yℓ | xℓ) + o(ϵ),
+
+so the sequence generator is 
+
+Rt(x, y) = 
+
+(Rt(xℓ, y ℓ), if x and y differ at exactly one coordinate ℓ,
+
+0, if they differ at two or more coordinates. (A.21) Here, as in the single-token generator, the first argument is the destination state and the second is the source state. Fix a current sequence x ∈ S and a source neighbor y = xℓ←z that differs only at coordinate ℓ. By Prop. A.13, 
+
+pt(y | x0)
+
+pt(x | x0) = pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+) . (A.22) Thus the exact sequence-level marginal ratio along the edge y → x depends on x0 only through the clean token 
+
+xℓ
+
+> 0
+
+. Replacing the posterior p0(xℓ 
+
+> 0
+
+| x) in (A.19) with the model prediction xℓt,θ (· | x) gives the model-induced score 
+
+st,θ (x)y := X
+
+> a∈V
+
+xℓt,θ (a | x) pt(z | a)
+
+pt(xℓ | a) . (A.23) This is the same local construction as in Prop. A.11, now applied with conditioning variable x. Therefore, if the current coordinate is masked, xℓ = k ∈ M , then for every clean token i ∈ V ,
+
+st,θ (x)xℓ←i = X
+
+> a∈V
+
+xℓt,θ (a | x) pt(i | a)
+
+pt(k | a)= xℓt,θ (i | x) αt
+
+(1 − αt)rit(k) ,
+
+(A.24) where we used Prop. A.4 and the identity pt(i | a) = αt1{i = a}. Likewise, for every j ∈ M \ { k},
+
+st,θ (x)xℓ←j = ψℓt,θ (j | x). (A.25) If instead xℓ ∈ V , then all off-diagonal incoming rates at coordinate ℓ vanish. Now apply Thm. A.9 on the full sequence state space S. Its time-local integrand is 
+
+Jt(θ; p0):= Ex0∼p0, x∼pt(·| x0)
+
+" X 
+
+> y̸=x
+
+Rt(x, y) st,θ (x)y − pt(y | x0)
+
+pt(x | x0) log st,θ (x)y + K
+
+ pt(y | x0)
+
+pt(x | x0)
+
+ !# 
+
+. (A.26) 24 Using (A.21), the inner sum contains only single-coordinate neighbors and therefore splits as 
+
+> L
+
+X
+
+> ℓ=1
+
+X 
+
+> z̸=xℓ
+
+Rt(xℓ, z )
+
+
+
+st,θ (x)xℓ←z − pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+) log st,θ (x)xℓ←z + K
+
+ pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+)
+
+ 
+
+,
+
+where (A.22) was used to replace the sequence ratio by its one-coordinate form. Hence, for each fixed coordinate ℓ,
+
+X 
+
+> z̸=xℓ
+
+Rt(xℓ, z )
+
+
+
+st,θ (x)xℓ←z − pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+) log st,θ (x)xℓ←z + K
+
+ pt(z | xℓ
+
+> 0
+
+)
+
+pt(xℓ | xℓ
+
+> 0
+
+)
+
+ 
+
+=1{xℓ ∈ M} ℓℓt (θ; x0, x).
+
+Substituting this identity into (A.26) yields 
+
+Jt(θ; p0) = Ex0∼p0, xt∼pt(·| x0)
+
+" LX
+
+> ℓ=1
+
+1{xℓt ∈ M} ℓℓt (θ; x0, xt)
+
+#
+
+.
+
+Integrating over t ∈ [0 , 1] and using that (3.6) averages over t ∼ Unif (0 , 1) yields exactly the objective (3.6) .Applying Thm. A.9 on the sequence state space with this explicit integrand gives (A.20). 
+
+## B Theoretical Analysis of Discrete Consistency Distillation 
+
+In this appendix, we analyze the theoretical ingredients behind the consistency-distillation scheme proposed in Sec. 3.3. We first study structural properties of the shared-Gumbel coupling and then derive the corresponding future-filtration consistency target. 
+
+B.1 Shared-Gumbel Paths 
+
+We begin by analyzing the pathwise structure induced by the shared-Gumbel construction. In particular, we show that under the schedule family used in our experiments, the resulting trajectories are highly structured and admit only a small number of jumps. 
+
+Proposition B.1 (At-most-two jumps under a power-law schedule) . Fix a coordinate ℓ and a clean token 
+
+xℓ 
+
+> 0
+
+∈ V . Assume that 
+
+βt = αρt , t ∈ [0 , 1] ,
+
+for some 0 < ρ ≤ 1. Then for the shared-Gumbel path in (3.8) , the trajectory t 7 → exℓt is almost surely piecewise constant with at most two jumps. More precisely, there exist random states z0, z 1, z 2 ∈ { xℓ
+
+> 0
+
+} ∪ M 
+
+and times 0 ≤ τ1 ≤ τ2 ≤ 1 such that 
+
+exℓt =
+
+
+
+z0, 0 ≤ t < τ 1,z1, τ1 ≤ t < τ 2,z2, τ2 ≤ t ≤ 1.
+
+In the single-mask or uniform-state special case, the path jumps at most once. 
+
+Proof. Fix the shared Gumbel variables {gℓz }z∈V∪M . Since pt(z | xℓ
+
+> 0
+
+) = 0 for all visible states z̸ = xℓ
+
+> 0
+
+, only the clean token xℓ 
+
+> 0
+
+and the mask states compete in (3.8) . If M = 1 , there is only one mask state, so only the clean branch and that single mask branch can compete; in this case the path jumps at most once and the claim is immediate. Hence assume M ≥ 2.Among the non-designated masks m ∈ M \ { mxℓ 
+
+> 0
+
+}, all log-probabilities are identical at each time t, so the best such competitor is a single time-independent mask 
+
+m∗ := arg max 
+
+> m∈M\{ mxℓ
+> 0
+> }
+
+gℓm.
+
+25 Hence the maximization only involves the three candidates xℓ
+
+> 0
+
+, mxℓ 
+
+> 0
+
+, and m∗. Their scores are 
+
+log αt + gℓxℓ
+
+> 0
+
+,
+
+log 
+
+
+
+(1 − αt)
+
+
+
+αρt + 1 − αρt
+
+M
+
+
+
++ gℓmxℓ
+
+> 0
+
+,
+
+and 
+
+log 
+
+ (1 − αt)(1 − αρt )
+
+M
+
+
+
++ gℓm∗ .
+
+First compare the clean token and the designated mask. Their score difference is 
+
+log 
+
+ αt
+
+(1 − αt)
+
+
+
+αρt + 1−αρt
+
+> M
+
+ +  gℓxℓ
+
+> 0
+
+− gℓmxℓ
+
+> 0
+
+.
+
+Set 
+
+R(a) := a
+
+(1 − a)
+
+
+
+aρ + 1−aρ
+
+> M
+
+ .
+
+A direct differentiation gives 
+
+dda log R(a) = 1 + ( M − 1) aρ(1 − ρ + ρa )
+
+a(1 − a) 1 + ( M − 1) aρ .
+
+Since 0 < ρ ≤ 1, we have 1 − ρ + ρa ≥ 0 for every a ∈ (0 , 1) , so dda log R(a) > 0. Thus R(a) is increasing in a.Because αt is nonincreasing in t, the clean-versus-designated score difference is monotone in t, so these two branches can cross at most once. Next compare the clean token and the best non-designated mask. Their score difference is 
+
+log 
+
+ M α t
+
+(1 − αt)(1 − αρt )
+
+
+
++
+
+
+
+gℓxℓ
+
+> 0
+
+− gℓm∗
+
+
+
+.
+
+Since αt is nonincreasing, while both 1 − αt and 1 − αρt are nondecreasing, this difference is nonincreasing in t.Hence these two branches also cross at most once. Finally, compare the designated mask and the best non-designated mask. Their score difference is 
+
+log 
+
+
+
+1 + M α ρt
+
+1 − αρt
+
+
+
++
+
+
+
+gℓmxℓ
+
+> 0
+
+− gℓm∗
+
+
+
+,
+
+which is nonincreasing in t because αρt is nonincreasing. Hence these two mask branches also cross at most once. Therefore once the clean-token branch loses maximality, it can never become maximal again; and after the maximizer has moved to the mask side, the identity of the maximizing mask can change at most once. So the path t 7 → exℓt has at most two jumps. In the single-mask or uniform-state special case there is only one mask-side competitor, so only the clean-to-mask transition may occur, and the path jumps at most once. 
+
+Theorem B.2 (Shared-Gaussian and shared-Gumbel representations of the Duo path) . Fix a coordinate ℓ
+
+and a clean token xℓ 
+
+> 0
+
+∈ V . Consider the Duo path 
+
+exduo ,ℓ t := arg max 
+
+> z∈V
+
+neαt 1{z = xℓ
+
+> 0
+
+} +
+
+q
+
+1 − eα2 
+
+> t
+
+εℓz
+
+o
+
+, t ∈ [0 , 1] , (B.1) 26 where (εℓz )z∈V are i.i.d. standard Gaussian random variables, sampled once and shared across all times. Let 
+
+pduo  
+
+> t
+
+(· | xℓ
+
+> 0
+
+) denote its one-time marginal, so that 
+
+pduo  
+
+> t
+
+(z | xℓ
+
+> 0
+
+) = αt 1{z = xℓ
+
+> 0
+
+} + (1 − αt) u(z),
+
+with u the uniform distribution on V. Define also the shared-Gumbel path 
+
+exgum ,ℓ t := arg max 
+
+> z∈V
+
+log pduo  
+
+> t
+
+(z | xℓ
+
+> 0
+
+) + gℓz , t ∈ [0 , 1] , (B.2) 
+
+where (gℓz )z∈V are i.i.d. standard Gumbel random variables, again sampled once and shared across all times. Then 
+
+(exduo ,ℓ t )t∈[0 ,1] 
+
+> d
+
+= ( exgum ,ℓ t )t∈[0 ,1] .
+
+Proof. Fix times 0 ≤ t1 < · · · < t m ≤ 1 and write 
+
+pt := pduo  
+
+> t
+
+(xℓ 
+
+> 0
+
+| xℓ
+
+> 0
+
+) = αt + 1 − αt
+
+|V| .
+
+For the Gaussian path (B.1) , all non-clean states have scores proportional to εℓz , so the best competing token 
+
+arg max  
+
+> z̸=xℓ
+> 0
+
+εℓz
+
+does not depend on t. Hence exduo ,ℓ t starts at xℓ
+
+> 0
+
+, jumps at most once, and after leaving xℓ 
+
+> 0
+
+stays forever at a single rival token. Its survival probability is exactly 
+
+Pr( exduo ,ℓ t = xℓ
+
+> 0
+
+) = pt,
+
+and symmetry shows that, conditional on leaving xℓ
+
+> 0
+
+, the rival token is uniform on V \ { xℓ
+
+> 0
+
+}.The same description holds for the Gumbel path (B.2) . Indeed, all non-clean logits are equal at each time, so the best competing token 
+
+arg max  
+
+> z̸=xℓ
+> 0
+
+gℓz
+
+is again independent of t. Thus exgum ,ℓ t also starts at xℓ
+
+> 0
+
+, jumps at most once, and then stays forever at a single rival token. Moreover, the Gumbel-max trick gives 
+
+Pr( exgum ,ℓ t = z) = pduo  
+
+> t
+
+(z | xℓ
+
+> 0
+
+),
+
+so its survival probability is again pt, and its post-jump rival token is again uniform on V \ { xℓ
+
+> 0
+
+}.Therefore both paths are the same one-jump process: they share the same survival curve pt and the same uniform law over the rival token after the jump. Consequently, for either choice 
+
+⋆ ∈ { duo , gum },
+
+any r ∈ { 0, . . . , m − 1}, and any j̸ = xℓ
+
+> 0
+
+,
+
+Pr  ex⋆,ℓ t1 = · · · = ex⋆,ℓ tr = xℓ
+
+> 0
+
+, ex⋆,ℓ tr+1 = · · · = ex⋆,ℓ tm = j = ptr − ptr+1 
+
+|V| − 1 ,
+
+with the convention pt0 := 1 , while 
+
+Pr  ex⋆,ℓ t1 = · · · = ex⋆,ℓ tm = xℓ
+
+> 0
+
+ = ptm .
+
+These finite-dimensional distributions agree for the two constructions, proving 
+
+(exduo ,ℓ t )t∈[0 ,1] 
+
+> d
+
+= ( exgum ,ℓ t )t∈[0 ,1] .
+
+27 B.2 Consistency Distillation 
+
+For the Gumbel-coupled trajectory in (3.8), let 
+
+Gt := σ(exu : u ∈ [t, 1]) , ex[t, 1] := {exu : u ∈ [t, 1] }.
+
+The derivation below is coordinatewise and does not require the coupled path to be Markov; only the decreasing-filtration property Gt ⊆ G s for s < t is used. 
+
+Proof of Thm. 3.3. Fix a coordinate ℓ and times 0 ≤ s < t ≤ 1. Let f ℓs be any simplex-valued, Gs-measurable random vector, and let f ℓt be any simplex-valued, Gt-measurable predictor. Expanding the KL divergence gives 
+
+EDKL (f ℓs ∥f ℓt ) = E
+
+"X
+
+> i∈V
+
+(f ℓs )i log( f ℓs )i
+
+#
+
+− E
+
+"X
+
+> i∈V
+
+(f ℓs )i log( f ℓt )i
+
+#
+
+.
+
+The first term is independent of f ℓt . Since f ℓt is Gt-measurable, 
+
+E
+
+"X
+
+> i∈V
+
+(f ℓs )i log( f ℓt )i
+
+#
+
+= E
+
+"X
+
+> i∈V
+
+E[( f ℓs )i | G t] log( f ℓt )i
+
+#
+
+.
+
+Set 
+
+a := E[f ℓs | G t] ∈ ∆V −1.
+
+Therefore minimizing the expected KL divergence over Gt-measurable f ℓt is equivalent, pointwise on Gt, to minimizing 
+
+− X
+
+> i∈V
+
+ai log qi over q ∈ ∆V −1.
+
+Using the identity 
+
+− X
+
+> i∈V
+
+ai log qi = − X
+
+> i∈V
+
+ai log ai + DKL (a∥q),
+
+we see that the unique minimizer is q = a. Hence 
+
+f ℓ,⋆ t = E[f ℓs | G t].
+
+If f ℓs = E[exℓ 
+
+> 0
+
+| G s], then Gt ⊆ G s for s < t , so the tower property yields 
+
+f ℓ,⋆ t = E[E[exℓ 
+
+> 0
+
+| G s] | G t] = E[exℓ 
+
+> 0
+
+| G t],
+
+which is exactly (3.9). The boundary condition follows because ex0 = x0, and hence E[exℓ 
+
+> 0
+
+| G 0] = exℓ 
+
+> 0
+
+.
+
+Remark B.3. If the coupled backward path is Markov with respect to the sequence state, then xℓ 
+
+> 0
+
+→ ext → ex[t, 1] ,so the future-filtration posterior reduces to the one-time posterior: 
+
+Pr( xℓ 
+
+> 0
+
+= · | ex[t, 1] ) = Pr( xℓ 
+
+> 0
+
+= · | ext).
+
+## C Experiment Settings and Additional Results 
+
+In this appendix, we summarize the experimental settings used in Secs. 3 and 4, and provide additional results that complement the main-text evaluations. We first describe the synthetic conditional-entropy experiment and the training and sampling details, and then present additional Pareto-front comparisons together with representative generation examples. 28 C.1 Synthetic Dataset for Conditional Entropy Evaluation 
+
+For the synthetic conditional-entropy experiment, we consider clean tokens x0 ∈ V , where the vocabulary has size V = 100 . The clean-token prior is a Zipf law 
+
+p0(i) = pZipf (i) ∝ i−s, i ∈ V ,
+
+with exponent s = 1 .2. We evaluate posterior uncertainty along the time grid 
+
+t ∈
+
+n
+
+0, 1
+
+K , . . . , 1
+
+o
+
+, K = 24 ,
+
+and use the convention αt = 1 − t. All path constructions in the figure are matched through this same discrete clean-signal level αt.The exact uniform-diffusion baseline is the forward process with one-time marginal puni  
+
+> t
+
+in (2.2) . We also include the corresponding shared-Gumbel path, defined by 
+
+xt = arg max 
+
+> z∈V
+
+log puni  
+
+> t
+
+(z | x0) + gz , gz
+
+> i.i.d.
+
+∼ Gumbel(0 , 1) .
+
+This coupling has the same one-time marginal as uniform diffusion while providing a pathwise realization driven by shared auxiliary randomness. For the exact uniform-diffusion baseline, no auxiliary randomness is present, and H(x0 | xt) is computed analytically from the closed-form forward marginal. For the shared-Gaussian path, we adopt the construction from Sahoo et al. [40] as follows: 
+
+xt = arg max 
+
+> z∈V
+
+eαt 1{z = x0} +
+
+q
+
+1 − eα 2 
+
+> t
+
+εz
+
+
+
+, εz
+
+> i.i.d.
+
+∼ N (0 , 1) .
+
+Its induced discrete marginal is matched to the uniform-diffusion signal level through the transformation 
+
+αt = T (eαt),
+
+where 
+
+T (eα) = VV − 1
+
+Z ∞−∞ 
+
+ϕ
+
+
+
+z − eα
+
+√1 − eα2
+
+
+
+Φ( z)V −1 dz − 1
+
+V
+
+
+
+,
+
+and ϕ and Φ denote the standard Gaussian density and cdf. Thus, for each prescribed αt, we first invert T
+
+numerically to obtain eαt, and then sample the Gaussian path at that value. For the multi-mask constructions, we compare both the nondesignated masked baseline and the designated multi-mask shared-Gumbel paths. In the designated family, each token x ∈ V is assigned a designated mask 
+
+mx = x mod M , and the one-time marginal is given by (3.2), with 
+
+βt = αρt , ρ = 0 .5.
+
+The curve labeled “ (Multi-)Masked, Unconditioned ” corresponds to the nondesignated masked baseline. In that baseline, once the output is observed to be masked, the particular mask identity carries no information about the underlying clean token. Hence the posterior over x0 remains the prior pZipf , and the resulting conditional entropy is always H(pZipf ), independent of the number of mask symbols M . For this reason, all nondesignated multi-mask variants yield the same entropy curve, so we group them together under the label “(Multi-)Masked, Unconditioned .” We now describe how H(x0 | xt, ω ) is evaluated. For each time t, the experiment draws 10 5 independent clean tokens x(n)0 ∼ pZipf , together with the corresponding auxiliary randomness ω(n) for the chosen path construction, and forms 
+
+x(n) 
+
+> t
+
+= Ft
+
+ x(n)0 , ω (n),
+
+29 where Ft denotes the relevant pathwise map. For a fixed realized pair (xt, ω ), the posterior over a candidate clean token j ∈ V is 
+
+q(x0 = j | xt, ω ) = wj (xt, ω )
+
+P 
+
+> i∈V
+
+wi(xt, ω ) , wj (xt, ω ) = pZipf (j) 1{Ft(j, ω ) = xt} .
+
+That is, a token j receives weight equal to its prior mass if, under the same shared randomness ω, it would produce the observed output xt, and zero otherwise. The corresponding conditional entropy is therefore 
+
+H(x0 | xt, ω ) = − X
+
+> i∈V
+
+q(x0 = i | xt, ω ) log q(x0 = i | xt, ω ).
+
+The reported quantity is the Monte Carlo average of this conditional entropy over the sampled pairs (x(n)0 , ω (n)).
+
+C.2 Experimental Details 
+
+In this subsection, we collect the dataset, architecture, training, distillation, and sampling details used in our main experiments. 
+
+C.2.1 Datasets 
+
+LM1B dataset. We conduct language-modeling experiments on the One Billion Word Benchmark (LM1B) [ 10 ]. We use the standard training, validation, and test splits provided by the benchmark, with preprocessing following [ 40 ]. We tokenize the text using bert-base-uncased tokenizer, with vocabulary size 30522. During training, examples are packed into fixed-length sequences of length 128. 
+
+OpenWebText dataset. We also evaluate on OpenWebText [ 14 ], a large-scale corpus constructed to mimic the distribution of WebText. We preprocess the dataset using standard concatenation, tokenize with GPT2 
+
+tokenizer, and pack the resulting token stream into sequences of length 1024. 
+
+C.2.2 Training Details 
+
+Model architecture. Unless otherwise specified, all experiments use a diffusion transformer (DiT) backbone with approximately 170M parameters. The detailed architecture consists of 12 transformer blocks, hidden dimension 768, and 12 attention heads. We use rotary positional embedding and sinusoidal time embedding. Additional architecture details follow the implementation in [40]. 
+
+Pretraining. We pretrain all models with the loss (3.6) . For the main pretraining runs, models are trained for 200K optimization steps using a minibatch size of 1024 and a learning rate of 3 × 10 −4. We use the AdamW optimizer with β1 = 0 .9, β2 = 0 .999 , and constant learning-rate schedule with warmup. For the uniform-state diffusion [ 40 ] and masked diffusion [ 39 ] schedules in (2.2) and (2.3) , respectively, we set 
+
+αt = 1 − t. 
+
+For the multi-mask schedule, we use 
+
+βt = αt = 1 − t
+
+throughout all language-modeling experiments. For the designated mapping, we set the designated mask as 
+
+mx = x mod M, x ∈ V ,
+
+where we assume the numbering of the vocabulary V given by the tokenizer. For the continual-training experiments ( MultiMDM -cont), we initialize from an MDLM checkpoint trained for 150K steps and continue training the multi-mask model for an additional 50K steps under the same optimization settings unless otherwise noted. 30 Inference. At inference time, generation starts from the terminal distribution of the corresponding forward process and then applies the learned reverse transition operator for a prescribed number of denoising steps. For MDLM, this corresponds to starting from the all-mask state. For uniform-state diffusion and MultiMDM ,initialization is drawn from the corresponding terminal distribution described in Sec. 2 and 3, respectively. Unless otherwise stated, we use ancestral sampling without classifier-free guidance. For each evaluation setting, we generate 128 samples to estimate the average generative perplexity (GenPPL) and the sample entropy. GenPPL is computed by GPT-2 Large model, and the sample entropy is computed according to the token frequencies in the generated samples. 
+
+Consistency distillation. In our experiments, we empirically find that the reverse-KL loss 
+
+eLδ
+
+> CD
+
+(θ, θ ) := Ex0∼p0, ω, t ∼Unif( δ, 1) 
+
+" LX
+
+> ℓ=1
+
+DKL 
+
+
+
+f ℓt,θ (· | ext) sg f ℓt−δ,θ (· | ext−δ )#
+
+,
+
+obtained by reversing the order of the two distributions in the consistency-distillation loss (3.11) , yields better numerical stability and better empirical performance. A natural intuition is that the teacher distribution at time t − δ is typically sharper than the student distribution at time t, since it corresponds to a less corrupted state and hence lower posterior uncertainty. In this regime, reverse KL is often preferable because it is more mode-seeking, as it encourages the student model to place mass on the dominant modes of the sharper teacher distribution. By contrast, the forward KL is more mode-covering and can therefore encourage overly diffuse predictions when the target distribution is narrow. We therefore adopt this reverse-KL objective in all consistency-distillation experiments. We perform distillation for R = 5 rounds and adopt a dyadic step-size schedule in which the step size doubles after every KR = 10 4 optimization steps, namely 
+
+δk = 2 −9+ ⌊k/K R⌋, k = 1 , . . . , K. 
+
+We set the minibatch size as 64 and the learning rate as 3 × 10 −4. Unless otherwise stated, the student is initialized from the pretrained MultiMDM checkpoint, while the teacher is taken to be the EMA teacher with stopped gradients. 
+
+C.2.3 Sampling Temperature 
+
+At inference time, for each coordinate, the DiT model outputs a vector 
+
+gt,θ (· | xt) ∈ R|V| ,
+
+whose entries are the pre-softmax scores used to form the model prediction conditioned on the current state 
+
+xt. The corresponding probability vector is then 
+
+xt,θ (· | xt) = softmax  gt,θ (· | xt),
+
+where the softmax is taken over the clean vocabulary V. To control the sharpness of this prediction at sampling time, we introduce a temperature parameter τ > 0 and rescale the pre-softmax scores before applying the softmax: 
+
+xτt,θ (· | xt) = softmax 
+
+ gt,θ (· | xt)
+
+τ
+
+
+
+.
+
+Smaller values of τ make the prediction more concentrated on high-score states, while larger values of τ flatten the distribution and yield more stochastic samples. In the temperature-aligned experiments in Sec. 4, we compare methods under a common fixed temperature, with default choice τ = 1 . In the entropy-aligned experiments, we instead tune τ separately for each method and each sampling budget so that the generated samples match the prescribed entropy level. 31 C.3 Additional Experiments 
+
+In this subsection, we provide additional Pareto-front visualizations beyond those shown in the main text. These figures offer a more complete view of the perplexity-entropy trade-off across different sampling budgets, numbers of masks, and distillation strategies. Figs. 4 and 5 are trained on the OpenWebText dataset, with the corresponding setup as below. 
+
+Pretrained models under varying sampling budgets (Figs. 6 and 7). Figs. 6 and 7 reports the perplexity-entropy Pareto fronts of pretrained models with OpenWebText and LM1B when sampled with different numbers of reverse steps K. Across all three panels, performance improves as the sampling budget increases, reflected by a systematic movement of the Pareto fronts toward the lower-right region. MultiMDM is consistently competitive with or better than the baselines, and the continual-training variant is especially strong at moderate and large sampling budgets. These results support the claim that the multi-mask design improves the pretrained teacher itself, even before applying consistency distillation. 
+
+Effect of the number of masks in pretraining (Fig. 8). Fig. 8 studies pretrained MultiMDM under different numbers of masks M and different sampling budgets. The overall trend is that increasing M from the single-mask regime substantially improves the perplexity-entropy trade-off, while excessively large M eventually yields diminishing returns and may slightly hurt performance. In our experiments, intermediate values, especially around M = 50 , give the strongest overall performance. This is consistent with the intuition in Sec. 3 that additional masks enrich the terminal distribution and intermediate path geometry, but only up to a point. 
+
+Distilled models with DCD/shared-Gaussian vs. shared-Gumbel coupling (Fig. 9). Fig. 9 extends the main-text distillation comparison by showing Pareto fronts at multiple sampling budgets for DCD-based distillation. The shared-Gumbel distilled MultiMDM remains consistently favorable across step counts, especially in the practically important few-step regime. Relative to pretrained models, the distilled models move the Pareto frontier downward at matched entropy, indicating improved generation quality after distillation. This figure also shows that the gains from the multi-mask teacher persist beyond the specific 4-step setting highlighted in the main text. 
+
+Distilled models with SDTT (Fig. 10). Fig. 10 presents the corresponding Pareto-front comparison under the SDTT distillation procedure. The same qualitative pattern holds: MultiMDM yields a stronger distilled generator than the single-mask and uniform-state baselines, and the improvement is most visible in the low-step regime where the distillation problem is hardest. Together with Fig. 8, these results indicate that the advantage of MultiMDM is not tied to one particular distillation algorithm, but instead comes from the underlying multi-mask teacher construction.          
+
+> (a) 4 sampling steps (b) 8 sampling steps (c) 16 sampling steps
+> Figure 6 Perplexity-entropy Pareto fronts of pretrained models on the OpenWebText dataset (entropy H= 5 .44 )sampled with varying numbers of steps K.
+
+32 (a) 4 sampling steps (b) 8 sampling steps (c) 16 sampling steps              
+
+> Figure 7 Perplexity-entropy Pareto fronts of pretrained models on the LM1B dataset (entropy H= 4 .31 ) sampled with varying numbers of steps K.
+> (a) 4 sampling steps (b) 8 sampling steps (c) 16 sampling steps
+> Figure 8 Perplexity-entropy Pareto fronts of pretrained models on the OpenWebText dataset sampled under different numbers of masks Mwith varying numbers of steps K.
+
+C.4 MultiLLaDA Adaptation and Evaluation 
+
+We initialize MultiLLaDA from the LLaDA-8B-Base checkpoint [ 30 ] and expand its diffusion state space to 
+
+M = 50 mask tokens. Following the continual-training construction in Sec. 4.1, we leave the clean-token output head unchanged, introduce the additional mask-token embeddings, and adapt the model with low-rank updates using DCLM and OpenCoder data. We train for 5,000 total optimization steps with batch size 256 and sequence length 1024. The LoRA rank is 8 with scaling parameter 16 , and we use AdamW with learning rate 3 × 10 −5. LoRA was chosen as a resource-efficient 8B adaptation setting; it is not a matched full-parameter replication of the 170M continual-training experiment. We evaluate both LLaDA and MultiLLaDA with the official LLaDA evaluation harness. 1 The evaluation covers the math benchmarks MATH500 and GSM8K and the code benchmarks HumanEval and MBPP. We report answer accuracy for the math tasks and Pass@1 for the code tasks. As generation length L varies across benchmarks in the original harness setting, we use three reverse-step budgets: L, L/ 2, and L/ 4 steps, corresponding respectively to 1, 2, and 4 generated tokens per step. All other evaluation settings are shared between the base and adapted models. The resulting scores are reported in Tab. 3. We have not yet tested full-parameter 8B adaptation or shared-Gumbel distillation at this scale. 
+
+C.5 Generation Examples 
+
+In this subsection, we provide representative unconditional generation examples from pretrained MultiMDM 
+
+models at different sampling budgets. These examples are intended to qualitatively illustrate how sample coherence degrades as the number of sampling steps decreases, complementing the quantitative GenPPL and entropy evaluations reported in Sec. 4. 
+
+> 1https://github.com/ML-GSAI/LLaDA
+
+33 (a) 4 sampling steps (b) 8 sampling steps (c) 16 sampling steps 
+
+Figure 9 Perplexity-entropy Pareto fronts of distilled models on the OpenWebText dataset sampled with varying numbers of steps K using the DCD(shared-Gaussian)/shared-Gumbel algorithm. 
+
+(a) 4 sampling steps (b) 8 sampling steps (c) 16 sampling steps 
+
+Figure 10 Perplexity-entropy Pareto fronts of distilled models on the OpenWebText dataset sampled with varying numbers of steps K using the SDTT algorithm. 
+
+C.5.1 MultiMDM pretrained on LM1B 
+
+We first show generations from the model pretrained on LM1B. Because LM1B uses shorter packed sequences, these examples more directly reflect local grammaticality and short-range coherence under different sampling budgets. The length of examples in the following is 128. 
+
+Generation example at 32 sampling steps. 
+
+[CLS] the world’s authors will now be able to exploit the gains by reader applications and the book mainstream virtually any book, a major independent publisher has said. [CLS] democrats are that there was just no time in sailing without anyone knocking on the head of voters. [CLS] the paper has the goods arriving on thursday since then, and war remains a day for the bungled delivery. [CLS] the nhl also reported it was in talks on thursday about naming a new general commissioner. [CLS] entry notices which celebrating athletes’birthdays have been blacked out on officials websites. [CLS] miss jones’s victory against larisa wilco will have marytti [CLS] 
+
+Generation example at 16 sampling steps. 
+
+[CLS] five householders are rescued from a blaze in which an elderly british woman died. [CLS] brian myers ( 3 - 3 ) gave up two hits for the losing pitcher, but perez ( 1 - 5 ) allowed eight strikeouts innings as the mets slumped to a loss for a fifth straight games. [CLS] and there are bound to be hidden risks - the potential for them is unknown. [CLS] police paramedics rescued a woman to the safety of the house. [CLS] the advantage ( under the limitations inherent in broadcast regulation, they need salary legal ) is that they can show off of ofcom when it’s " normal " as required by the [CLS] 
+
+Generation example at 8 sampling steps. 
+
+[CLS] more than 24 he did each time the freshman went to ucla. [CLS] with 4 - 1 up against fernando alonsotel vettel came through there to sit chinalco’s. [CLS] do not expect fatalities, with dozens more staff staph infections likely [CLS] the gap - donut favorite turntable bird recently occupied king abdullah ii? [CLS] the federal housing agency’more than altruistic low - income borrower and credit, as well as money, makes people ms. also features more concerned in the program. missing an average saturday afternoon sleep. five lane is from ambitions. and the den, bank commute, restaurant seventh, [CLS] 
+
+34 C.5.2 MultiMDM pretrained on OpenWebText 
+
+We next show generations from the model pretrained on the OpenWebText dataset. Since OpenWebText sequences are much longer, these examples are mainly intended to illustrate global fluency, topic continuity, and failure modes at different step counts. The length of examples in the following is 1,024. 
+
+Generation example at 64 sampling steps. 
+
+<|endoftext|> thousands of people to flee the Libyan military if the violence breaks out in weeks. In late February, Brahmenya hospitals in Tripoli said they treat 14,000 people, while Edaara hospital in Benghazi in Benghazi had treated over 80 people. Gdadara hospitals said only 12 people had been confirmed dead during the protests so so far, killing 21, including 158, without further details. Trust International swiftly denied the release of the figures. The news agency denied being quoted by Bangladeshi reporter on whether it had joined opposition because it sought to expose its affiliations, which were exposed in Shahan ’s interaction on November 12, 2011. The BBC said it felt Shahsan had abused the authority. This does not mean we are opposed, ” it said, “but it really exists in the identity of the Libyan Special Operations teams. ”
+
+The Ministry of Foreign Affairs Jamaat Online said on June 8 reports relating to military intervention in Libya that “We had not to concede and we had not to commit anything ”.The ECEC and Ori Investigation Agency monitoring group in February 2014 said Mohan Ahmet was concerned by “greatly independence ” of DNE in last year ’s uprising. In late February 2014, he said the uprising helped black out public opinion. He had been forced to meet senior opposition figures and imprisoned. Authorities promised to return “solidarity and freedom to speak out ”.A document released in 2012, acknowledged the encouragement for protests but said he could not have spoken to any political organisation of the national security forces in Libya to prove there was not enough of national unity Libyan Independence Party leader goieah readies a pae during a protest rally in Gaddafi’s Drum de Sa in Tripoli November 12, 2014. REUTERS/Aneas Hahoman had met with Egyptian Musaam Front National Solidarity Fighters (MARC) for information on behalf of the RSF. The independence struggle “is territory we ’re there to protect, ” he told Guardian I. “Today we will continue to protest and defend the revolution, ” he said.<|endoftext|>You think you fit a doctor? That’s probably the best way to avoid getting sick and ill. All countries have higher levels of infection and death, with malnutrition and developmental delays in 9th, according to the World Health Organization’s 2012 survey. Despite continuous diarrhea of about two-thirds of all childhood in the region, malnutrition has led to about 40 percent of all deaths in any given year. According to a 2009 WHO report U.S. patients are said to generate 75 percent of gastrointestinal symptoms including vomiting, diarrhoea, diarrhea and diarrhea. "Studies show the greatest cases come from larger entraps where people are concentrated throughout southern and northern parts of the outbreak," said Frank M. Burni, Ph.D. surgeon. "Rapid ∼inid vomiting, diarrhea and other complications include examples of a loss of immunity that can slow processes in the body ’s metabolism." Different foods present nearly a full year of risk. UN approved Friday its annual definition of chronic and acute foodborne outbreaks, which suggests elimination of doctor-made animal feed and vaccines. A staggering number of doctor-metrica outbreaks have come from Afghanistan, Iraq, Iraq and Syria. In a report, the World Health Organisation "described how so far there were 1.1 million in in 2010 where just 1 kg of food stock was ever collected." According to the World Health Organization, the Montreal’s Institute, which report on outbreaks linked to food diseases, and Iraq, Iraq, Afghanistan, Syria, the total gap is "624 million." Related Stories Supported international organizations: Concerns and Prevent occurence Chronic malnutrition and fighting against it through estimated proportions. The MORE The rest of the World contains only about 125 million people, a combination of health, security and panic proportions, accordingoc evaluated data by London-based Sage Foundation’s and principal physicians. 
+
+“That means about half of that population is concentrated in the Americas — so solid collective nutritional intake is difficult to track, ” said Frank M. Burni, M.D. of Tiro University. It ’s “a sort of medical emergency but global proportions are running their course rapidly. ”
+
+Cronuts and processed foods eaten by thefed, starches to the liquid, drinking water causes diarrhea and vomiting. Nose infections and a different type of microorganisms are also more severe, from diarrhea to hepatic as well as severe stomach and vomiting. The disease occurs 57 percent of time in therisk tier, according to the latest review of 231 new cases. Studies in children who ate the upstream diet have found that parents may be more likely to present the disease. There are increasing rates of the disease in the poorest countries. According to one study<|endoftext|> 
+
+Generation example at 32 sampling steps. 
+
+<|endoftext|> into one of the certificates for pirating machines. The reason they could then barely escape was to start talking in front of lots of restaurants and resemble a bar. And as of, the advantages of working official passports are very real. The. has spiraled, from many passports to plummet as high as $US42.6 billion the day of the weekend. In the time since the West Point border disagreement of gold has skyrocketed from the value landong and for months more than $40 billion each day worth of remained unfilt. The enthusiasm is shifting.<|endoftext|>After May 4 used to say Best in British movie SBE!" Girl’s girl are matesigham Lynn from Camden animated adventure drama "No Kiss on your old girl."Happy to confirm this is an real voice, it has already been admitted byThe film ’Tattler and Not partner’ say ’old girl’ is Chads in fact, in 1985 film ‘The Marine STER’ and also your Telled Everything on Me the "teen’s song to action I have spitting."Getting to the point of singing, some of them now have a lot of skin under their face both, with their Black Stipragix ’as well as especially iconic, their Kenneth fangaroo bass.Kim Rivel, who has sung ’The Finnswear of a tune called The Scarlet Merse It All Mean, only has her boy’s ’old girl’ because she sings in Former Buta."At the event, the stars of absolute school bands got a serious job singing ’Party’ to sing in:Will Ferrell sing ’The Village’. Does Shick. Hada’s ’Death Valley’ – but not funny enough for audiences to get to. A reality DaBini played belrer who sings for these commercial retail clients really sounds genuine!’Pharrell’s who sung in the documentaries short ’Daddy Whis’.He commented:’With such a flair for singing ten songs, few singers can have their own records heardand enjoy these songs singing not only over the tapes.’It was inducted furtherDouglas Lancaster, head of the 
+
+35 movie ensembleInterestingly, it is revealing that Celebrity Apprentice host Donald Trump told Ball magazine that he doesn’t show the characters for the kids aspect of their lives.It’s interesting that fans of whether who sees similarities between the movie resorts and the spots themselves are rare.<|endoftext|>This is former Oklahoma Attorney General Swatsina Newman, NAMATP/MCP. The 1989 Draft of Hyoichi Young. A member of Wyoming JFF, he was selected 3. Second victim of the mad panda of teams, he was reunited with USHL and provided a PowerPoint presentation featuring 3 more players on the women’s game up to the draft. Nobody I knew ever discussed this draft with the world known datalers and it’s assumed that he was etcetera and played the game. During the trips I lost playing Young in our office and brought in USHL: Hockey East hockey (CT) and California State League Hockey League (AAA). theShowled a fascinating story, analysis of field hockey coverage on USHL since 1987 and told stories as well. To the organization he brings the family debriss from this time. The legacy of his fateful chug cloud; maybe even the future. Will this draft and a 2016 one come together for any part? I believe so to begin with. There is no way to answer. Questions What the Waitfield Principle and other questions questions which has entered the generated prize can contact me1@gmail.com Staff I also welcome your comments, questions, and let me know. The Perspective’s Fans or the Waitfield conclusion In recent years, Larsen Soll I’ve jointly came to agreement with the not so named theme for this 3 The Midterm of the study of Social, Policy, and Economics, a paper which he demonstrated: It will be difficult for the next several focus topics for the people you will think most to be closely associated with. That thesis was that although there is a demand for feedback, the "should" and thus a " conclusion" comes from the representative and quasi industry (the CEH then pointed out). Feedback voices are needed only, also the above, to address scholarship and research. Many of the decisions that we are going to make based on discussion are complicated, three-way decision-forerunners. The fact of the two separate winner-to-take loyalties that decide only the golden rules rulemaking bubble are the significance of the issue. Understanding the ’Three First’ Problem is the best answer. However discussing some requires the narrowest set of decisions. Steps unlikely, by any definition. Any winner requires a possibly existing principle such as Rule. However, there is good secrecy. The fact is that the majority of the step-by-step discussion is about settled policies and logic. There are huge errors in the middle of the discussion<|endoftext|> 
+
+Generation example at 16 sampling steps. 
+
+<|endoftext|> edited list, I know better than anyone that I ’m not going to teach the history class about the realities of the economy and modern business, what we will rather talk about at the first lesson history is be the question of what the road cuts are supposed to do today and about; why we made today? ’s sound model the way it ’s built to be; and what our history is about, how we designed the economy and therefore for a country to work and flourish right down.<|endoftext|>Bill: When they walks home behind Etgel – why he looked at Leah ’s-Ghostening cat population? Robot life was saved by theOfSecure? to Mike Davidson 0hLO Guard or Musk calculated that life has been saved by’secure’ on Airbnb after servers have been stepped down. Airbnb was chastised by Stratus and Google for licensing just from its home world, wondering if things matter and people would rescue it. Now it ’s down to unofficial IoTs-iusmaires as robots check out for vulnerable users and pick their mission’s stars and a fleet of their supersonic pros and cons. To restore security for this idiotic ecosystem from malware, prevent your exit keys from stealing your eLife sharing, the tech editor Musk tweeted last night. "Today on May 31, 2019 the new era of sustainable charmers simply sank to the ground." He also responding to the user Duncan reported. TailingClean in a Blitz: Robots Restore Security of Families However, the manned car security expert believes the deterrents are end doe by now. Whether or not the robots come back are new matters, Musk added today. Now rather than not, he will ditch the stigmas: Stations. Over to Martha of Our Fortan: Oren employee Hugh Hallow, Roz and partner Kelly have just taken a major stake in an oilfield crowdfunding platform to build a Battalion Care center for Northern Texas. The Musk co-founder and Roz lot manufactured money out of their CEO’s round-ups, meaning they raised the question of $15 million to pay for their "An App I Teutary ” platform, now to be called NXhoe. Elon Musk’s not too much more reasoned. Because the startup is located on Earth. Perhaps, "app" was not tied to Earth thematically in the first place – it in the digital universe of discovered parties operating with hopes of finding a person acquainted with men. But yes, for App. the helped generate many other thirteen authorities in that regard. Meanwhile, the app-based Games developer’s "You think is significant" app hopes to better understand and execute platform efforts potentially to make more people queasy. Franco Lee of the current documentary Citizens for Sociocracy: The Public Record, said: Over 300 million in 2011 users clicked on its seven platforms – and 400,000 social media websites – means “a platform I campaigned on?, and it raised $1.5M or more to relied on the social hand and knowledge, and, of course, how to “keep things interesting ”
+
+Apps, Hallow ’s co-founder said, are reagents in the internet that’s done no the way he’s cousins have taken crude, road time shortcuts. He added: With the most of all, everything is handled divulged and registered especially on social media. Does he accountable for actions and are available to post/repost, will your failures destroy the reputation? To see this, hire a willing and trustworthy partner – ‘ It ’ as though the symbiotic model used by Reno & Nevis for both the videos and high school and court to ensure safer and more sensual uses but engaged in the maximizing and supremacy of work ethic.<|endoftext|>Burst entered to win its 150th consecutive race [1] Praft went on to win 157 of the inaugural knockout-winning 5-0 nations1, and was never unbeaten in singles but first placed class in the 1990s Barry Vale, and Jon, the second, claimed a third place [Most judges would never have known of the fact that this debut class qualified the third World School Championships that season; the first time since Courtney Deletes 
+
+36 World Cup in 2005], they formed parties when the other countries competition the World Cup had become. James Jonathan Banks of Pyre who came at the 20 Crickets was one of the most unlikely candidates to make the brackets [The school programme has intermittently heled-grown 40 in the seven year cycle, leaving just the five vars on a track assmall as five as2]. Another bold entry was in the south, Auckland winner Michael Baker entered on the seven year cycle. As a continuously world class competitor, he has brought vital minds to the high courts whilst delivering a the deep offshore nation the Rugby provides. His return from an amateur break is ab<|endoftext|> 
+
+C.5.3 MultiMDM distilled on OpenWebText 
+
+Generation example at 64 sampling steps. 
+
+<|endoftext|> Man, Michael knows the look. As soon as I type around it, really I look at the the look in you eyes. I like to film so on and on. There are shorter shadows on the film and then when I go over the camera it kills him the only young person that I have shot that with. But then I’m sitting in one of the Amets and the second steps, and he steps out of his or three shots a bit, and then he points a gun at me, and then BenLE steps down again, and you never know who is shooting but and he still’s up there. I show half the size of my screen to him. BenLE notices this idea, then he’s hurt everybody else on the floor of the room. It’s just really odd, and it happens a few times, not even in our studio. It’s weird, and really makes it feel like someone getting the best shots or someone puts them over in the EDM will shoot somebody, like Sharon Frye. I’ve been watching this at least on the TV, and I was seeing it second and third event time. It was my seat of the train. Mike Paul’s other material right now is Breaking Bad. (Source: Getty Images) Donald Trump is smart and has set some amazing ideas for the future of baseball next season on the success that he brings. Let ’s look at the Trump fantasy. , being a business-shash politician and raising the Little League ’s exciting U.S. ideas that he could win or return to the top of the successful Little League. There hadn ’t been many good news before being let a sitting president take office as a huge executive from here to Trump. , a 10% banking and 80% investment banker, was absolutely everything we saw for the Orlando Magic, because he also helped secure the Milwaukee Bucks. All-Star league vet Ryan Smith, the Orlando Magic ’s manager, left the team after the trade deadline with no need for Tom Donning. Ryan is a surrogate of the fans, family, friends, and fans that should be unfamiliar with politics. It hadn ’t been many good news before winning a single game and being let president-elect take office as a huge executive. Turns out there is now one of the better fan base for any sports team in baseball. Trump clearly knows what to do. That has been a success. For the gaming movement so enthusiastically thrashed for him. It is that many owners are flying around the United States and cities to value their game. And now now there are endless opportunities. There are a person and a company who might be playing or are now sending illegal assets to Ted Cruz stifle their fortunes or open doors. Jos\u00e9 Castro shouldn ’t have a gambling ring. Talbot shouldn ’t get Super Bowl and be known to be getting ready for a Cup playoff push. If we can have Trump and the ownership, we can get a superstar of that caliber as a major league player and give him a first round. And that is nothing to do with Trump, though, as a team, we can see enough of a lot of talent. Drew, a former running back who has thrown 48 games, is now one of the most powerful players that the Little League has ever watched before. His investors have been willing to pay to deal Joe Cannrell on the roster after 5-in-13 losses. Jim Wong is a shrewd baseball scout. The infrastructure for coaching smartness has been built and has been laid up. GM has an asset-management stake of more than $100 million in just two years, with a maver coming to the negotiating table and paying for that. Boston is an organization he needs. A different guy from the old Toronto Toronto. He has been keeping quite close with the club ’s incarnations at the time. He was involved in office once again with Mike and Dick Tracy. A part of life. Bryan, big-day work with Matt Kemp like Louis Bette train in the yester baseball movement in his neighborhood. He is ready to take his coaching away and bring in Chris and Davey. We can ’t find even close to playing out. Tim Juron is the official manager in the division. He left Las Vegas in late ’s as manager of Little League Baseball before joining Jeff Landis, the former team ’s then-GM with the Cleveland Browns-97. He played overseas for Dallas and became a spotman co-host in the 1993-1996 Stars. No guy other than Ryan is able to Tyler Dan Marino. Ryan is going to take over the franchise from Arron McGuire, Alfonso, and Vincent Cox. He could also bring back a long-time NFL star. Shannon graduated from Top 12 Seasonal-owned University of Tennessee and slipped to second pick in 2014. While there, Golden State<|endoftext|> 
+
+Generation example at 32 sampling steps. 
+
+<|endoftext|> at about 200 feet, or almost two miles. The company ’s superintendent, Michael Accel, said it had been beneficial to the structure for the Packers, but that the fire 
+
+“should not have taken a bit in danger. ”
+
+In hours of time before the June 2016 agreement was reached, neither side nor Akug Lee had any fears with the building plan, a representative on the matter could said in details. He told both parties of the decision, but they are refusing to do so. Shannon Lock, who worked with the guards as president of the Flyer Millet Expressaway company a week earlier, saw about least 8 staffers in the building. 
+
+“She and the place said employees are out at comparable sites," Lock said Monday, specifically for her personal age range. "We don ’t think it possible to involve any operations, I did. We ’ve said the specific gates, some people know exactly what is going on, what ’s happening, and it ’s true that a lot of goes on, and overhead lighting and other stuff, a lot. But I just think about acknowledging this is an honor, and to me that is the nature of a community putting graphics and place on the floor." It ’s just year, but some folks chose Dec. and people find it a challenging time\u2026 people, who are natives of the site, said Deanne McGarukum ’s father, Gene Metz. He said they designed and built it at the University of Virginia, recited it, and after some academic somesurgeon deep digging, the first step was the old antiquities. 
+
+“We had a lot of half-finished dealing here, ” he said. “We went there for our residency and torn all the ancient and gravestones, using them as a practice slate. ”
+
+37 Still, McGarukum said it was a problem. A lot of the guys were very socially awkward and very socially society, so we were totally overwhelmed and we sort of started buying and buying stuff. ”
+
+Woodes said they had to climb out on their own with the floor-strewn floor. He was opposed to the Wall St wall for several years. 
+
+“The main problem in Yarvi, George, is to solve, ” Montee Cromwell said. “We was considered the best solution in the 90 ’s?-82, because there were people out here. Why it it ’s a dream endeavor,. "When it came to us and they started moving in, co everybody was New Jersey, digging everywhere foot by foot into the River against the big problem. It all couldn ’t happen! I understand why it did and how it ended up getting there." The Flyer Studio owner Jeff Ehbrist, 58, said he ’ was visiting a construction company went into the grasses near a bank to move in a building on the bank. "Maybe I could be out," he said. "I was working really hard and this thing happened here, which was just so hard to keep going like here." Latterstrom Street is Historic belong to the Planet Store, which has a 26-acre feet of floor that flows from several sizeable houses throughout the city. Quarterback Mike Lee said it ’s not free space, but he has volunteers all over the world, who have been at Planet Store every four years, making agreements to employees. There ’s a decent deal of eight other kinds of big offices they can work on. "The main disconnect is that it ’s not the idea that looks like the creation of a college were-in, but people working there in a building that has so cleaned it up on a leaking floor and it ’s so deep people don ’t understand the reason for the use." The group worked harder to move the space and business into the library, but Stone Long Stine, which just halted fundraising and competing with the city of Dallas and Philadelphia put up extremely higher rents. Rumpbridge said the workers have been here for the last eight years to keep the flat and business open. Akslyn, Ind. The Planet Store is the Church ’s fifth-largest site in Indian City. The topography of the building of the Library marked about 1:30 p.m. in mega-housing 2009, as compiled by Census Bureau, and February 25. The primary building to the PlanetStore is the Remnick Building, demolished in 1937 and March 7. The building also now houses rooms, according to CensusC and the Chrysler Building was demolished in big time in 2005. The Church of Indian City is an exclusive, sound-tight home maintained by artists from The Flyer (Yber Spring Architecting Group, makers of Old Style Graffiti, and the Windspeaker Artists Companies, Corp.<|endoftext|> 
+
+Generation example at 16 sampling steps. 
+
+<|endoftext|>ryker ’s upcoming Gear VR Game One, which was developed at the PC level, and isn ’t likely to be added to with The Gear The Dance of Isrotur right now but to get the game in the studio is, until San Francisco, on The Next VR expansion and Oculus Rift. We Web Developers will continue to build a game unlock store, which is several locations in the UK and UK, and Disney releasing Overwatch in South America. This December showcases “ Sigourney Weaver ”’ s soon video debut, and the story of the game warts here in the entire world. Water City At River City really hasn ’t be north of Melbourne for yet, and this is not the time to become the right location. To add to more Fehrally momentum, this is what we ’re doing. The company is getting some capital off, and it will be throwing its bid to prize 10 to 40 players for up $1. - A world filled with monsters that are interconnected, and there have been a number of established monsters, but they will always come up with the impacts of people growing together. This game will bring the magic of the Loop with Super Meat Boy, too. Episode IV: Infinity Mirror Social- Dual street character mode has a powerful effect at River City, including some “nepor ” types and detail. To push your traditional content, you can interact with a number of highly detailed events and in the middle of the story, In and immersive, the takes a red card game to see through the battlefield more than gameplay or transcendent details. This experience, for surrealism and graphics behind it, will already become very popular. bs.games. A database of the 40 artists who created the game and is collected up to $200, and $320 will be paid by game company Calcalibur City, on the site of “ Epic ” as on display at Ubisoft San Francisco and will celebrate the game and strive to represent the world with the best in Spaziland. - The fledgling PCelles would reenact themselves with the AI control puzzle. The game is designed and will end up at $25,000. The awarding is now on March 20 for Energy: Envergence. - Tinker Board, a story and action-packed board game created to the Marvel, the Mark of Encounter, Mastermaster, Hashoric, Legacy, Numeneric and Runes and Chronicles franchise. Ben Ryan will present the designer of the products he made in his first year to Agnesne Gembert, Bible ’s Witch of the Year. Ryan can get some special T together for his game that he found so fun to and was thrilled he wants to play this little one. And how the game ends up, as he, his brother, out: "Canada in the Namps of Madness: Zack ’s, game player, have I been overlooked or have been pushed hard by a misconception? "Look, the guy is Matt Corcoran and maybe he who wins. He you ’d like to receive an awesome shopping future day by meeting Sam, John,zellingi and Mama. Thank you for the many iPhone subscribers." Friday 21, 29: Phil Tayang and his Trejo (Bacon, who previously hasn ’t participated in the games, and associate Producer Paul Spragen. Jason, Jan and Jason slipped after being very close at the board with Garrett. May 28, 13: From now-9, Danielle, revealed how she was trying to speed up her game video Mark Maiss. Damia Becker, who was still out of high school, 24, who talks about her passion for game stunts, has at least one game of hers. Rob and Dustin Collins, who was starting how to work around as a senior programmer, told BuzzFeed News that Aaronione was more at odds by?the tofuddledness ” than working on measure unknown. Hana Sculptee Alright. And then this is a quote for all Fehusally wrapped fans:<|endoftext|>NOTE: The most competitive staff members with highly mercurile mastery and the gift of emotion, tend less to mean to name it but than those who use conventional history to testify that their test are over problems. I’m deeply moved by the fact that things get in our heads for life. I try my best not to take notices toward all of us being and when they get so media sabotaged that it ’s makes me worse, every day more. I try to grow stronger. It is alongside to get a chance just to falsify the facts but to movet people from one over to another for to delegitections better. For Hubris, it goes to my heart as I once saw Peter and Caroline homesmaneuver at my own<|endoftext|> 
+
+38
