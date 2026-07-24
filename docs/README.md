@@ -18,35 +18,29 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-23
-- 运行时间：2026-07-23 21:32:03 UTC
+- 最新运行日期：2026-07-24
+- 运行时间：2026-07-24 21:10:24 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：4
+- 本次总论文数：3
+- 精读区：2
 - 速读区：1
 
 ### 今日简报（AI）
-今日精读两篇高分论文，聚焦自回归视频生成的高效注意力机制与扩散模型的剪枝方法。最值得关注：HeadCast通过投射注意力头加速视频生成，以及Importance-Aware OBS剪枝在保持质量下减少模型冗余。建议普通读者重点关注注意力优化与模型压缩方向，以实现在有限算力下更高效的生成应用。
-- 详情：[/202607/23/README](/202607/23/README)
+今日共3篇论文，聚焦扩散模型推理时缩放和高效视频生成两个方向；最值得关注《Inference-Time Scaling of Diffusion Models via Progressive Seed Pruning》的种子剪枝策略（9.0分）和《Ms. Forcing》的多尺度分块注意力流式视频生成方法（8.0分）；建议优先精读这两篇，把握可缩放推理与视频生成效率的最新思路。
+- 详情：[/202607/24/README](/202607/24/README)
 
 ### 精读区论文标签
-1. [HeadCast: Casting Attention Heads for Efficient Autoregressive Video Generation](/202607/23/2607.20125v1-headcast-casting-attention-heads-for-efficient-autoregressive-video-generation)  
-   标签：评分：10.0/10、query:diff-accel
-   evidence：免训练即插即用自回归视频扩散模型加速框架
-2. [Importance-Aware OBS Pruning for Diffusion Models](/202607/23/2607.20048v1-importance-aware-obs-pruning-for-diffusion-models)  
+1. [Inference-Time Scaling of Diffusion Models via Progressive Seed Pruning](/202607/24/2607.21591v1-inference-time-scaling-of-diffusion-models-via-progressive-seed-pruning)  
    标签：评分：9.0/10、query:diff-accel
-   evidence：免训练剪枝加速扩散模型
-3. [OSVE: One Step Video Editing with One Step Diffusion Models](/202607/23/2607.19895v1-osve-one-step-video-editing-with-one-step-diffusion-models)  
+   evidence：通过渐进种子剪枝实现扩散模型推理时扩展，有效加速生成且无需额外训练
+2. [Ms. Forcing: Efficient Streaming Video Generation with Multi-Scale Patchification and Attention](/202607/24/2607.20940v1-ms-forcing-efficient-streaming-video-generation-with-multi-scale-patchification-and-attention)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：单步视频编辑加速扩散模型推理
-4. [Evolving Cache Schedules for Fast Diffusion Policy Inference](/202607/23/2607.20293v1-evolving-cache-schedules-for-fast-diffusion-policy-inference)  
-   标签：评分：8.0/10、query:diff-accel
-   evidence：免训练缓存调度加速扩散推理
+   evidence：自适应空间粒度的流式视频扩散加速
 
 ### 速读区论文标签
-1. [Multi-Mask Diffusion Language Models for Few-Step Generation](/202607/23/2607.19686v1-multi-mask-diffusion-language-models-for-few-step-generation)  
-   标签：评分：7.0/10、query:diff-accel
-   evidence：多掩码扩散用于少步生成，加速文本扩散模型
+1. [SANA-Video 2.0: Hybrid Linear Attention with Attention Residuals for Efficient Video Generation](/202607/24/2607.21553v1-sana-video-20-hybrid-linear-attention-with-attention-residuals-for-efficient-video-generation)  
+   标签：评分：6.0/10、query:diff-accel
+   evidence：混合注意力高效视频扩散
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
