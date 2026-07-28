@@ -1,0 +1,1018 @@
+Title: Manifold-Constrained Noise Optimization for Diverse Diffusion Sampling
+
+URL Source: https://arxiv.org/pdf/2607.23937v1
+
+Published Time: Tue, 28 Jul 2026 01:27:12 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# Manifold-Constrained Noise Optimization for Diverse Diffusion Sampling 
+
+## Qitan Shi, Cheng Jin, Ziyuan Liu, Yuantao Gu ∗
+
+Tsinghua University {sqt24,jinc21,liuziyua22}@mails.tsinghua.edu.cn, gyt@tsinghua.edu.cn 
+
+Abstract 
+
+Few-step distilled diffusion models generate high-quality im-ages quickly, but often lose per-prompt diversity, producing near-identical samples across random seeds. Optimizing the initial noise at inference time offers an appealing way to re-cover this diversity, yet existing methods directly update the initial noise in an unconstrained Euclidean space, ignoring both the geometry of the Gaussian prior and the model’s sen-sitivity to noise frequencies. They therefore introduce auxil-iary quality-control objectives to maintain generation fidelity, adding compute and weighting hyperparameters while still requiring conservative updates to prevent degradation. In this work, we propose MoNO, a training-free method that per-forms Manifold-constrained Noise Optimization on a low-dimensional, quality-stabilizing noise manifold. MoNO se-quentially optimizes each new initial noise so that its predicted visual feature complements previous generations, while Rie-mannian updates on an affine low-frequency sphere preserve prior likelihood and fix unstable high-frequency components by construction. This enables large geodesic steps, removes the need for auxiliary quality-control objectives, and converges in far fewer iterations than prior noise-optimization methods. Experiments with multiple distilled text-to-image diffusion models show that MoNO consistently improves per-prompt diversity while maintaining image quality. 
+
+## Introduction 
+
+Few-step distilled diffusion models generate high-quality text-to-image samples in only one or a few network eval-uations, making generation fast enough to be interactive and increasingly popular in practice (Sauer et al. 2024; Yin et al. 2024; Black Forest Labs 2025). However, they ex-hibit severe mode collapse, where sampling the same prompt with different random seeds still yields nearly identical im-ages (Gandikota and Bau 2026; Wu et al. 2026; Li et al. 2026), as shown in Figure 1. This limits many applications, since repeatedly sampling a prompt is often intended to sur-face different possibilities. Under mode collapse, the model instead trivially repeats near-identical images and fails to ex-plore the broader distribution of plausible outputs. This mo-tivates a line of inference-time methods that, given a trained diffusion model, improve the diversity of the small set of images generated per prompt at sampling time, without any retraining. Existing inference-time methods for improving diversity 
+
+> ∗
+
+Corresponding author. 
+
+(a) sampled from i.i.d. initial noise 
+
+(b) sampled from optimized initial noise Figure 1: Generations for the prompt “cat with sunglasses” 
+
+with FLUX.2 [klein] 4B. (a) Under i.i.d. sampling, few-step distilled models collapse in diversity and produce visually similar images. (b) Our method changes only the initial noise, yielding more diverse generations. can be grouped into three families. Guidance methods modify the denoising dynamics at inference time, for example by perturbing the conditioning signal, introducing interactions among concurrently generated samples, or pushing visual features away from reference samples (Sadat et al. 2024; Corso et al. 2024; Vinograd, Achituve, and Fetaya 2026; Singh et al. 2024). Search methods, by contrast, leave the sampler itself unchanged. They sample a large candidate pool and solve a group-selection problem that trades off individual quality against pairwise diversity (Parmar et al. 2025). Noise optimization methods instead act directly on the initial noise, optimizing it so that the resulting generations become more diverse (Kim, Um, and Ye 2025; Harrington et al. 2026). Among these methods, noise optimization is a natural fit for arXiv:2607.23937v1 [cs.CV] 27 Jul 2026 few-step diffusion models. By acting on the initial noise, it avoids perturbing the short pretrained sampling trajectory and does not require a large candidate pool that would offset the efficiency gains of distillation. It also remains applicable when there are too few denoising steps for step-wise methods to act effectively. However, existing noise-optimization methods still rely on auxiliary quality-control objectives to prevent optimized noises from producing low-quality generations. These ob-jectives include external reward models that provide quality signals, as well as soft regularization or anchoring terms that discourage overly aggressive noise updates. They introduce additional compute and weighting hyperparameters, yet still require conservative updates to prevent quality degradation. Our key insight is that this conservatism is not inherent to noise optimization, but rather a consequence of optimizing the initial noise in an unconstrained Euclidean space. The constraints that previous methods impose softly have natural hard-constrained counterparts. First, for an isotropic Gaus-sian prior, the probability density depends only on the noise norm, and high-dimensional samples concentrate in a thin annulus around their typical radius (Vershynin 2020). Thus, instead of penalizing deviations from the Gaussian prior, we can preserve prior likelihood exactly by moving along the fixed-radius sphere passing through the initial noise. Second, diffusion models are sensitive to the frequency structure of their noise inputs. Empirically, low-frequency noise compo-nents provide a more stable subspace for controlling image structure and fidelity, whereas high-frequency updates tend to be less stable and more artifact-prone (Falck et al. 2025; Harrington et al. 2026; Jeon and Lee 2026). We therefore restrict optimization to the low-frequency subspace while keeping high-frequency components fixed. This yields a con-strained noise manifold, namely an affine sphere over the low-frequency subspace, where prior validity and frequency stability are enforced by construction rather than balanced through auxiliary losses. Building on this insight, we propose MoNO , short for 
+
+Manifold-c onstrained Noise Optimization, a training-free inference-time method that recovers diversity by optimizing initial noises on a constrained manifold. Given the features of previously generated images, MoNO samples a new initial noise, predicts the corresponding clean image with a sin-gle network evaluation, and extracts a visual feature vector from the prediction. It then updates the initial noise to reduce the feature vector’s projection onto the subspace spanned by previous generations, encouraging the new image to occupy a direction not already covered by the set. The update is performed by Riemannian optimization on the constrained manifold, so the noise remains within the prescribed feasible set throughout optimization (Absil, Mahony, and Sepulchre 2008; Boumal 2023). This design replaces softly balanced additional terms with hard feasibility constraints. Instead of using auxiliary quality-control objectives to keep the opti-mized noise from producing degraded images, MoNO con-strains every update to remain on the quality-stabilizing noise manifold. Consequently, it can take large geodesic steps with-out leaving the feasible set, leading to far fewer iterations than prior noise-optimization methods. Our contributions are as follows: 
+
+• We identify a hard-constrained geometry for noise op-timization that preserves Gaussian prior likelihood by fixed-radius norm constraints and stabilizing genera-tion by restricting updates to low-frequency components, yielding a low-frequency affine sphere as the feasible manifold. 
+
+• We propose MoNO, a sequential noise-optimization method that diversifies generations by minimizing each new sample’s feature projection onto the subspace spanned by previous samples, using Riemannian up-dates on the constrained manifold. Because every update remains feasible by construction, MoNO avoids auxil-iary quality-control objectives, supports large geodesic steps, and remains training-free and plug-and-play for pretrained few-step generators. 
+
+• We validate MoNO across multiple distilled text-to-image diffusion models. The results show that MoNO consis-tently improves per-prompt diversity over i.i.d. sampling and representative inference-time baselines while keeping comparable image quality. 
+
+## Related Work 
+
+Diversity Collapse in Few-Step Diffusion Models 
+
+Few-step distilled diffusion models have made text-to-image generation substantially more efficient, but this accelera-tion can reduce the effect of sampling randomness. For a fixed prompt, different random seeds may still produce highly similar images, leading to per-prompt diversity col-lapse (Gandikota and Bau 2026; Wu et al. 2026; Li et al. 2026). Unlike dataset-level mode dropping, this is a condi-tional sampling issue. The model may produce realistic im-ages across prompts, but different seeds for the same prompt fail to explore distinct plausible outcomes. Since users often sample several candidates from one prompt to explore alter-natives, restoring per-prompt diversity at inference time is especially important for few-step diffusion models. 
+
+Inference-Time Methods for Diverse Generation 
+
+Existing inference-time methods improve diversity without retraining the model. Guidance methods modify the denois-ing process, either by perturbing the conditioning signal (Sa-dat et al. 2024), introducing interactions among concurrently generated samples (Corso et al. 2024; Vinograd, Achituve, and Fetaya 2026), or applying feature-level adversarial guid-ance (Singh et al. 2024). Search-based methods leave the sampler unchanged, but generate a large candidate pool and select a subset that balances sample quality and pairwise di-versity (Parmar et al. 2025). These methods show that diver-sity can be improved after training, but they either intervene inside the sampling trajectory or rely on generating and fil-tering extra candidates. For few-step diffusion models, the denoising trajectory offers only a few opportunities for step-wise intervention, while large candidate pools would offset the efficiency gained by distillation. A more direct control variable is therefore the source of stochasticity itself: the initial noise. Noise Optimization for Diverse Generation 
+
+A more direct way to improve generation diversity is to opti-mize the initial noise itself. Let Gθ denote a fixed pretrained diffusion model, and let Z = {zi}Ni=1 ⊂ Rd be a batch of initial noises for a prompt c. Existing diversity-oriented noise optimization methods update Z while keeping Gθ fixed, so that the generated samples Gθ (Z, c ) become more diverse. These methods can be abstracted as 
+
+min 
+
+> Z∈(Rd)N
+
+Ldiv 
+
+ Gθ (Z, c ) + λ Lreg (Z, c ),
+
+where Ldiv encourages separation among generated samples, and Lreg denotes auxiliary regularization used to preserve image fidelity or consistency with the noise prior. Different methods instantiate these terms differently. Kim, Um, and Ye (2025) defines a contrastive objective using re-pulsion between batch elements to increase diversity and attraction to fixed anchors to preserve fidelity. Harrington et al. (2026) optimize initial noises with feature-space di-versity objectives and combine them with quality rewards and regularization to avoid quality degradation. These meth-ods demonstrate that the initial noise is an effective control variable for recovering diversity. However, since Z is opti-mized in an unconstrained Euclidean space, fidelity and prior preservation must be enforced indirectly through soft regular-ization terms or optimization heuristics. As a result, diversity improvement must be balanced against fidelity through ob-jective weights, stopping rules, or conservative update sizes. This suggests that the admissible region of noise optimization is as important as the objective used to encourage diversity. 
+
+## Method 
+
+This section presents the proposed MoNO framework. We first formulate diversity enhancement as a sequential feature-subspace optimization problem. We then define the admissi-ble noise manifold that constrains the optimization, derive the corresponding Riemannian update, and finally describe the practical instantiation used for efficient inference. Figure 2 provides an overview of the full pipeline. 
+
+Sequential Feature-Subspace Diversification 
+
+Let c denote a text prompt, and let x = Gθ (z, c ) be the image generated by a fixed pretrained diffusion model from an initial noise z ∈ Rd. Given a frozen feature extractor ϕ,we write the feature of the generated image as 
+
+v(z, c ) = ϕ(x) = ϕ(Gθ (z, c )) .
+
+Following the sequential sampling strategy of Harrington et al. (2026), MoNO constructs a diverse set one sample at a time, which avoids optimizing all samples jointly and allows the set size to grow without a fixed batch-size limit. Sup-pose that n − 1 samples have already been generated for the same prompt, with initial noises {zi}n−1 
+
+> i=1
+
+and corresponding features 
+
+vi = v(zi, c ), i = 1 , . . . , n − 1.
+
+These previous features define the occupied feature subspace 
+
+Sn−1 = span( v1, . . . , v n−1).
+
+Figure 2: Overview of MoNO. Given a new initial noise zn,the diffusion model produces an image xn, whose feature vn
+
+is compared with the previous features Sn−1. The resulting diversity loss drives manifold-constrained noise optimiza-tion, updating only the initial noise while keeping the model parameters and sampler fixed. For the n-th sample, MoNO starts from a fresh Gaussian noise z0 
+
+> n
+
+∼ N (0 , I ) and optimizes the noise so that the new feature is not well explained by Sn−1. Let ΠSn−1 denote the orthogonal projector onto Sn−1. We define the sequential diversity loss as 
+
+Ldiv (zn; Sn−1) = ΠSn−1 v(zn, c ) 22 .
+
+Minimizing this loss suppresses the component of the new feature that lies in the subspace spanned by previous gener-ations. The n-th noise is therefore obtained by solving 
+
+z⋆n = arg min 
+
+> zn∈M n
+
+Ldiv (zn; Sn−1),
+
+where Mn ⊂ Rd denotes the admissible noise set. This formulation differs from noise optimization with an auxil-iary soft regularizer because fidelity-preserving constraints are imposed through the feasible set itself, rather than added as a separate regularization term. After obtaining z⋆n, the generated sample Gθ (z⋆n, c ) is added to the set, and its fea-ture is incorporated into the feature subspace for subsequent sequential updates. 
+
+Manifold-Constrained Noise Space 
+
+The sequential diversity loss specifies which feature com-ponent should be suppressed. We now define where the ini-tial noise is allowed to move during optimization. Instead of adding a soft regularization term to penalize undesir-able noise updates, MoNO imposes fidelity-preserving con-straints through the feasible set itself. Figure 3 illustrates the two empirical observations behind this design: generated images are sensitive to the norm of the initial noise, and full-frequency updates can be substantially more disruptive than low-frequency updates. HPSv2 0.270 HPSv2 0.322 HPSv2 0.270 HPSv2 0.322 HPSv2 0.310 HPSv2 0.283      
+
+> small norm typical norm large norm initial low-freq update full-freq update
+
+(a) Noise norm (b) Update frequency Figure 3: Effects of noise norm and update frequency on generation quality for the prompt “a photo of a bird” . Badge colors indicate relative visual quality. (a) Initial noises with different norms produce images with visibly different fidelity. (b) Starting from the same initial generation, a one-step norm-preserving update restricted to low frequencies is less disruptive than a one-step norm-preserving update over all frequency components. 
+
+Norm constraint. The initial noise follows the standard Gaussian prior z ∼ N (0 , I ), whose density depends only on the Euclidean norm ∥z∥2. An unconstrained update can therefore change the prior likelihood by moving the noise radially. To avoid this radial drift, MoNO constrains the opti-mized noise to remain on the sphere determined by its initial draw z0:
+
+Mnorm (z0) = z ∈ Rd : ∥z∥2 = ∥z0∥2 .
+
+This constraint allows the noise to move along a fixed-radius Gaussian shell rather than toward a different-norm region. As shown in Figure 3(a), noises with different norms can lead to markedly different generation quality. 
+
+Frequency constraint. A fixed norm alone is not suf-ficient. Although spherical updates preserve the Gaussian density, they may still modify high-frequency components of the initial noise. Prior studies suggest that diffusion mod-els expose meaningful and uneven control across noise fre-quencies, with low-frequency components often providing a more stable handle for image structure and fidelity (Falck et al. 2025; Harrington et al. 2026; Jeon and Lee 2026). We observe the same tendency in Figure 3(b): under a one-step norm-preserving update, allowing all frequency components to change is more disruptive than restricting the update to low frequencies. We therefore constrain the optimization trajec-tory to a low-frequency subspace. Let PL denote an orthog-onal low-pass projection and let PH = I − PL be its high-frequency complement. MoNO freezes the high-frequency component of the initial noise: 
+
+Mfreq (z0) = z ∈ Rd : PH z = PH z0 .
+
+This constraint ensures that only the low-frequency compo-nent of the noise can be changed during optimization. 
+
+Intersection manifold. Combining the norm and fre-quency constraints yields the admissible noise manifold: 
+
+M(z0) = Mnorm (z0) ∩ M freq (z0).
+
+Equivalently, decompose the initial noise as 
+
+z0 = z0 
+
+> L
+
++ z0 
+
+> H
+
+, z0 
+
+> L
+
+= PLz0, z0 
+
+> H
+
+= PH z0.
+
+Since PL and PH are orthogonal projections, the feasible set can be written as an affine low-frequency sphere: 
+
+M(z0) = z = z0 
+
+> H
+
++ u : u ∈ Im( PL), ∥u∥2 = ∥z0
+
+> L
+
+∥2 .
+
+Thus, MoNO optimizes only the low-frequency compo-nent, keeps the low-frequency norm fixed, and leaves the high-frequency component unchanged. This converts fidelity preservation from a soft regularization term into a hard geo-metric constraint on the initial-noise space. 
+
+Riemannian Noise Update 
+
+Because M(z0) is a low-dimensional manifold, ordinary gradient updates do not preserve feasibility. We therefore use the Riemannian gradient descent recipe (Boumal 2023). Fixing the current sequential step n, we write the objective as 
+
+f (z) = Ldiv (z).
+
+From the previous subsection, any feasible noise can be rep-resented as 
+
+z = z0 
+
+> H
+
++ u, ∥u∥2 = r, 
+
+where z0 
+
+> H
+
+= PH z0, u = PLz, and r = ∥PLz0∥2. Thus, the feasible set is a sphere in the low-frequency subspace, translated by the fixed high-frequency component z0 
+
+> H
+
+.At iteration k, let 
+
+zk = z0 
+
+> H
+
++ uk, ∥uk∥2 = r. 
+
+We first compute the Euclidean gradient in the ambient noise space, 
+
+gk = ∇z f (zk).
+
+Feasible infinitesimal updates must keep the high-frequency component fixed and must not change the norm of the low-frequency component. Hence, the descent direction should lie in the tangent space of the feasible manifold. The tangent space of M(z0) at zk is 
+
+Tzk M(z0) = ξ ∈ Im( PL) : ⟨ξ, u k⟩ = 0 .
+
+The orthogonal projection of gk onto this tangent space is 
+
+Proj M(z0) 
+
+> zk
+
+(gk) = PLgk − ⟨PLgk, u k⟩∥uk∥22
+
+uk.
+
+This gives the Riemannian gradient 
+
+grad f (zk) = Proj M(z0) 
+
+> zk
+
+(gk).
+
+The projection removes both infeasible components of the Euclidean gradient: the high-frequency component, which would change PH z, and the radial component, which would change the low-frequency norm. We then take the Riemannian descent direction 
+
+hk = − grad f (zk).
+
+With step size α > 0, the next iterate is obtained by mov-ing along the geodesic on the manifold, equivalently by the exponential map: 
+
+zk+1 = Exp M(z0)
+
+> zk
+
+ αh k .
+
+Since M(z0) is an affine sphere, this geodesic update has a closed form. With zk = z0 
+
+> H
+
++ uk, the low-frequency com-ponent is updated by 
+
+uk+1 = uk cos 
+
+ α∥hk∥2
+
+r
+
+
+
++ r hk
+
+∥hk∥2
+
+sin 
+
+ α∥hk∥2
+
+r
+
+
+
+,
+
+and the full noise is reconstructed as 
+
+zk+1 = z0 
+
+> H
+
++ uk+1 .
+
+By construction, the update satisfies 
+
+PH zk+1 = z0 
+
+> H
+
+, ∥PLzk+1 ∥2 = r, 
+
+so each iterate remains exactly on M(z0).Compared with a free Euclidean update, the Riemannian update first discards the gradient components that would vi-olate the constraints. It then moves along the geodesic of 
+
+M(z0), producing a constraint-preserving update of the ini-tial noise. Thus, every iterate remains feasible without auxil-iary regularization or conservative post-hoc correction. Ad-ditional derivation details are provided in the appendix. 
+
+Practical Instantiation 
+
+In the formulation above, the diversity loss is written with the generator output x = Gθ (z, c ) and the feature subspace is defined abstractly by previous features. In practice, we instantiate both components in a lightweight way. To avoid differentiating through the full sampling trajectory, we com-pute the optimization loss using the denoising network’s own single-step clean-image prediction, denoted by Aθ . Given the current noise z, this proxy prediction produces ˆx = Aθ (z, c ).
+
+During optimization, we use v(z, c ) = ϕ(ˆ x) for gradient computation. After optimization, the final image is still gen-erated as x = Gθ (z, c ) using the original sampler. We in-stantiate ϕ with lightweight DINOv2 patch features (Oquab et al. 2023). We also maintain an orthonormal basis Qn−1
+
+of the previous feature subspace Sn−1, so that the projection loss is computed as 
+
+Ldiv (zn; Sn−1) = Q⊤
+
+> n−1
+
+v(zn, c ) 22 .
+
+Algorithm 1 summarizes the full procedure. MoNO gen-erates samples sequentially, optimizing each newly sampled noise on its own manifold M(z0
+
+> n
+
+) and then adding the re-sulting feature to the maintained basis. The first sample is generated from an empty basis, while later samples are op-timized to avoid the subspace already covered by previous generations. Since MoNO stores only a compact feature ba-sis and optimizes one noise at a time, its memory cost is effectively independent of the final set size, and the number of generated samples can be chosen freely at inference time. Algorithm 1: Manifold-Constrained Noise Optimization 
+
+Require: prompt c, generator Gθ , proxy predictor Aθ , fea-ture extractor ϕ, low-pass projection PL, number of sam-ples N , optimization iterations K, step size α 
+
+> 1:
+
+Initialize Q0 ← [ ]  
+
+> 2:
+
+for n = 1 , . . . , N do  
+
+> 3:
+
+Sample z0 
+
+> n
+
+∼ N (0 , I ) 
+
+> 4:
+
+Construct M(z0
+
+> n
+
+) using PL and PH = I − PL 
+
+> 5:
+
+Set z0 
+
+> n
+
+as the initial iterate  
+
+> 6:
+
+for k = 0 , . . . , K − 1 do  
+
+> 7:
+
+ˆx ← Aθ (zkn, c ) 
+
+> 8:
+
+v ← ϕ(ˆ x) 
+
+> 9:
+
+f (zkn) ← ∥ Q⊤
+
+> n−1
+
+v∥22 
+
+> 10:
+
+gk ← ∇ zkn f (zkn) 
+
+> 11:
+
+grad f (zkn) ← Proj M(z0
+
+> n)
+> zkn
+
+(gk) 
+
+> 12:
+
+zk+1  
+
+> n
+
+← Exp M(z0
+
+> n)
+> zkn
+
+ −α grad f (zkn) 
+
+> 13:
+
+end for  
+
+> 14:
+
+Generate xn ← Gθ (zKn , c ) 
+
+> 15:
+
+Extract vn ← ϕ(xn) 
+
+> 16:
+
+Qn ← Orthonormalize([ Qn−1, v n])  
+
+> 17:
+
+end for  
+
+> 18:
+
+return {xn}Nn=1 
+
+## Experiments 
+
+Experimental Setup 
+
+Models and datasets. In the main experiments, we eval-uate MoNO on few-step distilled text-to-image diffusion models, including 4-step FLUX.2 [klein] 4B (Black Forest Labs 2025), single-step SDXL-Turbo (Sauer et al. 2024), and single-step DMD2 (Yin et al. 2024). We evaluate all methods on the GenEval benchmark (Ghosh, Hajishirzi, and Schmidt 2023), generating four images for each prompt to assess per-prompt generation diversity. Unless otherwise specified, all other sampling parameters are kept at their default values. 
+
+Compared methods. In addition to standard i.i.d. sam-pling, we compare MoNO with representative inference-time diversity sampling methods, including CADS (Sadat et al. 2024), Particle Guidance (Corso et al. 2024), Neg-ToMe (Singh et al. 2024), Group Inference (Parmar et al. 2025), DivGen (Harrington et al. 2026), and CNO (Kim, Um, and Ye 2025). For the single-step distilled model, step-wise methods are less directly applicable, and we therefore compare only with noise optimization methods. For all noise optimization methods, we use four optimization iterations in the main comparison. For MoNO, we additionally report the one-iteration variant. 
+
+Evaluation metrics. We evaluate each method in terms of diversity and quality. We measure diversity using pairwise LPIPS (Zhang et al. 2018), pairwise DreamSim (Fu et al. 2023), and the set-level Vendi Score (Friedman and Dieng 2022). We measure quality using per-image CLIPScore (Hes-sel et al. 2021), CLIP-IQA (Wang, Chan, and Loy 2023), and HPSv2 (Wu et al. 2023). More detailed experimental settings are provided in the appendix. Table 1: Main results on GenEval with distilled text-to-image diffusion models. We report the mean across prompts, with the standard deviation shown in subscript. The best results within each model block are shown in bold. Model Method Diversity ↑ Quality ↑
+
+LPIPS DreamSim Vendi Score CLIPScore CLIP-IQA HPSv2 FLUX.2 [klein] 4B (4 steps) i.i.d. 0.528 ±0.133 0.178 ±0.078 1.734 ±0.461 0.338 ±0.035 0.630 ±0.112 0.313 ±0.025 
+
+CADS 0.733 ±0.040 0.413 ±0.097 2.575 ±0.608 0.323 ±0.031 0.558 ±0.118 0.288 ±0.025 
+
+Particle Guidance 0.540 ±0.123 0.183 ±0.078 1.757 ±0.468 0.338 ±0.034 0.636 ±0.118 0.313 ±0.025 
+
+NegToMe 0.544 ±0.123 0.185 ±0.079 1.771 ±0.465 0.338 ±0.034 0.631 ±0.118 0.312 ±0.025 
+
+Group Inference 0.609 ±0.101 0.232 ±0.092 1.934 ±0.536 0.337 ±0.033 0.631 ±0.119 0.311 ±0.024 
+
+DivGen 0.553 ±0.114 0.191 ±0.081 1.809 ±0.495 0.338 ±0.034 0.636 ±0.121 0.315 ±0.026 
+
+CNO 0.540 ±0.123 0.183 ±0.078 1.761 ±0.468 0.338 ±0.034 0.636 ±0.118 0.313 ±0.025 
+
+MoNO (1-iter) 0.692 ±0.072 0.330 ±0.103 2.168 ±0.547 0.336 ±0.032 0.613 ±0.111 0.303 ±0.024 
+
+MoNO (4-iter) 0.742 ±0.064 0.453 ±0.103 2.592 ±0.599 0.332 ±0.032 0.610 ±0.109 0.294 ±0.023 
+
+i.i.d. 0.628 ±0.054 0.234 ±0.091 1.937 ±0.508 0.330 ±0.030 0.605 ±0.121 0.297 ±0.031 
+
+DivGen 0.650 ±0.057 0.268 ±0.093 2.161 ±0.557 0.329 ±0.030 0.576 ±0.122 0.294 ±0.031 
+
+CNO 0.643 ±0.058 0.247 ±0.090 1.975 ±0.497 0.330 ±0.030 0.574 ±0.123 0.295 ±0.031 
+
+MoNO (1-iter) 0.695 ±0.049 0.320 ±0.104 2.162 ±0.547 0.328 ±0.030 0.608 ±0.116 0.299 ±0.028 
+
+SDXL-Turbo (1 step) MoNO (4-iter) 0.735 ±0.049 0.384 ±0.107 2.368 ±0.563 0.326 ±0.030 0.619 ±0.111 0.297 ±0.027 
+
+i.i.d. 0.646 ±0.084 0.257 ±0.081 2.037 ±0.483 0.333 ±0.029 0.606 ±0.128 0.294 ±0.030 
+
+DivGen 0.680 ±0.076 0.288 ±0.088 2.312 ±0.549 0.331 ±0.030 0.583 ±0.131 0.295 ±0.029 
+
+CNO 0.674 ±0.076 0.267 ±0.083 2.068 ±0.497 0.332 ±0.030 0.580 ±0.134 0.295 ±0.030 
+
+MoNO (1-iter) 0.733 ±0.062 0.338 ±0.087 2.283 ±0.546 0.330 ±0.029 0.606 ±0.119 0.294 ±0.028 
+
+DMD2 (1 step) MoNO (4-iter) 0.768 ±0.053 0.385 ±0.090 2.493 ±0.554 0.327 ±0.028 0.610 ±0.107 0.293 ±0.025 
+
+Table 2: Ablation of MoNO constraints on GenEval with FLUX.2 [klein] 4B. All variants use four optimization iter-ations with the same update magnitude. The best results are shown in bold. Constraints CLIPScore ↑ CLIP-IQA ↑ HPSv2 ↑
+
+Norm + Freq 0.332 ±0.032 0.610 ±0.109 0.294 ±0.023 
+
+Norm only 0.301 ±0.025 0.490 ±0.096 0.255 ±0.020 
+
+Freq only 0.329 ±0.030 0.605 ±0.109 0.290 ±0.023 
+
+Main Results 
+
+As shown in Table 1, MoNO consistently improves gener-ation diversity across all evaluated distilled text-to-image generators while keeping image quality stable. Compared with i.i.d. sampling, MoNO substantially increases all di-versity metrics, indicating that optimizing each new initial noise against the feature subspace of previous generations effectively reduces repeated modes within the same prompt. Compared with prior noise-optimization methods, MoNO also achieves stronger diversity gains, and the one-iteration variant already provides a clear improvement, suggesting that the constrained update can make effective progress with very limited optimization. The visual comparisons in Figure 4 further illustrate the diversity improvements. While i.i.d. sampling often produces visually similar samples for the same prompt, MoNO gener-Table 3: Ablation of the single-step proxy predictor on GenEval with FLUX.2 [klein] 4B. Both variants use four optimization iterations. The best results are shown in bold. Metric Full Proxy Diversity ↑
+
+LPIPS 0.724 ±0.064 0.742 ±0.064 
+
+DreamSim 0.423 ±0.104 0.453 ±0.103 
+
+Vendi Score 2.593 ±0.572 2.592 ±0.599 
+
+Quality ↑
+
+CLIPScore 0.331 ±0.032 0.332 ±0.032 
+
+CLIP-IQA 0.632 ±0.104 0.610 ±0.109 
+
+HPSv2 0.301 ±0.024 0.294 ±0.023 
+
+ates more varied visual attributes, with four iterations pro-ducing stronger diversity than one iteration. To inspect the optimization dynamics more directly, Figure 5 compares dif-ferent noise-optimization methods across iterations. Prior methods show only limited changes, whereas MoNO rapidly diversifies the generated samples within a few iterations, il-lustrating the benefit of large geodesic updates on the con-strained noise manifold in the low-iteration regime. Addi-tional experimental results are provided in the Appendix. 
+
+Ablation Study 
+
+We ablate two key design choices in MoNO: the optimization constraints that preserve image quality, and the single-step i.i.d. 
+
+MoNO (1-iter) 
+
+MoNO (4-iter) 
+
+FLUX.2 [klein] 4B SDXL-Turbo Figure 4: Visual comparison of per-prompt generation diversity on FLUX.2 [klein] 4B and SDXL-Turbo for the prompt “a photo of a dog” . Standard i.i.d. sampling produces visually similar samples, while MoNO increases diversity with one optimization iteration and yields substantially more diverse generations with four iterations. Iter 0 Iter 1 Iter 2 Iter 3 Iter 4 DivGen 
+
+CNO 
+
+MoNO 
+
+Figure 5: Optimization progress of three different noise-optimization methods on FLUX.2 [klein] 4B for the prompt 
+
+“a photo of a book” . MoNO yields more visible diversifica-tion after only a few updates. proxy predictor that enables efficient gradient computation. 
+
+Effect of optimization constraints. We ablate the two constraints used in MoNO: norm constraint and frequency constraint. As shown in Table 2, using either constraint alone leads to a degradation in image quality. As illus-trated in Figure 6, the norm-only variant suffers from severe high-frequency artifacts and distorted structures, while the frequency-only variant often produces locally over-saturated regions. In contrast, combining the norm constraint and the frequency constraint better preserves visual quality while enabling effective diversity enhancement. 
+
+Effect of the single-step proxy predictor. MoNO op-timizes the diversity loss using the denoising network’s single-step clean-image prediction, i.e., ϕ(Aθ (z, c )) , rather than differentiating through the full sampling trajectory, i.e., 
+
+ϕ(Gθ (z, c )) . To validate this design, we compare the de-fault proxy-based optimization with a variant that replaces 
+
+ϕ(Aθ (z, c )) by ϕ(Gθ (z, c )) in the diversity loss and back-Norm + Freq 
+
+Norm only 
+
+Freq only 
+
+Figure 6: Visual comparison of MoNO constraint ablations on the prompt “a photo of a clock” . Using both constraints re-sults high-quality images, while keeping only one constraint causes significant quality degradation. propagates through the full sampler. As shown in Table 3, the proxy-based variant achieves a comparable quality–diversity trade-off to the full-sampler variant, with a measured 2.37 ×
+
+speedup. This shows that Aθ provides an effective and effi-cient optimization signal for diverse generation. 
+
+## Conclusion 
+
+We introduced MoNO, a manifold-constrained noise opti-mization method for improving per-prompt diversity in few-step distilled text-to-image diffusion models. MoNO op-timizes each initial noise against the feature subspace of previous generations, while restricting updates to a low-dimensional manifold that preserves the Gaussian prior ge-ometry and fixes unstable high-frequency components. This constrained formulation enables larger stable updates and yields consistent diversity gains over i.i.d. sampling and prior inference-time baselines, while maintaining image quality. References 
+
+Absil, P.-A.; Mahony, R.; and Sepulchre, R. 2008. Optimiza-tion algorithms on matrix manifolds . Princeton University Press. Black Forest Labs. 2025. FLUX.2: Frontier Visual Intelli-gence. https://bfl.ai/blog/flux-2. Boumal, N. 2023. An introduction to optimization on smooth manifolds . Cambridge University Press. Corso, G.; Xu, Y.; De Bortoli, V.; Barzilay, R.; and Jaakkola, T. 2024. Particle guidance: non-iid diverse sampling with diffusion models. In International Conference on Learning Representations , volume 2024, 22480–22507. Falck, F.; Pandeva, T.; Zahirnia, K.; Lawrence, R.; Turner, R.; Meeds, E.; Zazo, J.; and Karmalkar, S. 2025. A fourier space perspective on diffusion models. arXiv preprint arXiv:2505.11278 .Friedman, D.; and Dieng, A. B. 2022. The vendi score: A diversity evaluation metric for machine learning. arXiv preprint arXiv:2210.02410 .Fu, S.; Tamir, N.; Sundaram, S.; Chai, L.; Zhang, R.; Dekel, T.; and Isola, P. 2023. Dreamsim: Learning new dimen-sions of human visual similarity using synthetic data. arXiv preprint arXiv:2306.09344 .Gandikota, R.; and Bau, D. 2026. Distilling diversity and control in diffusion models. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision ,1304–1313. Ghosh, D.; Hajishirzi, H.; and Schmidt, L. 2023. Geneval: An object-focused framework for evaluating text-to-image alignment. Advances in Neural Information Processing Sys-tems , 36: 52132–52152. Harrington, A.; Koepke, A.; Karthik, S.; Darrell, T.; and Efros, A. A. 2026. It’s Never Too Late: Noise Optimization for Collapse Recovery in Trained Diffusion Models. In Pro-ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 43124–43134. Hessel, J.; Holtzman, A.; Forbes, M.; Le Bras, R.; and Choi, Y. 2021. Clipscore: A reference-free evaluation metric for image captioning. In Proceedings of the 2021 conference on empirical methods in natural language processing , 7514– 7528. Hu, X.; Wang, R.; Fang, Y.; Fu, B.; Cheng, P.; and Yu, G. 2024. Ella: Equip diffusion models with llm for enhanced semantic alignment. arXiv preprint arXiv:2403.05135 .Jeon, H.; and Lee, S.-H. 2026. LENS: Low-Frequency Eigen Noise Shaping for Efficient Diffusion Sampling. arXiv preprint arXiv:2605.07253 .Kim, B.; Um, S.; and Ye, J. C. 2025. Diverse Text-to-Image Generation via Contrastive Noise Optimization. arXiv preprint arXiv:2510.03813 .Li, H.; Wen, T.; Qi, L.; Wu, Z.; Chen, Y.; Zhou, X.; Zhu, L.; Wang, X.; and Zhang, K. 2026. 1. x-Distill: Breaking the Diversity, Quality, and Efficiency Barrier in Distribution Matching Distillation. arXiv preprint arXiv:2604.04018 .Oquab, M.; Darcet, T.; Moutakanni, T.; Vo, H.; Szafraniec, M.; Khalidov, V.; Fernandez, P.; Haziza, D.; Massa, F.; El-Nouby, A.; et al. 2023. Dinov2: Learning robust visual fea-tures without supervision. arXiv preprint arXiv:2304.07193 .Parmar, G.; Patashnik, O.; Ostashev, D.; Wang, K.-C.; Aber-man, K.; Narasimhan, S.; and Zhu, J.-Y. 2025. Scaling group inference for diverse and high-quality generation. arXiv preprint arXiv:2508.15773 .Radford, A.; Kim, J. W.; Hallacy, C.; Ramesh, A.; Goh, G.; Agarwal, S.; Sastry, G.; Askell, A.; Mishkin, P.; Clark, J.; et al. 2021. Learning transferable visual models from natural language supervision. In International conference on machine learning , 8748–8763. PmLR. Sadat, S.; Buhmann, J.; Bradley, D.; Hilliges, O.; and Weber, R. 2024. CADS: Unleashing the diversity of diffusion models through condition-annealed sampling. In International Con-ference on Learning Representations , volume 2024, 23723– 23755. Sauer, A.; Lorenz, D.; Blattmann, A.; and Rombach, R. 2024. Adversarial diffusion distillation. In European Conference on Computer Vision , 87–103. Springer. Singh, J.; Li, L.; Shi, W.; Krishna, R.; Choi, Y.; Koh, P. W.; Cohen, M. F.; Gould, S.; Zheng, L.; and Zettlemoyer, L. 2024. Negative token merging: Image-based adversarial fea-ture guidance. arXiv preprint arXiv:2412.01339 .Vershynin, R. 2020. High-dimensional probability. Univer-sity of California, Irvine , 10(11): 31. Vinograd, G.; Achituve, I.; and Fetaya, E. 2026. Diverse Sam-pling in Diffusion Models with Marginal Preserving Particle Guidance. arXiv preprint arXiv:2605.06553 .Wang, J.; Chan, K. C.; and Loy, C. C. 2023. Exploring clip for assessing the look and feel of images. In Proceedings of the AAAI conference on artificial intelligence , volume 37, 2555–2563. Wu, T.; Li, R.; Zhang, L.; and Ma, K. 2026. Diversity-Preserved Distribution Matching Distillation for Fast Visual Synthesis. arXiv preprint arXiv:2602.03139 .Wu, X.; Hao, Y.; Sun, K.; Chen, Y.; Zhu, F.; Zhao, R.; and Li, H. 2023. Human preference score v2: A solid benchmark for evaluating human preferences of text-to-image synthesis. 
+
+arXiv preprint arXiv:2306.09341 .Yin, T.; Gharbi, M.; Park, T.; Zhang, R.; Shechtman, E.; Durand, F.; and Freeman, W. T. 2024. Improved distribution matching distillation for fast image synthesis. Advances in neural information processing systems , 37: 47455–47487. Zhang, R.; Isola, P.; Efros, A. A.; Shechtman, E.; and Wang, O. 2018. The unreasonable effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer vision and pattern recognition , 586–595. Appendix 
+
+## A Details of the Riemannian Noise Update 
+
+This section provides the derivation of the Riemannian up-date used in MoNO. We use the Euclidean metric inherited from the ambient noise space. Let PL be an orthogonal low-pass projection and PH = I − PL be its orthogonal comple-ment. Thus, P 2 
+
+> L
+
+= PL, P 2 
+
+> H
+
+= PH , PLPH = 0 , and every noise vector can be decomposed as 
+
+z = PLz + PH z. 
+
+For an initial draw z0, define 
+
+z0 
+
+> L
+
+= PLz0, z0 
+
+> H
+
+= PH z0, r = ∥z0
+
+> L
+
+∥2.
+
+A.1 Manifold and Tangent Space 
+
+MoNO constrains the optimized noise to preserve both the Gaussian-shell norm and the high-frequency component of the initial noise: 
+
+M(z0) = z ∈ Rd : ∥z∥2 = ∥z0∥2, PH z = PH z0 .
+
+Because PL and PH are orthogonal projections, we have 
+
+∥z∥22 = ∥PLz∥22 + ∥PH z∥22.
+
+For any z ∈ M (z0), the high-frequency constraint gives 
+
+PH z = z0 
+
+> H
+
+. Combining this with the fixed-norm constraint gives 
+
+∥PLz∥22 = ∥z0∥22 − ∥ z0 
+
+> H
+
+∥22 = ∥z0
+
+> L
+
+∥22 = r2.
+
+Therefore, M(z0) can equivalently be written as the affine low-frequency sphere 
+
+M(z0) = z = z0 
+
+> H
+
++ u : u ∈ Im( PL), ∥u∥2 = r .
+
+The fixed component z0 
+
+> H
+
+only translates the sphere, so the nontrivial geometry lies in the low-frequency variable u =
+
+PLz.We now derive the tangent space. Let z(t) be a smooth curve on M(z0) with z(0) = z = z0 
+
+> H
+
++ u, and let 
+
+ξ = z′(0) 
+
+be its velocity. Since PH z(t) = z0 
+
+> H
+
+for all t, differentiating gives 
+
+PH ξ = 0 ,
+
+which implies ξ ∈ Im( PL). Since ∥PLz(t)∥22 = r2 for all t,differentiating at t = 0 gives 
+
+0 = ddt ∥PLz(t)∥22
+
+> t=0
+
+= 2 ⟨PLz, ξ ⟩ = 2 ⟨u, ξ ⟩.
+
+Thus, any feasible infinitesimal update must lie in the low-frequency subspace and be orthogonal to the current radius 
+
+u. The tangent space is therefore 
+
+Tz M(z0) = {ξ ∈ Im( PL) : ⟨ξ, u ⟩ = 0 } , u = PLz. 
+
+A.2 Riemannian Gradient 
+
+Let f (z) denote the diversity objective at the current sequen-tial step, and let 
+
+g = ∇z f (z)
+
+be its Euclidean gradient in the ambient noise space. Under the Euclidean metric, the Riemannian gradient is the unique tangent vector grad f (z) ∈ Tz M(z0) satisfying 
+
+⟨grad f (z), ξ ⟩ = ⟨g, ξ ⟩ for all ξ ∈ Tz M(z0).
+
+Equivalently, it is the orthogonal projection of the ambient gradient g onto the tangent space. The tangent space imposes two constraints. First, feasible directions must lie in Im( PL), so the high-frequency com-ponent of g is removed by PLg. Second, feasible directions must be orthogonal to u = PLz, so the radial component inside the low-frequency subspace must also be removed. Since u ∈ Im( PL), the orthogonal projection of PLg onto the complement of u is 
+
+PLg − ⟨PLg, u ⟩∥u∥22
+
+u. 
+
+Therefore, 
+
+grad f (z) = Proj M(z0) 
+
+> z
+
+(g) = PLg − ⟨PLg, u ⟩∥u∥22
+
+u. 
+
+This expression is tangent because 
+
+PH grad f (z) = 0 
+
+and 
+
+⟨grad f (z), u ⟩ = ⟨PLg, u ⟩ − ⟨PLg, u ⟩∥u∥22
+
+⟨u, u ⟩ = 0 .
+
+It is also the closest tangent vector to the ambient gradient in Euclidean norm, since it removes exactly the orthogonal complement of the tangent space: the high-frequency com-ponent and the low-frequency radial component. 
+
+A.3 Exponential Map and Constraint Preservation 
+
+We next derive the closed-form exponential-map update. Since z0 
+
+> H
+
+is fixed, it suffices to consider the radius-r sphere in the low-frequency subspace: 
+
+Sr = {u ∈ Im( PL) : ∥u∥2 = r} .
+
+For a tangent vector η ∈ TuSr , we have ⟨η, u ⟩ = 0 . Consider the curve 
+
+γ(t) = u cos 
+
+ t∥η∥2
+
+r
+
+
+
++ r η
+
+∥η∥2
+
+sin 
+
+ t∥η∥2
+
+r
+
+
+
+.Full trajectory prediction 
+
+One-step proxy prediction Figure 7: Visualization of the proxy predictor using FLUX.2 [klein] 4B. The first row shows images generated by the full sampling trajectory, while the second row shows images decoded from the corresponding one-step proxy prediction under the same seed, prompt, and sampling configuration. Although the proxy prediction has lower visual quality than the full-trajectory output, it already captures the coarse visual structures needed for diversity comparison during optimization. This curve starts from u, since 
+
+γ(0) = u. 
+
+Its initial velocity is 
+
+γ′(0) = η. 
+
+Moreover, because u ⊥ η, its norm is preserved: 
+
+∥γ(t)∥22 = ∥u∥22 cos 2
+
+ t∥η∥2
+
+r
+
+
+
++ r2 sin 2
+
+ t∥η∥2
+
+r
+
+
+
+= r2.
+
+Thus γ(t) remains on Sr . Its acceleration is normal to the sphere, so γ(t) is the geodesic on the radius-r sphere with initial point u and initial velocity η. Hence the exponential map is 
+
+Exp Sr 
+
+> u
+
+(η) = u cos 
+
+ ∥η∥2
+
+r
+
+
+
++ r η
+
+∥η∥2
+
+sin 
+
+ ∥η∥2
+
+r
+
+
+
+,
+
+with the convention Exp Sr 
+
+> u
+
+(0) = u.At iteration k, MoNO takes the Riemannian descent direc-tion 
+
+hk = − grad f (zk).
+
+Since hk ∈ Tzk M(z0), it is also a tangent vector for the low-frequency sphere at uk = PLzk. Setting η = αh k, the exponential-map update gives 
+
+uk+1 = uk cos 
+
+ α∥hk∥2
+
+r
+
+
+
++ r hk
+
+∥hk∥2
+
+sin 
+
+ α∥hk∥2
+
+r
+
+
+
+.
+
+The full noise is then reconstructed by adding back the fixed high-frequency component: 
+
+zk+1 = z0 
+
+> H
+
++ uk+1 .
+
+Equivalently, 
+
+zk+1 = Exp M(z0)
+
+> zk
+
+ αh k .
+
+Finally, the update preserves the constraints exactly. Since 
+
+uk+1 ∈ Im( PL),
+
+PH zk+1 = PH (z0 
+
+> H
+
++ uk+1 ) = z0 
+
+> H
+
+.
+
+Since the exponential map remains on the radius-r sphere, 
+
+∥PLzk+1 ∥2 = ∥uk+1 ∥2 = r = ∥PLz0∥2.
+
+Therefore, 
+
+zk+1 ∈ M (z0),
+
+so every Riemannian update step remains feasible by con-struction. 
+
+## B Detailed Experimental Settings 
+
+B.1 General Setup 
+
+All experiments are conducted on NVIDIA A100-SXM4-40GB hardware. DMD2 is evaluated at a resolution of 1024 ×
+
+1024 , while the other generators are evaluated at 512 × 512 .For MoNO, we use facebook/dinov2-base (Oquab et al. 2023) as the frozen feature extractor, and en-able gradient checkpointing during optimization to reduce memory usage. All generated images are evaluated us-ing the same metric implementation. Specifically, we re-port LPIPS (Zhang et al. 2018) with a VGG backbone, DreamSim (Fu et al. 2023) with the dino_vitb16 back-bone, and Vendi Score (Friedman and Dieng 2022) com-puted from facebook/dinov2-base (Oquab et al. 2023) features as diversity metrics. For quality evalua-tion, we report CLIPScore (Hessel et al. 2021) using 
+
+openai/clip-vit-base-patch32 (Radford et al. 2021), CLIP-IQA (Wang, Chan, and Loy 2023) using the 
+
+pyiqa implementation with the clipiqa model, and HPSv2 (Wu et al. 2023) using the xswu/HPSv2 check-point. 
+
+B.2 MoNO Implementation Details 
+
+MoNO generates images sequentially for each prompt. The first image is sampled without optimization because the fea-ture basis is empty. Each subsequent image is optimized against the patch-wise feature subspace constructed from previously generated images. Table 4: Results on DPG-Bench with distilled text-to-image diffusion models. We report the mean across prompts, with the standard deviation shown in subscript. The best results within each model block are shown in bold. Model Method Diversity ↑ Quality ↑
+
+LPIPS DreamSim Vendi Score CLIPScore CLIP-IQA HPSv2 FLUX.2 [klein] 4B (4 steps) i.i.d. 0.543 ±0.102 0.121 ±0.045 1.589 ±0.292 0.342 ±0.035 0.678 ±0.125 0.293 ±0.035 
+
+CADS 0.698 ±0.048 0.275 ±0.073 2.087 ±0.444 0.339 ±0.033 0.626 ±0.130 0.282 ±0.033 
+
+Particle Guidance 0.543 ±0.103 0.121 ±0.045 1.588 ±0.298 0.343 ±0.035 0.681 ±0.126 0.294 ±0.035 
+
+NegToMe 0.550 ±0.103 0.124 ±0.046 1.602 ±0.303 0.343 ±0.035 0.674 ±0.125 0.293 ±0.035 
+
+Group Inference 0.588 ±0.094 0.144 ±0.051 1.673 ±0.328 0.344 ±0.035 0.678 ±0.125 0.293 ±0.035 
+
+DivGen 0.550 ±0.099 0.124 ±0.046 1.621 ±0.312 0.344 ±0.035 0.682 ±0.126 0.296 ±0.035 
+
+CNO 0.543 ±0.103 0.121 ±0.045 1.592 ±0.299 0.343 ±0.035 0.681 ±0.126 0.294 ±0.035 
+
+MoNO (1-iter) 0.665 ±0.075 0.218 ±0.067 1.880 ±0.377 0.341 ±0.034 0.670 ±0.122 0.288 ±0.033 
+
+MoNO (4-iter) 0.714 ±0.066 0.301 ±0.079 2.151 ±0.452 0.338 ±0.033 0.661 ±0.120 0.280 ±0.031 
+
+i.i.d. 0.623 ±0.059 0.176 ±0.063 1.787 ±0.375 0.343 ±0.033 0.641 ±0.131 0.284 ±0.037 
+
+DivGen 0.639 ±0.061 0.207 ±0.072 2.027 ±0.445 0.341 ±0.032 0.620 ±0.132 0.281 ±0.037 
+
+CNO 0.633 ±0.063 0.193 ±0.067 1.829 ±0.391 0.342 ±0.032 0.620 ±0.132 0.282 ±0.037 
+
+MoNO (1-iter) 0.674 ±0.054 0.253 ±0.080 2.001 ±0.433 0.340 ±0.032 0.643 ±0.126 0.284 ±0.035 
+
+SDXL-Turbo (1 step) MoNO (4-iter) 0.711 ±0.055 0.315 ±0.091 2.225 ±0.491 0.338 ±0.031 0.648 ±0.119 0.281 ±0.033 
+
+i.i.d. 0.634 ±0.081 0.169 ±0.055 1.866 ±0.384 0.347 ±0.032 0.668 ±0.110 0.279 ±0.037 
+
+DivGen 0.652 ±0.078 0.190 ±0.063 2.083 ±0.441 0.346 ±0.032 0.659 ±0.113 0.281 ±0.037 
+
+CNO 0.644 ±0.081 0.177 ±0.058 1.893 ±0.383 0.347 ±0.032 0.658 ±0.113 0.281 ±0.037 
+
+MoNO (1-iter) 0.707 ±0.070 0.253 ±0.071 2.099 ±0.445 0.345 ±0.031 0.678 ±0.102 0.280 ±0.034 
+
+DMD2 (1 step) MoNO (4-iter) 0.741 ±0.065 0.296 ±0.074 2.268 ±0.478 0.342 ±0.031 0.684 ±0.097 0.279 ±0.033 
+
+For the low-frequency constraint, we implement PL by applying a spatial Fourier low-pass projection independently to each latent channel. Let F denote the two-dimensional discrete Fourier transform over spatial dimensions, and let 
+
+Mρ be a binary circular low-pass mask. The low- and high-frequency projections are defined as 
+
+PL = F −1MρF, PH = I − PL.
+
+The mask is given by 
+
+Mρ(ωx, ω y ) = 1
+
+q
+
+ω2 
+
+> x
+
++ ω2
+
+> y
+
+p1/2 ≤ ρ
+
+ ,
+
+where ωx and ωy are normalized Fourier frequencies. We use a cutoff ratio of ρ = 0 .15 in all experiments. This gives the constrained search space 
+
+M = z = PLz + PH z0 : ∥PLz∥2 = ∥PLz0∥2 ,
+
+where the high-frequency component is fixed to that of the initial noise z0, and only the low-frequency component is rotated on a sphere. For the geodesic update, we tune the induced rotation an-gle rather than the raw Euclidean step size. Let uk = PLzk,
+
+r = ∥PLz0∥2, and hk be the projected descent direction on the low-frequency tangent space. The angular step is param-eterized as 
+
+φk = α∥hk∥2
+
+r .
+
+The low-frequency component is then updated by 
+
+uk+1 = uk cos φk + r hk
+
+∥hk∥2
+
+sin φk,zk+1 = PH z0 + uk+1 .
+
+Since the sphere has an explicit geometric structure, using the rotation angle as the hyperparameter makes the step size easier to tune and transfer across settings. We set φ = 30 ◦ for the one-iteration variant and φ = 20 ◦ for the four-iteration variant. For efficient optimization, we use proxy predictor Aθ to obtain a clean-image estimate from the current initial noise for feature extraction. For one-step generators, this estimate is simply given by the one-step clean prediction used by the sampler itself. For multi-step generators like FLUX.2 [klein] 4B, we instead use the model’s one-step prediction as a proxy, avoiding backpropagation through the full sampling trajec-tory. Specifically, let DVAE denote the VAE decoder, and let 
+
+T denote the initial denoising timestep. For FLUX.2 [klein] 4B, a flow-matching model, the network predicts a velocity field vθ (zT , T, c )1. Under the scheduler’s linear interpolation convention zT = (1 − σT )z0 + σT ϵ, we use the correspond-ing first-order Euler endpoint estimate 
+
+ˆz0 = zT − σT vθ (zT , T, c ), Aθ (zT , c ) = DVAE (ˆ z0) ,
+
+> 1
+
+Here the subscript T denotes the denoising timestep, not the sequential generation index. 10 20 30 40      
+
+> Rotation angle (deg)
+> 2.2
+> 2.4
+> 2.6
+> 2.8
+> Vendi Score
+> 0.285
+> 0.290
+> 0.295
+> 0.300
+> 0.305
+> HPSv2 0.1 0.2 0.3
+> Low-frequency cuto ff
+> 2.4
+> 2.5
+> 2.6
+> 2.7
+> 2.8
+> Vendi Score
+> 0.288
+> 0.290
+> 0.292
+> 0.294
+> 0.296
+> HPSv2 2468
+> Optimization iterations
+> 2.2
+> 2.4
+> 2.6
+> 2.8
+> Vendi Score
+> 0.285
+> 0.290
+> 0.295
+> 0.300
+> 0.305
+> HPSv2
+
+Figure 8: Hyperparameter sweeps of MoNO over rotation angle, low-frequency cutoff, and optimization iterations. Each plot uses Vendi Score as the diversity metric and HPSv2 as the quality metric. where σT denotes the initial flow noise level under the sam-pler parameterization. The estimate Aθ is used only for fea-ture extraction and optimization. After optimization, the fi-nal image is still generated by running the original sampler 
+
+Gθ (z, c ) from the optimized initial noise. Figure 7 visualizes this proxy on FLUX.2 [klein] 4B by comparing images gener-ated from the full sampling trajectory with images decoded from the corresponding proxy prediction under the same sampling settings, showing that the proxy already captures the coarse visual structure needed for diversity comparison during optimization. For the diversity objective, we extract DINOv2 patch fea-tures from the predicted clean image used for optimization. Specifically, the predicted image is resized to 256 × 256 ,the CLS token is discarded, and every patch feature is ℓ2-normalized. Let ψp(ˆ x) ∈ RD denote the normalized DINO feature of patch p, and let Bp,n −1 ∈ RD×mp,n −1 be the or-thonormal basis maintained at the same patch position from the previous n − 1 generated images, where mp,n −1 denotes the current basis size. For the n-th image, the optimized diversity loss is the average patch-wise projection length, 
+
+Ldiv (zn) = 1
+
+P
+
+> P
+
+X
+
+> p=1
+
+B⊤
+
+> p,n −1
+
+ψp(Aθ (zn, c )) 22 .
+
+After the final image Gθ (zn, c ) is generated, its DINO patch features are added to the maintained patch-wise bases using Gram–Schmidt orthogonalization. 
+
+B.3 Compared Method Details 
+
+For Group Inference (Parmar et al. 2025), we follow its de-fault setting, starting from 64 candidates for each prompt and progressively pruning them using the original group-level ob-jective with CLIP (Radford et al. 2021) text-image similarity as the unary term and DINO (Oquab et al. 2023) feature di-versity as the binary term. Other selection hyperparameters follow the original default settings. For DivGen (Harrington et al. 2026), we keep its original reward-based quality reg-ularization, including HPS-based quality control and CLIP regularization when used by the corresponding configura-tion, and use the DPP-based diversity objective with DINO features. Since the official implementations of CADS (Sa-dat et al. 2024) and CNO (Kim, Um, and Ye 2025) are not publicly available at the time of our experiments, we re-implement both methods according to the algorithmic de-scriptions in their papers. For CADS, we perturb the text conditioning with scheduled Gaussian noise following the condition-annealing schedule. For CNO, we follow its con-trastive noise optimization objective and preserve the an-choring regularization described in the original method. All baseline-specific hyperparameters are fixed across prompts and datasets. 
+
+## C Additional Experimental Results 
+
+C.1 Additional Quantitative Results 
+
+We further evaluate MoNO on DPG-Bench (Hu et al. 2024) to verify its effectiveness beyond the main evalua-tion setting. Compared with GenEval (Ghosh, Hajishirzi, and Schmidt 2023), which focuses on structured compositional prompts with controlled object-level attributes and relations, DPG-Bench provides a complementary testbed with denser prompts and richer semantic details. As shown in Table 4, MoNO consistently improves diversity across the evaluated models. In particular, the four-iteration variant achieves the best diversity scores within each model block, while main-taining competitive image quality. These results further sup-port that constrained noise optimization can improve sample diversity without relying on external reward models or large candidate pools. 
+
+C.2 Hyperparameter Sensitivity 
+
+We analyze the sensitivity of MoNO to three key hyperpa-rameters: the rotation angle φ, the low-frequency cutoff ρ,and the number of optimization iterations K. All sweeps are conducted on GenEval using FLUX.2 [klein] 4B, around the default configuration of four optimization iterations, a rotation angle of 20 ◦, and a low-frequency cutoff of 0.15 .For each sweep, we vary only one hyperparameter while keeping the other two fixed. As shown in Figure 8, chang-ing these hyperparameters induces a clear quality–diversity trade-off: stronger optimization improves diversity, as re-flected by higher Vendi Score, while slightly reducing image quality, as reflected by lower HPSv2. These results show that MoNO provides a simple and controllable way to balance diversity and quality. C.3 Additional Qualitative Visualization 
+
+We provide additional qualitative comparisons between i.i.d. sampling and MoNO sampling for three distilled diffusion models. For each prompt, we visualize 16 images each from i.i.d. sampling and MoNO sampling. We show the one-iteration variant of MoNO in Figures 9 to 11, and the four-iteration variant in Figures 12 to 14. Across different models, prompts, and optimization budgets, MoNO produces visibly more diverse samples than i.i.d. sampling while preserving generation fidelity. i.i.d. sampling 
+
+MoNO sampling Figure 9: Qualitative comparison between i.i.d. sampling and MoNO (1-iter) using FLUX.2 [klein] 4B for the prompt “a photo of a bench” .i.i.d. sampling 
+
+MoNO sampling Figure 10: Qualitative comparison between i.i.d. sampling and MoNO (1-iter) using SDXL-Turbo for the prompt “a photo of a car” .i.i.d. sampling 
+
+MoNO sampling Figure 11: Qualitative comparison between i.i.d. sampling and MoNO (1-iter) using DMD2 for the prompt “a photo of a bed” .i.i.d. sampling 
+
+MoNO sampling Figure 12: Qualitative comparison between i.i.d. sampling and MoNO (4-iter) using FLUX.2 [klein] 4B for the prompt “a photo of a teddy bear” .i.i.d. sampling 
+
+MoNO sampling Figure 13: Qualitative comparison between i.i.d. sampling and MoNO (4-iter) using SDXL-Turbo for the prompt “a photo of a chair” .i.i.d. sampling 
+
+MoNO sampling Figure 14: Qualitative comparison between i.i.d. sampling and MoNO (4-iter) using DMD2 for the prompt “a photo of a cup” .

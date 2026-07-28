@@ -1,0 +1,1590 @@
+Title: CachedSearch: Training-Free Cached Exploration for Test-Time Search in Video Diffusion
+
+URL Source: https://arxiv.org/pdf/2607.23159v1
+
+Published Time: Tue, 28 Jul 2026 00:33:38 GMT
+
+Number of Pages: 36
+
+Markdown Content:
+Technical report 
+
+# CachedSearch: Training-Free Cached Exploration for Test-Time Search in Video Diffusion 
+
+Shreshth Saini 1,2, † Neil Birkbeck 2 Yilin Wang 2 Balu Adsumilli 2 Alan C. Bovik 1,3 
+
+> 1
+
+The University of Texas at Austin 2Google, Inc. 3University of Colorado Boulder 
+
+Test-time search lets small video diffusion models rival larger ones, but costs 2–10 × more. All candi-dates are fully denoised, although most are discarded. Training-free caching makes each rollout 2–3×
+
+faster at near-lossless quality. Composition is safe only if lossy caching preserves verifier rankings. We present the first study of whether caching corrupts candidate ranking in video test-time search. On Wan2.1-T2V-1.3B with an adaptive caching wrapper ( ∼2× per-candidate speedup), ImageReward scores seed-matched cached and full rollouts. Median per-prompt Spearman rank correlation is 0.905 ,with 72 % top-1 agreement on the VBench suite. VBench-2.0 replicates this result on a harder suite. Recomputing the cached winner at full compute retains 90 –94 % of the full-search gain. Errors cluster among near-tied candidates, making corruption self-limiting. This finding leads to CachedSearch .It explores every candidate with aggressive caching, then re-generates only the winner at full com-pute. At N =8 , it captures 94 .7% of best-of-N ’s gain at 63 % of the cost. Capture rises with width. At matched budget, it searches twice as wide for 38 % more gain. The result holds from 1.3B– 14 Bacross six models and four families: Wan, LTX, CogVideoX, and Hunyuan. Wan2.1-14B matches the 1.3B model’s fidelity. Mid-trajectory pruning multiplies the exploration saving to 3.11 × at 88 .6%capture. Ports to other model families require recalibrating a single parameter, showing that fidelity tracks architecture rather than parameter count. CachedSearch is training-free, verifier-agnostic, and orthogonal to the search algorithm, making it a plug-in multiplier for test-time scaling. 
+
+Date: July 28, 2026 
+
+Code: github.com/shreshthsaini/CachedSearch 
+
+Project page: shreshthsaini.github.io/CachedSearch 
+
+## 1 Introduction 
+
+Video diffusion is the most expensive mainstream generative workload per output. In our setting, one 81-frame, 50-step rollout of Wan2.1-T2V-1.3B [31], a 1.3B-parameter model, takes 68.3 s on a modern GPU (Section 4). Test-time search multiplies this cost. It samples N candidates, scores them with a verifier, and keeps the best [26, 21, 8]. Even pruning-based video searches pay 2–10 × the single-sample cost [21, 42]. Every candidate is generated at full cost, including those the method discards. Training-free caching attacks the cost of one rollout. It reuses features across denoising steps and yields 2–3× speedups with near-lossless fidelity [41, 22, 24, 45, 5]. Yet this literature studies only seed-matched fidelity. It asks whether acceleration produces the same video, not whether it preserves a later selection decision. No prior work composes caching with test-time search. The obstacle is subtle. Caching is lossy, but search does not require exact candidates. It requires only their relative ordering under the verifier. If caching reshuffles that ordering, search chooses the wrong candidate and the apparent saving disappears. If the ordering survives, search can explore much more cheaply. We test this directly with seed-matched cached and full-compute twins, both scored by ImageReward [36]. Rankings survive. On the VBench suite [12], the median per-prompt Spearman correlation is ρ = 0 .905 
+
+and top-1 agreement is 72 % (Section 4.5). VBench-2.0 provides a third replication [43]. Ranking errors also have low stakes. They concentrate on prompts whose candidates are nearly tied, where choosing the wrong candidate costs little (Section 5.4). Section 4.1 defines ranking, gain, regret, and cost formally. This result leads to CachedSearch : explore cheap, commit full . Generate all N candidates with aggressive caching. Score the drafts, then re-generate only the winner at full compute from its seed. At 
+
+N =8 , this retains 94 .7% of full best-of-8’s reward gain at 63 % of its cost. At the budget of full best-of-4,it instead searches eight candidates and gains 38 % more reward. It searches twice as wide for the same money. CachedSearch changes only candidate rollout. It is cache-agnostic and orthogonal to both the 
+
+> †
+
+Work done while at The University of Texas at Austin. 
+
+1arXiv:2607.23159v1 [cs.AI] 25 Jul 2026 Technical report −2 −1 0 1 2                          
+
+> full-compute veri fi er score
+> −2
+> −1
+> 0
+> 1
+> 2
+> cached score ( τ = 0.10)  median ρ= 0.905
+> (3 suites, n= 50/946)
+> (a) caching preserves ranking
+> one prompt's 8 candidates
+> ρ= 0.905
+> 0200 400 600
+> wall-clock per prompt (s)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> reward gain over single
+> best-of-4 full
+> single
+> best-of-8 full keep-draft
+> +38%
+> equal explore budget
+> (b) more gain per second
+> 94.7% of the gain
+> at 63% of the cost
+> 70 75 80 85 90
+> gain capture at τ*(%)
+> LTX-2B
+> Hunyuan-13B
+> Cog-5B
+> Wan2.2-5B
+> Wan-14B
+> Wan-1.3B
+> 85% band
+> 79.6%
+> 85.1%
+> 85.9%
+> 86.0%
+> 87.5%
+> 88.3%
+> (c) across 6 models, 4 families
+> τ= . 02
+> τ*= . 05
+> τ*= . 05
+> τ*= . 10
+> τ*= . 10
+> τ*= . 20
+
+Figure 1: CachedSearch explores cheaply and commits at full compute. It keeps most of test-time search’s quality at a fraction of the cost and generalizes across models. (a) Cached and full-compute rollouts of the same seeds rank candidates alike (Wan2.1-T2V-1.3B [31], τ =0 .10 ; each dot a candidate, one prompt’s 8 highlighted): median per-prompt Spearman ρ = 0 .905 , recurring on three independent suites. 
+
+(b) At N =8 , committing full compute to the cached winner captures 94 .7% of best-of-8’s reward gain at 
+
+63 % of its wall-clock cost; at matched budget it searches twice as wide for +38 % gain over full-compute best-of-4 (95 % prompt-bootstrap CI, B=10 4, n=50 ). (c) Gain capture at each model’s calibrated τ ∗ across six models and four architecture families; five of six clear the 85 % band, LTX-Video-2B [7] is the honest boundary. search algorithm and verifier. The protocol transfers across six models, four architecture families, and the 
+
+1.3B– 14 B scale range. Off-family models such as CogVideoX-5B [38] need only a recalibrated τ . It also stacks with candidate pruning, reaching a 3.11 × exploration speedup. These properties make caching a plug-in multiplier for test-time search. 
+
+Contributions. 
+
+• The first ranking-preservation study for caching under search: a seed-matched protocol evaluated on the gate grid, the VBench suite, and VBench-2.0. Median ρ: 0.905 /0.905 /0.881 ;outcomes are scored as regret in delivered quality, not just rank correlation. • When ranking breaks, and why it rarely matters: corruption concentrates on low-spread prompts (corr(spread, ρ) = +0 .31 ; Section 5.4). Median regret is 0, and ∼94 % of search gains remain. A spread-based adaptive per-prompt τ does not beat a fixed threshold (Section D.3). • CachedSearch . A training-free explore-cheap, commit-full method that retains 94 .7% of full best-of-8 gain at 63 % cost and gives 38 % more reward at iso-cost. • A speed–fidelity trade-off law: the τ frontier spans 1.58 –2.41 × speedup while keeping capture 
+
+≥ 88 %. Its shape follows the self-limiting corruption above. • Composability and generality: pruning stacks multiplicatively ( 3.11 × exploration speedup at 
+
+88 .6% capture; Section D.8). Wan2.1-14B [31] again reaches median ρ = 0 .905 . One τ recalibration transfers the protocol to CogVideoX-5B and, more broadly, six models and four families spanning 
+
+1.3B– 14 B (Section 5.6). A second video-native verifier changes capture by at most 2.5 points (Section D.6). 
+
+## 2 Preliminaries 
+
+We fix the generative model, the search primitive, and the cost notation used throughout. 
+
+Flow-matching video diffusion. We consider latent video diffusion models trained with flow matching, as instantiated by Wan2.1-T2V-1.3B [19, 23, 31]. A video is represented by a spatio-temporally compressed latent x ∈ RC×F ×H×W ; a diffusion transformer (DiT) vθ (xt, t, c ) predicts the velocity field transporting a Gaussian sample x1 ∼ N (0 , I) to a data sample x0, conditioned on a text prompt c. Sampling integrates 2Technical report 1 explore N under cache              
+
+> cost N⋅Cc(τ= 0.10)
+> 2score & pick winner
+> cost +ε(verify)
+> 3commit at full compute
+> bit-exact
+> full-compute video
+> cost +Cf
+> verify
+> re-generate
+> winner's seed
+> s2
+> s1
+> s6
+> ImageReward
+> s2+1.35
+> s1+1.06
+> s6-1.07
+> winner
+
+Figure 2: Overview of CachedSearch . Cache every candidate, score the drafts, then re-generate the winning seed at full compute. the probability-flow ODE over a decreasing grid of T timesteps 1 = t1 > · · · > t T > t T +1 = 0 with an Euler-type update, 
+
+xtk+1 = xtk + ( tk+1 − tk) ˜ vk, (1) followed by VAE decoding of xtT +1 into pixels. With classifier-free guidance (CFG) [10] at scale w, each step evaluates the transformer once per guidance branch and combines 
+
+˜vk = vθ (xtk , t k, ∅) + w(vθ (xtk , t k, c ) − vθ (xtk , t k, ∅)), (2) so a rollout costs 2T transformer evaluations, which dominate wall-clock time. Throughout, a rollout is the map G(c, s ) 7 → y from a prompt c and a seed s (which fixes x1) to a decoded video y; the ODE solver is deterministic, so the seed fully determines the sample. 
+
+Best-of-N search with a verifier. Verifier-guided test-time search draws N candidates from distinct seeds [26, 21]. It scores yi = G(c, s i) with V (y, c ) ∈ R. It returns yi⋆ , where i⋆ = arg max i V (yi, c ). Our verifier is ImageReward [36], averaged over K=8 uniformly spaced frames. We follow prior video test-time-search work in using a reward model as the verifier [21, 26, 8]. Frame-level verifiers can be reward-hacked [26]. Section D.6 repeats the audit with a video-native verifier (VideoScore [9]). Section 5.5 uses direct temporal measurements. 
+
+Cost model. Let Cf denote the cost of one full-compute rollout. Let Cc < C f denote the cost of one cached rollout. Their ratio is γ = Cc/Cf . Verification is shared across strategies and costs little relative to generation, so we omit it. Verification scores 8 frames, whereas DiT sampling takes tens of seconds. Full-compute best-of-N costs N C f .
+
+## 3 Method 
+
+CachedSearch separates the two jobs in test-time search. Exploration generates candidates for ranking. 
+
+Delivery generates the final video. Ranking can survive even when pixel fidelity does not. We therefore cache every exploration rollout aggressively. We then regenerate only the winning seed at full compute (Figure 2). Using the notation of Section 2, we define the caching rule (Section 3.1), then present the algorithm (Section 3.2) and its cost (Section 3.3). Appendix B analyzes how ranking noise becomes search regret. 
+
+3.1 Adaptive transformation-vector caching 
+
+We wrap the DiT with training-free caching for exploration. The wrapper uses the transformation-vector 
+
+formulation of EasyCache [45]. Section A.1 surveys this method family. The wrapper intercepts every transformer call. Let x denote the latent input of the current call and vθ (x) its output. Rather than caching the output itself, we cache the transformation vector computed at the most recent computed call, whose input we denote xref :
+
+∆ = vθ (xref ) − xref . (3) 3Technical report 
+
+Algorithm 1 CachedSearch : cached exploration with optional full-compute commit 
+
+Require: prompt c; seeds s1, . . . , s N ; cache threshold τ ; verifier V ; mode ∈ { keep , commit } 
+
+> 1:
+
+for i = 1 , . . . , N do ▷ exploration: N cached rollouts, cost N C c 
+
+> 2:
+
+reset cache state; yi ← Gτ (c, s i) ▷ Eqs. 3–5  
+
+> 3:
+
+ri ← V (yi, c ) 
+
+> 4:
+
+end for  
+
+> 5:
+
+i⋆ ← arg max i ri 
+
+> 6:
+
+if mode = commit then  
+
+> 7:
+
+return G(c, s i⋆ ) ▷ delivery, cost Cf ; exact full-compute sample (seed-deterministic)  
+
+> 8:
+
+else  
+
+> 9:
+
+return yi⋆ ▷ deliver cached winner as-is  
+
+> 10:
+
+end if 
+
+A skipped call returns the approximation 
+
+ˆvθ (x) = x + ∆ , (4) i.e., it assumes the residual vθ (x) − x varies slowly across adjacent steps even where vθ itself does not. 
+
+Adaptive skip rule. An accumulated input-change indicator controls skipping. At each call, the wrap-per adds the relative drift from the last computed input: 
+
+a ← a + ‖x − xref ‖F
+
+‖xref ‖F
+
+, (5) The wrapper skips while a ≤ τ . Once a > τ , it evaluates the transformer and refreshes ∆ and xref . It then resets a ← 0. Each skipped step adds the total drift since the last computation. Thus, the indicator grows faster the longer a run of skips continues and ends long skip runs conservatively. The wrapper always computes the first Kw warmup steps and last Kc cooldown steps. It also computes until the first ∆ exists. We use Kw = Kc = 5 with T = 50 throughout. The threshold τ trades speed against fidelity (Section 4). 
+
+Per-branch cache state. Under CFG the pipeline calls the transformer once per guidance branch per step (Eq. 2); the conditional and unconditional inputs differ and drift at different rates. The wrapper therefore keeps fully independent state (∆ , xref , a ) per branch. It alternates between the two guidance branches, keeping separate cache state so each branch schedules its own skips. 
+
+Properties. The wrapper is training-free and model-agnostic. It replaces the transformer module of an existing pipeline with no model changes. It also preserves determinism. For fixed (c, s, τ ), the cached rollout 
+
+Gτ (c, s ) is deterministic, exactly like G(c, s ), which off mode recovers. A static variant that computes every 
+
+k-th step between warmup and cooldown serves as a uniform-schedule baseline. 
+
+3.2 CachedSearch 
+
+CachedSearch caches all N exploration rollouts (Algorithm 1). It scores them and selects one seed. 
+
+Keep-draft delivers the cached winner. Recommit regenerates that seed at full compute. Recommit stores no latents. Determinism ensures that G(c, s i⋆ ) exactly reproduces the winning seed’s full-compute sample. This is the sample full-compute best-of-N would deliver after selecting the same seed. Caching therefore affects only seed selection in recommit mode. We measure ranking fidelity in Section 4. Our measure is per-prompt Spearman ρ between cached and full scores over matched seeds. Appendix B connects ranking fidelity to regret and iso-cost gains (Proposition 5). Keep-draft is cheaper but delivers a cached sample. Its quality therefore requires an audit. Frame-level verifiers can miss temporal artifacts. Section 5.5 audits temporal metrics, optical flow, and LPIPS [40]. Static temporal quality survives, but aggressive caching dampens motion (mean flow −8.0% at τ =0 .20 ). We therefore recommend recommit by default. CachedSearch is independent of the search procedure. It accelerates any sample-then-rank loop. It also composes with candidate pruning such as latent-reward filtering [42]. Section D.8 confirms that their savings multiply. 4Technical report 
+
+3.3 Cost analysis 
+
+With verification cost shared and omitted, the strategies cost cost (keep ) = 
+
+> explore cheap
+
+︷ ︸︸ ︷ 
+
+N C c , cost (best-of-N ) = 
+
+> all candidates full
+
+︷ ︸︸ ︷ 
+
+N C f ,
+
+cost (commit ) = 
+
+> explore cheap
+
+︷ ︸︸ ︷ 
+
+N C c +
+
+> commit full
+
+︷︸︸︷ 
+
+Cf .
+
+(6) Recommit is cheaper than full-compute best-of-N iff N C c + Cf < N C f , i.e., beyond the break-even width 
+
+N > N ∗ = 11 − γ . (7) On Wan2.1-T2V-1.3B [31], we measure Cf = 68 .3 s and Cc = 34 .7 s at τ = 0 .10 . This is a 1.97 × per-rollout speedup. The setting uses a resolution of 480 ×832 , 81 frames, T =50 , and one GH200 GPU. The speedup is 1.58 × at τ =0 .05 and 2.41 × at τ =0 .20 . Thus, γ ≈ 0.51 and N ∗ ≈ 2.0. N =2 is a cost wash. At N =8 ,recommit costs 8Cc + Cf ≈ 346 s, versus 8Cf ≈ 546 s ( 63 %). Keep-draft costs ≈ 278 s ( 51 %). Both ratios approach γ as N grows. Under a fixed budget B, full search evaluates B/Cf candidates. CachedSearch 
+
+explores (B − Cf )/ Cc candidates. With γ ≈ 0.5, this is nearly twice as many candidates. Caching does not increase peak memory. Its only state is the per-branch (∆ , xref , a ) from Section 3.1. This uses two latent-sized tensors and one scalar per guidance branch. CachedSearch stores nothing across candidates. It regenerates the winner from its seed instead of saving latents. Peak memory therefore matches a plain rollout. 
+
+## 4 Experiments 
+
+We test ranking preservation, delivered gain per unit cost, the reward cost of ranking errors, and replication on the VBench [12] suite and VBench-2.0 [43]. 
+
+4.1 Setup Model and suites. The 50 -prompt gate grid is the pilot and configuration set, and every headline finding is re-measured on the full official suites: 946 -prompt VBench ( 15 ,104 paired rollouts) and 1,013 -prompt VBench-2.0. The gate uses Wan2.1-T2V-1.3B [31] at 480 ×832 , 81 frames, T =50 , guidance 5.0, 8 seeds, and one NVIDIA GH200 per rollout; its 800 full/cached videos at τ = 0 .10 support strategy simulation, with 400 cached videos at each of τ ∈ { 0.05 , 0.20 } for the sweep. The VBench all_dimension list and the harder VBench-2.0 benchmark use the same 8-seed paired protocol at τ = 0 .10 , and we save suite videos for multi-verifier rescoring [12, 43]. Full generation is seed-deterministic; ImageReward [36], averaged over 
+
+8 uniformly spaced frames, scores all candidates. The two CFG branches keep independent cache state. 
+
+Timing and strategies. At τ = 0 .10 , Cf = 68 .3 ± 4.5 s and Cc = 34 .7 ± 2.5 s (mean ±sd, n=400 per arm), a 1.97 × candidate speedup; batch size one is fastest (Section D.5), and Appendix H gives the timing protocol. We compare single ( Cf ), best-of-N full ( N C f ), keep ( N C c), and commit ( N C c + Cf ), averaging measured scores and latencies over every ( 8
+
+> N
+
+) seed subset without extrapolation. 
+
+Definitions and protocol. For prompt c, Si = V (G(c, s i), c ) and ˆSi = V (Gτ (c, s i), c ) are candidate i’s full and cached scores. Delivered value scores the returned video, using Si for single, best-of-N , and commit and ˆSi for keep; commit reproduces the winning seed’s full trajectory, while keep remains a nominal value audited in Section 5.5. Gain subtracts the mean single baseline; regret is max i Si − Sarg max i ˆSi ; capture is retained best-of-N gain, reported either as the ratio of mean gains (Table 1) or the mean per-prompt ratio in Eq. 11 (Table 3 and the VBench suites); speedup is Cf /Cc; and cost is end-to-end delivery time (Eq. 6). At the default, the cached transformer’s ≈0.49 forward-pass ratio matches wall-clock γ = Cc/Cf = 0 .508 .We fixed τ = 0 .10 , commit, and N = 8 on the gate before official-suite evaluation and verified the implementation with a bit-exact no-cache control. All reported uncertainty uses a prompt bootstrap (B = 10 4). Appendix H gives the determinism and seed protocol. 5Technical report −2 −1 0 1 2
+
+full-compute score     
+
+> −2
+> −1
+> 0
+> 1
+> 2
+> cached score ( τ = 0.10)
+> median per-prompt ρ= 0.905
+> mean ρ= 0.820
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> candidate spread
+
+Figure 3: Within-prompt candidate ranking survives caching: median Spearman ρ =0.905 . Cached vs. full scores for 50 prompts and 
+
+8 seeds at τ = 0 .10 . Color encodes within-prompt score spread; each dot is one measured rollout pair. 0
+
+10 
+
+20 
+
+30 
+
+> prompts
+
+τ = 0.05 
+
+> med 0.90
+> p10 0.74
+> median
+> p10
+
+0
+
+10 
+
+20 
+
+τ = 0.10 
+
+> med 0.90
+> p10 0.61
+
+0.0 0.5 1.0 
+
+per-prompt ρ
+
+0
+
+10 
+
+20 
+
+> prompts
+
+τ = 0.20 
+
+> med 0.86
+> p10 0.47
+
+0.0 0.5 1.0 
+
+per-prompt ρ
+
+0
+
+200 
+
+400 
+
+VBench ( n = 944) 
+
+> med 0.90
+> p10 0.69
+
+Figure 4: Median ρ stays at 0.86 –0.90 across caching levels and at 19 × prompt scale. Per-prompt cached/full rank-correlation histograms for the gate sweep ( n = 50 ) and the VBench [12] suite at τ = 0 .10 ; Table 3 gives exact summaries. Table 1: Commit retains 94 .7% of best-of-8 gain at 
+
+63 .3% of its cost. Strategies over all seed subsets of the 
+
+50 × 8 grid at τ = 0 .10 . Columns report delivered gain, wall-clock, capture, and relative cost; shading marks the default. 
+
+N strategy gain ↑ cost (s) ↓ capture ↑ rel. cost ↓
+
+– single +0 .000 68 – –2 full +0 .304 137 100 % 100 %2 keep +0 .286 69 94 .1%† 50 .8%2 commit +0 .274 138 89 .9% 100 .8%4 full +0 .514 273 100 % 100 %4 keep +0 .496 139 96 .5%† 50 .8%4 commit +0 .461 207 89 .6% 75 .8%8 full +0 .752 547 100 % 100 %8 keep +0 .749 278 99 .6%† 50 .8%8 commit +0 .712 346 94 .7% 63 .3%100 200 300 400 500 600  
+
+> mean end-to-end wall-clock per prompt (s)
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> mean delivered reward gain
+> (over single full rollout)
+> single rollout
+> full best-of-N
+> CachedSearch
+> default ( τ= 0.10)
+> step truncation
+> same budget:
+> +38% more gain
+> more reward at
+> the same budget
+
+Figure 5: Above break-even, every caching engine beats full-compute best-of-N . Delivered reward vs. end-to-end budget on the 50 -prompt gate grid. Markers denote 
+
+N = 2 , 4, 8; step truncation is the matched-cost alternative. 
+
+4.2 Candidate-ranking preservation 
+
+On the VBench suite, median within-prompt Spearman correlation is ρ = 0 .905 , top-1 agreement is 72 %, and p10 is 0.690 . The gate pilot gives the same median, with 64 % top-1, mean 0.820 , p10 0.614 , and 9/50 
+
+prompts below ρ = 0 .7. Figures 4 and 3 show the distributions; Sections 4.4 and 5.4 price and explain the tail. 
+
+Takeaway. At a 1.97 × candidate speedup, cached rollouts preserve within-prompt candidate ranking (median ρ = 0 .905 ); the corrupted minority concentrates where candidates are near-tied. 6Technical report 0.00 0.25 0.50 0.75 1.00 1.25 1.50       
+
+> regret (full-compute reward units)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> fraction of prompts  ≤ regret
+> random pick
+> random (o ff icial)
+> off icial suite
+> CachedSearch, τ= 0.05
+> cached τ= 0.10
+> cached τ= 0.20
+
+Figure 6: Regret stays far below random pick-ing at every caching level. Per-prompt regret CDFs at N = 8 against pooled random baselines. Dotted curves show the VBench [12] suite; zero re-gret occurs on 64 % of gate prompts and 72 % offi-cial. 0.2 0.4 0.6 0.8 1.0 1.2 
+
+candidate score spread (full)   
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> ranking preservation  ρ
+> corr(spread, ρ) = +0.25
+> ρ< 0.7: 9/50 prompts
+> regret 0
+> 0.3
+> 0.6
+
+Figure 7: Ranking corruption concentrates where candidate spread is low and wrong picks are cheap. Per-prompt ρ vs. score spread at 
+
+τ = 0 .10 on 50 gate prompts; marker area is regret. The VBench [12]-suite correlation is +0 .31 .
+
+4.3 Search gain versus wall-clock 
+
+Gain, capture, and cost follow Section 4.1; measured latencies are Cf = 68 .3 s and Cc = 34 .7 s. Keep is cached-scored and therefore nominal (Section 5.5). A dagger marks ratios above 100 %, an unbounded ratio-of-means artifact rather than evidence of gain beyond best-of-N . Table 1 gives the central result. Figure 5 compares exploration engines; Figure 11 (Appendix D.1) gives the strategy-only view. Above the 
+
+N ∗ ≈ 2 break-even, every cached curve beats full-compute best-of-N . At N = 8 , commit retains 94 .7% of best-of-8 gain at 63 .3% of its cost. At ≈300 s, it searches 8 instead of 4 candidates and gains 38 % more reward. Width extensions reach 95 .7% capture at N = 16 and 95 .2% at N = 32 while cost falls to 57 .1%and 53 .9% (full analysis: Appendix D.9). Keep roughly halves cost with near-perfect nominal capture, but learned verifiers miss temporal artifacts, so commit remains the default (Section 5.5). 
+
+Takeaway. Explore cached, commit full: at N =8 this keeps 94 .7% of the best-of-N gain at 63 % of its cost, and at a matched ≈300 s budget cached exploration searches twice as wide for 38 % more gain. 
+
+4.4 Regret under ranking errors 
+
+On the VBench suite, mean regret is 0.056 against a 0.79 random-pick baseline, median regret is 0, 72 %of prompts incur zero regret, and mean per-prompt capture is 90 .2%. The gate pilot gives 0.040 regret against 0.657 random, 64 % zero regret, 93 .9% ratio-of-means capture, and 90 .1% mean per-prompt capture. Figures 6 and 7 show that most errors swap near-equivalent candidates; Section 5.4 tests the mechanism at scale. 
+
+4.5 VBench suite replication 
+
+We repeat the core measurement on the VBench suite with complete paired coverage across 8 seeds at 
+
+τ = 0 .10 . At this larger scale, median ρ remains 0.905 , mean ρ is 0.859 , and p10 is 0.690 . Top-1 agreement is 72 %. Mean regret is 0.056 against a 0.79 random baseline, which gives 90 .2% mean per-prompt capture. Candidate speedup is 1.95 × (67 → 35 s). Only 11 % of prompts fall below ρ = 0 .7, and 
+
+72 % incur zero regret. Figure 4 shows the ranking distribution. Relative to Section 4.2, the larger sample provides greater precision around the same conclusion. Its regret distribution (Section 4.4) appears in 7Technical report Table 2: Published caches serve as interchangeable exploration engines. Four methods use the same 50 -prompt, 8-seed gate protocol and full references. Rows report candidate fidelity, speedup, and best-of-8 commit cost; reuses names the cheaply recomputed component. Shading marks the default.                                                              
+
+> exploration engine reuses speedup ↑med ρ↑p10 ↑top-1 ↑regret ↓capture ↑cost (s) ↓
+> no caching (= full best-of-N)-0.99 ×1.000 1.000 100 %0.000 100 %621
+> CachedSearch + PAB [41] attn. outputs 1.29 ×0.976 0.950 90 %0.004 99 .5%493
+> CachedSearch + CFG-Cache [24] uncond. branch 1.38 ×1.000 0.929 92 %0.004 99 .6%465
+> CachedSearch + TeaCache [22] full model 1.84 ×0.929 0.783 68 %0.029 93 .2%365
+> CachedSearch + EasyCache [45] (default) full model 1.96 ×0.905 0.614 64 %0.039 90 .1%346
+
+Figure 6. The smaller corruption tail also agrees with the mechanism in Section 5.4. Full intervals are in the appendix. The VBench point estimates are favorable, but none differs significantly from the gate grid at its n=50 resolution. Every gate estimate remains statistically consistent with the VBench suite. This result adds precision, not evidence of improvement over the gate grid. We also repeat the measurement on VBench-2.0 [43], a harder suite that tests intrinsic faithfulness through compositional interactions, physics, commonsense, and camera control. This replication matters because it changes both prompt structure and difficulty while preserving the paired-seed protocol. Median ρ = 0 .881 , top-1 is 69 %, capture is 89 .3%, and speedup is 1.98 ×, all statistically consistent with the VBench suite (Table 9, Appendix D). The agreement shows that ranking preservation is not specific to the original suite’s per-dimension prompt lists. 
+
+Delivered-video metrics. On a held-out VBench subset, CachedSearch -commit statistically matches full best-of-8 across the standard metric suite at 64 % of its wall-clock. The full delivered-video audit is in Table 8 and Appendix D. 
+
+## 5 Analysis and Ablations 
+
+5.1 Caching aggressiveness 
+
+Raising the threshold buys speed at a gradual cost to ranking quality. Candidate speedup grows from 
+
+1.58 × to 2.41 ×, while p10 ρ falls from 0.74 to 0.47 ; Table 3 and Figure 8 give the remaining metrics. We use τ = 0 .10 by default, nearly doubling exploration speed while retaining 90 % capture. 
+
+5.2 Ranking preservation across published caching methods 
+
+Table 2 compares published caching rules as alternative exploration engines inside CachedSearch , not as rival end-to-end methods. Search, selection, and delivery remain fixed. We reproduce one official implementation from each major reuse family. TeaCache [22] runs the official Wan2.1 [31] rule with the published 1.3B polynomial coefficients and threshold 0.08 . Below threshold, it skips all transformer blocks and reuses the cached token residual ( 24/50 steps per CFG branch). PAB [41] broadcasts attention outputs 
+
+across steps (official VideoSys rule). Wan has no official configuration, so its unified 3D self-attention uses the CogVideoX [38] “spatial” range 2; cross-attention uses OpenSora’s [44] range 6. FasterCache’s 
+
+CFG-Cache [24] is a verbatim port with the official frequency-compensation constants. It rebuilds 26/50 
+
+unconditional forwards from conditional outputs with boosted low/high FFT deltas. This isolates CFG reuse from attention reuse (PAB) and full-model reuse (TeaCache and our EasyCache-style rule [45]). A 
+
+no-caching control regenerates the full-compute variant in the same harness. It reproduces all overlapping scores bit-exactly, with every common record identical ( ρ = 1 , speedup 1.00 ×). This validates seed determinism and the protocol. Every engine preserves candidate ranking. PAB [41] and CFG-Cache [24] keep median ρ at 0.98 –1.00 and capture above 99 % at 1.29 ×/1.38 ×. The aggressive full-model engines reach ∼1.8–2.0× at 90 –93 % capture. Together with the τ sweep, they form one capture-vs-speedup frontier (Figure 8). Speedup predicts fidelity to within a few points despite different reuse patterns. Thus CachedSearch is cache-agnostic. Our default takes the aggressive end for maximum speedup; TeaCache [22] is the balanced middle choice when fidelity matters more. Architecture-specific calibration appears in Section 5.6. In delivered-value terms (Figure 9), TeaCache delivers 96 % at 67 % cost, CFG-Cache and PAB 99 .5% at 85 –90 %, ours 95 % at 63 %. 8Technical report 1.0 1.5 2.0 2.5 
+
+candidate speedup (×)          
+
+> 82.5
+> 85.0
+> 87.5
+> 90.0
+> 92.5
+> 95.0
+> 97.5
+> 100.0
+> 102.5
+> search-gain capture (%)
+> ours, τsweep
+> τ= 0.05
+> τ= 0.10
+> τ= 0.20
+> TeaCache
+> PAB
+> CFG-Cache no caching
+> fit: 104 −19.1 ln x
+> R2= 0.92
+> rerun
+
+Figure 8: Caching engines share one capture-vs-speedup frontier. Filled markers show PAB [41], CFG-Cache [24], TeaCache [22], and Easy-Cache [45]; blue points sweep τ and × marks the independent default rerun. The dashed fit covers six caching points ( R2 = 0 .92 ), each with n = 50 
+
+prompts. 300 400 500 600 
+
+wall-clock cost per prompt (s), N = 8  
+
+> 88
+> 90
+> 92
+> 94
+> 96
+> 98
+> 100
+> 102
+> 104
+> delivered gain (% of best-of-8's)
+> full best-of-8: 100% gain @ 547 s
+> ours ( τc= 0.10)
+> 63% cost
+> TeaCache
+> 67% cost
+> PAB
+> 90% cost
+> CFG-Cache
+> 85% cost
+> no caching
+> 114% cost
+
+Figure 9: Every caching engine beats full-compute search on delivered cost. Best-of-8
+
+gain capture vs. measured end-to-end wall-clock at 
+
+N = 8 , including recommit. Points compare PAB [41], CFG-Cache [24], TeaCache [22], EasyCache [45], and the no-caching control on the 50 -prompt grid. Table 3: Raising τ trades a graceful capture loss for more speedup. Caching-threshold sweep (50 prompts × 8 seeds, with shared full-compute ref-erences). Regret and capture use N =8 ; capture fol-lows Eq. 11. Shading marks the default.                                 
+
+> τspeedup ↑median ρ↑p10 ρ↑top-1 ↑regret ↓capture ↑
+> 0.05 1.58 ×0.905 0.738 70 %0.025 93 .6%
+> 0.10 1.97 ×0.905 0.614 64 %0.040 90 .1%
+> 0.20 2.41 ×0.857 0.474 52 %0.057 88 .3%
+
+Table 4: Ranking preservation under two cheap-exploration strategies. Caching and step truncation at matched ∼2× speedup, using T = 50 
+
+references on 50 prompts and 8 seeds. Truncation incurs ∼6× more regret; shading marks the default.                             
+
+> strategy speedup ↑med ρ↑p10 ρ↑top-1 ↑regret ↓capture ↑
+> caching ( τ=0 .10 )1.97 ×0.905 0.614 64 %0.039 90 .1%step-truncation ( T=25 )1.98 ×0.512 0.024 44 %0.226 72 .6%
+
+5.3 Caching versus truncation 
+
+The obvious alternative to caching is to spend fewer denoising steps per candidate. We measure that alternative under the identical gate protocol, using the existing full-compute T =25 arm as cheap exploration and the T =50 full-compute rollouts as references. Both arms deliver ∼2× speedup. Table 4 reports the matched comparison. Caching retains 90 .1% of search gain, while truncation retains 72 .6%; truncation’s regret is nearly six times higher and its worst-decile ranking is uncorrelated with the reference ordering. Search needs the cheap score to predict the full-compute sample’s rank. A truncated rollout is an honest sample of a different, shorter-schedule distribution, so its verifier scores rank its own outputs, not the 50 -step outputs that commit will deliver. Caching instead perturbs the same seed-matched trajectory. That is precisely the property search needs. 
+
+Takeaway. At the same 2× saving, caching keeps 90 % of search’s value while truncation keeps 73 %. What matters is preserving the delivered sample’s trajectory, not the budget. 
+
+5.4 Self-limiting ranking corruption 
+
+On the VBench [12] suite ( τ = 0 .10 ), per-prompt ρ and full-compute score spread have corr(spread, ρ)
+
+= +0 .31 (p = 2 ×10 −22 ). Ranking fails mainly when candidates are already near-tied. Prompts with 
+
+ρ < 0.7 have lower spread than the rest (median 0.40 vs. 0.56 ; Mann–Whitney p = 3 ×10 −10 ), and 79 % lie 9Technical report Table 5: Ranking fidelity varies by model family at fixed τ = 0 .10 . Six models from four families [31, 32, 38, 15, 7], each with 50 prompts and 8 seeds under its model-card recipe. skip is reused denoising steps; bold and underline mark the two best fidelity values.                                                      
+
+> model params med. ρ↑p10 ↑top-1 ↑capture ↑skip speedup ↑
+> Wan2.1-1.3B 1.3B 0.905 0.61 64 %90 .1%51 %1.97 ×
+> LTX-Video-2B 2B 0.536 0.14 50 %67 .6%64 %2.63 ×
+> Wan2.2-TI2V-5B 5B 0.881 0.60 46 %86 .0%55 %2.05 ×
+> CogVideoX-5B 5B 0.762 0.35 48 %75 .2%53 %2.06 ×
+> HunyuanVideo-13B 13B 0.762 0.44 54 %79 .9%57 %2.19 ×
+> Wan2.1-14B 14B 0.905 0.52 58 %87 .5%52 %2.05 ×
+
+in the bottom half. Cached score noise therefore changes ordering most when candidate separation, and hence selection value, is small (Appendix B, Eq. 13). Figure 7 shows the same pattern on the gate grid. The VBench [12] suite bears out both halves of this mechanism. Selection is most reliable exactly where the most is at stake: across spread quartiles, gain capture rises monotonically from 81 % (lowest quartile, median ρ = 0 .857 ) to 96 % (highest quartile, median ρ = 0 .952 ) while the attainable per-prompt gain more than triples ( 0.36 → 1.27 reward units), so realized regret does not grow with the stakes (corr(spread, regret) = −0.11 ). The corrupted tail is not free (the 11 % of prompts with ρ < 0.7 average 0.161 regret versus 0.043 elsewhere, i.e. 32 % of the total regret), but it is bounded: half of these prompts ( 51 %) still pick the exact best candidate, and even within this subset cached selection retains 68 % of the attainable gain. Caching therefore fails most often where failure costs least; this is why mean regret ( 0.056 on VBench [12], 
+
+0.040 on the gate) sits an order of magnitude below the random-pick baseline, and it matches the zero median regret of Section 4.4. It also suggests spread as a cheap online signal for a per-prompt adaptive τ :an idea we test, and reject, next. 
+
+Takeaway. Corruption is self-limiting: it concentrates on near-tied prompts (corr(spread, ρ) =+0 .31 ), capture rises with the stakes ( 81 % → 96 % across spread quartiles), and even the corrupted 
+
+11 % of prompts retain 68 % of their attainable gain. 
+
+Adaptive threshold (negative result). A spread-probe policy is statistically indistinguishable from and pointwise never better than fixed τ = 0 .10 : at matched 1.97 × speedup, capture changes by −0.4
+
+points. The full policy and frontier are in Section D.3, Appendix D; we retain one global threshold. 
+
+5.5 Keep-draft versus recommit 
+
+Keep’s clear cost is motion dampening : mean optical flow falls −3.1% at τ = 0 .10 and −8.0% at τ = 0 .20 .ImageReward [36] and VideoScore [9] both prefer the cached outputs, so neither learned judge detects the artifact (Section D.6). Use keep only at τ ≤ 0.10 when motion is secondary; use commit for aggressive caching or motion-critical prompts. The temporal metrics, LPIPS [40], fidelity examples, and flow maps are in Appendices D.4 and I. 
+
+Batching control. Batching does not explain the saving: full-compute throughput drops from 0.92 to 
+
+0.90 videos/min at batch 2, cached batching gains only 8%, and batch 8 exceeds memory. Section D.5 in Appendix D gives the full control and determinism audit. 
+
+Verifier robustness. VideoScore-v1.1 [9] bounds caching-attributable cross-verifier loss at −2.5 points of gain capture, a statistically marginal difference far below the verifiers’ standing disagreement. It also prefers motion-dampened cached outputs, so direct temporal metrics and commit delivery remain necessary; the full ablation is Section D.6 in Appendix D. 
+
+5.6 Model generality and scale 
+
+We evaluate Wan2.1-T2V-1.3B [31], Wan2.1-T2V-14B [31], Wan2.2-TI2V-5B [32, 31], CogVideoX-5B [38], HunyuanVideo-13B [15], and LTX-Video-2B [7]. 10 Technical report 1.00 1.25 1.50 1.75 2.00 2.25 2.50 2.75                           
+
+> candidate speedup (×)
+> 80
+> 85
+> 90
+> 95
+> 100
+> search-gain capture (%)
+> one frontier: 104 −19.1 ln x
+> (R2= 0.92; held-out R2= 0.90)
+> caching methods
+> (PAB/CFG-Cache/TeaCache),
+> rerun, zero-skip control
+> τ= . 05
+> τ= . 10 (default) τ= . 20
+> T= 25
+> T= 100
+> 720p
+> within Wan2.1-1.3B: one backbone, four axes
+> 1.00 1.25 1.50 1.75 2.00 2.25 2.50 2.75
+> candidate speedup (×)
+> 60
+> 70
+> 80
+> 90
+> 100
+> search-gain capture (%)
+> Wan-1.3B operating band
+> 2.7 × steeper
+> 64% skip
+> each family its own frontier ( R2=−0.86 across models)
+> across families: architecture sets level and slope
+> Wan-1.3B Wan2.2-5B Wan-14B Cog-5B Hunyuan-13B LTX-2B
+
+Figure 10: One frontier fits reuse choices within a backbone, but architecture shifts the frontier. 
+
+Gain capture vs. candidate speedup; up-left is better. Panel A varies reuse axes on Wan2.1-1.3B [31]; Panel B sweeps τ across six models. Each point has 44 –50 prompts. At fixed τ = 0 .10 , Table 5 separates family from size: Wan2.1-1.3B and 14B both reach median ρ = 0 .905 
+
+with 90 .1%/87 .5% capture, and Wan2.2 reaches 0.881/86 .0%. Off-family ports sit lower regardless of size: CogVideoX and Hunyuan reach median 0.762 with 75 .2%/79 .9% capture, while over-skipped LTX is the boundary at 0.536/67 .6%. Architecture sets fidelity; parameter count sets the absolute saving, from 6 s on LTX-2B to 175 s on Wan-14B. Calibration recovers much of the family gap: CogVideoX reaches 85 .9% capture at τ = 0 .05 and 1.78 ×,while every Wan backbone reaches at least 86 % at its selected threshold. CogVideoX and Hunyuan use 
+
+τ ∗ = 0 .05 , Wan2.2 and Wan14B use 0.10 , Wan1.3B qualifies at 0.20 , and no measured LTX threshold reaches 85 % capture; the full recipe and per-model table are in Table 11 in Appendix D.9. The mechanism transfers across a 10 .8× scale gap and four model families, but the operating point does not. A 25 -prompt pilot is sufficient to recalibrate τ for a new family. 
+
+Schedule length and resolution. At fixed τ , 25/50/100 -step trajectories skip 32/51/66 % of steps and reach 1.41/1 .97/2 .80 × at 95 .8/90 .1/82 .5% capture. Resolution leaves the operating point unchanged (720 p: 2.05 ×, 90 .8%); Section D.7 in Appendix D gives the full ablation. 
+
+Application: multiplying pruned-search methods. Pruning-based search methods reduce how many candidates pay full price; CachedSearch reduces what each candidate costs. The savings therefore multiply, and the measured composition confirms the prediction: the measured 1.96 × (caching) and 1.59 ×
+
+(mid-trajectory pruning) factors produce a 3.11 × exploration speedup over full-compute best-of-8 at 88 .6%capture, with median regret still zero (Section D.8, Appendix D). 
+
+5.7 Scaling behavior 
+
+Figure 10 collects threshold, engine, schedule, resolution, width, and model measurements. On Wan2.1-1.3B, the frontier fitted to threshold and engine predicts held-out schedules, 720 p, and a rerun within 
+
+2.0 points ( R2 = 0 .90 ); it fails across backbones ( R2 = −0.86 ), where each family traces its own curve. Delivered capture rises toward a ∼95 % width plateau, and absolute savings grow with model cost. Ap-pendix D.9 contains the operating-point registry, frontier fits, width and model figures, calibration recipe, and per-axis analyses. 11 Technical report 
+
+## 6 Conclusion 
+
+We presented the first study of training-free caching in video diffusion test-time search and the method it leads to. On Wan2.1-T2V-1.3B [31], seed-matched results show aggressive caching preserves verifier-induced rankings. Median Spearman ρ = 0 .905 at a ∼2× per-candidate speedup. This holds on the 50-prompt gate grid and the VBench suite [12], with 72 % top-1 agreement. The cached winner retains 
+
+90 –94 % of the reward gain from full-compute search. Errors concentrate on nearly tied candidates, where mistakes cost less. CachedSearch explores under caching, then regenerates only the winner at full compute. It captures 94 .7% of best-of-8 gains at 63 % of the cost. It captures 95 .7% of best-of-16 gains at 
+
+57 % of the cost, or searches about twice as wide at a fixed budget. Across six models and four architecture families ( 1.3B– 14 B), it holds at 14 B within the same family. It transfers to three further architectures after per-family calibration of τ . It also stacks with pruning-based search, reaching a 3.11 × exploration speedup at 88 .6% capture. It therefore complements existing search methods. Table 12 in Appendix D.9 condenses the practical guidance into one lookup. The lesson extends beyond caching. Any lossy accelerator can support exploration if it passes the same ranking-plus-regret audit. Discarded candidates need not be faithful. They need only be honest about ordering. Allocating budgets across such accelerators is the next question. 
+
+Reproducibility statement 
+
+All experiments use publicly released checkpoints: Wan2.1-T2V-1.3B [31], Wan2.1-T2V-14B [31], Wan2.2-TI2V-5B [32, 31], CogVideoX-5B [38], HunyuanVideo-13B [15], and LTX-Video-2B [7]. We use ImageRe-ward [36] and VideoScore [9] as verifiers with a training-free caching wrapper; no model is trained or fine-tuned. Generation is deterministic given (prompt, seed, caching threshold τ ), so every candidate and every delivered video in the paper can be re-materialized exactly. Appendix H gives exact configurations and measured costs. We will release the caching wrapper, search harness, evaluation scripts, prompt lists, seeds, and all per-candidate scores. 
+
+Ethics statement 
+
+This work reduces the inference cost of an existing capability (text-to-video generation with test-time search) rather than introducing new generative capabilities; risks are those of the underlying open models. Cheaper high-quality sampling lowers the cost of both beneficial and malicious video synthesis. Provenance mitigations (watermarking, content credentials) are orthogonal to and unaffected by our method: caching changes how exploration candidates are computed, not what is delivered, and in the recommended recommit mode the delivered video is a standard full-compute sample. 
+
+## References 
+
+[1] Mishan Aliev, Eva Neudachina, Ilya Bykov, Aleksandr Oganov, Kirill Struminsky, Aibek Alanov, and Denis Rakitin. Recache: Learning budget-aware caching schedules for diffusion models via reinforce. 
+
+arXiv preprint arXiv:2606.06060 , 2026. [2] Divya Jyoti Bajpai, Shubham Agarwal, Apoorv Saxena, Kuldeep Kulkarni, Subrata Mitra, and Man-jesh Kumar Hanawal. Flowcast: Trajectory forecasting for scalable zero-cost speculative flow matching. 
+
+arXiv preprint arXiv:2602.01329 , 2026. ICLR 2026. [3] Hanshuai Cui, Zhiqing Tang, Zhifei Xu, Zhi Yao, Wenyi Zeng, and Weijia Jia. Bwcache: Accelerating video diffusion transformers through block-wise caching. arXiv preprint arXiv:2509.13789 , 2025. [4] Valentin De Bortoli, Alexandre Galashov, Arthur Gretton, and Arnaud Doucet. Accelerated diffusion models via speculative sampling. arXiv preprint arXiv:2501.05370 , 2025. [5] Huanlin Gao, Ping Chen, Fuyuan Shi, Chao Tan, Zhaoxiang Liu, Fang Zhao, Kai Wang, and Shiguo Lian. Lemica: Lexicographic minimax path caching for efficient diffusion-based video generation. 
+
+arXiv preprint arXiv:2511.00090 , 2025. NeurIPS 2025 Spotlight. [6] Youping Gu, Xiaolong Li, Yuhao Hu, Minqi Chen, and Bohan Zhuang. Blade: Block-sparse attention meets step distillation for efficient video generation. arXiv preprint arXiv:2508.10774 , 2025. 12 Technical report [7] Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richardson, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, Poriya Panet, Sapir Weissbuch, Victor Kulikov, Yaki Bitterman, Zeev Melumian, and Ofir Bibi. Ltx-video: Realtime video latent diffusion. arXiv preprint arXiv:2501.00103 , 2024. [8] Haoran He, Jiajun Liang, Xintao Wang, Pengfei Wan, Di Zhang, Kun Gai, and Ling Pan. Scaling image and video generation via test-time evolutionary search. arXiv preprint arXiv:2505.17618 , 2025. [9] Xuan He, Dongfu Jiang, Ge Zhang, Max Ku, Achint Soni, Sherman Siu, Haonan Chen, Abhranil Chan-dra, Ziyan Jiang, Aaran Arulraj, Kai Wang, Quy Duc Do, Yuansheng Ni, Bohan Lyu, Yaswanth Narsu-palli, Rongqi Fan, Zhiheng Lyu, Yuchen Lin, and Wenhu Chen. Videoscore: Building automatic met-rics to simulate fine-grained human feedback for video generation. arXiv preprint arXiv:2406.15252 ,2024. [10] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 ,2022. [11] Yuezhou Hu and Jintao Zhang. Speculative decoding for autoregressive video generation. arXiv preprint arXiv:2604.17397 , 2026. [12] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, Yaohui Wang, Xinyuan Chen, Limin Wang, Dahua Lin, Yu Qiao, and Ziwei Liu. Vbench: Comprehensive benchmark suite for video genera-tive models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2024. arXiv:2311.17982. [13] Yicheng Ji, Zhizhou Zhong, Jun Zhang, Qin Yang, XiTai Jin, Ying Qin, Wenhan Luo, Shuiyang Mao, Wei Liu, and Huan Li. Forcing-kv: Hybrid kv cache compression for efficient autoregressive video diffusion models. arXiv preprint arXiv:2605.09681 , 2026. [14] Sejoon Jun, Zheng Ding, Huangyuan Su, Weirui Ye, and Yilun Du. Temporal backtracking search for test-time generative video reasoning. arXiv preprint arXiv:2606.13861 , 2026. [15] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. [16] William H. Kruskal. Ordinal measures of association. Journal of the American Statistical Association ,53(284):814–861, 1958. [17] Byung-Ki Kwon, Sohwi Lim, Hyeon-Woo Nam, Ye-Bin Moon, and Tae-Hyun Oh. Early failure detec-tion and intervention in video diffusion models. arXiv preprint arXiv:2603.14320 , 2026. [18] Yitong Li, Junsong Chen, Haopeng Li, Haozhe Liu, Jincheng Yu, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. Sol video inference engine: Agent-native full-stack acceleration framework for efficient video generation. arXiv preprint arXiv:2606.23743 , 2026. [19] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow match-ing for generative modeling. In International Conference on Learning Representations (ICLR) , 2023. [20] Dong Liu, Yanxuan Yu, Jiayi Zhang, Yifan Li, Ben Lengerich, and Ying Nian Wu. Fastcache: Fast caching for diffusion transformer through learnable linear approximation. arXiv preprint arXiv:2505.20353 , 2025. [21] Fangfu Liu, Hanyang Wang, Yimo Cai, Kaiyan Zhang, Xiaohang Zhan, and Yueqi Duan. Video-t1: Test-time scaling for video generation. arXiv preprint arXiv:2503.18942 , 2025. [22] Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep embedding tells: It’s time to cache for video diffusion model. 
+
+arXiv preprint arXiv:2411.19108 , 2024. CVPR 2025. [23] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In International Conference on Learning Representations (ICLR) ,2023. 13 Technical report [24] Zhengyao Lv, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K. Wong. Fastercache: Training-free video diffusion model acceleration with high quality. arXiv preprint arXiv:2410.19355 , 2024. [25] Zheqi Lv, Zhibo Zhu, Jinke Wang, Qi Tian, Shengyu Zhang, Zhengyu Chen, Chengxi Zang, Zhou Zhao, and Fei Wu. Navicache: Test-time self-calibration caching for video generation. arXiv preprint arXiv:2606.26795 , 2026. ICML 2026. [26] Nanye Ma, Shangyuan Tong, Haolin Jia, Hexiang Hu, Yu-Chuan Su, Mingda Zhang, Xuan Yang, Yandong Li, Tommi Jaakkola, Xuhui Jia, and Saining Xie. Inference-time scaling for diffusion models beyond scaling denoising steps. arXiv preprint arXiv:2501.09732 , 2025. [27] Xin Ma, Yaohui Wang, Gengyun Jia, Xinyuan Chen, Ziwei Liu, Yuan-Fang Li, Cunjian Chen, and Yu Qiao. Latte: Latent diffusion transformer for video generation. arXiv preprint arXiv:2401.03048 ,2024. [28] Zizheng Pan, Bohan Zhuang, De-An Huang, Weili Nie, Zhiding Yu, Chaowei Xiao, Jianfei Cai, and Anima Anandkumar. T-stitch: Accelerating sampling in pre-trained diffusion models with trajectory stitching. arXiv preprint arXiv:2402.14167 , 2024. [29] Desen Sun, Jason Hon, Jintao Zhang, and Sihang Liu. Hybridstitch: Pixel and timestep level model stitching for diffusion acceleration. arXiv preprint arXiv:2603.07815 , 2026. [30] Yijing Tu, Shaojin Wu, Mengqi Huang, Wenchuan Wang, Yuxin Wang, Chunxiao Liu, and Zhendong Mao. Stream-t1: Test-time scaling for streaming video generation. arXiv preprint arXiv:2605.04461 ,2026. [31] Wan Team. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. [32] Wan Team. Wan2.2: Open and advanced large-scale video generative models. https://github.com/ Wan-Video/Wan2.2 , 2025. Open-weights release including Wan2.2-TI2V-5B; technical report shared with Wan2.1 (arXiv:2503.20314). [33] Zhou Wang, Alan C. Bovik, Hamid R. Sheikh, and Eero P. Simoncelli. Image quality assessment: From error visibility to structural similarity. IEEE Transactions on Image Processing , 13(4):600–612, 2004. doi: 10.1109/TIP.2003.819861. [34] Ronald J. Williams. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine Learning , 8(3–4):229–256, 1992. doi: 10.1007/BF00992696. [35] Junyi Wu, Zhiteng Li, Zheng Hui, Yulun Zhang, Linghe Kong, and Xiaokang Yang. Quantcache: Adaptive importance-guided quantization with hierarchical latent and layer caching for video genera-tion. arXiv preprint arXiv:2503.06545 , 2025. [36] Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. Imagereward: Learning and evaluating human preferences for text-to-image generation. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. arXiv:2304.05977. [37] Jiazheng Xu, Yu Huang, Jiale Cheng, Yuanming Yang, Jiajun Xu, Yuan Wang, Wenbo Duan, Shen Yang, Qunlin Jin, Shurun Li, Jiayan Teng, Zhuoyi Yang, Wendi Zheng, Xiao Liu, Dan Zhang, Ming Ding, Xiaohan Zhang, Xiaotao Gu, Shiyu Huang, Minlie Huang, Jie Tang, and Yuxiao Dong. Vision-reward: Fine-grained multi-dimensional human preference learning for image and video generation. 
+
+arXiv preprint arXiv:2412.21059 , 2024. [38] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. Cogvideox: Text-to-video diffusion models with an expert transformer. arXiv preprint arXiv:2408.06072 , 2024. [39] Jintao Zhang, Kaiwen Zheng, Kai Jiang, Haoxu Wang, Ion Stoica, Joseph E. Gonzalez, Jianfei Chen, and Jun Zhu. Turbodiffusion: Accelerating video diffusion models by 100-200 times. arXiv preprint arXiv:2512.16093 , 2025. 14 Technical report [40] Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, and Oliver Wang. The unreasonable effectiveness of deep features as a perceptual metric. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 586–595, 2018. arXiv:1801.03924. [41] Xuanlei Zhao, Xiaolong Jin, Kai Wang, and Yang You. Real-time video generation with pyramid attention broadcast. arXiv preprint arXiv:2408.12588 , 2024. ICLR 2025. [42] Zengqun Zhao, Ziquan Liu, Yu Cao, Shaogang Gong, Zhensong Zhang, Jifei Song, Jiankang Deng, and Ioannis Patras. Latsearch: Latent reward-guided search for faster inference-time scaling in video diffusion. arXiv preprint arXiv:2603.14526 , 2026. ECCV 2026. [43] Dian Zheng, Ziqi Huang, Hongbo Liu, Kai Zou, Yinan He, Fan Zhang, Lulu Gu, Yuanhan Zhang, Jing-wen He, Wei-Shi Zheng, Yu Qiao, and Ziwei Liu. Vbench-2.0: Advancing video generation benchmark suite for intrinsic faithfulness. arXiv preprint arXiv:2503.21755 , 2025. [44] Zangwei Zheng, Xiangyu Peng, Tianji Yang, Chenhui Shen, Shenggui Li, Hongxin Liu, Yukun Zhou, Tianyi Li, and Yang You. Open-sora: Democratizing efficient video production for all. arXiv preprint arXiv:2412.20404 , 2024. [45] Xin Zhou, Dingkang Liang, Kaijin Chen, Tianrui Feng, Xiwu Chen, Hongkai Lin, Yikang Ding, Feiyang Tan, Hengshuang Zhao, and Xiang Bai. Less is enough: Training-free video diffusion acceler-ation via runtime-adaptive caching. arXiv preprint arXiv:2507.02860 , 2025. 15 Technical report 
+
+## Appendix contents                      
+
+> AExtended related work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 BRanking-noise model for cached exploration . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 CTheory and measurement . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 DAdditional Experiments . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 EPer-category analysis. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29 FVerifier bias. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30 GScaling discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30 HReproducibility . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31 IQualitative examples . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32 JLimitations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+
+## A Extended related work 
+
+This appendix hosts the full survey and positioning argument, pointed to from Section 1. 
+
+A.1 Training-free caching for video diffusion 
+
+Training-free caching is the dominant inference-time accelerator for video diffusion transformers. These methods exploit a common pattern: adjacent-step feature and attention differences are large near the trajectory ends but small in the middle. This U-shaped redundancy appears across Open-Sora [44], Latte [27], Wan 2.1 [31], and HunyuanVideo [15]. PAB [41] broadcasts attention outputs across steps with reuse ranges ordered cross > temporal > spatial. TeaCache [22] replaces uniform intervals with output-change estimates from timestep-embedding-modulated inputs. FasterCache [24] limits subtle feature loss from adjacent-step reuse. Its CFG-Cache also exploits redundancy between classifier-free-guidance branches at the same timestep. EasyCache [45] reuses per-step transformations while an online accumulated change indicator stays below τ . It needs no offline calibration, and we adopt this adaptive wrapper. BWCache [3] gates reuse at DiT-block granularity through relative-L1 similarity. FastCache learns a linear approxi-mation of cached features, and NaviCache self-calibrates its schedule [20, 25]. LeMiCa [5] casts scheduling as a shortest-path problem and uses lexicographic minimax optimization to bound globally accumulated error. ReCache [1] instead learns budget-aware schedules with REINFORCE [34] against uncached targets. These methods move from local reuse heuristics toward global error budgets. Our work instead studies how these cache perturbations affect selection among multiple candidates. Single-model training-free caching plateaus at roughly 2–3× speedup at near-lossless quality. Prior work evaluates single-sample fidelity to a full-compute reference through PSNR [33], SSIM [33], LPIPS [40], or absolute VBench [12] scores. These measurements do not reveal whether small perturbations reorder nearly tied candidates. We instead measure relative candidate ranking, which determines whether caching is safe inside test-time search. 
+
+A.2 Test-time scaling and diffusion search 
+
+A complementary literature spends more inference compute to improve quality. Ma et al. [26] recast inference-time scaling as verifier-guided search over sampling noise after showing that extra denoising steps saturate. With modest search compute, a 0.6B model can outperform a 12B model without search. They also show that a single verifier can reward-hack, improving its own metric while degrading held-out metrics. We test this failure mode in Section D.6. Video-T1 [21] applies multimodal reward models in a Tree-of-Frames search. EvoSearch [8] uses evolutionary denoising to make Wan 1.3B competitive with Wan 14B. LatSearch [42] scores partially denoised latents and prunes before VAE decoding, matching EvoSearch-level gains at a fraction of the compute. Stream-T1 [30] explores streaming generation with few-step chunks. Early-failure detection [17] aborts candidates from cheap RGB previews. Temporal backtracking search [14] reallocates compute over time by restarting full-quality generation from verified 16 Technical report prefixes instead of resampling whole rollouts. Unlike our method, each reduces search cost without reducing every candidate’s per-step cost. These methods prune or truncate candidates, but every survivor pays full per-step denoising cost. We reduce each candidate’s rollout cost with training-free caching. This lever composes multiplicatively with existing search methods instead of competing with them, and we demonstrate stacking with latent-RM-style pruning. The composition preserves their pruning logic while lowering the cost of candidates that remain. Our question is whether cache approximation corrupts verifier ranking and silently breaks search. 
+
+A.3 Speculative draft-verify sampling 
+
+Our explore-cheap/commit-full scheme is closest to speculative execution. De Bortoli et al. [4] extend speculative sampling to diffusion with acceptance rules for draft–target denoising pairs. For video, a 1.3B drafter and 14B autoregressive target achieve 1.59 × speedup at 98 % quality retention through reward-based routing [11]. FlowCast [2] uses a velocity-MSE acceptance test for training-free self-speculative flow matching. In image generation, T-Stitch [28] assigns early and late sampling to small and large models. HybridStitch [29] extends this split across pixels and timesteps. Unlike our method, these approaches accelerate a single trajectory through draft–target verification. These methods verify within one trajectory, at a step or segment boundary, using a smaller or distilled draft model. We use the same model under aggressive caching, so the draft follows the same latent trajectory statistics by construction. Verification occurs at the candidate level: the search verifier scores cached rollouts, then only the winner is regenerated at full compute. We turn best-of-N search into draft-verify instead of accelerating one trajectory. 
+
+A.4 Composition of efficiency techniques 
+
+Stacking inference accelerators is not automatically safe. Video-BLADE [6] shows that training-free com-position of pretrained sparse attention with a step-distilled model degrades quality because distillation ignores the sparsity pattern. Joint training fixes the mismatch. QuantCache [35] combines caching, quan-tization, and pruning through shared heuristics. TurboDiffusion [39] reaches 100 –200 × acceleration by training sparse-linear attention, low-bit quantization, and consistency distillation together. Sol [18] tunes caching, sparsity, pruning, and quantization per model. Prior work combines methods only along the cost axis. It neither adds the quality axis of verifier-guided search nor tests whether approximation distorts the selection signal. We compose those axes and measure the effect on selection. 
+
+Positioning. CachedSearch is a multiplier layer between training-free caching and test-time search. It uses cached rollouts as candidate-level drafts, scores them with the search verifier, and restores a full-compute output by recommitting the winning seed. Its ranking and regret audit measures when this composition preserves the selection decision and how much value is lost when it does not. 
+
+## B Ranking-noise model for cached exploration 
+
+This appendix models search value lost when cached scores select the winner. Standard Gaussian-copula and order-statistic tools predict gain capture, regret, and top-1 agreement from Section 4. We compare them with data to support the empirical analysis. 
+
+B.1 Setup and assumptions 
+
+For prompt c and width N , candidate i has full score Si = V (G(c, s i), c ) and cached score ˆSi =
+
+V (Gτ (c, s i), c ) (Section 4.1). Both are deterministic given seed si; randomness is over i.i.d. seeds. Cached-Search selects ˆı = arg max i ˆSi. Recommit delivers Sˆı by seed-determinism (Section 3.2); the full-compute oracle attains max i Si. We use three assumptions: 
+
+Assumption 1 (Exchangeable candidates) The pairs (Si, ˆSi), i = 1 , . . . , N , are i.i.d. across candi-dates. This reflects the protocol: seeds are drawn independently and enter symmetrically. 
+
+Assumption 2 (Gaussian-copula ranking noise) Within a prompt, (Si, ˆSi) is bivariate normal with 
+
+Si ∼ N (μ, σ 2) and correlation r ∈ [0 , 1] . Only the rank structure of the cached scores matters for selec-
+
+17 Technical report 
+
+tion ( arg max is invariant to strictly increasing transforms of ˆS), so the marginal of ˆS is irrelevant and Assumption 2 is really two parts: (i) a Gaussian dependence structure (copula) with parameter r between full and cached scores, and (ii) a Gaussian marginal for the full score. Part (ii) is what lets us convert rank statements into reward units. 
+
+Assumption 3 (Verifier as value) The full score S is taken as the value of a candidate. Verifier mis-specification (reward hacking) is a real but orthogonal failure mode of all verifier-guided search, treated empirically via verifier ensembles in Section 4; the analysis here isolates the additional error introduced by caching. 
+
+Under Assumption 2, write Si = μ + σZ i and standardize ˆSi as ˆZi. Each (Zi, ˆZi) is standard bivariate normal with correlation r, and ˆı = arg max i ˆZi. Define 
+
+eN = E
+
+[
+
+max  
+
+> i≤N
+
+Zi
+
+]
+
+=
+
+∫ ∞−∞ 
+
+z N ϕ (z)Φ( z)N −1 dz (8) as the expected maximum of N standard normals ( e2 = 1/ √π ≈ 0.564 ; e3 ≈ 0.846 ; e4 ≈ 1.029 ; e6 ≈ 1.267 ;
+
+e8 ≈ 1.424 ; e16 ≈ 1.766 ). 
+
+B.2 Value of the noisy argmax 
+
+The first result quantifies the value lost to noisy selection: 
+
+Proposition 1 (Selection under rank noise) Under Assumptions 1–2, 
+
+E[Sˆı
+
+] = μ + σ r e N , E[ max  
+
+> i
+
+Si
+
+] = μ + σ e N . (9) 
+
+Consequently the expected regret of CachedSearch relative to full-compute best-of-N is 
+
+R(N, r ) = E[ max  
+
+> i
+
+Si − Sˆı
+
+] = σ (1 − r) eN , (10) 
+
+and the expected gain capture (the fraction of the best-of-N improvement over a random candidate that survives noisy selection) is 
+
+capture (N, r ) = E[Sˆı] − μ
+
+E[max i Si] − μ = r, independent of N. (11) 
+
+Proof. Decompose Zi = r ˆZi + √1 − r2 ηi with ηi ∼ N (0 , 1) independent of ( ˆZj )j≤N ; this reproduces the joint law of Assumption 2. The index ˆı is a function of ( ˆZj ) alone, so E[ηˆı] = E[E[ηˆı | ( ˆZj )] ] = 0 and 
+
+E[Zˆı] = r E[ ˆZˆı] = r E[max i ˆZi] = r e N , using that ˆZ is standard normal. The oracle term is Eq. equation 8; subtract and rescale by σ. For Eq. equation 11, a random (or the first) candidate has expected value μ. □
+
+Rank noise removes a constant gain fraction instead of compounding with width, so cached exploration can widen search (Section 3.3). At r = 0 , selection is uniform and E[Sˆı] = μ; for r ≥ 0, expected value never falls below the no-search baseline. Recommit still delivers a full-compute sample. We calibrate latent r from the observed per-prompt Spearman ρ:
+
+Corollary 1 (Spearman calibration) Under Assumption 2, the classical Gaussian rank-correlation re-lationship [16] maps the measured median ρ = 0 .905 to r ≈ 0.913 and the mean ρ = 0 .820 to r ≈ 0.833 .
+
+On the extended 16 -seed grid, Proposition 1 with median-calibrated r predicts capture ≈ 0.91 , flat in N .Measured capture is 91 .1%, 90 .9%, 92 .2%, and 95 .7% at N = 2 , 4, 8, 16 . The N =4 → 16 gain is +4 .8 points. A 32 -seed extension remains at 95 .2% (Figure 16). Section B.5 separates finite-sample level bias from the Gaussian-marginal shape error in Assumption 2(ii), and Table 6 corrects the prediction. Proposition 3 explains the aggregate level. 18 Technical report 
+
+B.3 Top-1 agreement and the zero-regret median 
+
+Top-1 agreement determines the probability of zero regret: 
+
+Proposition 2 (Top-1 agreement) Under Assumptions 1–2, with ϕ2(·, · ; r) and Φ2(·, · ; r) the standard bivariate normal density and CDF, 
+
+p1(N, r ) = Pr [ arg max 
+
+> i
+
+Zi = arg max 
+
+> i
+
+ˆZi
+
+] = N
+
+∫
+
+> R2
+
+ϕ2(z, ˆz; r) Φ 2(z, ˆz; r)N −1 dz d ˆz, (12) 
+
+which is increasing in r and decreasing in N . Since ties have measure zero, Pr [regret = 0] = p1(N, r ), so the median regret is 0 if and only if p1(N, r ) ≥ 12 .Proof. By exchangeability, p1 = N Pr [Z1 = max i Zi, ˆZ1 = max i ˆZi]. Conditioning on (Z1, ˆZ1) = ( z, ˆz), the remaining N − 1 pairs are i.i.d. bivariate normal, so the conditional probability is Φ2(z, ˆz; r)N −1; integrate against ϕ2. Monotonicity in N is immediate; monotonicity in r follows from the usual Gaussian-comparison (Slepian-type) argument, and we also confirm it numerically over the range used here. □
+
+At N = 8 , p1(8 , r ) = 0 .58 for mean-calibrated r = 0 .833 and 0.69 for median-calibrated r = 0 .913 .Measured top-1 agreement at N = 8 and τ = 0 .10 is 64 %, within this bracket. Both exceed 12 , matching median regret 0 at N = 8 and 64 % zero-regret prompts. Yet ρ ≈ 0.9 still implies ∼ 30 % top-1 disagreement. Top-1 safety depends on disagreement value, not agreement alone. Proposition 1 bounds that value by 
+
+σ(1 − r)eN ; the next result locates it. 
+
+B.4 Heterogeneous-prompt regret 
+
+We aggregate Proposition 1 over prompts with different score spreads σp and ranking fidelities rp:
+
+Proposition 3 (Spread-weighted capture) Let prompts p have parameters (μp, σ p, r p) satisfying As-sumptions 1–2 prompt-wise. Then the expected per-prompt regret is Rp = σp(1 − rp)eN , and the aggregate capture over prompts is the spread-weighted mean correlation 
+
+capture = Ep[σprp]
+
+Ep[σp] = ¯r + Cov p(σp, r p)
+
+Ep[σp] , (13) 
+
+where ¯r = Ep[rp]. Hence if spread and ranking fidelity are positively associated, Cov p(σp, r p) > 0, the aggregate capture strictly exceeds the mean per-prompt capture, and the regret mass concentrates on low-spread prompts, where by Rp ≤ σpeN the attainable loss is small in absolute terms. Proof. Sum Proposition 1 over prompts: aggregate gain of the oracle is Ep[σp]eN and of CachedSearch 
+
+is Ep[σprp]eN ; divide. The covariance identity is E[σr ] = E[σ]E[r] + Cov (σ, r ). The bound Rp ≤ σpeN is Eq. equation 10 with rp ≥ 0. □
+
+Ranking corruption is self-limiting on low-spread prompts, where mistakes are cheap. Spread and ρ have Spearman association +0 .25 ; the 9/50 prompts with ρ < 0.7 have low spread. Aggregate capture ( 94 %) exceeds mean-calibrated capture ( 0.83 ) and its spread-weighted correction ( 0.85 ). 
+
+Remark 1 (The model is conservative) The model correctly predicts median-zero regret and self-limiting corruption, but it predicts mean regret 0.107 instead of 0.039 and capture 0.85 instead of 0.94 . It overestimates loss because it spreads disagreement across the score range, whereas observed swaps cluster among near-tied mid-pack candidates. This error is conservative because measured selection is more stable than the model predicts. 
+
+B.5 Capture versus search width 
+
+Equation equation 11 remains flat in N under prompt heterogeneity: eN cancels from Eq. equation 13 for any joint distribution of (σp, r p). Measurements disagree. Across all (16 
+
+> N
+
+) subsets of the extended 16 -seed grid, capture is 91 .1%, 90 .9%, 92 .2%, and 95 .7% at N = 2 , 4, 8, 16 (Section 4.3, Figure 16). The N =4 to 16 
+
+increase is +4 .8 points. Heterogeneity cannot create this N -dependence, so a within-prompt idealization fails. Two effects explain the level and direction, with an unmodeled remainder. First, width-independence comes from the Gaussian marginal, not rank noise: 19 Technical report 
+
+Proposition 4 (Capture under a general score marginal) Keep the Gaussian copula of Assump-tion 2(i) with parameter r > 0, but let the full score have an arbitrary continuous marginal F with mean μF and E|S| < ∞, i.e. Si = gF (Zi) with gF = F −1 ◦ Φ nondecreasing. With MN = max i≤N ˆZi and 
+
+η ∼ N (0 , 1) independent, 
+
+capture (N, r, F ) = E[gF
+
+(rM N + √1 − r2 η)] − μF
+
+E[gF (MN )] − μF
+
+. (14) 
+
+If F is Gaussian, capture equals r as in Proposition 1; if F is bounded above by b = ess sup S, both selected and best-candidate values approach b, so 
+
+capture (N, r, F ) −→ 1 (N → ∞ ). (15) 
+
+The bounded-score case gets the measured direction right but underestimates the rise, which makes its width prediction conservative. Proof. As in Proposition 1, Zˆıd
+
+= rM N + √1 − r2 η and max i Si = gF (max i Zi) with max i Zid
+
+= MN ; a random candidate has mean μF . This gives Eq. equation 14, and the Gaussian case is immediate. For the bounded case, couple widths by taking maxima over the first N terms of one i.i.d. sequence, so MN ↑ ∞ 
+
+a.s. and both arguments in Eq. equation 14 increase a.s. Then b − gF (·) ≥ 0 decreases pointwise to 0 (as 
+
+gF (z) → b when z → ∞ ), is integrable at N = 2 (since E|Sˆı| ≤ E ∑ 
+
+> i
+
+|Si| < ∞), and monotone convergence gives both expectations ↑ b; the ratio tends to (b − μF )/( b − μF ) = 1 . □
+
+Verifier scores are bounded in practice (rewards lie in [−2.3, 2.3] ; Section 4.1), so capture must rise with width. Flat extrapolation of Eq. equation 11 is conservative. Yet plugging the observed 16 -score vectors into Eq. equation 14 predicts less than one point of growth from N =2 to 16 .Second, the calibration: 
+
+Remark 2 (Finite-sample calibration attenuation) Finite-sample Spearman correlation understates the latent relationship: at n = 16 , population ρ = 0 .905 has expected sample value 0.875 [16]. Correcting this attenuation raises median calibrated r from 0.900 to 0.927 , raises the flat capture prediction from 0.879 
+
+to 0.903 , and reduces regret overprediction from 2.7× to 2.0×. The correction improves the level but leaves the width trend flat, so the remaining error still overstates risk. 
+
+Table 6 applies both corrections without free parameters. It preserves each score vector, adds Gaussian rank noise at corrected rp, and uses the ratio-of-mean-gains estimator over every seed subset. The “model sd” column reports estimator sampling noise from one modeled noise realization per prompt. Predictions match the level through N = 8 within sampling noise. At N = 16 , the model is conservative by 4.9 points: 
+
+90 .8% predicted versus 95 .7% measured, at model quantile 0.94 . It captures the direction but not the full rise. Table 6: The parameter-free rank-noise model matches capture through N = 8 but is conser-vative at N = 16 . Predicted and measured gain capture on the 50 -prompt, 16 -seed grid at τ = 0 .10 .                      
+
+> Nmeasured predicted (model sd) meas. −pred. model quantile
+> 291 .1%90 .3% ( 1.0)+0 .80.81 490 .9%90 .4% ( 1.2)+0 .50.65 892 .2%90 .0% ( 1.9)+2 .20.87 16 95 .7%90 .8% ( 3.3)+4 .90.94
+
+Measured rank errors protect the top better than exchangeable noise. At N = 16 , the cached winner is in the true top two for 92 % of prompts, versus 86 % under the corrected Gaussian copula, so the model predicts 90 .8% capture instead of the measured 95 .7%. We therefore keep the headline empirical and use the model only as a conservative envelope. 
+
+B.6 Iso-cost comparison and break-even 
+
+We now combine the value and cost models from Section 3.3: 20 Technical report 
+
+Proposition 5 (Break-even and iso-cost widening) Let γ = Cc/Cf . (i) Recommit costs less than full-compute best-of-N iff N > 1/(1 − γ). (ii) At a fixed budget B ≥ Cf , full-compute search affords 
+
+Nf = B/Cf candidates while CachedSearch (recommit) affords Nc = ( B − Cf )/ Cc = ( Nf − 1)/ γ; under Assumptions 1–2, CachedSearch attains higher expected value at equal cost iff 
+
+r e Nc > e Nf . (16) 
+
+Proof. (i) is Eq. equation 7. (ii) substitutes each width into Proposition 1: expected gains over no-search are σre Nc and σe Nf . □
+
+For measured γ = 0 .508 and median-calibrated r = 0 .913 , Nf = 2 gives Nc ≈ 2 and re 2 = 0 .52 < e 2 = 0 .56 .Cached search loses because recommit consumes the savings. At Nf = 3 , Nc ≈ 4 and re 4 = 0 .94 > e 3 =0.85 ; at Nf = 4 , Nc ≈ 6 and re 6 = 1 .16 > e 4 = 1 .03 . The margin grows with B because eN grows as 
+
+∼ √2 ln N while r stays constant. These two constants (γ, ρ ) reproduce the strategy simulation in Section 4: a wash at N = 2 and an iso-cost advantage from N ≈ 4 onward. 
+
+Scope and limitations. The parameter r belongs to the (model, cache threshold τ , verifier) triple and requires per-prompt measurement. The τ sweep moves median ρ from 0.905 (τ ≤ 0.10 ) to 0.857 (τ = 0 .20 ). Assumption 2 is conservative in the direction documented by Remark 1. Assumption 3 excludes reward hacking, which caching neither causes nor fixes. Keep-draft falls outside these guarantees because it delivers a cached sample (Section 3.2). Choosing τ online from the spread in Proposition 3 does not clear the fixed-τ
+
+frontier (Section D.3); its noisy two-sample probe costs more than the flat capture-versus-speedup curve returns. 
+
+## C Theory and measurement 
+
+Appendix B predicts outcomes from two measured constants, ρ = 0 .905 and γ = Cc/Cf = 0 .508 , without fitting. The former maps to r = 0 .913 through Corollary 1. Table 7 compares each prediction with the 
+
+50 × 8 grid at τ = 0 .10 (Sections 4 and 5). Table 7: The rank-noise model predicts the main grid’s qualitative behavior but is conservative on regret. Predictions vs. measurements for 50 prompts, 8 seeds, and τ = 0 .10 ; source results are in Tables 1 and 3.                                                                 
+
+> quantity predicted measured source gain capture at N=8 0.83 –0.91 (≈r)94 .7%Prop. 1; Tab. 1 capture trend in Nflat ( =r,∀N)89 .9/89 .6/94 .7%at
+> N=2/4/8
+> Prop. 1; Tab. 1 top-1 agreement p1(8 , r )0.58 –0.69 64 %Prop. 2; Section 4.2 median regret 0(since p1>12)0(64 % zero-regret) Prop. 2; Section 4.4 mean regret (reward units) 0.107 0.040 Eq. equation 10; Section 4.4 aggregate capture (per-prompt plug-in)
+> 0.829 /0.853 (spread-wtd.)
+> 0.940 Prop. 3 sign of corr(spread, ρ)>0(self-limiting) +0 .25 Prop. 3; Section 5.4 regret mass on below-median-spread prompts majority 64 %Prop. 3 break-even width N∗2.03 N=2 is a wash Prop. 5; Tab. 1 iso-cost winner at Nf≥3CachedSearch
+> (re Nc> e Nf)
+> +38 % gain at ≈300 sProp. 5; Section 4.3
+
+Ambiguous predictions show the bracket from mean-calibrated r = 0 .833 and median-calibrated r = 0 .913 
+
+copula parameters. 
+
+Model agreement. The structural predictions hold. Capture is nearly flat in N , top-1 agreement falls inside the calibration bracket, and low-spread prompts absorb most corruption. The cost model also recovers the N =2 wash and growing iso-cost advantage. Median regret is zero because p1(8 , r ) > 12 .21 Technical report 0 100 200 300 400 500        
+
+> wall-clock cost per prompt (s)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> reward gain over single
+> single
+> N= 2
+> N= 4
+> N= 8
+> prune+cached
+> best-of-Nfull CachedSearch-keep
+> CachedSearch-commit
+> faded dashed: τ∈{0.05, 0.20}
+
+Figure 11: CachedSearch dominates best-of-
+
+N beyond the N ∗ ≈ 2 break-even. Reward gain vs. wall-clock; up-left is better. Curves compare full, keep, and commit for N = 2 , 4, 8 on 50 prompts; the gold diamond adds pruning. 1.4 1.6 1.8 2.0 2.2 2.4 
+
+exploration speedup (×)       
+
+> 88
+> 89
+> 90
+> 91
+> 92
+> 93
+> 94
+> search-gain capture (%)  τ= 0.05
+> τ= 0.10
+> τ= 0.20 fixed τ
+> adaptive (probe K= 2)
+
+Figure 12: Adaptive per-prompt τ never beats the fixed frontier. Gain capture vs. exploration speedup at N = 8 and n = 50 . Filled blue points are fixed thresholds; open gold points sweep the K = 2 
+
+probe policy’s decision threshold. 
+
+Regret over-prediction. Equation equation 10, evaluated with measured (σp, ρ p), predicts 0.107 mean regret against 0.040 measured. It therefore over-predicts regret by 2.7× and under-predicts capture ( 0.85 
+
+vs. 0.94 ). A Gaussian copula spreads rank errors uniformly across the score range (Remark 1), while measured swaps cluster among near-tied mid-pack candidates (Figure 7). The argmax is therefore more stable than ρ suggests. Appendix B provides a conservative deployment guide: realized regret is lower at all three τ values. Headline results should still come from measurement. 
+
+## D Additional Experiments 
+
+This section collects analyses and figures summarized in Section 4–Section 5. 
+
+D.1 Main-result figures 
+
+Figure 11 expands the strategy comparison in Section 4.3. The remaining exhibits provide the supporting views referenced from the main analysis. 
+
+D.2 Additional metrics 
+
+So far, the search verifier also evaluates each strategy. We instead re-evaluate the delivered videos under a standard metric suite on a held-out VBench [12] subset from the validated population of Section D.6. The strategies deliver a single, best-of-8, keep, or commit video. We score the original rollouts without regeneration. The suite includes six VBench [12] dimensions 1, VideoScore [9], ImageReward [36], mean RAFT optical-flow magnitude, and LPIPS [40] against the same-seed full reference. Costs follow Section 4.1 (text encoding and VAE decodes are excluded from the FLOPs ratio but included in wall-clock). Three results matter. (1) Commit is faster and no worse on metrics it never optimized. Its paired deltas from best-of-8 are statistically zero across the quality suite: VideoScore [9] avg −0.006 
+
+and all VBench [12] dimensions within 0.6% of scale. Background consistency differs by only −0.001 on a ∼0.98 scale. ImageReward [36] concedes 0.06 of the 0.87 gain, giving 93 .2% capture, consistent with Table 1. (2) Reference-free scorers favor keep despite its fidelity cost. Keep beats best-of-8 on VideoScore [9] by +0 .065 , including +0 .103 on dynamics. It beats its full re-render by +0 .036 on the frame 
+
+> 1
+
+Computed in custom_input mode, which applies every dimension to every video; the VBench [12] protocol com-putes temporal flickering only on static-scene prompt subsets, so the VBench [12] rows are strategy-comparisons on a fixed prompt set, not leaderboard-comparable absolutes. 
+
+22 Technical report Table 8: Commit matches best-of-8 across the standard metric suite at lower cost. Four delivery strategies on a held-out VBench [12] subset at τ = 0 .10 , N = 8 . Rows are strategies and columns are quality, fidelity, and cost metrics; green cells are statistically consistent with best-of-8.
+
+Quality VBench [12] dimensions Fidelity Cost (% bo8) method IR ↑ VS ↑ subj ↑ bg ↑ mot ↑ flk ↑ aes ↑ img ↑ flow LPIPS [40] ↓ wall ↓ FLOPs ↓
+
+single (no search) −0.06 2.58 0.970 0.975 0.992 0.990 0.554 65 .3 1.85 0 12 .5 12 .5
+
+best-of-8 full +0.81 2.60 0.978 0.980 0.991 0.987 0.615 67 .7 1.56 0 100 100 
+
+CachedSearch -keep +0 .79 2.67 0.976 0.978 0.991 0.987 0.604 66 .7 1.96 0.114 51 .4 48 .5
+
+CachedSearch -commit +0 .75 2.60 0.976 0.979 0.991 0.987 0.610 67 .3 1.97 0 63 .9 61 .0−0.25 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+ImageReward ↑
+
+2.55 
+
+2.60 
+
+2.65 
+
+2.70 
+
+VideoScore avg ↑
+
+0.000 
+
+0.025 
+
+0.050 
+
+0.075 
+
+0.100 
+
+0.125 
+
+> 0 by construction
+> (full-delivery
+> strategies)
+
+LPIPS to full ref. ↓
+
+single (no search) best-of-8 full CachedSearch-keep CachedSearch-commit 
+
+Figure 13: Commit matches best-of-8 quality at 61 % of its transformer FLOPs. Mean ImageRe-ward [36], VideoScore [9], and same-seed LPIPS [40] on the held-out VBench [12] subset; bars are 95 %prompt-bootstrap intervals. Figure 14 gives all metrics. 0.0     
+
+> 0.5
+> ImageReward
+> 2.6
+> 2.7
+> VideoScore avg
+> 0.97
+> 0.98
+> subject consist.
+> 0.975
+> 0.980
+> background cons.
+> 0.990
+> 0.992
+> motion smooth.
+> 0.985
+> 0.990
+> temporal fl icker
+> 0.55
+> 0.60
+> aesthetic qual.
+> 65.0
+> 67.5
+> imaging (MUSIQ)
+> 1
+> 2
+> 3
+> fl ow magn. (px)
+> 68 (12%)
+> 541
+> 278 (51%)
+> 346 (64%)
+> wall-clock (s)
+> 1.00 (12%)
+> 8.00
+> 3.88 (48%)
+> 4.88 (61%)
+> FLOPs (full rollouts)
+> single (no search) best-of-8 full CachedSearch-keep CachedSearch-commit
+
+Figure 14: Commit tracks best-of-8 across the full metric suite. Four strategies on the held-out VBench [12] subset, with raw metric scales and 95 % prompt-bootstrap intervals. Dotted lines mark best-of-8; the last column reports wall-clock and transformer FLOPs. verifier, matching the +0 .037 bias in Section 5.5. Yet keep has LPIPS [40] 0.114 , aesthetic −0.012 , and imaging −1.0 . Its temporal signature is mild at this τ (Section 5.5): flicker improves by +0 .0005 , while the −0.7% winner-level flow change is within the noise of the −3.1% population effect. (3) Efficiency does not depend on the scorer. The rollout costs are unchanged under any metric. Commit spends 
+
+64 % of the wall-clock and 61 % of the transformer FLOPs, while keep roughly halves cost but pays a small frame-quality price that the reference-free scorers reward. 23 Technical report Table 9: The result holds on a third, harder suite. Ranking, regret, capture, and speedup across the gate, the VBench [12] suite, and VBench-2.0 [43] at τ = 0 .10 with 8 seeds. All VBench-2.0 [43] headline quantities are statistically consistent with the VBench [12] suite. 
+
+suite n med ρ ↑ mean ρ ↑ p10 ↑ top-1 ↑ zero-regret ↑ capture ↑ speedup ↑
+
+gate grid 50 0.905 0.820 0.61 64 % 64 % 90 .1% 1.97 ×
+
+official VBench [12] 944 0.905 0.859 0.69 72 % 72 % 90 .2% 1.95 ×
+
+VBench-2.0 [43] 1,013 0.881 0.848 0.69 69 % 69 % 89 .3% 1.98 ×
+
+VBench-2.0 [43] replication. Both suites so far share VBench [12]’s prompt style. As a structurally dif-ferent replication we repeated the full measurement on VBench-2.0 [43], which probes intrinsic faithfulness 
+
+through compositional object interactions, physics, commonsense, and camera control. It is substantially harder for current generators than VBench [12]’s per-dimension lists. Every headline quantity is statis-tically consistent with the VBench [12] suite (Table 9): median ρ = 0 .881 (one 8-candidate lattice step below 0.905 ; the mean, 0.848 vs. 0.859 , differs by −0.011 ), top-1 69 %, and 89 .3% capture at a reproduced 
+
+1.98 ×. The new suite also stress-tests the corruption mechanism from the direction that should hurt: its harder prompts produce significantly tighter candidate spreads (mean 0.49 vs. 0.56 official, with a statis-tically reliable difference), and low spread is exactly where ranking corrupts (Section 5.4); the coupling itself replicates (corr(spread, ρ) = +0 .29 , p = 8 ×10 −21 ). Yet the suite-level cost is undetectable (capture moves by −0.9 points, statistically consistent with zero) because the corruption that the tighter spreads do cause stays concentrated on the prompts where a wrong pick is cheapest: the self-limiting property is a mechanism, not a prompt-set accident. 
+
+D.3 Adaptive per-prompt thresholds 
+
+Spread predicts which prompts tolerate aggressive caching and can be estimated from two cheap rollouts. We simulate this policy on the measured 3-τ grid, whose arms share prompts and seeds. No generation is added. Policy: probe K=2 candidates at τ = 0 .20 . If their score gap exceeds t, run the remaining 6
+
+at τ = 0 .20 ; otherwise run all 8 at τ = 0 .05 , treating the probes as sunk cost. High spread signals robust ranking (Section 5.4). Sweeping t traces the frontier in Figure 12. The simulation directly compares the natural adaptive policy with fixed thresholds under identical prompts, seeds, and measured rollouts. The adaptive frontier never exceeds the fixed-τ curve. At matched 1.97 × speedup, it captures 89 .7% versus 
+
+90 .1% for τ = 0 .10 . The paired difference is ∆ = −0.4 points and is statistically indistinguishable from zero. Its conservative endpoint reaches 93 .6% capture only at 1.36 ×, versus 1.58 × for fixed τ = 0 .05 . The ratio-of-means estimator (Section 4.1) and the reversed low-spread rule give the same result. No tested adaptive variant clears the fixed frontier. The matched difference is statistically indistinguishable from zero and pointwise favors the fixed threshold. The fixed curve leaves little headroom: capture changes only 5.3 points across a 1.5× speedup range (Section 5.1). A two-sample spread estimate is noisy, and fallback pays pure probe overhead. Adaptivity needs a free signal, such as the wrapper’s internal cache-error indicator during the first rollout. Such a signal could spend no extra rollouts merely to decide how to save rollouts. A global τ = 0 .10 remains the stronger default. 
+
+D.4 Keep-draft versus recommit 
+
+Detail for Section 5.5: the direct temporal metrics on the 300 materialized winner pairs, and the LPIPS [40] comparison between the keep/commit pairs. The temporal question is answered by scoring all 300 material-ized winner videos with VBench [12]-style temporal metrics (DINO subject consistency, CLIP background consistency, warping-error motion smoothness, temporal flickering, and mean optical-flow magnitude as a dynamics measure). Static temporal quality is preserved under keep-draft: motion smoothness is unchanged (|∆| ≤ 0.0003 ), flickering is marginally better for keep ( +0 .0007 to +0 .0015 ), background consistency is equal, and subject consistency dips by at most −0.005 . Perceptually, keep and commit are genuinely different videos rather than near-duplicates: LPIPS [40](keep, commit) over the winner pairs rises mono-tonically with cache aggressiveness (mean 0.122 / 0.142 / 0.170 at τ = 0 .05 / 0.10 / 0.20 ; n=50 each), consistent with the motion-dampening account above: the cached trajectory diverges perceptibly from its 24 Technical report full-compute twin even when frame-level and most temporal scores match. Fidelity examples and flow maps appear in Appendix I. 
+
+D.5 Batching control 
+
+A natural objection is whether batching can replace caching. We benchmarked candidate batch sizes 
+
+{1, 2, 4, 6, 8} at the study configuration on an NVIDIA GH200 GPU. Batching yields no throughput: full-compute throughput drops from 0.92 to 0.90 videos/min going from batch 1 to 2, cached rollouts gain only 
+
++8 %, and batch 8 is infeasible. At 32 K tokens per sample, Wan-1.3B [31] saturates the GPU’s compute at batch 1. Batching also breaks seed determinism: the batched rollout of a seed is not bit-identical to its single-sample rollout (max first-frame pixel deviation 0.6), which would invalidate the exactness of the commit step. Two consequences for honest efficiency accounting: per-rollout wall-clock is the right cost unit for this workload, and best-of-N cannot close its 2× cost gap through batching. The saved FLOPs of cached exploration are real rather than an artifact of underutilized hardware. 
+
+D.6 Video-native verifier robustness 
+
+Prior ranking and regret results use ImageReward [36]. We rescore them with VideoScore [9] v1.1, a video-native judge. It evaluates visual quality, temporal consistency, dynamic degree, text alignment, and factual consistency over 24 frames. Unlike ImageReward [36], it observes motion and can test whether the findings survive a video-native verifier. The data include all 300 winner-pair videos (Section 5.5) and 
+
+23 ,542 VBench [12]-suite rollouts (Section 4.5). They yield n = 467 prompts with validated, complete 
+
+8×full + 8 ×cached coverage. A score-consistency check removes ambiguous prompt matches, and the retained subset reproduces the VBench [12] suite’s median ρ, top-1 agreement, and capture. 
+
+Ranking preservation is weaker when VideoScore [9] barely separates candidates. Cached-vs-full rank correlation has median ρ = 0 .762 (p10 0.31 ), 54 % top-1 agreement, 65 .6% gain capture, and 55 %zero regret. These exceed chance but trail ImageReward [36] on the same videos ( 0.905 / 73 % / 91 %); dimension medians span 0.73 –0.79 . Two measurements explain this drop. First, candidate scores are nearly tied. VideoScore [9]’s median within-prompt spread is only 0.083 on [1 , 4] , versus 0.55 for ImageReward [36]. Its rankings thus occupy the near-tied regime of Section 5.4, where rank noise is large but mistaken picks are cheap. Second, the verifiers agree less with each other than cached agrees with full: median ρ(IR , VS )
+
+is +0 .24 within prompts and +0 .13 over 7,701 pooled videos, versus 0.905 / 0.762 for cached-to-full. The perturbation from caching is therefore smaller than the standing disagreement between the judges. Verifier choice changes the ranking more than cached execution does. This separates approximation error from ordinary evaluator disagreement. 
+
+Caching adds at most marginal cross-verifier loss. Under full-compute VideoScore [9], the cached-exploration IR winner captures 18 .6% of attainable gain, versus 21 .2% for the full-compute IR winner (mean VS-regret 0.245 vs. 0.230 ; random baseline 0.263 ; n = 467 ). The paired difference is −2.5 capture points and is statistically consistent with zero. Regret increases by +0 .015 on VideoScore [9]’s [1 , 4] scale. Both effects are small beside the verifier choice itself: full-compute ImageReward [36] selection captures only 21 .2% of VideoScore [9] gain. Thus VideoScore [9] judges ImageReward [36]’s cached and full-compute picks almost identically. Most cross-verifier loss comes from choosing ImageReward [36], not from caching its search. This is the decision-relevant comparison because delivery uses the selected seed, not the full candidate ranking. 
+
+VideoScore [9] prefers keep and misses motion dampening. Across the 50 winner pairs per τ ,keep wins on every dimension and threshold. The average margin grows +0 .036 / +0 .058 / +0 .129 at 
+
+τ = 0 .05/0 .10/0 .20 (Wilcoxon p ≤ 0.004 each). At τ = 0 .20 , dynamic degree favors keep by +0 .176 on 
+
+92 % of pairs ( p < 0.001 ), although optical flow is 8% lower (Section 5.5). Appendix F therefore describes a broader learned-judge bias: the video-native judge also rewards the dampened output, and the bias grows with aggressiveness. Learned judges alone cannot audit lossy acceleration. Use direct temporal metrics such as optical flow and LPIPS [40]. Recommit remains the safe delivery default because it regenerates the chosen seed at full compute and avoids this bias by construction. 
+
+D.7 Schedule length and resolution 
+
+Prior results use the model-card schedule ( 50 steps) and resolution ( 480 ×832 ). Table 10 varies both on Wan2.1-1.3B at fixed τ = 0 .10 . Schedule length is a third axis of effective aggressiveness, alongside 25 Technical report Table 10: Longer schedules expose more redundancy; resolution does not move the operating point. Wan2.1-1.3B [31] at τ = 0 .10 , with 50 prompts and 8 seeds per row. skip is reused denoising steps; shading marks the default.                                                 
+
+> config med ρ↑p10 ↑top-1 ↑regret ↓capture ↑skip speedup ↑
+> 25 steps 0.964 0.85 86 %0.019 95 .8%32 %1.41 ×
+> 50 steps (default) 0.905 0.61 64 %0.040 90 .1%51 %1.97 ×
+> 100 steps 0.798 0.46 62 %0.126 82 .5%66 %2.80 ×
+> 720 ×1280 ,50 steps 0.881 0.69 66 %0.059 90 .8%53 %2.05 ×25 50 100
+
+denoising steps T    
+
+> 30
+> 40
+> 50
+> 60
+> 70
+> steps skipped (%)
+> 32%
+> 51%
+> 66%
+> 720p: 53%
+> trend: −46 + 24.6 ln T
+> (slope CI [+24.5, +24.7])
+> 25 50 100
+
+denoising steps T   
+
+> 70
+> 75
+> 80
+> 85
+> 90
+> 95
+> 100
+> gain capture (%)  95.8
+> 90.1
+> 82.5
+> 720p: 90.8
+> trend: 127 −9.5 ln T
+> (slope CI [-17.7, -2.3])
+
+Figure 15: Schedule length, not pixel count, controls redundancy. Skip fraction (left) and gain capture (right) vs. denoising steps at τ = 0 .10 and n = 50 . Dashed lines are log-linear trends with bootstrap bands; open diamonds show the 720 p contrast. threshold (Section 5.1) and architecture (Section 5.6). Finer schedules take smaller steps, so more updates fall below the same drift threshold. From 25 to 100 steps, skip rises 32 % → 51 % → 66 % and speedup rises 1.41 × → 1.97 × → 2.80 ×. Ranking fidelity falls from 0.964 → 0.905 → 0.798 median ρ and 95 .8% →
+
+90 .1% → 82 .5% capture. Figure 15 gives log-linear trends: skip% ≈ − 46 + 24 .6 ln T and capture ≈127 − 9.5 ln T . We call these monotone patterns trends, not laws, because they use only three schedule lengths. They match the U-shaped redundancy profile in Section A.1: finer schedules spend more steps in the flat middle of the trajectory. The skip fraction is nearly deterministic given T , while capture retains prompt-level variation. All three points also lie within 2.0 points of the Wan-1.3B frontier in Figure 10, although the fit never saw this axis. Changing schedule therefore moves the model along its frontier. Long schedules offer the largest relative and absolute savings, exactly where full-compute search is most expensive. Short schedules leave little to skip: 25 steps provide only 1.41 × at τ = 0 .10 , but retain near-perfect fidelity. This is the same boundary seen in few-step distilled samplers. Resolution is different. At 720 ×1280 (2.3× the pixels), the operating point remains near the default: 53 % skip, 2.05 × speedup, median ρ = 0 .881 , 90 .8% capture, and 66 % top-1. This is the open contrast in Figure 15. Recalibrate τ
+
+when the schedule changes, but retain it across resolution changes. 
+
+D.8 Composition with pruned search 
+
+Pruning-based search methods reduce how many candidates pay full price; CachedSearch reduces what each candidate costs. The two levers are orthogonal, so their savings should multiply: they prune candidates 
+
+mid-trajectory, we cheapen every rollout . We test whether the two compose by running all 8 candidates cached ( τ = 0 .10 ) only to step 20 of 50 , scoring a 4-frame preview decoded from the sampler’s internal 
+
+x0 estimate (a ∼21 × cheaper probe than a full decode), continuing only the top-4 to completion, and committing the winner ( 50 prompts, same grid as the gate). The composition works as multiplication predicts: exploration cost falls to 175 s per prompt, 3.11 × below full-compute best-of-8 (547 s) and 1.59 ×
+
+26 Technical report 2 4 8 16 32           
+
+> search width N
+> 80
+> 85
+> 90
+> 95
+> 100
+> gain capture (%)
+> 91.1 90.9
+> 92.2
+> 95.7 95.2
+> keep (nominal)
+> commit
+> rank-noise model (conservative): 88\%, fl at
+> 24816 32
+> search width N
+> 50
+> 60
+> 70
+> 80
+> 90
+> top-1 agreement (%)  86
+> 76
+> 70 70
+> 66
+
+Figure 16: Delivered capture rises toward 95 % with search width while top-1 falls. Width scaling at τ = 0 .10 on 50 prompts; open marks are seed-subset simulations through N = 16 , and N = 32 
+
+is measured directly. The gray band is the rank-noise prediction. below cached-only exploration ( 278 s), i.e. the measured 1.96 × (caching) and 1.59 × (pruning) factors multiply to the observed 3.1×; delivering the recommitted winner end-to-end (preview, decode, scoring, and the 68 s recommit included) costs a measured 256 s, versus 346 s for CachedSearch -commit without pruning (both plotted on the Pareto plane of Figure 11), while gain capture falls only from 90 .1% (cached, no pruning) to 88 .6%, with median regret still exactly zero and the true-best candidate surviving the prune on 86 % of prompts. Cached exploration is thus a multiplier on pruning-based search rather than an alternative to it, substantiating the composability claim of Section 1. 
+
+D.9 Scaling analysis 
+
+This subsection expands the scaling summary and master operating-points figure (Section 5, Figure 10). It covers frontier unification, width, model scale, and cross-architecture calibration. Section D.7 gives schedule and resolution trends. The model grid contains Wan2.1-T2V-1.3B [31], Wan2.1-T2V-14B [31], Wan2.2-TI2V-5B [32, 31], CogVideoX-5B [38], HunyuanVideo-13B [15], and LTX-Video-2B [7]. 
+
+One frontier per backbone. Figure 10 collects every measured operating point of the paper on a single capture-vs-speedup plane; its left panel isolates the Wan2.1-1.3B [31] backbone. Section 5.2 fits its frontier on six points that vary the reuse rule ( τ ) or family (PAB [41], CFG-Cache [24], TeaCache [22]): capture(%) = 104 .2 − 19 .1 ln (speedup ), R2 = 0 .92 . All other points are evaluation. Four unseen configurations, the 25 - and 100 -step schedules, 720 p, and an independent default rerun, land within 2.0
+
+points (held-out R2 = 0 .90 ). Refitting all ten Wan-1.3B points barely changes the curve: 104 .2 − 19 .9 ln x,
+
+R2 = 0 .94 . Within one backbone, candidate speedup predicts selection fidelity across thresholds, caching families, schedules, and resolutions. This result makes reuse amount a sufficient statistic for fidelity within the backbone. The mechanism used to obtain that reuse does not create a new trade-off. Instead, each method moves the operating point along the same curve. This relation fails across backbones. At fixed τ = 0 .10 , the Wan frontier over-predicts the six-model captures by 3–18 points ( R2 = −0.86 ). A pooled fit over all 18 non-degenerate points reaches only 
+
+R2 = 0 .59 . CogVideoX [38] follows its own steeper frontier, 114 .8 − 52 .2 ln x (R2 = 0 .98 ), with 2.7× the Wan slope. It is more caching-sensitive at every measured speedup, despite sharing the same log-linear form. Wan2.1-14B is the flattest backbone measured. Its panel (B) dial spans τ = 0 .005 –0.20 , with a degenerate zero-skip control at 0.005 . The four non-degenerate arms fit 93 .3 − 9.2 ln x (R2 = 0 .93 ). Skip fraction gives the same result without latency: it explains R2 = 0 .89 within Wan-1.3B but 0.40 across models. We therefore report per-family frontiers rather than one universal law. Reuse determines fidelity within a family, while architecture sets the trade-off’s level and slope. A new backbone therefore needs its own calibration. The 25 -prompt pilot of Section 5.6 locates that frontier before a full search campaign. 
+
+Width. Figure 16 re-simulates all four strategies over every (16 
+
+> N
+
+) seed subset of the extended 16 -seed grid, and adds an N =32 point from a further extension to 32 seeds per prompt. The two panels move in 27 Technical report 1.3B 5B 14B 5B 13B 2B         
+
+> parameters, grouped by family
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> median  ρ (ranking fidelity)
+> 0.905 0.881 0.905
+> 0.762 0.762
+> 0.536
+> Wan2.1/2.2 family:
+> flat across 10.8 × size
+> off -family:
+> lower at every size
+> 1.3B 5B 14B
+> parameters
+> 10
+> 30
+> 100
+> 300
+> seconds saved per candidate
+> 34s
+> 67s
+> 174s
+> 47s 47s
+> 6s
+> ≈12Cfper candidate;
+> absolute saving
+> grows with size
+> Wan-1.3B
+> Wan2.2-5B
+> Wan-14B
+> Cog-5B
+> Hunyuan-13B
+> LTX-2B
+
+Figure 17: Fidelity tracks architecture family, while absolute savings track model cost. Median 
+
+ρ (A) and seconds saved per candidate (B) at τ = 0 .10 , with 8 seeds and 50 prompts per model. Table 5 gives full values. opposite directions: exact top-1 agreement decays from 86 % at N =2 to a ∼65 –70 % plateau at N ≥ 8 (a larger pool gives more ways to mis-rank the exact best), yet commit capture rises from 90 .9% at N =4 
+
+to 95 .7% at N =16 and holds at 95 .2% at N =32 (the surface-some -near-best mechanism of Section 4.3, saturating near 95 %), while the commit cost ratio simultaneously falls toward the pure exploration ratio (75 .8% → 63 .3% → 57 .1% → 53 .9% of best-of-N ). The shape is a rise to saturation: the N =4 → 16 
+
+increase is +4 .8 points (Section B.5), while N =16 → 32 moves −0.5 points (within noise), and a saturating fit capture (N ) = c∞ − β/N over the five widths puts the ceiling at c∞ = 94 .8% ( R2 = 0 .62 , a consistency check from five points rather than a fitted law). The flat spread-weighted copula envelope overlaid in Figure 16 ( 88 %; Appendix B, Remark 1) cannot produce this rise. Section B.5 traces the disagreement to the Gaussian-marginal idealization. Top-1 agreement is therefore the wrong scaling metric for cached search; delivered capture improves exactly in the wide-search regime where the method saves the most. 
+
+Model scale. Figure 17 plots median ρ by model, grouped by family, and the absolute per-candidate saving against parameter count, at fixed τ = 0 .10 for all six models; capture and top-1 follow the same family split (Table 5). Within the Wan family [31], a 10 .8× parameter increase leaves median ρ exactly unchanged ( 0.905 ) and moves capture only mildly ( 90 .1% → 87 .5%; top-1 64 % → 58 %, Table 5), with the cross-generation Wan2.2-5B [32] point on the same plateau ( 0.881 / 86 .0%); every off-family point sits below the Wan band at every size: LTX-2B [7] at the bottom ( 0.536 / 67 .6%), CogVideoX-5B [38] and Hunyuan-13B [15] in between ( 0.762 each, capture 75 .2% / 79 .9%). Vertical position in the fidelity panel tracks family, not scale, which is the graphical form of Table 5’s conclusion and direct support for hypothesis H2 of Appendix G: cacheable redundancy and rank fidelity are properties of the (architecture, 
+
+τ ) pair, not of parameter count. The savings panel prices the transfer in absolute terms: at τ = 0 .10 
+
+every backbone saves ≈half its rollout cost per candidate ( 49 –54 % of Cf ; the over-driven LTX 62 %), so the absolute saving grows linearly with model cost: 6 s per candidate on LTX-2B ( 10 s rollouts), 34 s on Wan-1.3B, 175 s on Wan-14B ( 341 s rollouts). Parameter count does not set the fidelity, but it does set the stakes: cached exploration saves the most compute exactly where full-compute search is most expensive. 
+
+Cross-architecture calibration. Figure 10(B) overlays the measured capture-vs-speedup curves of all six backbones. All are monotone and smooth, but they are shifted : CogVideoX’s [38] τ = 0 .10 point ( 75 .2%at 2.06 ×) lies well below Wan-1.3B’s [31] most aggressive setting, while its τ = 0 .05 point ( 85 .9% at 1.78 ×)climbs back to the edge of Wan’s operating band: the same nominal threshold buys different effective aggressiveness on different backbones. The Wan2.1-14B curve spans the full dial, τ = 0 .005 to 0.20 : at 
+
+τ = 0 .005 the drift indicator never crosses the threshold, so zero steps are skipped and the cached arm reproduces full compute bit-exactly ( 1.01 ×, capture 100 %, a useful end-to-end determinism control, as Sec-tion 5.2’s no-caching control was for the harness), while τ = 0 .02/0 .05/0 .10/0 .20 buy 1.21/1 .59/2 .05/2 .52 ×
+
+at 92 .1/88 .0/87 .5/84 .7% capture: the flattest curve of any backbone (its own fit 93 .3 − 9.2 ln x over the four non-degenerate arms, R2 = 0 .93 , vs. slopes of −12 .5 on Wan-1.3B, −16 .1 on Wan2.2-5B [32], −16 .7
+
+on Hunyuan [15], −28 .3 on LTX [7], and −52 .2 on CogVideoX). The most expensive model in the set is also the most caching-tolerant. LTX-Video traces the opposite extreme: its whole curve sits below the 
+
+85 % band at every measured τ (the boundary row of Table 11). The figure turns the calibration rule of 28 Technical report Table 11: Calibrated thresholds recover at least 85 % capture on five of six models [31, 32, 38, 15, 7]. τ ∗ is the most aggressive qualifying measured threshold; † marks the LTX boundary. The left block gives each sweep and the right its selected operating point. 
+
+capture (%) ↑ at measured τ = operating point at τ ∗
+
+model .005 .02 .05 .10 .20 τ ∗ med ρ ↑ capture ↑ skip speedup ↑
+
+Wan2.1-1.3B - - 93 .6 90 .1 88 .3 0.20 0.857 88 .3% 60 % 2.41 ×
+
+Wan2.2-TI2V-5B - - 89 .3 86 .0 83 .1 0.10 0.881 86 .0% 55 % 2.05 ×
+
+Wan2.1-14B 100 92 .1 88 .0 87 .5 84 .7 0.10 0.905 87 .5% 52 % 2.05 ×
+
+CogVideoX-5B - - 85 .9 75 .2 64 .7 0.05 0.810 85 .9% 44 % 1.78 ×
+
+HunyuanVideo-13B - - 85 .1 79 .9 79 .7 0.05 0.810 85 .1% 46 % 1.77 ×
+
+LTX-Video-2B - 79 .6 71 .6 67 .6 - none † 0.786 79 .6% 43 % 1.71 ×
+
+Table 12: Deployment settings for quality, speed, motion, width, and new backbones. Measured on Wan2.1-T2V-1.3B [31] at N = 8 unless noted; cost is relative to full best-of-N . Keep capture is nominal and commit restores full-compute dynamics.                             
+
+> deployment goal mode τexpected capture ↑cost ↓
+> guaranteed quality (default) commit 0.10 94 .7%63 %maximum speed (drafts) keep 0.10 99 .6% nominal 51 %motion-critical prompts commit 0.05 93 .6%76 %widest search, fixed budget commit 0.10 ,N=16 95 .7%57 %new architecture or schedule commit calibrate see Tab. 11, Fig. 10, Tab. 10 pilot calibration
+
+Section 5.6 into a procedure: pick a target capture (horizontal line), and sweep τ on a small pilot until the model’s curve crosses it; the abscissa then reports the speedup that fidelity level costs on that architecture. 
+
+Per-model calibrated operating points. Table 11 gives a recommended threshold τ ∗ per backbone. We select the most aggressive measured τ with at least 85 % gain capture. Every Wan backbone [31, 32] qualifies at τ = 0 .10 . Wan-1.3B also qualifies at τ = 0 .20 , with 88 .3% capture at 2.41 ×. The 5B and 14B models miss at τ = 0 .20 by only 1–2 points ( 83 .1%/ 84 .7%). The 14B dial is flat, moving 92 .1 → 84 .7%across τ = 0 .02 → 0.20 . (We nonetheless keep τ = 0 .10 as the paper-wide default on Wan-1.3B: one notch of conservatism buys a healthier tail (p10 ρ 0.61 vs. 0.47 ) and keep-draft safety, Section 5.5; τ ∗ marks the most aggressive validated setting for commit-mode exploration.) CogVideoX-5B [38] and HunyuanVideo-13B [15] require τ ∗ = 0 .05 , where both reach ∼1.8× and 85 –86 % capture. LTX-Video-2B [7] is the boundary: no measured τ qualifies. At τ = 0 .02 , capture improves by 12 points ( 67 .6% → 79 .6%) at 1.71 ×. Yet LTX remains 5–6 points below CogVideoX and Hunyuan at ∼44 % skip. Its frontier, 94 .5−28 .3 ln x (R2 = 0 .99 ), reaches 85 % only near 1.4×. Calibration helps, but LTX has a lower frontier. Two to three cached-only arms scored against existing full-compute references suffice to place a backbone’s curve against the target band. 
+
+## E Per-category analysis 
+
+We test whether the score-spread pattern in Section 5.4 has semantic structure. We assign each of the 50 
+
+prompts to one keyword category: humans (n=18 ), animals (n=9 ), nature (n=10 ), objects (n=9 ), or stylized 
+
+(n=4 ). Humans center people; nature covers landscapes, weather, and natural phenomena. Objects cover vehicles, machines, and manufactured items. Stylized prompts are non-photorealistic. Table 13 reports ranking fidelity and regret at τ = 0 .10 , N = 8 .The results match the spread mechanism in Section 5.4. Nature and animal prompts have high top-1 agreement ( 80 %/ 78 %) and low mean regret ( 0.005 /0.008 ). Animals still have the lowest median ρ (0.833 ), indicating swaps among near ties. Human and object prompts have more regret ( 0.045 /0.066 ), where articulated motion and object integrity create meaningful candidate spread. Stylized prompts have the largest mean regret ( 0.112 ), but n=4 and two prompts contribute 0.302 and 0.148 ; the other two contribute zero. The worst prompt is an object case (“robot arm assembling electronics”, ρ = −0.07 , regret 0.408 ). 29 Technical report Table 13: Ranking fidelity varies modestly across prompt categories. Keyword buckets over 50 
+
+prompts at τ = 0 .10 and N = 8 . Spread is mean within-prompt score SD; regret uses reward units. The stylized bucket has only n = 4 .                                  
+
+> category nmedian ρ↑mean regret ↓top-1 ↑mean spread humans 18 0.881 0.045 56 %0.53
+> animals 90.833 0.008 78 %0.51
+> nature 10 0.929 0.005 80 %0.53
+> objects 90.857 0.066 56 %0.43
+> stylized 40.917 0.112 50 %0.54
+
+Non-photorealistic and fine-mechanism content may depend more on mid-trajectory dynamics. Reusing transformation vectors can then perturb verifier-relevant scores. Examples include stop-motion stutter, unfolding origami, and articulated manipulation. This interpretation motivates category-aware or cache-signal-aware adaptation. These are diagnostics, not population claims. The tested spread probe does not adapt successfully (Section D.3). A powered analysis could use the VBench [12] suite (Section 4.5); Table 13 only identifies candidate failure modes. 
+
+## F Verifier bias 
+
+For the same winning seed, ImageReward [36] scores the cached video above its full-compute twin (Sec-tion 5.5). Keep − commit is +0 .008 / +0 .037 / +0 .028 at τ = 0 .05 / 0.10 / 0.20 (n=50 pairs each; keep 
+
+≥ commit on ∼60 % of pairs). 
+
+Mechanism: motion dampening photographs well. Cached rollouts lose motion as τ grows: mean optical flow falls −3.1% at τ =0 .10 and −8.0% at τ =0 .20 , with less flicker (Section 5.5). A frame verifier sees 8 stills, where slower scenes reduce blur and transient deformation. LPIPS [40] of 0.122 –0.170 confirms a preference between distinct outputs, not score noise on duplicates. The verifier rewards motion reduction rather than detecting caching itself. Slower scenes also produce more canonical poses, which frame-level aesthetic and alignment models favor. 
+
+Implications for verifier-guided search. A common bias across N candidates cancels in the within-prompt arg max. Candidate-specific motion loss can still cause rank swaps (Section 4.2), which the mea-sured regret already includes. Regret and capture compare cached selections with full-compute scores, so both include this selection effect. The same verifier scores CachedSearch -keep (Table 1), so its ∼99 %nominal capture is an upper bound. This is a caching instance of verifier over-optimization [26]. Recommit removes the bias from delivered quality. Motion-aware or video-native verifiers [37, 9] may reduce it, but VideoScore [9] shares the preference, including on dynamic degree (Section D.6). Deployments should report the keep-vs-commit score delta and mean optical flow. This check needs one extra scoring pass on 
+
+2 × 50 videos. 
+
+## G Scaling discussion 
+
+CachedSearch depends on each (model, τ , verifier) triple’s speedup Cf /Cc and ranking fidelity r; Sec-tion 4 and the cross-model results in Section 5.6 show how these measures of denoising redundancy change with scale. 
+
+Hypotheses. (H1) Cacheable redundancy grows with scale. Larger, higher-resolution, or longer generations may have flatter mid-trajectory dynamics. More capacity may go to refinement across spatially redundant tokens, so a fixed-τ cache should skip more. Forcing-KV [13] supports the token-count axis: its KV-compression speedup rises from 1.35 –1.5× at 480 p to 2.82 × at 1080 p. (H2) Ranking preservation does not follow redundancy. Fidelity asks whether cache error stays orthogonal to the verifier-relevant score direction. It depends on candidate spread relative to cache-induced score noise, not parameter count. (H3) Self-limiting corruption transfers across scale. At 1.3B, low regret follows the positive spread–fidelity association, not ρ alone (Proposition 3). This covariance may survive even when ρ falls. 30 Technical report 
+
+Cross-family data point: CogVideoX-5B [38]. We ran the full gate protocol (same 50 prompts, 
+
+8 seeds, full vs. cached τ =0 .10 , ImageReward [36] verifier) on this model at its native configuration ( 49 
+
+frames, 480 ×720 , 50 steps, guidance 6.0; its batch-concatenated CFG requires the single-branch variant of the cache wrapper, Section 5.6). Results, computed by the same script as Table 13: candidate speedup 
+
+2.06 × (91 .3 → 44 .3 s); median ρ = 0 .762 (mean 0.684 , p10 0.352 ; 20/50 prompts below 0.7); top-1 agreement 48 %; mean regret 0.124 reward units against a 0.517 random-pick baseline: ∼76 % of search gains retained (ratio of means; 75 .2% as mean per-prompt ratio), with median regret 0.008 and 48 % of prompts at exactly zero regret. The spread–fidelity association remains positive but weaker (corr = +0 .17 ). CogVideoX is consistent with H1: speedup rises 1.97 × → 2.06 × at the same τ on a model with 3.8× the parameters. It also supports H2. At 5B, median ρ falls 0.905 → 0.762 , and capture falls 94 % → 76 %. Architecture, training data, resolution, clip length, and CFG implementation confound this cross-family comparison. The within-family rung separates these effects. Wan2.1-14B [31] matches its 1.3B sibling’s median ρ = 0 .905 
+
+under the same protocol (Table 5, Section 5.6). It reaches a reproduced 2.05 × speedup and 87 .5% capture across a 10 .8× parameter gap. Thus the CogVideoX drop is a family effect from an uncalibrated τ , largely recovered by the per-model sweep in Section 5.6. The six-model grid in Table 5 agrees. HunyuanVideo-13B [15] and LTX-Video-2B [7] also lose ranking fidelity at fixed τ (capture 79 .9% / 67 .6%), while matching or exceeding Wan speedups. Redundancy and fidelity do not track parameter count. We therefore measure r for each model. A cheap pilot needs one prompt set and two rollout modes, exactly the calibration in Appendix B. Even CogVideoX’s uncalibrated r retains three quarters of the search gain at roughly half the exploration cost in recommit mode. Delivery quality is unchanged by construction. The non-parameter axes provide direct H1 tests (Section D.7). At fixed τ = 0 .10 on Wan2.1-1.3B [31], the skip fraction rises 32 % → 51 % → 66 % from 25 to 100 denoising steps. The log-linear trend is ≈+24 .6 skip points per e-fold of T (Figure 15). Schedule length is the strong axis for step-wise caching. At 720 ×1280 
+
+(2.3× the pixels), the skip fraction moves only 51 % → 53 %. Forcing-KV’s resolution gains use a different mechanism, AR KV compression. Parameter count is also flat within the family: 51 % at 1.3B and 52 %at 14 B. Future work should fit skip fraction, iso-quality speedup, and ranking fidelity across parameters, resolution, and length. The CogVideoX 2B↔5B rung remains open. Together, these measurements make H1 axis-specific and support H2 across model sizes. They provide limited evidence for the third hypothesis. A systematic grid should vary one axis at a time and calibrate τ
+
+per model. It should separate cacheability from ranking preservation and test whether the spread–fidelity association persists. 
+
+## H Reproducibility 
+
+Public checkpoints, fixed seeds, and the configurations below reproduce all results. Generation is de-terministic for (prompt, seed, τ ) on a fixed stack, so each cached or full video can be re-materialized exactly. We will release the caching wrapper, search harness, analysis and figure scripts, prompt lists, seeds, configurations, and evaluation scores. 
+
+Models and inference configurations. The checkpoints are Wan2.1-T2V-1.3B [31], Wan2.1-T2V-14B [31], Wan2.2-TI2V-5B [32, 31], CogVideoX-5B [38], HunyuanVideo-13B [15], and LTX-Video-2B [7]. Table 14: Exact model-card generation configurations for all six models. Native resolution, length, guidance, VAE precision, and measured full-to-cached latency at τ = 0 .10 .                                                                            
+
+> model resolution ×frames guidance VAE Cf→Cc(τ=0 .10 )Wan2.1-T2V-1.3B 480 ×832 ×81 5.0fp32 68 .3→34 .7sLTX-Video 2B 480 ×704 ×161 3.0bf16 10 .1→3.8sWan2.2-TI2V-5B 704 ×1280 ×121 5.0fp32 130 .1→63 .5sCogVideoX-5B 480 ×720 ×49 6.0fp32 91 .3→44 .3sHunyuanVideo 13B 480 ×720 ×61 6.0bf16 87 .1→39 .8sWan2.1-T2V-14B 480 ×832 ×81 5.0fp32 341 .3→166 .8s
+
+31 Technical report single sample                             
+
+> r=−2.27
+> best-of-8, full
+> r= + 1.63 s3
+> CachedSearch-commit
+> r= + 1.63 s3
+> same pick
+> r=−1.57 r= + 1.38 s1 r= + 1.38 s1
+> same pick
+> r=−1.54 r= + 1.78 s4 r= + 1.74 s5
+> Δr=−0.03
+> ``A person is playing harp''
+> ``Robot dancing in Times Square.''
+> ``A boat sailing leisurely along the Seine River with the Ei ff el Tower in background, in super slow motion''
+
+Figure 18: Search yields visible gains, and cached exploration finds the same winner cheaper. 
+
+Selected VBench [12] prompts compare single, full best-of-8, and commit at τ = 0 .10 . Chips give measured ImageReward [36] and seed; red boxes mark discriminating regions. Each model uses T = 50 and its native resolution, length, and guidance configuration. The cached and full arms use the same model-specific precision. 
+
+Cache wrapper. The adaptive cache follows the transformation-vector formulation of EasyCache [45] (Section 3.1): cached quantity ∆ = v(x) − x; skip returns x + ∆ . The skip rule accumulates the relative input drift a += ‖x − xref ‖F /‖xref ‖F against the last computed input xref and recomputes when a > τ 
+
+(resetting a, xref , ∆). Warmup and cooldown windows of Kw = Kc = 5 steps always compute, as does any step with an empty cache. Defaults: τ = 0 .10 ({0.05 , 0.20 } in the sweep). At τ =0 .10 the wrapper skips 
+
+26/50 steps on Wan and 27/50 on CogVideoX-5B. Table 5 gives all six models’ skip fractions, and Table 10 gives their dependence on schedule length and resolution. The wrapper is reset between generations. 
+
+Protocol, seeds, verifier. Grids: 50 prompts × seeds 0–7 × { full , cached }, i.e. 800 scored rollouts per model at τ =0 .10 , plus 400 cached rollouts per additional τ (the full references are τ -independent and reused). Noise is drawn from a per-candidate torch.Generator seeded with the candidate’s seed. The VBench [12] suite and VBench-2.0 [43] use the same paired 8-seed protocol. Verifier: ImageReward [36] v1.0 averaged over 8 uniformly spaced frames (frames converted to uint8 before scoring). The temporal study (Section 5.5) materializes the 50 winner pairs per τ (300 videos) and scores DINO subject / CLIP background consistency, motion smoothness, temporal flicker, mean optical flow, and LPIPS [40]. 
+
+Hardware. All rollouts and scoring ran on NVIDIA GH200 GPUs, one GPU per rollout. 
+
+## I Qualitative examples 
+
+The frame sequences themselves are the video evidence. The search comparison shows the central single-versus-search result, and the gallery adds two VBench [12] cases. The four-strategy grid includes a different-pick failure, while the model strips test cross-model fidelity. The final figures show same-seed appearance fidelity, flow reduction, and motion-focused keep-versus-commit sequences. 
+
+I.1 Search comparison on the VBench [12] suite 
+
+Figure 18 makes the aggregate numbers concrete on selected VBench [12] prompts. Where the single sample fails (a motion-blurred smear in place of a harpist, a robot dancing on a black studio backdrop instead of Times Square, an empty river with no Eiffel Tower), best-of-8 finds a candidate that satisfies the prompt, worth +2 .9 to +3 .9 reward. CachedSearch -commit delivers the same video as full-compute search on two of the three prompts (identical winning seed, hence pixel-identical delivery after recommit) and an equal-reward alternative on the boat, while its exploration rollouts cost half as much. Figure 19 collects the retrieval-validated picks omitted from Figure 18, using the same three columns. 32 Technical report single sample                 
+
+> r=−1.34
+> best-of-8, full
+> r= + 1.23 s2
+> CachedSearch-commit
+> r= + 1.23 s2
+> same pick
+> r=−1.37 r= + 1.15 s1 r= + 1.15 s1
+> same pick
+> ``A bigfoot walking in the snowstorm.''
+> ``A steam train moving on a mountainside''
+
+Figure 19: Extended qualitative comparisons confirm the same search behavior. Additional VBench [12] prompts under the Figure 18 protocol: single, full best-of-8, and commit at τ = 0 .10 . Chips report measured ImageReward [36] and seed; both are same-pick cases. 12% of best-of-8 cost                                   
+
+> single sample
+> r=−2.22
+> 100% of best-of-8 cost
+> best-of-8, full
+> r= + 0.98 s2
+> 64% of best-of-8 cost
+> CachedSearch-commit
+> r= + 0.98 s2
+> same pick, bit-exact
+> 51% of best-of-8 cost
+> CachedSearch-keep ̂
+> r= + 0.69 s2
+> r=−2.21 r= + 1.03 s1 r= + 0.54 s2
+> Δr=−0.49 ̂
+> r= + 0.51 s2
+> r=−2.09 r= + 0.83 s3 r= + 0.83 s3
+> same pick, bit-exact ̂
+> r= + 0.81 s3
+> ``a red clock''
+> ``a hot dog and a handbag''
+> ``a couch on the right of a bed, front view''
+
+Figure 20: All four delivery strategies compared under measured budgets. Selected VBench [12] prompts form rows; columns are single, best-of-8, keep, and commit. Headers give cost relative to full best-of-8; corner chips give measured delivered ImageReward [36]. 
+
+I.2 Different-pick failure 
+
+Figure 20 extends the comparison to all four delivery strategies under their measured budgets. The pattern is the paper in one image: the single sample misses the prompt (a melted clock face, a missing hot dog, no couch at all), search finds a satisfying candidate, and cached exploration delivers that same candidate at 
+
+64 % (commit, bit-exact) or 51 % (keep, visually near-identical) of best-of-8’s cost. The middle row is the honest case: cached ranking errs, and the miss costs 0.49 reward out of a +3 .2 search gain. Figure 20 is the failure example: its middle row shows cached exploration selecting a different seed and losing 0.49 
+
+reward from a +3 .2 search gain. 
+
+I.3 Cross-model strips 
+
+Figure 21 completes the cross-model picture qualitatively: the same wrapper at the same τ produces cached rollouts that remain faithful drafts on every backbone operating in its calibrated skip regime, drifting only in instance-level detail, while the one model the fixed threshold over-drives (LTX) is also the one whose delivered content visibly diverges. Visual fidelity and ranking fidelity degrade together, both governed by the skip fraction, not by model identity. 
+
+I.4 Fidelity and motion 
+
+Figure 22 shows what these LPIPS [40] values look like: the selected pairs span the suite distribution (mean 0.142 , range 0.021 –0.343 , n = 50 ), and the widest shown is 0.189 . Across that range, the cached rollout and its full-compute twin agree on subject, layout, and palette, and disagree in fine texture and 33 Technical report Wan2.1 1.3B                               
+
+> full compute
+> r= + 1.19
+> cached ( τc= 0.10)
+> r= + 1.15 skips 25/50
+> Wan2.2 5B r= + 1.77 r= + 1.69 skips 28/50
+> Wan2.1 14B r= + 1.57 r= + 1.45 skips 25/50
+> CogVideoX 5B
+> r= + 1.76 r= + 1.79 skips 27/50
+> Hunyuan 13B
+> r= + 1.78 r= + 1.73 skips 29/50
+> LTX-Video 2B
+> r=−1.20 r=−1.35 skips 32/50
+
+Figure 21: Calibrated backbones track their full-compute twins; over-driven LTX [7] visibly drifts. One shared prompt and seed across six models at τ = 0 .10 , with full and cached rows under each model-card recipe. Chips report ImageReward [36] and reused denoising steps. motion phase: the cached rollout is a faithful draft of the video the verifier is asked to rank, which is the property candidate ranking needs. Figure 23 preserves layout and identity but reduces mean flow by 32 % on the eagle and 12 % on the blacksmith, local examples of the population’s 8% reduction at τ = 0 .20 (Section 5.5). Figure 24 shows the τ = 0 .20 winner pairs with the largest keep-vs-commit frame difference. Keep preserves layout, identity, and style, but reduces displacement, consistent with the measured −8% mean flow (Section 5.5). 
+
+## J Limitations 
+
+We use ImageReward [36] as the verifier. A better temporally aligned reward model would be preferable, but no publicly available one is reliable enough for this role today. VideoScore [9] gives weaker ranking preservation and shares the preference for motion-dampened cached outputs, so recommit remains the default and motion-sensitive uses need direct temporal audits, including LPIPS [40]. The study covers six public checkpoints from four families and best-of-N seed selection through N = 16 ; each new architecture requires threshold calibration, and searches that verify intermediate states need a separate audit. 34 Technical report Full             
+
+> r= + 1.53
+> Cached  τc = 0.10
+> r= + 1.58 LPIPS 0.029
+> Full
+> r= + 1.64
+> Cached  τc = 0.10
+> r= + 1.66 LPIPS 0.061
+> Full
+> r= + 1.67
+> Cached  τc = 0.10
+> r= + 1.54 LPIPS 0.120
+> Full
+> r= + 1.32
+> Cached  τc = 0.10
+> r= + 1.35 LPIPS 0.189
+
+``Lava fl owing down a volcano slope at dusk'' (s5) ``A hummingbird hovering next to a bright pink …'' (s0) 
+
+``An astronaut planting a fl ag on a red rocky p …'' (s2) ``A cowboy riding a horse across an open prairi …'' (s3) 
+
+Figure 22: Cached twins preserve subject, layout, and palette; differences concentrate in detail and motion phase. Four same-seed winner pairs at τ = 0 .10 , with two frames per video. Chips report measured ImageReward [36] and pairwise LPIPS [40]. Full       
+
+> mean |flow| 7.04
+> Cached
+> mean |flow| 4.79 τc= 0.20: −32% motion
+> mean |flow| map
+> Full
+> mean |flow| 2.78
+> Cached
+> mean |flow| 2.45 τc= 0.20: −12% motion
+
+``An eagle soaring over a canyon, camera tracking fro …'' ``A blacksmith hammering glowing metal, sparks fl ying'' 
+
+Figure 23: Flow maps expose motion dampening that learned judges miss. Two same-seed, high-motion winner pairs at τ = 0 .20 : full compute above, cached below. Each block shares the color scale for temporal-mean Farneback flow magnitude. 35 Technical report t = 0 
+
+keep  
+
+> flow 1.4 |Δ| 16
+
+t = 26 t = 53 t = 80 
+
+commit  
+
+> flow 2.3 |Δ| 19
+
+keep  
+
+> flow 2.9 |Δ| 13
+
+commit  
+
+> flow 3.2 |Δ| 15
+
+keep  
+
+> flow 11.1 |Δ| 10
+
+commit  
+
+> flow 11.1 |Δ| 12
+
+``A blacksmith hammering glowing metal, sparks flying'' (τc = 0.20 )
+
+``A street musician playing violin as pedestrians pass by'' (τc = 0.20 )
+
+``A red fox trotting through fresh snow in a pine forest'' (τc = 0.20 )
+
+Figure 24: Static content is preserved under keep-draft; motion is dampened ( −8% mean flow at this τ , Section 5.5). Keep (top rows) vs. commit (bottom rows) winner videos at τ = 0 .20 , four evenly spaced frames; adversarial selection: pairs chosen by largest mean frame difference among the 50 
+
+winner pairs. 36
