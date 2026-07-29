@@ -18,49 +18,32 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-28
-- 运行时间：2026-07-28 21:18:14 UTC
+- 最新运行日期：2026-07-29
+- 运行时间：2026-07-29 21:43:03 UTC
 - 运行状态：成功
-- 本次总论文数：9
-- 精读区：5
-- 速读区：4
+- 本次总论文数：4
+- 精读区：1
+- 速读区：3
 
 ### 今日简报（AI）
-1）今日重点推荐9篇论文，聚焦视频扩散模型缓存加速与生成多样性，精读两篇高分的缓存机制研究。
-2）最值得关注《CachedSearch》与《OmniCache》：前者提出训练无关的测试时缓存探索，后者实现多维层次特征缓存，均显著提升扩散模型搜索效率。
-3）建议优先阅读这两篇缓存相关的工作，并尝试复现代码以加速实际视频生成任务。
-- 详情：[/202607/28/README](/202607/28/README)
+今日精读1篇、速读3篇，聚焦扩散模型加速与采样优化。最值得关注的方向是并行解码蒸馏实现图像视频快速生成，以及无分类器引导的解析调度设计。建议优先精读并行蒸馏方法，对实际部署加速效果显著。
+- 详情：[/202607/29/README](/202607/29/README)
 
 ### 精读区论文标签
-1. [CachedSearch: Training-Free Cached Exploration for Test-Time Search in Video Diffusion](/202607/28/2607.23159v1-cachedsearch-training-free-cached-exploration-for-test-time-search-in-video-diffusion)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：免训练缓存使视频扩散测试时搜索加速2-3倍
-2. [OmniCache: Multidimensional Hierarchical Feature Caching For Diffusion Models](/202607/28/2607.23844v1-omnicache-multidimensional-hierarchical-feature-caching-for-diffusion-models)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：无需训练的特征缓存框架，用于加速图像和视频扩散模型
-3. [Sol-Attn: Accelerating Video Generation Inference via On-the-Fly Attention Sparsification](/202607/28/2607.24027v1-sol-attn-accelerating-video-generation-inference-via-on-the-fly-attention-sparsification)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：免训练的在线注意力稀疏化加速视频扩散推理
-4. [Rethinking the Generation Order of Block Diffusion Language Models](/202607/28/2607.24306v1-rethinking-the-generation-order-of-block-diffusion-language-models)  
+1. [Parallel Decoding Distillation for Fast Image and Video Generation](/202607/29/2607.26004v1-parallel-decoding-distillation-for-fast-image-and-video-generation)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：免训练的文本扩散采样方法，实现显著加速
-5. [MXAttention: Data-Free Optimal Scaling and Pre-Normalization Quantization for MXFP4 Attention](/202607/28/2607.24377v1-mxattention-data-free-optimal-scaling-and-pre-normalization-quantization-for-mxfp4-attention)  
-   标签：评分：8.0/10、query:diff-accel
-   evidence：针对MXFP4注意力的数据免费后训练量化，加速视频扩散模型推理
+   evidence：并行解码蒸馏实现扩散模型的快速图像和视频生成
 
 ### 速读区论文标签
-1. [DuSPiT: Dual-Branch Sub-Patch Pixel Diffusion Transformer](/202607/28/2607.18510v1-duspit-dual-branch-sub-patch-pixel-diffusion-transformer)  
+1. [Analytic Distribution of Classifier-Free Guidance for Schedule Design](/202607/29/2607.19725v1-analytic-distribution-of-classifier-free-guidance-for-schedule-design)  
+   标签：评分：7.0/10、query:diff-accel
+   evidence：对无分类器引导的理论分析指导调度设计，有助于加速采样
+2. [Learning Sampling Parameters for Diffusion Models](/202607/29/2607.23488v1-learning-sampling-parameters-for-diffusion-models)  
    标签：评分：6.0/10、query:diff-accel
-   evidence：新的扩散Transformer架构，用于高效像素空间图像生成
-2. [Generative Video Compression with Adaptive Score Distillation](/202607/28/2607.22772v1-generative-video-compression-with-adaptive-score-distillation)  
+   evidence：学习扩散模型推理时采样参数以加速
+3. [MMOE: Modernizing Diffusion Transformers with Efficient Expert Design](/202607/29/2607.24665v1-mmoe-modernizing-diffusion-transformers-with-efficient-expert-design)  
    标签：评分：6.0/10、query:diff-accel
-   evidence：使用分数蒸馏加速视频压缩中的扩散模型推理
-3. [Manifold-Constrained Noise Optimization for Diverse Diffusion Sampling](/202607/28/2607.23937v1-manifold-constrained-noise-optimization-for-diverse-diffusion-sampling)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：无需训练的噪声优化方法，用于少步扩散模型的多样采样
-4. [Rethinking Classifier-Free Guidance in On-Policy Diffusion Distillation](/202607/28/2607.24731v1-rethinking-classifier-free-guidance-in-on-policy-diffusion-distillation)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：研究扩散模型蒸馏中的无分类器引导，有助于加速
+   evidence：高效专家设计提升扩散变换器推理效率
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
