@@ -18,32 +18,29 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-29
-- 运行时间：2026-07-29 21:43:03 UTC
+- 最新运行日期：2026-07-30
+- 运行时间：2026-07-30 21:27:01 UTC
 - 运行状态：成功
-- 本次总论文数：4
-- 精读区：1
-- 速读区：3
+- 本次总论文数：2
+- 精读区：0
+- 速读区：2
 
 ### 今日简报（AI）
-今日精读1篇、速读3篇，聚焦扩散模型加速与采样优化。最值得关注的方向是并行解码蒸馏实现图像视频快速生成，以及无分类器引导的解析调度设计。建议优先精读并行蒸馏方法，对实际部署加速效果显著。
-- 详情：[/202607/29/README](/202607/29/README)
+今日速读两篇论文，分别关注扩散模型中的鲁棒水印反演技术与非梯度向量流学习。  
+最值得关注的是评分7.0的《FARI》，该研究提出了一步法反演水印，有望提升扩散模型输出的可溯源性与鲁棒性。  
+建议深入研读水印反演论文，并思考其如何应用于你的水印或内容认证场景。
+- 详情：[/202607/30/README](/202607/30/README)
 
 ### 精读区论文标签
-1. [Parallel Decoding Distillation for Fast Image and Video Generation](/202607/29/2607.26004v1-parallel-decoding-distillation-for-fast-image-and-video-generation)  
-   标签：评分：8.0/10、query:diff-accel
-   evidence：并行解码蒸馏实现扩散模型的快速图像和视频生成
+- 本次无精读推荐。
 
 ### 速读区论文标签
-1. [Analytic Distribution of Classifier-Free Guidance for Schedule Design](/202607/29/2607.19725v1-analytic-distribution-of-classifier-free-guidance-for-schedule-design)  
+1. [FARI: Robust One-Step Inversion for Watermarking in Diffusion Models](/202607/30/2607.26723v1-fari-robust-one-step-inversion-for-watermarking-in-diffusion-models)  
    标签：评分：7.0/10、query:diff-accel
-   evidence：对无分类器引导的理论分析指导调度设计，有助于加速采样
-2. [Learning Sampling Parameters for Diffusion Models](/202607/29/2607.23488v1-learning-sampling-parameters-for-diffusion-models)  
+   evidence：低NFE近似加速反转
+2. [Flow Map Learning via Nongradient Vector Flow](/202607/30/2607.26398v1-flow-map-learning-via-nongradient-vector-flow)  
    标签：评分：6.0/10、query:diff-accel
-   evidence：学习扩散模型推理时采样参数以加速
-3. [MMOE: Modernizing Diffusion Transformers with Efficient Expert Design](/202607/29/2607.24665v1-mmoe-modernizing-diffusion-transformers-with-efficient-expert-design)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：高效专家设计提升扩散变换器推理效率
+   evidence：学习流图以加速扩散/流模型采样
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
