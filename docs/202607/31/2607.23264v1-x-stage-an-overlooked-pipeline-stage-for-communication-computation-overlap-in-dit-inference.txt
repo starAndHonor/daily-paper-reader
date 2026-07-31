@@ -1,0 +1,830 @@
+Title: X-Stage: An Overlooked Pipeline Stage for Communication-Computation Overlap in DiT Inference
+
+URL Source: https://arxiv.org/pdf/2607.23264v1
+
+Published Time: Tue, 28 Jul 2026 00:50:04 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Jianwen Xian 1 Zhiyuan Xu 2,*, ‡ Yuchen Li 2,*, ‡ Ziliang Lai 1 Kang He 1
+
+Zhen Huang 3 Aichen Feng 3 Jinyan Chen 3 Yilin Zhang 3 Qinqin Chen 3 Chengru Song 1, †
+
+> 1
+
+KlingAI Research 2Tsinghua University 3NVIDIA 
+
+## Abstract 
+
+Fine-grained, device-initiated communication lets persistent GPU kernels in distributed diffusion transformer (DiT) infer-ence issue remote stores and overlap data movement with Tensor Core computation. Existing systems schedule when communication is issued and when received data becomes consumable, but omit post-issue progress before remote-visible completion, making sender backpressure hard to pre-dict. We identify X-Stage , a software-visible post-issue pipeline stage. Measurements on an eight-GPU node with a recent NVIDIA architecture show that short remote-store bursts drain as the issuer resumes work, whereas sustained injec-tion exhausts finite outstanding capacity and delays later issues. A lightweight Burst–Gap model parameterized by backpressure-free issue time, effective drain rate, and out-standing capacity predicts issue overhead, recovery between bursts, and the onset of backpressure. Guided by the model, we redesign two communication– computation fused kernels. For DeepGEMM MegaMoE, interleaving Linear-1 and Linear-2 work across expert waves places computation between concentrated remote-store bursts, yielding a 1.18 × geometric-mean and 1.62 × maxi-mum kernel speedup over the Expert-Wave baseline across 84 configurations. For Ulysses sequence-parallel attention, tile-granular fusion of the post-attention All-to-All with FlashAttention lets an output-tile owner issue remote stores and resume computation without a dedicated communica-tion warp or streaming multiprocessor. FlashAttention-3 and FlashAttention-4 reach maximum sender-visible speedups of 
+
+1.43 × and 1.42 × over serial execution, and at long sequences their steady-state times approach those of FlashAttention alone. These results establish post-issue progress as a measurable scheduling lever for shaping bursts, avoiding backpressure, and hiding sender-side overhead. 
+
+Keywords: GPU communication, NVLink, remote store, communication–computation fusion, mixture of experts, sequence parallelism, performance modeling 
+
+> ∗These authors contributed equally to this work.
+> †Corresponding author.
+> ‡Work done during an internship at KlingAI Research.
+
+## 1 Introduction 
+
+The widening gap between GPU compute throughput and intra-node interconnect bandwidth increasingly places inter-GPU data movement on the critical path of distributed-model execution [ 20 , 34 ]. Tensor, expert, and sequence parallelism all exchange activations or intermediate results across GPUs, making communication a central scalability bottleneck for large-model training and inference [2, 17, 20, 43]. Conventional GPU collectives are launched by the host or by separate communication kernels and overlap with computation mainly at operator or stream granularity. Peer memory mapping, symmetric memory, and device-initiated communication instead allow a GPU kernel to construct a remote address and move data directly to peer memory [ 23 ,28 ]. We refer to writes from a GPU kernel to peer-mapped or symmetric memory as device-initiated remote stores . They may be implemented as global-store instructions to a peer address or through higher-level one-sided primitives. Recent systems, including FLUX, Comet, TileLink, MegaScale-MoE, and ParallelKittens, decompose communi-cation and computation at cooperative thread array (CTA), tile, or warp granularity. Kernel fusion, task reordering, device-side signaling, resource partitioning, and wave sched-uling expose substantially more overlap [ 2 , 20 , 34 , 43 , 44 ]. These techniques describe which communication and compute tiles may execute concurrently, which role issues each transfer, and when a consumer may use the remote data. This information is sufficient to construct a correct tile pipeline, but not to predict the sender’s execution after a remote store is issued. In particular, existing abstractions do not expose how far the issuer may advance ahead of remote-visible completion or when sustained injection will exhaust downstream resources and backpressure the compute pipeline. We encountered this limitation while analyzing MegaMoE, DeepGEMM’s persistent mixture-of-experts (MoE) kernel. MegaMoE fuses token Dispatch , Linear-1, activation, Linear-2, and Combine into a persistent kernel organized as expert waves [ 10 , 11 ]. Its task-level timeline represents Combine as one communication phase. Under a conservative completion-coupled interpretation—in which the remote-store issuer is assumed unable to resume subsequent local work until the issued stores become remotely visible—the entire Combine arXiv:2607.23264v1 [cs.DC] 25 Jul 2026 Xian et al. 
+
+interval lies on the local critical path. Using the published stage times, this interpretation predicts at most approxi-mately 1.5× speedup over the serial stage sum, below the 
+
+1.56 × reported by the implementation [ 10 , 11 ]. This mis-match suggests that the issuer can resume useful execu-tion after issuing the stores while the requests continue to progress toward remote-visible completion. DiT-MoE workloads combine long sequences and fine-grained experts with input-dependent routing [ 13 , 35 , 41 ]. Although EPLB mitigates placement imbalance, it does not eliminate per-input routing skew [ 9 ]. Longer sequences am-plify Combine traffic to persistent hot experts, while fine-grained experts shorten the gaps between Linear-2 bursts, making MegaMoE more susceptible to sender-side backpres-sure. Parameterized microbenchmarks reveal two distinct regimes. Short remote-store bursts incur near-baseline sender-visible issue time, while the issued requests continue to progress toward remote-visible completion after the issuer resumes execution. Under sustained and concentrated injection, outstanding requests accumulate and increase the issue time of subsequent bursts. A producer-side gap that introduces no new remote stores allows these requests to drain and restores issue time toward its backpressure-free baseline. We call this software-visible post-issue pipeline stage—the interval between remote-store issue and remote-visible completion— X-Stage . As Figure 1 illustrates, an epilogue may issue a burst and return to a subsequent mainloop while the burst drains through X-Stage. X-Stage creates both an overlap opportunity and a back-pressure hazard. Useful computation can cover post-issue draining, but repeated bursts can fill the finite effective out-standing capacity and stall later stores, the epilogue, and eventually the Tensor Core producer. Consequently, aggre-gate compute and communication times alone cannot deter-mine whether communication remains hidden. We capture this behavior with a lightweight Burst–Gap model . Each burst injects a volume of remote stores over a short interval; the following producer-side gap issues no new remote stores and allows outstanding requests to drain concurrently with useful work. Three measurable quantities, the backpressure-free issue time, effective drain rate, and ef-fective outstanding capacity, predict the sender-visible issue time, the gap needed for recovery, and the onset of back-pressure. This abstraction matches GEMM-like kernels, in which an epilogue emits a burst and the next matrix multiply– accumulate (MMA) mainloop supplies the gap. The model leads to two complementary scheduling ac-tions. In MegaMoE, an expert wave executes many Linear-2 epilogues consecutively, concentrating Combine stores into long bursts. We interleave ready Linear-1 work from later waves with Linear-2 work, redistributing computation between bursts without changing the dependencies or com-munication volume. Across 84 configurations, the result-ing interleaved scheduler achieves a 1.18 × geometric-mean speedup, a 1.17 × median speedup, and a 1.62 × maximum speedup over the Expert-Wave baseline. For Ulysses sequence-parallel attention [ 17 ], we fuse each FlashAttention output tile with its post-attention All-to-All. The role that owns the output issues the corresponding re-mote stores and immediately resumes the next tile; the next FlashAttention Q-loop supplies a gap in which the stores drain. This piggybacked design reserves neither a dedicated communication warp nor a dedicated streaming multipro-cessor (SM). FlashAttention-3 and FlashAttention-4 achieve maximum sender-visible speedups of 1.43 × and 1.42 ×, re-spectively, over serial execution. As the sequence length and Q-loop compute gap grow, the fused sender-visible steady-state time approaches FlashAttention-only time. This paper makes the following contributions: 1. A software-visible post-issue abstraction. We identify X-Stage, the finite interval in which an accepted remote store can make progress concur-rently with subsequent computation. This abstraction explains why neither fully blocking nor unbounded-asynchrony models capture sender-visible behavior. 2. Characterization and prediction. Parameterized microbenchmarks of remote stores measure issue time without backpressure, effective drain rate, burst–gap recovery, and effective outstanding capacity. The re-sulting Burst–Gap model predicts steady-state period, sender-visible issue overhead, and capacity-induced backpressure without application-specific refitting. 3. X-Stage-aware kernel designs. For MegaMoE, cross-wave Linear-1/Linear-2 interleaving reshapes concen-trated bursts of remote stores. For fused FlashAtten-tion and A2A, a piggybacked tile pipeline uses the ex-isting Q-loop as a post-issue drain window and avoids long-lived communication roles. 4. Performance and mechanism-level validation. 
+
+We evaluate 84 MegaMoE configurations and two FlashAttention generations. Kernel timelines and per-tile instrumentation connect the measured speedups to the issue, drain, capacity, and staging effects pre-dicted by the model. 
+
+## 2 Background and Motivation 
+
+2.1 GPU Communication and Fine-Grained Fusion 
+
+Modern multi-GPU nodes allow a GPU to access peer mem-ory directly over high-speed fabrics such as NVLink [ 27 ]. Peer memory mapping, a unified virtual address space, and symmetric memory let a kernel construct addresses in re-mote memory and initiate data movement from the device [ 25 , 28 ]. NVSHMEM, for example, provides a partitioned-global-address-space (PGAS) model and symmetric-memory X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Figure 1. Remote stores issued by an epilogue continue to make progress in X-Stage while the next mainloop performs useful computation. The remote-store burst and the intervening mainloop form the recurring burst–gap pattern used throughout this paper. interface for fine-grained one-sided operations without re-turning to the host or launching a separate collective kernel for every transfer [28]. Fine-grained communication is increasingly important in large-model parallelism. Tensor parallelism invokes All-Gather, Reduce-Scatter, or All-Reduce [ 33 ]; expert paral-lelism dispatches tokens before expert computation and com-bines outputs afterward; Ulysses sequence parallelism uses two All-to-All operations to convert between sequence and head partitions around attention [ 17 ]. As low-precision Ten-sor Core throughput increases, each compute phase shortens relative to inter-GPU data movement. Operator- or stream-level concurrency may therefore leave substantial communi-cation exposed, motivating decomposition at tile, CTA, or warp granularity. Recent systems construct fine-grained pipelines through task decomposition, kernel fusion, specialized execution roles, and device-side synchronization [ 2 , 20 , 34 , 43 , 44 ]. Al-though their designs differ in task granularity, resource orga-nization, and scheduling mechanism, they primarily expose the software schedule : which communication and compute tiles may execute concurrently, which role issues each trans-fer, and when remote data becomes ready for consumption. A tile-level signal can report remote readiness, but it does not reveal how far the sender may continue before that event or when finite downstream resources will backpressure the issuer. X-Stage complements, rather than replaces, tile-level scheduling by modeling this post-issue progress. At a higher level, an ideal fused latency is often estimated as 
+
+𝑇 ideal = max  𝑇 compute ,𝑇 comm 
+
+ .
+
+This aggregate model asks whether total computation can cover total communication, but treats communication as a single interval. Remote-store issue and remote-visible com-pletion are distinct events. Issue means that the sender has injected a write request, not that the data is already visible at the destination. The request may continue to progress while later computation runs; under sustained injection, however, unfinished requests may accumulate, lengthen later issue operations, and backpressure the epilogue and upstream computation. Aggregate compute and communication times alone cannot capture this transition. 
+
+2.2 MegaMoE Execution 
+
+MegaMoE is a representative fine-grained, communication– computation fused MoE kernel. In an expert-parallel MoE layer, a router selects one or more experts for each token. Be-cause experts reside on different GPUs, Dispatch first sends each token to its destination rank. Each expert then evaluates a two-layer feed-forward network: Linear-1 projects the hid-den dimension to an intermediate dimension, an activation such as SwiGLU [ 32 ] is applied, and Linear-2 projects back to the hidden dimension. Combine returns expert outputs to the source rank and aggregates the top-𝑘 results using the router weights. A conventional implementation launches separate ker-nels for Dispatch , grouped GEMM, activation, the second grouped GEMM, and Combine . MegaMoE fuses these stages into a persistent mega-kernel and uses warp specialization for Dispatch , data movement, Tensor Core computation, and epilogue work [ 10 ]. In the public implementation, the Linear-2 epilogue reads accumulator results and writes them to a symmetric Combine buffer with remote stores. Although separate roles execute the Tensor Core mainloop and the epilogue, finite on-chip accumulator and staging resources couple them as producer and consumer. MegaMoE groups local experts into expert waves to orga-nize locality and execution. The original schedule generally executes a wave’s Linear-1 work, then its activation and Linear-2 work, before advancing to the next wave. The Linear-1 work of different waves has no direct neural-network dependency. Once Dispatch data and a destination buffer are ready, a later wave’s Linear-1 can, in principle, begin before the previous wave’s remote Combine stores complete. Xian et al. 
+
+2.3 A Task-Level Modeling Mismatch 
+
+MegaMoE’s published timeline represents Dispatch , Linear-1, activation, Linear-2, and Combine as task-level stages [ 11 ]; Figure 2(a) shows this view. A natural conservative interpretation is that local epilogue and staging resources remain coupled to a Linear-2 result until the corresponding 
+
+Combine operation becomes remotely visible. We call this the completion-coupled interpretation .Let 𝑇 Lin1 , 𝑇 Act , and 𝑇 Lin2 denote the steady-state stage times of Linear-1, activation, and Linear-2 within an expert wave. Let 𝑇 cc Combine span the local epilogue through remote-visible completion. Ignoring pipeline fill and drain, the per-wave steady-state time is approximated by 
+
+𝑇 cc wave ≈ max (𝑇 Lin1 ,𝑇 Act ) + max  𝑇 Lin2 ,𝑇 cc Combine 
+
+ .
+
+We decompose the completion-coupled Combine interval as 
+
+𝑇 cc Combine = 𝑇 local epilogue + 𝑇 RS issue + 𝑇 post -issue completion ,
+
+where the final term is the remaining time from accepted issue to remote visibility. This model permits temporary over-lap between the Linear-2 producer and result-sending role through finite on-chip staging, but treats remote completion as the steady-state progress constraint. Applying the model to the reported stage times yields an estimated speedup ceil-ing of about 1.5× over the serial baseline, whereas the im-plementation reaches 1.56 × [ 10 , 11 ]. Although this small dis-crepancy is not by itself a mechanism proof, the completion-coupled estimate cannot explain the observed speedup and motivates a direct measurement of post-issue progress. 
+
+2.4 Decomposing Combine: From Issue to Remote Visibility 
+
+Figure 2(a) treats Combine as one communication stage. This representation captures application dependencies and the task-level timeline but conflates two sender-side events. A Linear-2 epilogue first reads accumulators, performs data conversion and address calculation, and writes the results to the symmetric Combine buffer. The remote-store issue portion ends when the sender accepts those write instruc-tions; it does not imply that the corresponding data is already visible remotely. Figure 2(b) separates these events. Once the remote stores are accepted, the issuing role may continue with later com-putation while the requests progress toward the destination. This decoupling explains why a completion-coupled esti-mate can understate MegaMoE speedup. Application latency alone, however, cannot reveal the progress rate, the amount by which the issuer can lead completion, or how sustained injection changes sender-visible execution. We therefore use controlled remote-store microbenchmarks to measure 
+
+Figure 2. Task-level and X-Stage-aware views of the MegaMoE expert-wave timeline. The task-level view treats Combine as a single communication stage, whereas the X-Stage-aware view separates sender-visible remote-store issue from subsequent progress toward remote-visible completion. effective draining, outstanding capacity, and backpressure directly. 
+
+2.5 Research Questions 
+
+The analysis above motivates three research questions: 
+
+• RQ1: Post-issue progress and resource bounds. 
+
+How do device-initiated remote stores progress af-ter issue, how far can the issuing role advance ahead of remote-visible completion, and which effective re-source bounds are visible to software? 
+
+• RQ2: Characterization and prediction. Can a light-weight model based on backpressure-free issue time, effective drain rate, and effective outstanding capacity predict execution period, recovery, and backpressure across burst volumes, producer configurations, and compute gaps? 
+
+• RQ3: X-Stage-aware kernel design. How can these measurements guide fused kernels? Specifically, can a scheduler reshape MegaMoE bursts to reduce request accumulation, and can a FlashAttention–A2A pipeline cover post-issue progress without reserving long-lived communication resources? 
+
+## 3 Characterizing and Modeling X-Stage 
+
+The application-level mismatch in Section 2.3 suggests that remote-store issue and remote-visible completion are not fully coupled. This section uses controlled microbenchmarks to characterize that post-issue behavior and develops a Burst–Gap model for recovery, steady-state burst period, and capacity-induced backpressure. X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Figure 3. Remote-store microbenchmark characterization of X-Stage. (a) Effect of the producer-side gap on sender-visible issue time; (b) measured burst period compared with the Burst–Gap model; (c) the effective-capacity knee for an isolated burst; and (d) the shared effective drain rate across producer configurations. 
+
+Table 1. Notation for the X-Stage Burst–Gap model. 
+
+Symbol Definition 
+
+K Concurrent remote-store producer count. 
+
+B Bytes per producer per burst. 
+
+V Aggregate burst volume, V = KB ; Vt de-notes per-tile volume. 
+
+𝑏 m, 𝑏 n Compute-tile M/N dimensions. 
+
+G Useful producer-side time between bursts with no remote stores. 
+
+𝑇 iss (G ; K, V) Sender-visible burst issue time, including backpressure. 
+
+𝑇 0iss (K , V) Backpressure-free burst issue time. 
+
+Δ𝑇 iss Backpressure overhead, Δ𝑇 iss = 𝑇 iss − 𝑇 0iss .
+
+𝑇 period Burst start-to-start period, 𝑇 period = 𝑇 iss + G .
+
+R Effective aggregate drain rate (717 GB/s mea-sured). 
+
+Q (K) Effective outstanding capacity for K produc-ers. 
+
+G∗ (K , V) Minimum recovery gap, G∗ = [V/R − 𝑇 0iss ]+.
+
+𝑞 0peak (K , V) Peak outstanding volume without a capacity limit, [V − R 𝑇 0iss ]+.
+
+M𝑋 Platform parameters (𝑇 0iss , R, Q) .
+
+The experiments isolate three quantities: how quickly the sender can inject a burst in the absence of backpressure, how quickly accepted requests drain, and how much data can remain effectively outstanding before issue stalls. We use producer in this section for a concurrent role that issues remote stores; it is distinct from a Tensor Core compute producer unless stated otherwise. Table 1 summarizes the notation. 
+
+3.1 Remote-Store Microbenchmarks 
+
+Our parameterized benchmark generates a burst from K
+
+concurrent producers. Each producer writes B bytes, for an aggregate volume V = KB . We use two modes. 
+
+Periodic bursts. Producers repeatedly issue a burst of volume V, modeling the remote stores in a GEMM epilogue, and then execute a producer-side gap of duration G, model-ing a subsequent MMA mainloop. We record both 𝑇 iss and the start-to-start period 𝑇 period . A zero gap drives the path to a drain-limited steady state and exposes the effective drain rate. Sweeping G reveals how requests left by one burst affect the next burst. 
+
+Isolated bursts. Each measurement starts after sufficient recovery, issues one burst of volume V, and records its sender-visible issue time. This mode detects whether a single burst can exhaust the effective outstanding capacity. A local-memory control uses the same number of produc-ers, store width, address generation, and loop structure. It separates ordinary instruction overhead from stalls caused by outstanding requests on the remote path. 
+
+3.2 The X-Stage Burst–Gap Model 
+
+Periodic bursts form a producer–consumer process: software injects requests, and the downstream path drains them. We describe its software-visible behavior with three quantities: 
+
+• the backpressure-free issue time 𝑇 0iss for a recovered burst with (K , V) ;
+
+• R , the effective aggregate drain rate; and 
+
+• Q (K) , the effective outstanding capacity for the pro-ducer configuration. The model assumes a work-conserving effective drain at rate R over the measured regime. It is a fluid, steady-state abstraction rather than a claim about a particular physical queue. If the gap is long enough to drain the previous burst, Xian et al. 
+
+its unfinished requests do not measurably delay the next issue, and 𝑇 iss = 𝑇 0iss . With a shorter gap, requests carry across periods. Flow conservation in a drain-dominated steady state requires each period to drain the volume injected during that period: 
+
+𝑇 period (G ; K, V) = VR . (1) By definition, a period comprises issue followed by the producer-side gap: 
+
+𝑇 period (G ; K, V) = 𝑇 iss (G ; K, V) + G . (2) Thus, in the drain-dominated regime, 
+
+𝑇 iss (G ; K, V) = VR − G .
+
+Issue cannot become faster than the backpressure-free baseline, giving the complete Burst–Gap relation 
+
+𝑇 iss (G ; K, V) = max 
+
+
+
+𝑇 0iss (K , V) , VR − G 
+
+
+
+. (3) The resulting issue-time overhead is 
+
+Δ𝑇 iss (G ; K, V) =
+
+ VR − G − 𝑇 0iss (K , V) 
+
+
+
+> +
+
+, (4) where [𝑥 ]+ = max (𝑥, 0). A scheduler can reduce this over-head by decreasing burst volume or increasing useful work between bursts. The recovered plateau is reached when 
+
+G ≥ G ∗ (K , V) =
+
+ VR − 𝑇 0iss (K , V) 
+
+
+
+> +
+
+. (5) 
+
+3.3 Calibrating the Effective Drain Rate 
+
+We first calibrate R independently. With zero-gap periodic bursts, producers continuously inject requests and reach a drain-dominated steady state, for which 
+
+𝑇 ss period (V) ≈ VR .
+
+Figure 3(d) reports the steady-state period across producer counts K and aggregate volumes V. Different K/B decom-positions of the same volume produce similar periods, and larger volumes converge to one linear trend. The down-stream drain, not a single producer’s local issue throughput, therefore controls this regime. Fitting the drain-dominated points to 𝑇 ss period = V/R gives R ≈ 717 GB/s on the measured system. All subsequent gap and capacity experiments use this value without per-curve refitting. 
+
+3.4 Validating Burst–Gap Behavior 
+
+After fixing R from Figure 3(d), we sweep G and obtain 𝑇 0iss 
+
+from the large-gap plateau. Equations 1 and 3 then predict the full sweep with no additional fitted parameter. Figure 3(a) shows the sender-visible view. At short gaps, requests left by the preceding burst lengthen the next issue. Increasing the gap reduces this extra stall approximately as 
+
+V/R − G until the issue time reaches 𝑇 0iss . The local-memory control is nearly gap-insensitive, indicating that recovery comes from post-issue progress on the remote path rather than from the gap instructions or store loop itself. Figure 3(b) shows the corresponding steady-state period. At short gaps, measurements stay on the drain-limited plateau V/R . Near the predicted G∗, execution switches to the 𝑇 0iss + G branch and increases linearly with the gap. The measurements follow 
+
+𝑇 period = max  𝑇 0iss + G , V/R  ,
+
+rather than the completion-coupled sum 
+
+𝑇 cc period = G + VR .
+
+The producer-side gap therefore overlaps with draining; it is not simply added to communication time. 
+
+3.5 Measuring Effective Outstanding Capacity 
+
+Periodic bursts expose steady state across cycles. Isolated bursts ask whether one sufficiently large burst backpres-sures itself even when X-Stage is initially empty. During a backpressure-free issue interval, the producers inject V
+
+bytes while approximately R𝑇 0iss (K , V) bytes drain. The un-constrained outstanding volume at the end of issue is there-fore 
+
+𝑞 0peak (K , V) = V − R 𝑇 0iss (K , V)  
+
+> +
+
+. (6) If 𝑞 0peak ≤ Q (K) , the isolated issue remains at 𝑇 0iss . Oth-erwise, injection beyond the capacity must wait for down-stream draining, yielding 
+
+𝑇 iso iss (K , V) = max 
+
+
+
+𝑇 0iss (K , V) , V − Q (K) R
+
+
+
+. (7) Figure 3(c) shows the isolated issue time versus aggre-gate volume. Small bursts remain on the backpressure-free baseline. Beyond a producer-configuration-dependent knee, issue time rises toward the drain-limited branch, demon-strating that the lead over downstream completion is finite. For K = 148 , the isolated issue-time knee occurs at about 33 KB per producer, corresponding to an aggregate burst volume of approximately 4.77 MiB. At B = 32 KB, the mea-sured backpressure-free issue floor is 𝑇 0iss ≈ 0.76 𝜇 s. Applying Equation 6 at the knee and accounting for the data drained during issue gives Q ≈ 4.25 MiB. 
+
+3.6 Model Summary 
+
+The three independently measurable quantities form the platform model 
+
+M𝑋 =  𝑇 0iss (K , V) , R, Q (K)  .X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+𝑇 0iss captures backpressure-free injection for a producer configuration and burst volume, R captures aggregate post-issue draining, and Q captures the finite lead over down-stream completion. We extract them from the recovered issue-time plateau, zero-gap steady-state period, and isolated-burst knee, respectively. Together they explain three obser-vations: 1. sender-visible issue can end before remote-visible completion, allowing accepted requests to progress concurrently with subsequent work; 2. a producer-side gap overlaps with post-issue draining, so steady-state period follows a max law rather than a completion-coupled sum; and 3. when outstanding volume exceeds effective capacity, backpressure first lengthens remote-store issue and can then propagate through local staging to the com-pute producer. The next section applies the same model in two regimes. MegaMoE interleaves work across expert waves to enlarge gaps between concentrated Linear-2 bursts. FlashAttention– A2A uses the following Q-loop to cover the post-issue progress of the previous output tile. 
+
+## 4 X-Stage-Aware Kernel Design 
+
+Once the sender accepts a remote store, the request can continue toward remote completion through X-Stage. This post-issue progress changes the scheduling boundary of a fused kernel: software must control not only when commu-nication is issued, but also how quickly accepted requests accumulate and how much useful work is available while they drain. A conventional fused GEMM is often described as a Load– Compute–Epilogue pipeline. When the epilogue contains remote stores, ending this description at issue hides an ad-ditional stage, as Figure 1 shows. There are two distinct levels of decoupling. Local staging provides compute–issue decoupling : a Tensor Core producer deposits a result in an accumulator or staging buffer, and an epilogue role issues the stores. X-Stage provides issue–completion decoupling : after is-sue is accepted, requests can progress without continuously occupying the issuing warp. For an aggregate burst volume V followed by a producer-side gap G, the Burst–Gap model gives 
+
+𝑇 iss (G ; K, V) = max 
+
+
+
+𝑇 0iss (K , V) , VR − G 
+
+
+
+, (8) and 
+
+Δ𝑇 iss (G ; K, V) =
+
+ VR − G − 𝑇 0iss (K , V) 
+
+
+
+> +
+
+. (9) The immediate scheduling objective is to reduce Δ𝑇 iss 
+
+without adding work or violating dependencies. 
+
+4.1 A Design Test with Two Actions 
+
+The model yields a compact test for recurring bursts. Under the fluid-model and steady-state assumptions of Section 3.2, X-Stage does not add sender-visible backpressure when both 
+
+V
+
+𝑇 0iss + G ≤ R 
+
+| {z }
+
+> long-term injection-rate bound
+
+, V − R 𝑇 0iss 
+
+ 
+
+> +
+
+≤ Q 
+
+| {z }
+
+> single-burst capacity bound
+
+(10) hold. The first bound prevents accumulation across pe-riods; the second prevents one initially isolated burst from exhausting effective capacity. Satisfying these bounds re-moves the modeled backpressure overhead . It does not, by itself, prove that all issue instructions, synchronization, or completion requirements are absent from the application critical path. An X-Stage-aware design follows three steps. First, cali-brate M𝑋 = (𝑇 0iss , R, Q) with the microbenchmarks in Sec-tion 3. Second, audit the target kernel to obtain its aggregate burst volume V and natural compute gap G. Third, choose one of two actions: 
+
+• Criterion violated: reshape injection. If the natural gap is too short or the burst too large, redistribute use-ful work between bursts or reduce burst aggregation. MegaMoE follows this path (Section 4.2): consecutive Linear-2 epilogues inject faster than the path drains, so ready Linear-1 work from later waves is moved between them. 
+
+• Criterion satisfied: piggyback on existing com-putation. If the existing compute pipeline already supplies a sufficient gap, a role that owns the out-put can issue a short burst and return to useful work while X-Stage drains it. A dedicated communication role cannot increase the measured downstream drain rate merely by waiting after issue, although it may still be useful for address generation, issue throughput, or synchronization in a different design. FlashAttention– A2A follows this path (Section 4.3): a full Q-loop sepa-rates output bursts, and the gap grows with sequence length. Both actions use the same calibrated parameters. Meg-aMoE changes the ordering of independent Linear-1 and Linear-2 tiles to smooth injection and control X-Stage occu-pancy. FlashAttention–A2A lets the existing output-owning role issue each burst and resume computation, avoiding a long-lived communication warp or SM whose sole purpose would be post-issue progress. 
+
+4.2 MegaMoE: Capacity-Aware Scheduling across Expert Waves 
+
+Fine-grained experts shorten the Linear-2 MMA mainloop, which is the natural gap between successive epilogue bursts. Xian et al. 
+
+Algorithm 1: Interleaved Scheduler                                                                                                       
+
+> 𝑔 : instance id, stride 𝐺 ;𝑟 ∈ { 0,1}: role in pair; 𝑃 : rows/stream; 𝑃 𝑖 :pairs/row; 𝑘 𝑖 : pair cursor; 𝑝 𝑖 =⌊𝑘 𝑖 /𝑃 𝑖 ⌋: row; 𝑒 (𝑝 ): expert of row 𝑝 ;
+> 𝑂 𝑒 : its first row; 𝐷 : minimum row lead of 𝐿 1over 𝐿 2.
+> 1procedure Scheduler (𝑔, 𝑟 )
+> 2𝑘 1←𝑔 ;𝑘 2←𝑔
+> 3while 𝑘 1<𝑃 ·𝑃 1or 𝑘 2<𝑃 ·𝑃 2do
+> 4𝑝 1← ⌊ 𝑘 1/𝑃 1⌋(+∞ if 𝐿 1done)
+> 5𝑝 2← ⌊ 𝑘 2/𝑃 2⌋
+> 6if 𝑘 2<𝑃 ·𝑃 2and 𝑝 2+𝐷 ≤𝑝 1then
+> 7emit 𝐿 2⟨𝑒 (𝑝 2), 𝑚 =𝑝 2−𝑂 𝑒 (𝑝 2), 𝑛 =2(𝑘 2mod 𝑃 2)+ 𝑟 ⟩
+> 8𝑘 2←𝑘 2+𝐺
+> 9else
+> 10 emit 𝐿 1⟨𝑒 (𝑝 1), 𝑚 =𝑝 1−𝑂 𝑒 (𝑝 1), 𝑛 =2(𝑘 1mod 𝑃 1)+ 𝑟 ⟩
+> 11 𝑘 1←𝑘 1+𝐺
+
+The original expert-wave schedule therefore frequently op-erates in the drain-dominated regime and violates the rate bound in Equation 10. Figure 4(a) shows the original schedule. Let Vt be the 
+
+Combine volume emitted by one Linear-2 tile on one pro-ducer, and let Kact be the number of producers whose tile boundaries align in a burst. The aggregate volume used by the X-Stage model is V = Kact Vt. Let 𝑇 mma L1 and 𝑇 mma L2 denote the Linear-1 and Linear-2 tile mainloop times. Consecutive Linear-2 tiles provide only Gwave ≈ 𝑇 mma L2 . For fine-grained experts, 
+
+V
+
+𝑇 0iss + 𝑇 mma L2 
+
+> R,
+
+so outstanding requests rise to the effective capacity. They cannot grow further in steady state; instead, backpressure lengthens issue and propagates through local staging to the Tensor Core producer. 
+
+Trading issue stall for a useful gap. In the drain-dominated regime, Equations 1 and 2 give 
+
+𝑇 iss + G = 𝑇 period = VR . (11) For fixed communication volume and drain rate, schedul-ing cannot shorten this period. It can, however, determine how much of the period is useful computation and how much is sender-visible issue stall. Under the expert-wave schedule, 
+
+𝑇 iss = VR − 𝑇 mma L2 > 𝑇 0iss .
+
+Increasing the useful gap by one unit reduces issue stall by one unit until 𝑇 iss reaches 𝑇 0iss . This exchange relies on post-issue progress. Under a completion-coupled model, 𝑇 cc period =
+
+G + V/R , so moving computation between bursts would only delay the next burst rather than reduce stall. Algorithm 1 merges the ready Linear-1 and Linear-2 tile streams. It greedily emits Linear-2 only when the Linear-1 stream leads by at least 𝐷 scheduler rows; otherwise, it emits a ready Linear-1 tile, which adds useful work without gener-ating Combine stores. In steady state, the pattern contains 
+
+𝑛 2 Linear-2 tiles and 𝑛 1 Linear-1 tiles per cycle. Their ratio is fixed by tile shapes. The lead 𝐷 changes the phase and readi-ness of the streams, not their long-run ratio, which separates two conditions. 
+
+Condition 1: Is interleaving sufficient? Averaged over a steady-state cycle, the natural gaps are 
+
+Gwave ≈ 𝑇 mma L2 , Gint ≈ 𝑇 mma L2 + 𝑛 1
+
+𝑛 2
+
+𝑇 mma L1 . (12) Interleaving adds neither computation nor communica-tion. It redistributes Linear-1 work that would otherwise be grouped at a wave boundary. Substituting Equation 12 into Equation 9 gives 
+
+Δ𝑇 int iss =
+
+
+
+Δ𝑇 wave iss − 𝑛 1
+
+𝑛 2
+
+𝑇 mma L1 
+
+
+
+> +
+
+. (13) Thus, useful computation offsets issue overhead one-for-one until the overhead reaches zero. Complete recovery re-quires Gint ≥ G ∗, equivalently 
+
+𝑛 2V
+
+𝑛 2
+
+ 𝑇 0iss + 𝑇 mma L2 
+
+ + 𝑛 1𝑇 mma L1 
+
+≤ R . (14) This test depends on the aggregate burst volume, tile mix and mainloop times, and calibrated (𝑇 0iss , R) , but not on 𝐷 .It can therefore predict before implementation whether re-ordering existing computation is sufficient. If Equation 14 fails, the scheduler must also reduce aggregate burst volume. For the evaluated configurations, the equation predicts that interleaving should move each tile’s sender-visible remote-store span from the drain-limited regime to the backpressure-free floor. We test this prediction in Section 5.2.3. 
+
+From epilogue stall to the compute critical path. The Burst–Gap model predicts the epilogue’s sender-visible span from the available post-issue drain gap: 
+
+𝑇 RS ≈ 𝑇 0iss + Δ𝑇 iss 
+
+plus fixed staging overhead. Epilogue stall is not neces-sarily compute stall. Double-buffered staging allows the MMA warpgroup to advance through the next mainloop before it must reuse the occupied slot. Let 𝑇 mma cover denote this configuration-specific cover window provided by local stag-ing. It is the following Linear-2 mainloop in the wave sched-ule and, when an inserted Linear-1 immediately follows, the Linear-1 mainloop in the interleaved schedule. Mixed cycles use the actual successor for each sampled tile. The critical-path stall of a tile is X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Figure 4. X-Stage-aware MegaMoE scheduling with a separate epilogue role. The expert-wave scheduler places Linear-2 tiles consecutively, causing their epilogues to issue concentrated remote-store bursts. The interleaved scheduler inserts ready Linear-1 work between these bursts, allowing earlier requests to drain during useful computation. 
+
+Δ𝑡 = 𝑇 RS − 𝑇 mma cover 
+
+ 
+
+> +
+
+. (15) Interleaving can therefore help at two independent lev-els. It enlarges the drain gap and reduces 𝑇 RS ; it can also replace the immediate mainloop cover window with a longer Linear-1 mainloop. Conversely, even if Equation 14 does not drive Δ𝑇 int iss to zero, residual epilogue stall remains off the Tensor Core critical path whenever 𝑇 RS ≤ 𝑇 mma cover . Section 5.2.3 tests Equation 15 using instrumentation on both sides of the staging boundary. 
+
+Condition 2: What lead prevents starvation? The steady-state gap is realized only if Linear-2 does not spin while waiting for its Linear-1 dependencies. A Linear-2 tile consumes Linear-1 outputs produced across multiple SMs and synchronized through the l2_full counter. If 𝐷 is too small, the Linear-2 stream catches up, spins on an unready dependency, and allows bursts to reconcentrate. The implementation maps N-tiles in paired CTAs and advances strided streams across KSM participating SMs. The resulting cross-SM phase skew gives the approximate anti-starvation knee 
+
+𝐷 knee =
+
+𝑏 n KSM 
+
+2ℎinter 
+
+
+
+, (16) where 𝑏 n is the N-tile width and ℎinter is the expert in-termediate dimension. Here 𝐷 is a lead in scheduler rows; the row layout determines its corresponding token range. This lower bound comes from cross-SM data readiness, not X-Stage draining, and therefore does not contain R, 𝑇 0iss , or 
+
+Q. Choosing 𝐷 < 𝐷 knee lets Linear-2 catch up and spin, allowing remote-store bursts to reconcentrate; increasing 
+
+𝐷 toward the knee removes this anti-starvation bottleneck. Increasing 𝐷 far beyond the knee does not change the long-run Linear-1/Linear-2 ratio or the X-Stage rate condition, but it grows the Linear-2-only tail and concurrent expert-weight working set, potentially eroding cache locality. Thus 
+
+𝐷 knee is sufficient for the model; any additional margin is implementation-specific tuning. Algorithm 1 preserves all within-expert dependencies and reorders only independent tiles. A future-wave Linear-1 tile is eligible only after its Dispatch input and destination ring slot are ready. The finite software pipeline depth separately limits in-flight epilogues and must remain compatible with the calibrated Q.
+
+4.3 FlashAttention–A2A: Piggybacking without a Dedicated Communication Role 
+
+We next consider Ulysses sequence parallelism, illustrated in Figure 5, a common strategy for diffusion transformer (DiT) workloads. The evaluated DiT setting uses full, non-causal attention, rather than the causal attention used by typical autoregressive LLMs [ 30 ]. Ulysses executes an All-to-All before attention to convert a sequence partition into a head partition, and another All-to-All (A2A) afterward to restore the original layout [ 17 ]. We fuse FlashAttention with the post-attention All-to-All at tile granularity: when an output Xian et al. 
+
+Figure 5. Ulysses sequence-parallel attention. QKV pro-jection and the pre-attention All-to-All transform sequence-partitioned tokens into head partitions (a–c). FlashAttention and the post-attention All-to-All produce the output and restore the original sequence partition (d–e); our FA+A2A design fuses these latter two operations. 
+
+Figure 6. FlashAttention Q-loop and output tiling. Each CTA owns a block of query rows and traverses the K/V tiles in the inner loop. Completing the traversal produces an output tile; successive output tiles form the outer loop. tile becomes ready, the owning role issues the tile’s remote stores at the boundary and then proceeds to the next tile. Figure 6 illustrates the Q-loop that separates consecutive output-tile boundaries. We first audit the design using Equation 10. A FlashAt-tention output tile has shape 𝑏 m × 𝑑 , where 𝑑 is the head dimension. Each persistent CTA writes 
+
+Bt = 𝑏 m𝑑𝑠 out 
+
+bytes at a tile boundary, where 𝑠 out is the output element size. In the conservative case where K producers align their boundaries, the aggregate burst is V = KB t; actual per-sistent CTAs are generally phase-shifted and inject more smoothly. Unlike MegaMoE, consecutive output bursts are separated by the next output tile’s complete Q-loop, which visits all ⌈𝑀 /𝑏 n⌉ KV tiles for sequence length 𝑀 [31 ]. The resulting gap GQloop (𝑀 ) grows approximately linearly with 
+
+𝑀 .For the evaluated FlashAttention-4 configuration, 𝑏 m =
+
+128 , 𝑑 = 128 , the output is bf16, and K ≤ 148 . Each producer writes 32 KB, below the approximately 33 KB per-producer effective-capacity knee measured in Section 3.5. In the worst aligned case, V ≈ 4.6 MiB and 
+
+V − R 𝑇 0iss 
+
+ 
+
+> +
+
+≈ 4.1 MiB < Q ≈ 4.25 MiB .
+
+The capacity bound therefore holds. The rate bound holds when GQloop (𝑀 ) ≥ G ∗. Section 4.3 derives a conservative sequence-length upper bound 𝑀 ∗
+
+> ub
+
+; all 𝑀 ≥ 𝑀 ∗ 
+
+> ub
+
+satisfy both bounds of the piggybacking design test. 
+
+Post-issue progress extends the drain window. Acompletion-coupled counterfactual makes the role of X-Stage explicit. If the issuing role had to remain blocked until remote visibility, the exposed time of each aligned output burst would be approximated by 
+
+Δ𝑡 cc =
+
+ VR + 𝑇 lat − 𝑇 cover 
+
+
+
+> +
+
+, 𝑇 cover ≲ 𝑇 mma QK , (17) where 𝑇 lat is a fixed completion-latency component and 
+
+𝑇 cover is the progress available from finite local staging while the issuer is blocked. In FlashAttention-4, one warpgroup drives the CTA’s MMA pipeline, so this local cover window is at most on the order of one 𝑄𝐾 𝑇 tile mainloop. Its duration and compute volume 2𝑏 m𝑏 n𝑑 do not grow with 𝑀 . If Δ𝑡 cc > 0,the total completion-coupled exposure over 𝑁 t ∝ 𝑀 output-burst waves grows as 
+
+𝐸 cc = 𝑁 tΔ𝑡 cc ∝ 𝑀. 
+
+With X-Stage, the issuing role returns after the sender accepts the stores. The next full Q-loop, rather than one local MMA step, becomes the post-issue drain window. If that window is insufficient, Equation 4 gives the issue-side backpressure 
+
+Δ𝑡 (𝑀 ) =
+
+ VR − G Qloop (𝑀 ) − 𝑇 0iss 
+
+
+
+> +
+
+. (18) X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Figure 7. Piggybacked FlashAttention–A2A pipeline for FlashAttention-4. A single warpgroup per CTA issues 𝑄𝐾 𝑇 
+
+and 𝑃𝑉 while specialized roles execute operations such as softmax. At an output-tile boundary, the epilogue issues remote stores (RS) and immediately starts the next tile. The previous tile drains through X-Stage during the next complete Q-loop, without a dedicated communication warp or SM. As in MegaMoE, this epilogue-side stall reaches the com-pute critical path only after it exceeds the additional double-buffer cover window GQK :
+
+Δ𝑡 ′ (𝑀 ) = Δ𝑡 (𝑀 ) − G QK 
+
+ 
+
+> +
+
+. (19) Because GQloop (𝑀 ) grows with 𝑀 while the aligned burst volume is fixed, Δ𝑡 decreases and eventually reaches zero. The weaker critical-path condition Δ𝑡 ≤ G QK may be reached even earlier. The contrast between Equations 17 and 18 fol-lows from one property: whether accepted stores can leave the issuing role and progress through X-Stage. This distinction also guides role assignment. Reserving communication warps or SMs can decouple an MMA role from address generation and issue [ 20 ], but consumes regis-ters, shared memory, occupancy, or Tensor Core capacity. In the audited region, waiting after issue does not improve the calibrated downstream drain rate. We therefore attach the short issue operation to the role that already owns the output tile. As Figure 7 shows, tile 𝑖 drains while tile 𝑖 + 1 executes its full Q-loop. Communication tiles retain the compute-tile shape, so the design minimally changes the FlashAttention data path. Unlike the MegaMoE reshape action, piggyback-ing does not reorder computation; it removes a long-lived communication role and uses the workload’s natural drain window. 
+
+A conservative convergence bound 𝑀 ∗
+
+> ub
+
+. For a GEMM tile of shape 𝑏 m ×𝑏 n and reduction dimension 𝑘 , the compute work is 
+
+𝐶 GEMM = 2𝑏 m𝑏 n𝑘. 
+
+A full-attention output tile performs both 𝑄𝐾 𝑇 and 𝑃𝑉 
+
+over all KV tiles, so 
+
+𝐶 FA = 4𝑏 m𝑏 n𝑑 
+
+ 𝑀 𝑏 n
+
+
+
+≈ 4𝑏 m𝑑𝑀. 
+
+Equating this work with the GEMM expression gives the equivalent reduction dimension 
+
+𝑘 equiv = 2𝑑 
+
+ 𝑀 𝑏 n
+
+
+
+∝ 𝑀. 
+
+The factor of two accounts for the two matrix multiplica-tions in attention. The measured Q-loop gap has a positive fixed component and an approximately linear steady-state slope. For a conservative threshold, we drop the positive fixed component and use the lower bound 
+
+GQloop (𝑀 ) ≥ 𝜎 
+
+ 𝑀 𝑏 n
+
+
+
+, 𝜎 ≈ 0.79 𝜇 s per KV tile .
+
+The model-predicted drain-induced residual over all burst waves is 
+
+𝐸 drain (𝑀 ) = 𝑁 t
+
+Δ𝑡 (𝑀 ) − G QK 
+
+ 
+
+> +
+
+.
+
+This quantity excludes the finite cost of executing backpressure-free issue instructions, which is included in the measured residual 𝐸 res = 𝑇 fused − 𝑇 FA in Section 5.3. Dropping the positive fixed gap yields the tile-aligned sufficient upper bound 
+
+𝑀 ∗ 
+
+> ub
+
+= 𝑏 n
+
+ G∗
+
+𝜎 
+
+
+
+, G∗ =
+
+ VR − 𝑇 0iss 
+
+
+
+> +
+
+. (20) Xian et al. 
+
+Using the once-calibrated platform parameters and the worst aligned case K = 148 gives G∗ ≈ 6.0 𝜇 s and 𝑀 ∗ 
+
+> ub
+
+≈ 1.0Ktokens. For 𝑀 ≥ 𝑀 ∗
+
+> ub
+
+, the drain-induced component 𝐸 drain 
+
+vanishes; the measured 𝐸 res may retain a small issue, launch, or measurement floor. The true threshold is no larger than this bound because the omitted fixed gap is positive. It can be smaller still because the compute critical path needs only 
+
+Δ𝑡 ≤ G QK and shorter sequences may use fewer than 148 concurrent producers. At the smallest evaluated sequence, 
+
+𝑀 = 8,192 , the measured Q-loop gap is about 80 𝜇 s, roughly 
+
+13 × the worst-case G∗.The evaluated range therefore separates two prior pre-dictions. X-Stage predicts no drain-induced growth with sequence length, 
+
+𝐸 XS res (𝑀 ) ≈ 𝐸 issue (𝑀 ),
+
+where 𝐸 issue is a small backpressure-free issue cost. The completion-coupled counterfactual predicts an additional component 
+
+𝐸 cc (𝑀 ) = 𝑁 tΔ𝑡 cc ∝ 𝑀. 
+
+Section 5.3 tests the difference in slope rather than relying on a single short-sequence point. 
+
+4.4 Summary 
+
+MegaMoE and FlashAttention–A2A instantiate the same de-sign test in different regions. MegaMoE violates the rate bound because concentrated Linear-2 bursts are separated by a short mainloop. Cross-wave Linear-1/Linear-2 inter-leaving reshapes injection; the dependency-derived 𝐷 knee 
+
+supplies an anti-starvation threshold, while unnecessarily larger leads can erode cache locality. FlashAttention–A2A satisfies the capacity bound, and its Q-loop gap exceeds the recovery gap for 𝑀 ≥ 𝑀 ∗
+
+> ub
+
+. The output-owning role can therefore piggyback issue on a tile boundary and resume computation while X-Stage drains the request. Both designs preserve communication volume; they differ in whether the workload requires injection reshaping or already supplies a sufficient drain window. 
+
+## 5 Evaluation 
+
+The evaluation asks two questions. First, do the two model-selected actions improve end-to-end performance: reshaping in MegaMoE (Section 5.2) and piggyback-ing in FlashAttention–A2A (Section 5.3)? Second, do mechanism-level measurements follow the Burst–Gap model quantitatively (Sections 5.2.2 and 5.2.3)? We use three principles to support attribution. Each com-parison holds the compute kernel, input, process mapping, and all paths except the target schedule or communication mechanism constant. Platform parameters (𝑇 0iss , R, Q) are calibrated once by the microbenchmarks in Section 3 and are not refitted to applications. Finally, end-to-end latency, exe-cution timelines, and per-tile instrumentation cross-check the same mechanism at different scales. 
+
+5.1 Experimental Setup 
+
+Experiments run on one eight-GPU system with a re-cent NVIDIA architecture. Each GPU has 148 SMs; NVLink/NVSwitch fully connects the GPUs. Experiments use eight-way expert parallelism (EP=8). The software stack is CUDA 13.1 , PyTorch 2.9 , DeepGEMM at commit 
+
+7f2a703 , and FlashAttention at commit 77aacb6 . The char-acterization in Section 3 uses unidirectional peer-to-peer remote stores. MegaMoE and FlashAttention–A2A use symmetric memory and device-initiated remote stores. Unless noted otherwise, we warm up each configuration, repeat the measurement, and report the median. All paired comparisons use identical inputs, process mappings, and kernel configurations. CUDA events measure kernel latency. Nsight Systems GPU metrics provide Tensor Core timelines, and in-kernel clock64() instrumentation measures sender-visible remote-store spans. The application experiments hold the independently calibrated 𝑇 0iss , R, and Q fixed. For each MegaMoE cell, one untimed invocation performs JIT com-pilation and warm-up. We then collect 20 barrier-aligned CUDA-event trials per rank. For each trial, we take the max-imum latency across ranks and report the median of these per-trial maxima. We rotate scheduler order across cells; two anomalous cells are additionally repeated in three order-rotated paired runs. FlashAttention–A2A timings use a sender-side steady-state boundary. A CUDA event completes after the kernel has consumed its source staging and issued the remote stores; a barrier synchronizes remote visibility once after the back-to-back replay rather than per iteration, matching deployments where the next dependent operator synchronizes before con-suming the fused operator’s output. Back-to-back replay exposes sustained sender-side backpressure. 
+
+5.2 MegaMoE Evaluation 
+
+We first report kernel-level performance across the full con-figuration matrix, then use Tensor Core timelines and per-tile instrumentation to test the backpressure mechanism. 
+
+5.2.1 Kernel Performance. We compare the Expert-Wave scheduler with the interleaved scheduler proposed in Section 4.2 on seven model shapes, W4A8 and W8A8 precision, balanced and skewed routing, and multiple sequence-length and expert configurations, for 84 configura-tions in total. Both implementations share the same compute kernels, warp specialization, symmetric buffers, epilogues, and synchronization paths, and change only the scheduling order of ready Linear-1 and Linear-2 tiles. We report X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Speedup = 𝑇 wave 
+
+𝑇 interleaved 
+
+.
+
+Across all configurations, the interleaved scheduler achieves a 1.18 × geometric-mean speedup, a 1.17 × median speedup, and a 1.62 × maximum speedup. Figure 8 breaks down the results by model, precision, and routing mode. Skewed routing benefits more than balanced routing. Concentrating tokens on hot experts creates longer runs of Linear-2 epilogues under Expert Wave, so ready Linear-1 work supplies a more valuable drain window. Balanced routing produces shorter bursts and more natural separation, leaving less sender-visible stall to remove. A few configurations regress. For example, some balanced configurations with large expert-weight working sets drop to about 0.94 ×. Profiling shows that cross-expert interleaving can reduce the L2 locality of expert weights, offsetting the communication-side gain. X-Stage-aware scheduling there-fore must also balance communication draining against data locality. 
+
+5.2.2 Tensor Core Timeline. Kernel speedup alone does not attribute the gain to X-Stage. The mechanism experi-ments therefore examine the interleaved scheduler across all evaluated shapes to isolate the transformation. We proceed from a global symptom to a quantitative mechanism. Ten-sor Core timelines show whether concentrated remote-store injection creates low-activity intervals before the per-tile analysis tests the critical-path stall equation derived before implementation (Section 5.2.3). If X-Stage backpressure causes the gain, concentrated bursts under the wave schedule should periodically suppress Tensor Core activity, while interleaving should shorten those intervals without changing communication volume. Figure 9 confirms this pattern for representative balanced and skewed configurations. The expert-wave scheduler shows phased ex-ecution: after consecutive Linear-2 epilogues inject remote stores, Tensor Core activity drops or develops a long tail. Interleaving distributes shorter bursts among Linear-1 and Linear-2 work, raising average Tensor-pipeline activity and shortening low-utilization intervals. The timeline establishes correlation with injection reshaping but does not locate the stall or test its magnitude; per-tile measurements do so next. 
+
+5.2.3 Per-Tile Remote-Store Span and Critical-Path Stall. We instrument two quantities for every Linear-2 tile. The epilogue records the sender-visible remote-store span 
+
+𝑇 RS , including instruction issue and any waiting induced by X-Stage backpressure. Independently, the MMA warpgroup records time spent at tile entry waiting for a staging slot (tmem_empty ). The first observes the source of backpressure; the second observes what reaches the compute critical path. 
+
+Span distribution. If the wave schedule supplies an in-sufficient gap, the Burst–Gap model predicts a drain-limited aggregate span near Kact Vt/R , where Kact is the number of producers participating in the aligned burst. Interleaving should move the span toward a backpressure-free floor con-sisting of 𝑇 0iss plus fixed staging overhead. Figure 10 exhibits both regimes. For skewed W8A8 routing, the seven expert-wave me-dians range from 7.9 to 9.9 𝜇 s and have pronounced tails. After interleaving, all seven narrow to 3.6–3.9 𝜇 s. For three representative shapes, we additionally redirect the stores to local HBM: the interleaved remote-store medians are within 
+
+0.5 𝜇 s of these local-store controls. The other four shapes fall in the same narrow range but do not have an independent local-store control. The shift is therefore directly tied to the backpressure-free floor for three shapes and is consistent with that floor for all seven. The robust application-level result is that changing only the schedule moves all seven span distributions from a broad, model-sensitive regime to a narrow floor-like regime. 
+
+Mapping span to compute stall. The reduction in span is not itself overall kernel speedup. By Equation 15, only the portion beyond the immediately available mainloop cover window reaches the MMA critical path. For each sampled tile, we substitute its measured epilogue span and the full-tile mainloop time of its successor into Equation 15. This yields a prediction for Δ𝑡 , which we compare against an independent MMA-side stall measurement. Table 2 reports the comparison. For six skewed configura-tions with visible wave-schedule backpressure, the equation predicts 1.5–4.9 𝜇 s per tile and the measured medians are 
+
+0.65 –4.3 𝜇 s. The approximation consistently overpredicts these medians by 0.45 –0.82 𝜇 s, but preserves their ordering and scale. For the interleaved schedule, it predicts zero and measurements are at most 0.05 𝜇 s. DSv4-Pro provides a nega-tive control: its 9.54 𝜇 s Linear-2 mainloop already covers the 
+
+7.88 𝜇 s wave span, so both the equation and instrumentation indicate negligible stall, and its kernel-level gain is corre-spondingly small. These observations support the proposed path from X-Stage backpressure, through double-buffered staging, to the Tensor Core critical path while also exposing the approximation error of the one-window model. 
+
+5.3 FlashAttention–A2A End-to-End Performance 
+
+We fuse the Ulysses All-to-All path with FlashAttention-3 (FA3) and FlashAttention-4 (FA4) and sweep sequence length 
+
+𝑀 . The compared implementations are: 
+
+• FA-only: the same FlashAttention compute path used by the corresponding fused implementation; 
+
+• A2A-only: the same post-attention All-to-All com-munication volume executed independently; 
+
+• Serial: FlashAttention followed by the same post-attention All-to-All, without tile-level fusion; and Xian et al. 
+
+Figure 8. MegaMoE kernel speedup. Speedup of the X-Stage-aware interleaved scheduler over the expert-wave scheduler, across models, precisions, and routing configurations. 
+
+Figure 9. MegaMoE Tensor Core timeline (Tensor-pipe active, percentage of peak). The interleaved scheduler dis-tributes communication bursts among Linear-1 and Linear-2 work, reducing backpressure-associated intervals of low Ten-sor Core activity. 
+
+• X-Stage-Fused: existing compute or epilogue roles is-sue remote stores at tile boundaries, with no dedicated communication warp or SM. In addition to sender-visible speedup over Serial, we report the measured sender-side residual beyond FlashAttention alone, 
+
+𝐸 res = 𝑇 fused − 𝑇 FA .
+
+A residual near zero means that issue and backpressure overhead are nearly absent from the measured sender-side path; it does not assert remote-visible completion. We also report the sender-visible hiding ratio 
+
+𝐻 = 1 − 𝑇 fused − 𝑇 FA 
+
+𝑇 serial − 𝑇 FA 
+
+. (21) 
+
+Figure 10. Sender-visible remote-store span for one MegaMoE Linear-2 tile. Consecutive Linear-2 work un-der the expert-wave scheduler produces longer, heavy-tailed spans. Interleaving shifts the distribution toward the backpressure-free range, where Linear-1 computation can cover the stores. The denominator uses the measured incremental cost in the serial composition, rather than an independently timed A2A kernel, because cache state, synchronization, and launch overhead can differ across compositions. 
+
+Measurement methodology. Three effects complicate the FlashAttention measurements. First, the CuteDSL Python launch overhead is comparable to short-sequence FA4 kernel time and would impose a host-side timing floor. We remove it from the timing window by replaying each FA4 variant from a CUDA Graph and measuring device execution with X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Table 2. Test of the per-tile stall model (W8A8, skewed routing, 55,808 tokens, 8 GPUs; times in μs). Span en-tries are wave/interleaved medians; 𝑇 mma entries are full-tile L2/L1 mainloop medians. Each Δ𝑡 entry is predic-tion/measurement.                                     
+
+> Span 𝑇 mma Δ𝑡 (pred. / meas.) Model Wave / int. L2 / L1 Wave Int. DiT-MoE 9.93 / 3.77 5.30 / 9.77 4.63 / 4.18 0 / 0.04 Qwen3.5 9.17 / 3.82 4.24 / 14.40 4.94 / 4.31 0 / 0.04 Hy3 9.68 / 3.59 6.09 / 10.79 3.60 / 3.08 0 / 0.05 MiMo-V2.5 9.22 / 3.94 7.77 / 7.57 1.45 / 0.71 0 / 0.05 GLM-5.2 9.53 / 3.63 7.99 / 18.77 1.54 / 0.92 0 / 0.04 DSv4-Flash 9.48 / 3.83 8.01 / 7.40 1.47 / 0.65 0 / 0.05 DSv4-Pro 7.88 / 3.55 9.54 / 11.57 0 / 0.06 0 / 0.04
+
+Table 3. Sender-visible X-Stage-aware FlashAttention– A2A performance. Times other than hiding ratio and speedup are in μs.                                                                
+
+> Method / 𝑀 8,192 16,384 32,768 49,152 65,536
+> FA3 + A2A
+> FA3 only 195.2 785.5 3,236.7 7,275.6 13,249.4 Serial 295.6 968.3 3,579.6 7,767.9 13,936.6
+> Fused 207.0 795.5 3,241.5 7,285.7 13,218.3
+> Hiding ratio 88% 95% 99% 98% ∼100% ∗
+> Speedup 1.428 ×1.217 ×1.104 ×1.066 ×1.054 ×
+> FA4 + A2A †
+> FA4 only 85.4 346.5 1,439.4 3,281.4 5,340.7 Serial 140.9 462.4 1,660.9 3,661.7 5,813.0
+> Fused 99.4 356.6 1,429.2 3,282.1 5,348.9
+> 𝐸 res +14 .0+10 .1−10 .2+0.7+8.2
+> Hiding ratio 75% 91% ∼100% ∗100% 98%
+> Speedup 1.417 ×1.297 ×1.162 ×1.116 ×1.087 ×
+> ∗Values at or slightly above 100% reflect measurement noise once A2A issue overhead is hidden within the sender-side timing boundary. †FA4 uses steady-state CUDA Graph replay; the 𝑀 =65 ,536 column is the clock-stabilized rerun described in the text. FA3 uses per-iteration steady-state timing. Metrics are computed from unrounded medians.
+
+events; profiler-reported device time provides a cross-check. FA3 launch overhead is small relative to its kernel time, so steady-state event timing is sufficient. Second, the hiding ratio has a small denominator at short sequences, while 𝐸 res at long sequences subtracts similar millisecond-scale measurements; both amplify noise and can produce small negative residuals. We reduce this noise through matched-path comparisons, medians, rotated execu-tion order, and repeated runs. Third, thermal dynamic volt-age and frequency scaling (DVFS) [ 24 ] can shift SM clocks across experiment blocks. We monitor clocks and repeat af-fected points in short, clock-stabilized runs. The resulting residuals are consistent with a small nonnegative issue over-head; we treat slightly negative values as noise rather than evidence that communication accelerates attention. 
+
+End-to-end speedup. Table 3 shows the expected trend. At shorter evaluated sequences, All-to-All occupies a larger fraction of serial time, and FA4 and FA3 reach maximum speedups of 1.42 × and 1.43 ×, respectively, at 𝑀 = 8,192 .At longer sequences, speedup falls to approximately 1.05 –
+
+1.09 ×. This does not indicate worse sender-side hiding. If the measured A2A issue path is fully covered, 
+
+𝑇 fused ≈ 𝑇 FA ,
+
+and the ideal speedup is 
+
+𝑆 max ≈ 𝑇 FA + 𝑇 A2A 
+
+𝑇 FA 
+
+= 1 + 𝑇 A2A 
+
+𝑇 FA 
+
+.
+
+As full-attention compute grows faster than the measured A2A contribution, this upper bound naturally approaches one. Speedup measures the sender-visible A2A overhead available to cover; 𝐸 res and 𝐻 measure how much of that overhead remains within the stated boundary. 
+
+Residual-exposure test. The sequence-length trend tests the opposing predictions from Section 4.3. The worst-case threshold 𝑀 ∗ 
+
+> ub
+
+(K =148 ) ≈ 1.0K is below all measured points. The X-Stage model therefore predicts no drain-induced growth over the measured range: the residual should remain near a small issue and measurement floor. The completion-coupled counterfactual predicts an additional component that grows from approximately 16 𝜇 s at 𝑀 = 8,192 to approximately 120 𝜇 s at 𝑀 = 65 ,536 .Figure 11 overlays these prior predictions with FA4 mea-surements. At 𝑀 ≤ 16 ,384 , 𝐸 res is a small positive 10 –14 𝜇 sand does not grow. The three longer-sequence estimates (−10 .2, +0.7, and +8.2 𝜇 s) are within 0.7% of the millisecond-scale kernel times and are consistent with zero after account-ing for the DVFS noise band. Direct profiling attributes the remaining 3–12 𝜇 s primarily to communication issue inside the kernel; it grows only slowly with the number of burst waves and remains on the scale expected for backpressure-free issue. The completion-coupled prediction at 𝑀 = 65 ,536 is nearly an order of magnitude above the largest positive measured residual and, more importantly, has the opposite slope. The counterfactual refers to the same persistent fused kernel with post-issue progress disabled, not to the Serial baseline; it re-tains tile fusion and avoids separate-kernel launch and syn-chronization. The comparison tests whether the issuing role decouples from post-issue progress, not when a downstream consumer can safely read the final output. Its 16 𝜇 s short-sequence prediction overlaps the fixed issue floor, so the first point alone cannot distinguish the models. The sequence-length slope does. FA3 follows the same pattern: its residual Xian et al. 
+
+Figure 11. Relative sender-visible residual 𝐸 res (𝑀 )/ 𝑇 FA 
+
+for FA4+A2A. Prior predictions use the once-calibrated platform parameters and measured compute-side timing, without application refitting. The dotted reference represents an approximately 16 𝜇 s issue floor, and the blue band is a 
+
+±2% DVFS envelope. The worst-case convergence threshold 
+
+𝑀 ∗ 
+
+> ub
+
+(K =148 ) ≈ 1.0K lies below all measured points. estimates range from −31 .1 to +10 .1 𝜇 s, and their absolute magnitude is below 0.25% of FA-only time at 𝑀 ≥ 32 ,768 .
+
+## 6 Discussion and Limitations 
+
+6.1 X-Stage as a Calibrated Execution Abstraction 
+
+X-Stage abstracts the aggregate post-issue behavior observed between remote-store issue and remote-visible completion. This behavior may reflect the combined effects of the store pipeline, cache hierarchy, fabric injection, flow-control cred-its, and receiver-side resources. Rather than requiring soft-ware to identify or model each component separately, X-Stage summarizes their externally visible effects as 
+
+M𝑋 =  𝑇 0iss , R, Q .
+
+Different systems may produce different parameter val-ues. The same calibration and scheduling method applies only while their external behavior is adequately described by the issue–drain–capacity model. A change in topology, routing, store width, producer count, memory placement, or GPU generation may require recalibration and may expose behavior outside the current fluid approximation. The drain horizon V/R predicts when the sender can return to low-cost issue. It does not replace remote comple-tion or memory-ordering semantics. X-Stage-aware kernels retain the required fences, signals, buffer lifetime rules, and consumer-side readiness checks. 
+
+6.2 Two Levels of Pipeline Decoupling 
+
+A fused GEMM epilogue often writes computed results to remote memory. Local buffering and warp specialization decouple the Tensor Core warpgroup from the epilogue or issuing role. This software layer can absorb a short mismatch, but finite slots eventually fill if issue remains backpressured. X-Stage exposes a second level after accepted issue. While effective outstanding capacity remains available, requests can advance toward remote visibility and the issuing role can resume computation or epilogue work. This decoupling is finite, not unbounded. Sustained injection above the effec-tive drain rate accumulates requests, lengthens later issue operations, and propagates backpressure through local stag-ing. Adding software buffers can delay this propagation but cannot remove the rate or capacity constraint. 
+
+6.3 Adaptive Burst Shaping and Scope 
+
+MegaMoE interleaving is a form of burst shaping : it preserves total work and communication volume but redistributes re-mote stores in time. More generally, a scheduler can use 
+
+V
+
+𝑇 0iss + G ≤ R , V − R 𝑇 0iss 
+
+ 
+
+> +
+
+≤ Q 
+
+to jointly choose tile size, useful gap, software staging depth, and the number of issuing resources. Reordering across tiles or experts can also change cache locality when too much cross-wave work is kept in flight. A practical gen-erator or runtime should compare predicted X-Stage stall reduction with locality cost and select the original or inter-leaved schedule for the current routing and working set. The evidence presented here has two limitations. First, the microbenchmarks study one-sided remote stores; loads, atomics, collectives with different progress engines, and cross-node networks may exhibit different constraints. Sec-ond, the model predicts sender-side backpressure but does not by itself account for synchronization, receiver conges-tion, or all launch and scheduling overheads. These limita-tions are why we treat X-Stage as a calibrated execution abstraction rather than a universal hardware description. 
+
+## 7 Related Work 
+
+7.1 Device-Initiated One-Sided Communication 
+
+Multi-GPU systems differ in how communication is initiated and which resources advance it. Conventional collectives are submitted by the host as separate communication kernels on CUDA streams and overlap with computation at ker-nel or operator granularity [ 26 , 36 ]. Peer memory mapping, symmetric memory, and device-initiated communication let a GPU kernel issue one-sided remote operations directly, embedding fine-grained data movement in a long-running compute kernel [23, 28]. Communication may execute in independent kernels or on dedicated SMs, or it may share CTAs, warps, and SMs with computation. Hybrid systems select between these or-ganizations according to the operation and workload [ 34 , 36 ]. Dedicated execution can provide more predictable progress but consumes compute resources; shared execution avoids a X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+separate launch and long-lived reservation but requires finer coordination. These choices determine who issues remote operations. X-Stage is orthogonal: it models when finite post-issue resources backpressure that issuer and, through local staging, upstream computation. 
+
+7.2 Fine-Grained Communication–Computation Fusion 
+
+Prior work constructs fine-grained overlap through task de-composition, kernel generation, and resource scheduling. CoCoNet represents communication and computation as first-class program structures and applies fusion and overlap transformations. FLUX over-decomposes both kinds of work into one fused kernel. Comet uses MoE dependencies and task reordering to coordinate communication and expert computation [2, 18, 43]. GC3 supplies a programmable collective DSL and optimiz-ing compiler. TileLink uses tile-centric primitives to connect communication with computation and generate fused im-plementations [ 3 , 44 ]. MegaScale-MoE combines device-side signals, communication-resource tuning, and swizzling for tile-level overlap. ParallelKittens supports intra- and inter-SM scheduling and selects shared or dedicated resources according to communication structure [20, 34]. These systems expose task decomposition, issue roles, de-pendencies, and remote tile readiness. Their public abstrac-tions generally do not quantify the finite sender-visible state after remote-store issue or predict when it will backpres-sure computation. X-Stage adds this issue–drain–capacity boundary and uses it to shape burst volume and compute gaps. 
+
+7.3 Analytical Performance Models 
+
+Roofline relates attainable throughput to arithmetic intensity and compute and memory-bandwidth ceilings [ 39 ]. LogP and LogGP describe distributed communication using latency, overhead, per-message gap, and a long-message extension [ 1, 5 ]. Queueing identities such as Little’s law relate average in-flight occupancy, throughput, and residence time [ 21 ]. These models capture aggregate bottlenecks or steady-state costs. The Burst–Gap model instead targets sender-visible remote-store issue, finite post-issue capacity, and recovery between repeated bursts inside a fused GPU kernel. 
+
+7.4 MoE Communication and Persistent Mega-Kernels 
+
+Expert-parallel MoE layers use Dispatch before expert com-putation and Combine afterward. Communication varies with expert count, routing skew, and parallel scale. Existing systems use grouped GEMM, expert batching, resource parti-tioning, and communication–computation overlap to reduce this cost [20, 43]. Sparse models such as Mixtral and DeepSeek-V3 activate only a subset of experts for each token [ 8, 19 ]. MegaBlocks maps sparse expert computation to block-sparse operations, while FasterMoE models and schedules dynamic expert work-loads [ 14 , 15 ]. Routing skew motivates complementary bal-ancing mechanisms: auxiliary-loss-free balancing shapes router decisions, EPLB adjusts expert placement, and Metro and ReaLB target serving-time expert imbalance [ 9, 37 , 38 ,40 ]. These methods change routing, placement, or sparse computation; X-Stage instead reshapes when an unchanged volume of Combine traffic enters the communication path. Lancet and FSMoE search the wider training graph for computation that can overlap All-to-All and construct pipelines from profiles and dependencies. FLUX, Comet, and MegaScale-MoE use decomposition, fine-grained scheduling, and resource partitioning for tile-level overlap. Cui et al. use tile-level signals to overlap expert computation and the second All-to-All on separate SM partitions. Deep-GEMM MegaMoE and UniEP further fuse Dispatch , expert computation, and Combine into persistent mega-kernels [2, 4, 10, 16, 20, 29, 43, 45]. DiT-MoE, EC-DIT, and Race-DiT study sparse expert ar-chitectures, expert-choice routing, and joint token–expert competition, respectively, showing that dynamic token-to-expert routing is an important scaling dimension for DiTs [13, 35, 41]. X-Stage quantifies the finite decoupling between remote-store issue and post-issue draining. We use that model to interleave Linear-1 and Linear-2 work across expert waves, changing the temporal distribution of Combine stores while preserving dependencies and communication volume. 
+
+7.5 Sequence Parallelism and FlashAttention 
+
+Distributed long-sequence attention commonly uses All-to-All or ring-based communication. DeepSpeed-Ulysses uses All-to-All to convert between sequence and head partitions. Ring Attention circulates K/V blocks and overlaps transfer with blockwise attention. USP combines these approaches for different model shapes and network topologies [12, 17, 22]. The FlashAttention family uses IO-aware tiling and asyn-chronous pipelines to improve single-GPU attention effi-ciency [ 6 , 7, 31 , 42 ]. Other systems place tile-level communi-cation around projection, attention, or output stages [ 20 , 34 ]. Our distinction is the explicit use of post-issue remote-store progress: the output-owning role returns to computation after issue, while X-Stage drains the accepted request. In the evaluated region, this avoids reserving a warp or SM solely to wait for communication progress. 
+
+## 8 Conclusion 
+
+This paper identifies X-Stage, a software-visible execution phase between remote-store issue and remote-visible comple-tion. Accepted stores can progress while the issuer resumes useful work, but sustained injection eventually fills finite effective capacity and backpressures later issue, the epilogue, Xian et al. 
+
+and the Tensor Core producer. A lightweight Burst–Gap model captures this behavior with backpressure-free issue time, effective drain rate, and effective outstanding capacity. The model guides two complementary kernel transforma-tions. Cross-wave Linear-1/Linear-2 interleaving reshapes MegaMoE Combine bursts and provides a 1.18 × geometric-mean and 1.62 × maximum kernel speedup across 84 config-urations. A piggybacked FlashAttention–A2A pipeline lets the output-owning role issue remote stores and resume com-putation without a dedicated communication warp or SM. FA3 and FA4 reach maximum speedups of 1.43 × and 1.42 ×,respectively, and their sender-visible steady-state times ap-proach FlashAttention-only time as the Q-loop covers post-issue draining. X-Stage complements tile dependencies and remote-readiness protocols by exposing a missing scheduling dimension: the rate and capacity of accepted but not yet completed remote stores. The current characterization covers one-sided remote stores, so other communication operations require independent validation. Within that scope, the model provides a measurable connection between remote-store behavior and fused-kernel scheduling. 
+
+## References 
+
+[1] Albert Alexandrov, Mihai F. Ionescu, Klaus E. Schauser, and Chris Scheiman. 1995. LogGP: Incorporating Long Messages into the LogP Model. In Proceedings of the Seventh Annual ACM Symposium on Par-allel Algorithms and Architectures (SPAA) . 95–105. [2] Li-Wen Chang, Wenlei Bao, Qi Hou, Chengquan Jiang, Ningxin Zheng, Yinmin Zhong, Xuanrun Zhang, Zuquan Song, Chengji Yao, Ziheng Jiang, Haibin Lin, Xin Jin, and Xin Liu. 2024. FLUX: Fast Software-based Communication Overlap on GPUs Through Kernel Fusion. arXiv preprint arXiv:2406.06858 (2024). [3] Meghan Cowan, Saeed Maleki, Madanlal Musuvathi, Olli Saarikivi, and Yifan Xiong. 2023. MSCCLang: Microsoft Collective Communication Language. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 (ASPLOS) . doi: 10.1145/3575693.3575724 Originally released as GC3, arXiv:2201.11840. [4] Minyu Cui, Anna Wingkvist, and Morgan Ericsson. 2026. Fine-grained Computation-Communication Overlap via Tile-level Signaling and Scheduling for Mixture-of-Experts. arXiv preprint arXiv:2607.19539 
+
+(2026). [5] David Culler, Richard Karp, David Patterson, Abhijit Sahay, Klaus Erik Schauser, Eunice Santos, Ramesh Subramonian, and Thorsten von Eicken. 1993. LogP: Towards a Realistic Model of Parallel Computation. In Proceedings of the Fourth ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming (PPoPP) . 1–12. [6] Tri Dao. 2024. FlashAttention-2: Faster Attention with Better Paral-lelism and Work Partitioning. In International Conference on Learning Representations (ICLR) . 35549–35562. [7] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. In Advances in Neural Information Processing Systems 35 (NeurIPS) .[8] DeepSeek-AI. 2024. DeepSeek-V3 Technical Report. arXiv preprint arXiv:2412.19437 (2024). [9] DeepSeek-AI. 2025. EPLB: Expert Parallelism Load Balancer. GitHub repository. https://github.com/deepseek-ai/EPLB .[10] DeepSeek-AI. 2026. DeepGEMM: High-performance Tensor Core Kernels and Mega MoE. GitHub repository. Working reference; add commit hash and access date before submission. [11] DeepSeek-AI. 2026. DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence. arXiv preprint arXiv:2606.19348 (2026). [12] Jiarui Fang and Shangchun Zhao. 2024. USP: A Unified Sequence Parallelism Approach for Long Context Generative AI. arXiv preprint arXiv:2405.07719 (2024). [13] Zhengcong Fei, Mingyuan Fan, Changqian Yu, Debang Li, and Junshi Huang. 2024. Scaling Diffusion Transformers to 16 Billion Parameters. 
+
+arXiv preprint arXiv:2407.11633 (2024). [14] Trevor Gale, Deepak Narayanan, Cliff Young, and Matei Zaharia. 2023. MegaBlocks: Efficient Sparse Training with Mixture-of-Experts. In 
+
+Proceedings of Machine Learning and Systems (MLSys) , Vol. 5. 288–304. [15] Jiaao He, Jidong Zhai, Tiago Antunes, Haojie Wang, Fuwen Luo, Shangfeng Shi, and Qin Li. 2022. FasterMoE: Modeling and Optimizing Training of Large-Scale Dynamic Pre-trained Models. In Proceedings of the 27th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming (PPoPP) . 120–134. doi: 10.1145/3503221.3508418 
+
+[16] Ke Hong, Xiuhong Li, Minxu Liu, Qiuli Mao, Tianqi Wu, Zixiao Huang, Lufang Chen, Zhong Wang, Yichong Zhang, Zhenhua Zhu, Guohao Dai, and Yu Wang. 2026. Efficient and Adaptable Overlapping for Computation and Communication via Signaling and Reordering. In 
+
+Proceedings of the 21st European Conference on Computer Systems (Eu-roSys) . 1894–1911. doi: 10.1145/3767295.3769370 
+
+[17] Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuaiwen Leon Song, Samyam Rajbhandari, and Yuxiong He. 2023. DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models. arXiv preprint arXiv:2309.14509 (2023). [18] Abhinav Jangda, Jun Huang, Guodong Liu, Amir Hossein Nodehi Sa-bet, Saeed Maleki, Youshan Miao, Madanlal Musuvathi, Todd Mytkow-icz, and Olli Saarikivi. 2022. Breaking the Computation and Commu-nication Abstraction Barrier in Distributed Machine Learning Work-loads. In Proceedings of the 27th ACM International Conference on Ar-chitectural Support for Programming Languages and Operating Systems (ASPLOS) . 402–416. doi: 10.1145/3503222.3507778 
+
+[19] Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, Gianna Lengyel, Guil-laume Bour, Guillaume Lample, Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep Subramanian, Sophia Yang, Szymon Antoniak, Teven Le Scao, Théophile Gervet, Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. 2024. Mixtral of Experts. arXiv preprint arXiv:2401.04088 (2024). [20] Chao Jin, Ziheng Jiang, Zhihao Bai, Zheng Zhong, Juncai Liu, Xiang Li, Ningxin Zheng, Xi Wang, Cong Xie, Qi Huang, Wen Heng, Yiyuan Ma, Wenlei Bao, Size Zheng, Xuegui Zheng, Yanghua Peng, Haibin Lin, Xuanzhe Liu, Xin Jin, and Xin Liu. 2026. MegaScale-MoE: Large-Scale Communication-Efficient Training of Mixture-of-Experts Models in Production. In Proceedings of the Twenty-First European Conference on Computer Systems (EuroSys) . 366–382. doi: 10.1145/3767295.3769325 
+
+[21] John D. C. Little. 1961. A Proof for the Queuing Formula: 𝐿 = 𝜆𝑊 .
+
+Operations Research 9, 3 (1961), 383–387. [22] Hao Liu, Matei Zaharia, and Pieter Abbeel. 2024. RingAttention with Blockwise Transformers for Near-Infinite Context. In International Conference on Learning Representations (ICLR) . 3992–4008. [23] Yijun Ma, Siyuan Shen, Tiancheng Chen, Akhil Langer, Jiri Kraus, Ben-jamin Glick, Craig Belusar, Jeff Hammond, and Torsten Hoefler. 2026. Demystifying NVSHMEM: A System-Level Analysis on Symmetric Memory and Device-Initiated Operations in GPU Communication. 
+
+arXiv preprint arXiv:2606.05951 (2026). [24] Xinxin Mei, Qiang Wang, and Xiaowen Chu. 2017. A Survey and Measurement Study of GPU DVFS on Energy Conservation. Digital X-Stage: An Overlooked Pipeline Stage for Communication–Computation Overlap in DiT Inference 
+
+Communications and Networks 3, 2 (2017), 89–100. [25] NVIDIA. 2026. CUDA C++ Programming Guide: Peer Device Memory Access. NVIDIA Developer Documentation. Accessed 2026; add exact URL and access date before submission. [26] NVIDIA. 2026. NVIDIA Collective Communications Library (NCCL) Documentation. https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/ . Version 2.30.7, accessed July 2026. [27] NVIDIA. 2026. NVLink and NVSwitch System Overview. NVIDIA Data Center Documentation. Accessed 2026; add exact URL and access date before submission. [28] NVIDIA. 2026. NVSHMEM: GPU-Initiated Communication Library. NVIDIA Developer Documentation. Accessed 2026; add exact URL and access date before submission. [29] Xinglin Pan, Wenxiang Lin, Lin Zhang, Shaohuai Shi, Zhenheng Tang, Rui Wang, Bo Li, and Xiaowen Chu. 2025. FSMoE: A Flexible and Scalable Training System for Sparse Mixture-of-Experts Models. In 
+
+Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 (ASPLOS) . 524–539. doi: 10.1145/3669940.3707272 
+
+[30] William Peebles and Saining Xie. 2023. Scalable Diffusion Models with Transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) . 4195–4205. [31] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and Tri Dao. 2024. FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision. In Advances in Neural Information Processing Systems 37 (NeurIPS) . 68658–68685. [32] Noam Shazeer. 2020. GLU Variants Improve Transformer. arXiv preprint arXiv:2002.05202 (2020). [33] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. 2019. Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism. 
+
+arXiv preprint arXiv:1909.08053 (2019). [34] Stuart H. Sul, Simran Arora, Benjamin F. Spector, and Christopher Ré. 2026. ParallelKittens: Systematic and Practical Simplification of Multi-GPU AI Kernels. In Proceedings of Machine Learning and Systems (MLSys) .[35] Haotian Sun, Tao Lei, Bowen Zhang, Yanghao Li, Haoshuo Huang, Ruoming Pang, Bo Dai, and Nan Du. 2025. EC-DIT: Scaling Diffusion Transformers with Adaptive Expert-Choice Routing. In International Conference on Learning Representations (ICLR) . 72383–72401. [36] Didem Unat, Ilyas Turimbetov, Mohammed Issa, Dogan Sagbili, Flavio Vella, Daniele De Sensi, and Ismayil Ismayilov. 2026. The Landscape of GPU-Centric Communication. Comput. Surveys 58, 12 (2026). doi: 10.1 145/3813799 
+
+[37] Lean Wang, Huazuo Gao, Chenggang Zhao, Xu Sun, and Damai Dai. 2024. Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts. arXiv preprint arXiv:2408.15664 (2024). [38] Yingping Wang, Yi Wu, Xiangyu Wu, Junwei Cui, Weilin Cai, Zhijiang Guo, and Jiayi Huang. 2026. ReaLB: Real-Time Load Balancing for Multimodal MoE Inference. arXiv preprint arXiv:2604.19503 (2026). [39] Samuel Williams, Andrew Waterman, and David Patterson. 2009. Roofline: An Insightful Visual Performance Model for Multicore Ar-chitectures. Commun. ACM 52, 4 (2009), 65–76. [40] Yanpeng Yu, Haiyue Ma, Krish Agarwal, Nicolai Oswald, Qijing Huang, Hugo Linsenmaier, Chunhui Mei, Ritchie Zhao, Ritika Borkar, Bita Darvish Rouhani, David Nellans, Ronny Krashinsky, and Anurag Khan-delwal. 2025. Efficient MoE Serving in the Memory-Bound Regime: Balance Activated Experts, Not Tokens. arXiv preprint arXiv:2512.09277 
+
+(2025). [41] Yike Yuan, Ziyu Wang, Zihao Huang, Defa Zhu, Xun Zhou, Jingyi Yu, and Qiyang Min. 2025. Expert Race: A Flexible Routing Strategy for Scaling Diffusion Transformer with Mixture of Experts. In Proceed-ings of the 42nd International Conference on Machine Learning (ICML) .73671–73682. [42] Ted Zadouri, Markus Hoehnerbach, Jay Shah, Timmy Liu, Vijay Thakkar, and Tri Dao. 2026. FlashAttention-4: Algorithm and Ker-nel Pipelining Co-Design for Asymmetric Hardware Scaling. arXiv preprint arXiv:2603.05451 (2026). [43] Shulai Zhang, Ningxin Zheng, Haibin Lin, Ziheng Jiang, Wenlei Bao, Chengquan Jiang, Qi Hou, Weihao Cui, Size Zheng, Li-Wen Chang, Quan Chen, and Xin Liu. 2025. Comet: Fine-grained Computation-Communication Overlapping for Mixture-of-Experts. In Proceedings of Machine Learning and Systems (MLSys) .[44] Size Zheng, Jin Fang, Xuegui Zheng, Qi Hou, Wenlei Bao, Ningxin Zheng, Ziheng Jiang, Dongyang Wang, Jianxi Ye, Haibin Lin, Li-Wen Chang, and Xin Liu. 2025. TileLink: Generating Efficient Compute-Communication Overlapping Kernels Using Tile-Centric Primitives. In Proceedings of Machine Learning and Systems (MLSys) .[45] Size Zheng, Xuegui Zheng, Li-Wen Chang, and Jidong Zhai. 2026. UniEP: Unified Expert-Parallel MegaKernel MoE for LLM Training. In 
+
+Proceedings of the 35th International Symposium on High-Performance Parallel and Distributed Computing (HPDC) . 387–401. doi: 10.1145/38 06645.3807818

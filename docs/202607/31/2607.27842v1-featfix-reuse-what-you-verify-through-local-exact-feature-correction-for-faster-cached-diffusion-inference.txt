@@ -1,0 +1,675 @@
+Title: FeatFix: Reuse What You Verify through Local Exact-Feature Correction for Faster Cached Diffusion Inference
+
+URL Source: https://arxiv.org/pdf/2607.27842v1
+
+Published Time: Fri, 31 Jul 2026 00:41:24 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# FeatFix: Reuse What You Verify through Local Exact-Feature Correction for Faster Cached Diffusion Inference 
+
+## Hanshuai Cui 2,1 , Zhiqing Tang 1, Zhi Yao 2,1 , Qianli Ma 1, Fanshuai Meng 1, Weijia Jia 1
+
+> 1
+
+Institute of Artificial Intelligence and Future Networks, Beijing Normal University, Zhuhai 519087, China 
+
+> 2
+
+School of Artificial Intelligence, Beijing Normal University, Beijing 100875, China 
+
+Abstract 
+
+Diffusion models are widely used to generate high-quality im-ages and videos, but their iterative denoising process remains computationally intensive. A growing class of training-free accelerators reduces this cost by reusing cached intermediate features or forecasting future ones. To control draft drift, these methods sometimes compute an exact block feature for veri-fication. Yet the resulting exact feature is typically used only to measure discrepancy or guide a later decision and is then discarded. We find that this previously computed feature can instead be reused for correction. Forwarding it at the verifica-tion site resets the local draft residual and reduces downstream feature error. Based on this observation, we introduce FeatFix, a local exact-feature correction method for cached diffusion in-ference. FeatFix operates at a fixed sparse set of layer–timestep sites. At each selected site, it replaces the complete draft block output with the exact output computed from the same incom-ing state, avoiding token- or channel-level partial replacement and full-timestep recomputation. Experiments across four im-age and video backbones show that FeatFix consistently ac-celerates generation, achieving a speedup of up to 6.70 × over Vanilla while maintaining competitive output quality. 
+
+## Introduction 
+
+Diffusion models have become a widely used paradigm for generating high-fidelity images and increasingly coherent videos (Ho, Jain, and Abbeel 2020; Dhariwal and Nichol 2021; Saharia et al. 2022; Rombach et al. 2022). The same iterative generation principle extends across score-based for-mulations (Song et al. 2021), flow matching (Lipman et al. 2023), and rectified flow (Liu, Gong, and Liu 2023). Modern diffusion transformers (DiTs) improve scalability by replac-ing convolutional denoisers with deep stacks of attention and MLP blocks (Peebles and Xie 2023; Esser et al. 2024). Their inference cost, however, remains tied to repeatedly evaluat-ing those blocks over many denoising timesteps. As model width, depth, spatial resolution, and video length grow, this repeated computation makes latency and resource demands central obstacles to interactive image and video generation. Existing acceleration strategies fall broadly into training-based and training-free categories. Training-based acceler-ation distills a long trajectory into fewer steps or optimizes a consistency objective (Salimans and Ho 2022; Song et al. 2023). It reduces network evaluations but requires additional data, optimization, and a new model artifact, often for each FLUX 
+
+> 5.03×
+> Qwen-Image
+> 2.17×
+> Hunyuan
+> Video-1.5
+> 2.28×
+> DiT-XL/2
+> 3.39×
+> Vanilla
+> FeatFix
+
+Figure 1: Cross-backbone comparisons. Each column pairs Vanilla with FeatFix at the reported speedup across FLUX, Qwen-Image, HunyuanVideo-1.5, and DiT-XL/2. backbone or deployment setting. Training-free acceleration instead operates on a pretrained checkpoint without modify-ing or retraining its parameters. Numerical solvers shorten the trajectory (Karras et al. 2022; Lu et al. 2022), while feature-level methods exploit temporal redundancy inside the denoiser. They reuse cached activations, forecast future features from their history, or selectively refresh exact com-putation (Ma, Fang, and Wang 2024; Selvaraju et al. 2024; Liu et al. 2025a,b,c). Compatibility with pretrained check-points lowers adaptation cost when retraining is unavailable. The underlying draft policy remains responsible for decid-ing where ordinary inference should reuse, forecast, or fully refresh a feature. Reuse and forecasting replace exact intermediate states with cheaper draft features, so approximation error can accu-mulate across timesteps and transformer blocks. To monitor this drift, verification-based accelerators occasionally com-pute a draft block output and its exact counterpart from the 
+
+same incoming state (Liu et al. 2025c). This check already incurs the transformer computation needed to produce a trust-worthy feature. Nevertheless, the Verify control may log the discrepancy, discard the already-computed exact feature, and continue forwarding the draft. The check thus diagnoses the current error without correcting the current state. We find that forwarding the exact tensor at the verification site eliminates the local same-input residual by construction and reduces downstream feature error. Turning an already-computed exact feature into a practical arXiv:2607.27842v1 [cs.CV] 30 Jul 2026 correction raises two key challenges. (C1) How can it correct the current draft without reducing the speedup? Replacing only selected tokens or channels leaves part of the block er-ror uncorrected, while recomputing the full timestep repeats many transformer blocks. The correction should therefore reuse the complete exact block output without any additional exact computation. (C2) How can a correction at only a few sites remain effective downstream? Exact replacement removes the same-input residual at the corrected block, but later layers and timesteps may weaken this local gain because the trajectory has already diverged. We therefore apply cor-rections at fixed, auditable layer–timestep sites and evaluate their effects against a matched-compute Verify control. We introduce FeatFix to address these challenges. It keeps the underlying draft policy unchanged and acts only at a fixed set of layer–timestep verification sites. At each site, FeatFix forwards the complete exact block output computed from the same incoming state instead of the draft. Because the matched Verify control already computes this exact output, FeatFix removes the local residual without additional block evaluation or full-timestep recomputation. We record full re-freshes, paid checks, and forwarded corrections separately to distinguish correction from scheduling. Matched Verify con-trols isolate the effect of forwarding the exact feature, while downstream feature traces test whether that effect persists beyond the corrected site. We evaluate FeatFix on FLUX.1-dev, Qwen-Image, HunyuanVideo-1.5, and DiT-XL/2 across image and video generation. It reaches up to 6.70 × speedup over Vanilla while maintaining competitive output quality. In the controlled FLUX study, FeatFix improves ImageRe-ward over matched Verify, passes the LPIPS non-inferiority guard, and operates at essentially the same latency as Verify. Figure 1 shows examples. Our contributions are threefold. 
+
+• We formulate paid exact-feature reuse as a local correc-tion principle and show why replacing the complete block output is the compute-consistent unit for removing the verified same-input residual. 
+
+• We introduce FeatFix, a draft-policy-independent frame-work for fixed, sparse, and auditable correction with matched Verify controls and explicit full-refresh, paid-check, and forwarded-correction accounting. 
+
+• We validate FeatFix across four image and video back-bones, achieving up to 6.70 × speedup while preserving quality. Feature traces show downstream error reduction, and a controlled evaluation confirms quality gains at the same computational cost. 
+
+## Related Work 
+
+Feature reuse and adaptive caching. Training-free accel-erators exploit temporal redundancy inside a pretrained de-noiser. DeepCache (Ma, Fang, and Wang 2024) introduced intermediate-feature reuse without retraining. FORA (Sel-varaju et al. 2024) and ∆-DiT (Chen et al. 2024) use fixed or structured refresh schedules, whereas ToCa (Zou et al. 2025) selects reusable content at token granularity. Tea-Cache (Liu et al. 2025a) and DiCache (Bu et al. 2026) use proxy errors or feature dynamics to trigger computation. Hi-Cache (Feng et al. 2026), ScalingCache (Gu et al. 2026), and Exact block output [B, N, C]                          
+
+> Token
+> 25/50% Channel
+> 25/50% Whole
+> block
+> 02
+> Block gain (×10 −3 )
+> Tok.25
+> Tok.50
+> Ch.25
+> Ch.50
+> Block-level
+> 467 TFLOPs
+> Full step
+> 759 TFLOPs
+> 1.63× L28 L32 L35 L37
+> E +2
+> E +3
+> M +2
+> M +3
+> L +2
+> L +3
+> 3.1 2.4 3.0 3.8
+> 3.6 3.9 5.8 7.1
+> 2.9 0.9 1.1 1.3
+> 4.7 1.1 1.6 2.0
+> 1.0 0.8 0.9 0.9
+> 2.3 2.0 2.6 2.6
+> win%
+> 95
+> 94
+> 75
+> 77
+> 68
+> 69
+> 048
+> Error reduction (×10 −3 )
+> 24/24 pointwise 95% CIs > 0
+> Overall ↓ 2.54 [2.25, 2.84]
+
+(a) Whole block is the efficient unit. (b) Correction persists downstream. 
+
+Figure 2: Whole-block correction and downstream propaga-tion. Whole-block forwarding reuses the paid exact tensor without partial residuals or whole-timestep recomputation, and its error reduction persists at later layers. DBCache (Cache-DiT Contributors 2025) introduce hierar-chical, scaled, or block-wise reuse. Video methods exploit magnitude, attention, or conditional redundancy (Ma et al. 2025; Zhao et al. 2025; Lyu et al. 2025). These policies decide what to reuse and when to refresh; FeatFix preserves those decisions and acts only when a paid check has produced both draft and exact block outputs. 
+
+Forecasting, verification, and local correction. Tay-lorSeer (Liu et al. 2025b) forecasts DiT features from tem-poral derivatives, while SpeCa (Liu et al. 2025c) combines a Taylor draft with speculative checks and uses discrepancy to accept or reject predicted states and adjust later computation. FeatFix instead asks whether the exact feature produced by a check should replace the current draft or serve only as a discrepancy signal. It defines neither a forecasting rule nor an online acceptance policy and applies to both reuse and fore-cast drafts. Its matched Verify control uses the same draft, incoming state, exact block evaluation, and fixed sites but dis-cards the exact output. Forwarding that output isolates local correction from scheduling and removes the selected block’s same-input residual, although the remaining trajectory may still differ from Vanilla. 
+
+## Method 
+
+Preliminaries 
+
+Diffusion and DiT denoising. Diffusion, flow-matching, and rectified-flow models denoise a sequence of noisy states (Song et al. 2021; Lipman et al. 2023; Liu, Gong, and Liu 2023). DiT implements the denoiser with L transformer blocks (Peebles and Xie 2023). For block ℓ at timestep t, let 
+
+ut,ℓ be its input and 
+
+hf 
+
+> t,ℓ
+
+= Bℓ(ut,ℓ ; t, c ), (1) its exact output, where c denotes text or class conditioning. A generation trajectory therefore contains a two-dimensional xT
+
+Full block 
+
+## hf
+
+# xt+1 
+
+Cached 
+
+draft 
+
+## hd
+
+# xt xt-1
+
+Cached 
+
+draft 
+
+## hd
+
+# xk
+
+Full block 
+
+## hf
+
+# x1
+
+Cached 
+
+draft 
+
+## hd
+
+# ⋯ ⋯ ⋯ ⋯ ⋯ x₀
+
+BACKBONE CALIBRATION 
+
+draft risk: low ⟶ high 
+
+t : x
+
+ₜ ⟶ x₀ 
+
+ℓ
+
+> shallow
+> deep
+
+frozen 
+
+d(hd, h f)
+
+PAID -SITE LOCAL CORRECTION 
+
+> PAID CHECK
+
+hd
+
+hf
+
+VERIFY discard 
+
+> later
+
+FeatFix hd 
+
+> replace later
+
+(t, ℓ)∈S
+
+S
+
+d( hd,h f)
+
+u(t, ℓ)
+
+> local reset
+
+hout =h fhf
+
+hd
+
+hf
+
+exact 
+
+draft 
+
+paid 
+
+hd hf
+
+Paid check 
+
+draft + exact 
+
+> ✓
+
+Figure 3: FeatFix framework. At sites defined by a frozen layer–timestep schedule, FeatFix forwards the already-computed exact whole-block feature while the matched Verify arm discards it. grid of layer–timestep sites (t, ℓ ) rather than only a sequence of denoising steps. 
+
+Feature reuse and forecasting. Training-free accelerators avoid evaluating Eq. (1) at every site. A reuse policy forwards a stored feature, e.g., hd 
+
+> t,ℓ
+
+= hf 
+
+> s,ℓ
+
+for an earlier refresh s.TaylorSeer first showed that future DiT features can instead be forecast from their temporal history (Liu et al. 2025b). In generic form, an order-K Taylor draft is 
+
+hd 
+
+> t,ℓ
+
+=
+
+> K
+
+X
+
+> k=0
+
+(t − s)k
+
+k!
+
+\∆(k)hs,ℓ , (2) with finite differences estimated at exact refreshes. We denote any such base draft policy by D. Importantly, D decides when ordinary sites reuse, predict, or refresh. 
+
+Paid verification and hidden drift. At skipped sites, hf
+
+> t,ℓ
+
+is unavailable, so the local error remains hidden. A paid verification exposes it by evaluating the draft and exact block output from the same incoming state: 
+
+hd 
+
+> t,ℓ
+
+= D(ut,ℓ ), hf 
+
+> t,ℓ
+
+= Bℓ(ut,ℓ ; t, c ). (3) We log their normalized relative-L1 discrepancy 
+
+drel -L1 (hd, h f ) = ∥hd − hf ∥1
+
+∥hf ∥1 + ϵ . (4) Here ϵ > 0 ensures numerical stability. This audit signal does not route the current sample: Verify may use it for later decisions but still forwards hd 
+
+> t,ℓ
+
+and discards the paid hf
+
+> t,ℓ
+
+.FeatFix asks whether that exact result should instead repair the current state. 
+
+Motivation for Whole-Block Correction 
+
+Paid verification already produces the complete exact block-output tensor [B, N, C ]. Forwarding only selected tokens or channels therefore saves no exact-block FLOPs and leaves an uncorrected residual. Attention heads are internal to the block and therefore do not provide a separate output axis for partial forwarding. At the other extreme, recomputing the whole timestep repeats the remaining transformer stack and changes the incoming trajectory. Whole-block forwarding thus reuses the complete paid output without this additional computation. Figure 2(a) reads from top to bottom. The upper dia-grams compare token-, channel-, and whole-block forward-ing. The middle annotations show that each block-level arm costs 467 TFLOPs, whereas whole-timestep recomputation costs 759 TFLOPs, or 1.63 × as much. The lower forest plot reports the additional downstream relative-L1 reduc-tion of whole-block forwarding over each partial arm, with all four 95% confidence intervals lying above zero. Panel (b) tracks the Verify-minus-Whole-block difference in relative-
+
+L1 across 200 paired DrawBench-style prompts, four layers, and early/middle/late interventions. Positive values indicate lower downstream error after correction. All 24 pointwise bootstrap intervals exclude zero, with an overall reduction of 
+
+2.541 [2 .254 , 2.835] × 10 −3. Together, these results support whole-block forwarding as an effective local correction. 
+
+FeatFix Framework 
+
+Overview. Figure 3 situates the correction primitive within cached denoising. The top path follows state–block–feature flow from xT to x0, where T is the initial noise index and L
+
+is the number of transformer blocks. Let S ⊆ { 1, . . . , T } × {1, . . . , L } denote the paid layer–timestep sites fixed before evaluation by a development-stage audit and the base caching schedule. Within each backbone and speed setting, the same sites are used for every evaluation sample and for both Verify and FeatFix. At a site (t, ℓ ) ∈ S , Verify and FeatFix evaluate the same incoming state ut,ℓ , draft hd
+
+> t,ℓ
+
+, and exact feature 
+
+hf
+
+> t,ℓ
+
+. For compactness, we omit site subscripts and write 
+
+u, hd, and hf . In the primary feature analyses, the figure’s 
+
+d(hd, h f ) denotes Eq. (4). Metric ablations may replace this logged scalar without changing the fixed forwarding rule. We write hout  
+
+> t,ℓ
+
+for the block output forwarded downstream. Verify sets hout  
+
+> t,ℓ
+
+= hd 
+
+> t,ℓ
+
+and discards the paid exact tensor, Efficiency Visual Quality Method Latency (s) ↓ Speedup ↑ FLOPs (T) ↓ Speedup ↑ CLIPScore ↑ PickScore ↑ ImageReward ↑ PSNR ↑ SSIM ↑ LPIPS ↓                                                                                                                                                                                                                             
+
+> Vanilla (N=50 )23.93 1.00 3734.6 1.00 32.54 23.77 1.361 ∞1.0000 0.0000
+> Vanilla (N=25 )11.58 2.06 1859.75 2.00 31.64 22.67 0.947 18.85 0.6818 0.2970
+> ∆-DiT (i4) 11.02 2.17 1602.9 2.33 32.65 23.38 1.241 14.60 0.6323 0.4909
+> ScalingCache (FT6) 10.93 2.19 1698.7 2.19 32.29 23.39 1.204 11.14 0.4934 0.5984
+> HiCache (i4) 10.59 2.26 1057.5 3.53 32.58 23.80 1.362 19.52 0.7320 0.3031
+> TeaCache (τ=.20 )8.63 2.77 1503.0 2.48 32.73 23.73 1.349 16.89 0.7069 0.3675
+> FORA (i4) 8.12 2.95 983.2 3.80 32.79 23.55 1.294 15.26 0.6483 0.4516
+> FeatFix (N=50 )7.57 3.16 928.4 4.02 32.64 23.89 1.396 20.39 0.7534 0.2685
+> TeaCache (τ=.40 )5.56 4.30 759.3 4.92 32.75 23.66 1.336 16.49 0.6858 0.4071
+> HiCache (i8) 5.35 4.47 611.4 6.11 32.79 23.56 1.313 15.72 0.6266 0.4427
+> FORA (i10) 4.94 4.84 388.3 9.62 32.47 22.43 0.749 13.62 0.5415 0.6137
+> SpeCa (N=28 )4.80 4.99 618.7 6.04 32.95 23.72 1.335 15.72 0.6367 0.4636
+> TaylorSeer (N=28 )4.77 5.02 536.5 6.96 32.55 23.37 1.273 15.55 0.6453 0.4615
+> FeatFix (N=28 )4.76 5.03 618.7 6.04 32.70 23.83 1.374 16.70 0.6739 0.3953
+> TeaCache (τ=.55 )4.71 5.08 685.0 5.45 32.72 23.58 1.289 14.99 0.6063 0.5138
+> HiCache (i12) 4.45 5.38 462.6 8.07 32.51 22.81 0.986 13.75 0.5379 0.5827
+> SpeCa (N=20 )3.73 6.41 467.2 7.99 33.08 23.54 1.313 15.03 0.6052 0.5163
+> TaylorSeer (N=20 )3.65 6.56 387.6 9.64 32.55 22.55 1.169 14.37 0.6075 0.5189
+> FeatFix (N=20 )3.57 6.70 467.2 7.99 33.03 23.56 1.318 16.13 0.6166 0.4492
+
+Table 1: FLUX.1-dev on DrawBench200. Rules delimit speed regions; bold and underline mark the best and second-best quality within each region. whereas FeatFix sets hout  
+
+> t,ℓ
+
+= hf
+
+> t,ℓ
+
+. The shorthand hout = hf
+
+is local to the corrected site under the same incoming state. Outside the selected verification sites, FeatFix preserves the underlying draft policy. 
+
+Local feature correction. At each (t, ℓ ) ∈ S , FeatFix logs the discrepancy for analysis and applies the fixed forwarding rule below. The schedule is fixed before evaluation and shared across evaluation samples within each setting. 
+
+hout  
+
+> t,ℓ
+
+=
+
+hf
+
+> t,ℓ
+
+, (t, ℓ ) ∈ S (FeatFix) ,
+
+D(ut,ℓ ), (t, ℓ ) /∈ S . (5) Thus replacement eliminates the local same-input draft resid-ual by construction. The method forwards the complete block-output feature tensor, typically [B, N, C ], rather than a subset of tokens, channels, or attention heads. Because the paid exact branch has already produced the whole ten-sor, whole-block forwarding adds no exact-block FLOPs rel-ative to Verify. Partial replacement leaves an uncorrected residual, while whole-timestep recomputation repeats sub-stantially more transformer work. Whole-block forwarding is therefore the compute-consistent sparse intervention. The mechanism analysis below tests its local reset and down-stream propagation. 
+
+Matched-compute controls and accounting. Every run separately records full-refresh timesteps, paid exact-block checks, and forwarded corrections. Verify uses the same con-figured full-refresh and paid-check budgets and forwards hd
+
+at each paid site. At the strict FLUX settings up to 6.70 ×,realized sites match for every prompt, providing a controlled same-site comparison. When every paid exact output is for-warded, Exact-only removes the redundant draft and discrep-ancy paths and produces outputs identical to FeatFix in the implementation audit. This confirms implementation parity between the two execution paths. 
+
+## Experiments 
+
+We first compare FeatFix with cache and forecasting base-lines on FLUX, then isolate the effect of forwarding the verified feature under matched compute. Mechanism studies measure the local reset and downstream error propagation, while HunyuanVideo-1.5, Qwen-Image, and DiT-XL/2 test portability. 
+
+Experimental Setup 
+
+FLUX.1-dev (Black Forest Labs 2024) is the primary back-bone. The main evaluation uses a fixed 200 -prompt Draw-Bench list (Saharia et al. 2022) with matched order and seeds, while the powered study uses 900 normalized COCO-caption clusters (Lin et al. 2014) with two seeds each. We report efficiency (latency, speedup, and FLOPs), recon-struction (PSNR, SSIM, and LPIPS), and text-alignment and preference metrics (CLIPScore, PickScore, and Im-ageReward) (Wang et al. 2004; Zhang et al. 2018; Hes-sel et al. 2021; Kirstain et al. 2023; Xu et al. 2023). DiT-XL/2 on ImageNet-256, Qwen-Image, and HunyuanVideo-1.5 test cross-model transfer, with FID, IS, precision, recall, GenEval, and VBench reported where applicable (Peebles and Xie 2023; Deng et al. 2009; Wu et al. 2025b,a; Heusel et al. 2017; Ghosh, Hajishirzi, and Schmidt 2023; Huang et al. 2024). Paired FLUX intervals use prompt- or cluster-level bootstrap resampling. 
+
+Evaluation protocol. We compare training-free methods within their recorded timing cohorts, with Vanilla as an un-Vanilla 
+
+> 1.00×
+> FeatFix
+> 5.03×
+> FeatFix
+> 6.70×
+> HiCache
+> 4.47×
+> FORA
+> 4.84×
+> SpeCa
+> 4.99×
+> TaylorSeer
+> 5.02×
+
+Figure 4: FLUX.1-dev visual comparison. 
+
+Arm Lat. (s) ↓ CLIP ↑ Pick ↑ IR ↑ PSNR ↑ SSIM ↑ LPIPS ↓
+
+Vanilla 23.93 32.54 23.77 1.361 ∞ 1.0000 0.0000 
+
+Verify 3.60 31.48 22.80 0.911 14.29 0.5854 0.5381 
+
+FeatFix 3.57 33.03 23.56 1.318 16.13 0.6166 0.4492 
+
+Table 2: FLUX fixed-fallback comparison between Vanilla, Verify, and FeatFix. ranked reference; within near-speed groups, bold and un-derline mark the best and second-best quality results. The primary causal comparison is paired FeatFix versus Verify with matched full-refresh and paid-site traces. 
+
+Main Results on FLUX 
+
+Overall FLUX comparison. Table 1 compares FeatFix with reuse, caching, and forecasting baselines in three speed re-gions. The horizontal rules group methods with similar la-tency, which makes the quality comparisons within each re-gion more meaningful. FeatFix is among the fastest methods in every group and reaches a 6.70 × speedup in the most ag-gressive setting. This range shows that FeatFix can be used for both moderate and aggressive acceleration. Among the accelerated methods, FeatFix gives the best ImageReward in all three regions and leads most PickScore and reconstruction comparisons. Its advantage is especially clear when acceleration becomes more aggressive, where several baselines lose both perceptual quality and similar-ity to Vanilla. A few methods retain a small advantage on CLIPScore or SSIM in individual regions, so FeatFix is not the best accelerated entry for every metric. However, its re-sults are more balanced across preference and reconstruction measures. PSNR ↑     
+
+> V16
+> F50
+> 15.62
+> 20.39
+> SSIM ↑
+> V16
+> F50
+> 0.6689
+> 0.7534
+> 1-LPIPS ↑
+> V16
+> F50
+> 0.5800
+> 0.7315
+> Vanilla-16
+> 7.85s
+> FeatFix-50
+> 7.57s 05
+> ΔLPIPS ×10 −3
+> 5×
+> 6×
+> 6.70×
+> −0.1 0.1
+> ΔCLIP
+> 0.00 0.05
+> ΔPick
+> 5×
+> 6×
+> 6.70×
+> 0.00 0.02
+> ΔIR
+
+(a) Runtime-matched reference. (b) Metric-wise paired effects. 
+
+Figure 5: FLUX runtime-matched reference and paired ef-fects across three regions up to 6.70 ×.0 5 10              
+
+> Verify − FeatFix (10 −3 )
+> s9
+> s13–14
+> s17–18
+> s21–22
+> s25–26
+> 68% +
+> 82% +
+> 64% +
+> 67% +
+> 50% + early mid late
+> stage
+> L28
+> L32
+> L34
+> L35
+> L37
+> FLUX block  0.78 0.64 0.45
+> 0.71 0.61 0.42
+> 0.72 0.49 0.30
+> 0.99 0.65 0.35
+> 0.89 0.56 0.29 0.4
+> 0.6
+> 0.8
+> discrepancy
+
+(a) Stagewise propagation. (b) Layer–stage drift map. 
+
+Figure 6: FLUX correction propagation across denoising stages and measured layers. 70          
+
+> 80
+> FID
+> 6810 12
+> base threshold
+> 5
+> 6
+> 7
+> latency (s)
+> COCO-1k MJHQ-1k 70
+> 80
+> 90
+> FID
+> 16 24 32 40 48
+> paid-check layer
+> 4
+> 6
+> latency (s)
+> COCO-1k MJHQ-1k
+
+(a) Threshold sensitivity. (b) Paid-layer sensitivity. 
+
+Figure 7: FLUX threshold and paid-layer sensitivity. 
+
+FLUX qualitative comparison. Figure 4 shows the corre-sponding FLUX examples. At both displayed speed settings, FeatFix keeps the main objects, composition, colors, and lo-cal details close to Vanilla. The examples support the quan-titative results by showing that the quality gains are visible across different prompts rather than being limited to one image type. 
+
+Fixed-fallback comparison. Table 2 directly compares Feat-Fix with the matched Verify control. The two methods have nearly identical latency and use the same paid exact checks. FeatFix performs better on every reported quality metric be-cause it forwards the exact feature instead of discarding it. This comparison isolates the effect of correction from the underlying draft schedule. 
+
+Matched-runtime and paired effects. Figure 5(a) places 0 8 16 24       
+
+> latency (s/image)
+> 512²
+> 640²
+> 768²
+> 896²
+> 1024²
+> 5.25×
+> 5.45×
+> 5.56×
+> 5.60×
+> 5.65×
+> Vanilla FeatFix 512 640 768 896 1024
+> square image resolution
+> 35.2
+> 37.1
+> 39.1
+> peak memory (GiB)
+> +16 MiB
+> +24 MiB
+> +28 MiB
+> +42 MiB
+> +52 MiB
+> Vanilla FeatFix
+
+(a) Five-resolution latency. (b) Peak-memory scaling. 
+
+Figure 8: FLUX latency and peak-memory scaling across five resolutions. vs. Vanilla 51.7%         
+
+> 050 100
+> vs. SpeCa 65.0%
+> 050 100
+> vs. TaylorSeer 68.3%
+> 050 100
+> FeatFix preference (%)
+
+Figure 9: FLUX.1-dev 2AFC preference with 95% confi-dence intervals and a 50% baseline. a lower-step Vanilla reference next to FeatFix at a similar observed runtime. FeatFix gives better reconstruction in this runtime range. Figure 5(b) provides the paired comparison with Verify. The effects remain favorable across all three speed regions: FeatFix improves ImageReward and LPIPS while changing latency only slightly. 
+
+Mechanism Analysis 
+
+Downstream feature propagation. Figure 6 tracks the ef-fect of correction through later denoising stages and layers. Panel (a) shows that the reduction in feature error remains positive through most of the later stages instead of disappear-ing immediately after the corrected site. Panel (b) reports the measured layers directly and shows the same pattern around the correction anchor. 
+
+Threshold and layer sensitivity. Figure 7(a) varies the base threshold on two evaluation sets. Increasing the threshold reduces latency, but quality does not improve monotonically, so the fastest configuration is not always the best operating point. Panel (b) changes the paid layer and shows a similar tradeoff. Some layers provide a better balance between speed and quality, which supports calibrating the correction site. 
+
+Resolution scaling. Figure 8 measures latency and peak memory from 512 2 to 1024 2. The latency gap between Vanilla and FeatFix grows with resolution, while the result-ing speedup stays in a narrow range. Peak memory also grows for both methods, but the additional memory used by Feat-Fix remains small. These results show that the correction mechanism scales without introducing a large memory cost. 
+
+Human Preference Study. Figure 9 summarizes a blinded two-alternative forced-choice study in which 18 participants each answered 10 questions. FeatFix is preferred to the near-speed SpeCa and TaylorSeer settings, while its comparison with Vanilla stays close to the 50% chance line. The con-fidence intervals in the figure show the uncertainty of each comparison. Together, the human study provides further evi-dence that FeatFix preserves perceptual quality under accel-eration and improves over near-speed baselines. 
+
+Efficiency Visual Quality Method Lat. (s) ↓ Spd. ↑ VBench ↑ PSNR ↑ SSIM ↑ LPIPS ↓
+
+Vanilla 772.60 1.00 81.19 ∞ 1.0000 0.0000 
+
+FasterCache 510.10 1.51 81.57 23.34 0.8419 0.1459 
+
+ToCa 491.20 1.57 81.51 24.80 0.8569 0.1316 
+
+DiCache 487.70 1.58 81.65 22.51 0.7983 0.1939 
+
+FeatFix 483.50 1.60 82.09 26.53 0.8849 0.1035 
+
+SpeCa 444.40 1.74 81.41 23.36 0.8231 0.1663 
+
+DBCache 435.30 1.78 81.65 24.62 0.8547 0.1343 
+
+MagCache 418.30 1.85 81.50 25.03 0.8643 0.1237 
+
+PAB 416.80 1.85 81.65 23.69 0.8185 0.1689 
+
+FeatFix 415.10 1.86 82.15 26.06 0.8739 0.1154 
+
+DeepCache 358.20 2.16 81.45 23.56 0.8335 0.1574 
+
+TeaCache 356.80 2.17 81.30 23.14 0.8242 0.1672 
+
+TaylorSeer 342.10 2.26 80.18 14.76 0.6045 0.4154 
+
+FeatFix 338.40 2.28 82.03 23.86 0.8385 0.1511 
+
+Table 3: HunyuanVideo-1.5 65-frame transfer across three near-speed regions with scaled VBench and reconstruction metrics. 
+
+Cross-Backbone Generalization 
+
+HunyuanVideo-1.5 results. Table 3 compares FeatFix with video acceleration baselines in three speed regions. Within each region, the methods have similar latency, so the main difference is the quality of the generated videos. Among the accelerated methods, FeatFix gives the best VBench and reconstruction results in all three groups. The advantage re-mains visible at the fastest setting, where some baselines show a larger drop in reconstruction quality. 
+
+Qwen-Image results. Figure 10 compares Qwen-Image out-puts at two speed settings. FeatFix retains the main subjects, layouts, and textures of the Vanilla images while reducing generation time, whereas several cache baselines change ob-ject appearance or local details more strongly. Table 4 reports the corresponding results in two speed regions. Among the accelerated methods, FeatFix gives the strongest PickScore and ImageReward results in both groups and also reaches the top CLIPScore. DBCache and DiCache obtain better reconstruction scores at some operating points, indicating closer pixel-level agreement with the corresponding Vanilla images. Together, the visual and quantitative results show that FeatFix provides a stronger balance on preference and prompt-alignment metrics. 
+
+DiT-XL/2 results. Figure 11 compares class-conditional samples from DiT-XL/2. FeatFix preserves the main object identity, shape, and texture of the Vanilla samples, while several faster baselines introduce larger changes in object structure or background content. Table 5 compares the same methods on ImageNet-256 using distributional quality and precision–recall metrics. FeatFix is the fastest entry and, among the accelerated methods, gives the best FID, sFID, IS, and precision. Together, these results show that the correction remains effective on a class-conditional diffusion transformer and is not limited to text-conditioned image or video models. Vanilla 
+
+> 1.00×
+> FeatFix
+> 2.17×
+> HiCache
+> 1.02×
+> DBCache
+> 1.21×
+> ToCa
+> 1.75×
+> DiCache
+> 2.08×
+> TeaCache
+> 2.09×
+
+Figure 10: Qwen-Image visual comparison. 
+
+Efficiency Visual Quality Method Lat. (s) ↓ CLIP ↑ Pick ↑ IR ↑ PSNR ↑ SSIM ↑ LPIPS ↓
+
+Vanilla 22.59 32.56 23.01 1.174 ∞ 1.0000 0.0000 
+
+HiCache 22.15 32.38 22.65 1.084 10.19 0.3848 0.7573 
+
+DBCache 18.74 32.60 22.99 1.158 38.62 0.9802 0.0171 
+
+TeaCache 15.56 32.71 22.90 1.129 29.43 0.9355 0.0896 
+
+DiCache 15.42 32.62 22.99 1.168 38.03 0.9809 0.0186 
+
+FeatFix 15.08 32.71 23.03 1.194 27.41 0.9169 0.1116 
+
+ToCa 12.90 32.57 22.87 1.106 32.46 0.9460 0.0754 
+
+DiCache 10.84 32.63 22.92 1.105 32.32 0.9565 0.0593 
+
+TeaCache 10.83 32.60 22.72 1.012 25.80 0.8973 0.1601 
+
+FeatFix 10.40 32.76 22.94 1.154 26.60 0.9069 0.1274 
+
+Table 4: Qwen-Image transfer on DrawBench200 across two speed regions; rules delimit within-region comparisons. 
+
+Efficiency Visual Quality Method Lat. (s) ↓ FID ↓ sFID ↓ IS ↑ Precision ↑ Recall ↑
+
+Vanilla 1.52 2.585 33.90 243.3 0.8058 0.5667 
+
+TaylorSeer 0.93 3.016 – 235.1 0.8068 0.5574 
+
+ToCa 0.79 3.804 – 226.5 0.7979 0.5336 
+
+FORA 0.53 5.132 – 212.5 0.7870 0.5024 
+
+SpeCa 0.48 2.807 30.94 238.8 0.8084 0.5595 
+
+FeatFix 0.45 2.792 30.51 240.4 0.8115 0.5577 
+
+Table 5: DiT-XL/2 transfer on ImageNet-256 with distribu-tional and precision–recall metrics. 
+
+## Limitations 
+
+FeatFix focuses on a common setting in which cache- or forecast-based accelerators already evaluate occasional exact Vanilla 
+
+> 1.00×
+> FeatFix
+> 3.39×
+> TaylorSeer
+> 1.64×
+> ToCa
+> 1.93×
+> FORA
+> 2.87×
+> SpeCa
+> 3.20×
+
+Figure 11: DiT-XL/2 visual comparison. block features. This focus enables a clean matched-compute study while keeping the correction mechanism training-free, local, and auditable. For the reported settings, we freeze the sites after development-stage audits and keep them fixed within each evaluation. A natural next step is to extend this principle to automatic budget-aware site selection and addi-tional inference stacks. 
+
+## Conclusion 
+
+We presented FeatFix, a local exact-feature correction method for cached diffusion inference. At frozen layer– timestep sites, it reused already-computed exact block fea-tures, replaced selected draft features, preserved the un-derlying draft policy, and avoided full-timestep recompu-tation. Matched Verify controls and feature traces showed that this intervention reset the same-input residual and re-duced downstream error at essentially unchanged latency. Across FLUX.1-dev, Qwen-Image, HunyuanVideo-1.5, and DiT-XL/2, FeatFix reached up to 6.70 × speedup over Vanilla and maintained competitive output quality. In the controlled FLUX study, FeatFix improved ImageReward and passed the LPIPS non-inferiority guard under matched computation. To-gether, these results established that paid verification served as both an audit signal and a practical resource for local tra-jectory correction. Building on this foundation, future work will explore prompt-adaptive, budget-aware policies that dy-namically allocate exact-feature corrections across layers and timesteps. 
+
+## References 
+
+Black Forest Labs. 2024. FLUX. Model documentation and release repository. Bu, J.; Ling, P.; Zhou, Y.; Wang, Y.; Zang, Y.; Wu, T.; Lin, D.; and Wang, J. 2026. DiCache: Let Diffusion Model Determine Its Own Cache. In International Conference on Learning Representations .Cache-DiT Contributors. 2025. Cache-DiT: A PyTorch-Native Inference Engine with Cache, Parallelism, Quanti-zation and CPU Offload for Diffusion Transformers. Open-source software. Chen, P.; Shen, M.; Ye, P.; Cao, J.; Tu, C.; Bouganis, C.-S.; Zhao, Y.; and Chen, T. 2024. ∆-DiT: A Training-Free Acceleration Method Tailored for Diffusion Transformers. arXiv:2406.01125. Deng, J.; Dong, W.; Socher, R.; Li, L.-J.; Li, K.; and Fei-Fei, L. 2009. ImageNet: A Large-Scale Hierarchical Image Database. In Proceedings of the IEEE Conference on Com-puter Vision and Pattern Recognition , 248–255. Dhariwal, P.; and Nichol, A. 2021. Diffusion Models Beat GANs on Image Synthesis. In Advances in Neural Informa-tion Processing Systems , volume 34, 8780–8794. Esser, P.; Kulal, S.; Blattmann, A.; Entezari, R.; Müller, J.; Saini, H.; Levi, Y.; Lorenz, D.; Sauer, A.; Boesel, F.; Podell, D.; Dockhorn, T.; English, Z.; and Rombach, R. 2024. Scal-ing Rectified Flow Transformers for High-Resolution Image Synthesis. In Proceedings of the 41st International Confer-ence on Machine Learning , volume 235 of Proceedings of Machine Learning Research , 12606–12633. Feng, L.; Zheng, S.; Liu, J.; Lin, Y.; Zhou, Q.; Cai, P.; Wang, X.; Chen, J.; Zou, C.; Ma, Y.; and Zhang, L. 2026. HiCache: A Plug-in Scaled-Hermite Upgrade for Taylor-Style Cache-then-Forecast Diffusion Acceleration. In International Con-ference on Learning Representations .Ghosh, D.; Hajishirzi, H.; and Schmidt, L. 2023. GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment. In Advances in Neural Information Processing Systems , volume 36, 52132–52152. Gu, L.; He, J.; Su, L.; He, K.; Wang, W.; and Liu, Y. 2026. ScalingCache: Extreme Acceleration of DiTs through Differ-ence Scaling and Dynamic Interval Caching. In International Conference on Learning Representations .Hessel, J.; Holtzman, A.; Forbes, M.; Le Bras, R.; and Choi, Y. 2021. CLIPScore: A Reference-Free Evaluation Metric for Image Captioning. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing , 7514– 7528. Heusel, M.; Ramsauer, H.; Unterthiner, T.; Nessler, B.; and Hochreiter, S. 2017. GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium. In 
+
+Advances in Neural Information Processing Systems , vol-ume 30, 6626–6637. Ho, J.; Jain, A.; and Abbeel, P. 2020. Denoising Diffusion Probabilistic Models. In Advances in Neural Information Processing Systems , volume 33, 6840–6851. Huang, Z.; He, Y.; Yu, J.; Zhang, F.; Si, C.; Jiang, Y.; Zhang, Y.; Wu, T.; Jin, Q.; Chanpaisit, N.; Wang, Y.; Chen, X.; Wang, L.; Lin, D.; Qiao, Y.; and Liu, Z. 2024. VBench: Compre-hensive Benchmark Suite for Video Generative Models. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vi-sion and Pattern Recognition , 21807–21818. Karras, T.; Aittala, M.; Aila, T.; and Laine, S. 2022. Elucidat-ing the Design Space of Diffusion-Based Generative Models. In Advances in Neural Information Processing Systems , vol-ume 35, 26565–26577. Kirstain, Y.; Polyak, A.; Singer, U.; Matiana, S.; Penna, J.; and Levy, O. 2023. Pick-a-Pic: An Open Dataset of User Preferences for Text-to-Image Generation. In Advances in Neural Information Processing Systems , volume 36, 36652– 36663. Lin, T.-Y.; Maire, M.; Belongie, S.; Hays, J.; Perona, P.; Ramanan, D.; Dollár, P.; and Zitnick, C. L. 2014. Microsoft COCO: Common Objects in Context. In Computer Vision – ECCV 2014 , volume 8693 of Lecture Notes in Computer Science , 740–755. Lipman, Y.; Chen, R. T. Q.; Ben-Hamu, H.; Nickel, M.; and Le, M. 2023. Flow Matching for Generative Modeling. In 
+
+International Conference on Learning Representations .Liu, F.; Zhang, S.; Wang, X.; Wei, Y.; Qiu, H.; Zhao, Y.; Zhang, Y.; Ye, Q.; and Wan, F. 2025a. Timestep Embedding Tells: It’s Time to Cache for Video Diffusion Model. In Pro-ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 7353–7363. Liu, J.; Zou, C.; Lyu, Y.; Chen, J.; and Zhang, L. 2025b. From Reusing to Forecasting: Accelerating Diffusion Models with TaylorSeers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , 15853–15863. Liu, J.; Zou, C.; Lyu, Y.; Ren, F.; Wang, S.; Li, K.; and Zhang, L. 2025c. SpeCa: Accelerating Diffusion Transform-ers with Speculative Feature Caching. In Proceedings of the 33rd ACM International Conference on Multimedia , 10024– 10033. Liu, X.; Gong, C.; and Liu, Q. 2023. Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow. In International Conference on Learning Representations .Lu, C.; Zhou, Y.; Bao, F.; Chen, J.; Li, C.; and Zhu, J. 2022. DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps. In Advances in Neural Information Processing Systems , volume 35, 5775–5787. Lyu, Z.; Si, C.; Song, J.; Yang, Z.; Qiao, Y.; Liu, Z.; and Wong, K.-Y. K. 2025. FasterCache: Training-Free Video Diffusion Model Acceleration with High Quality. In Inter-national Conference on Learning Representations .Ma, X.; Fang, G.; and Wang, X. 2024. DeepCache: Ac-celerating Diffusion Models for Free. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 15762–15772. Ma, Z.; Wei, L.; Wang, F.; Zhang, S.; and Tian, Q. 2025. MagCache: Fast Video Generation with Magnitude-Aware Cache. In Advances in Neural Information Processing Sys-tems , volume 38, 34348–34380. Peebles, W.; and Xie, S. 2023. Scalable Diffusion Models with Transformers. In Proceedings of the IEEE/CVF Inter-national Conference on Computer Vision , 4195–4205. Rombach, R.; Blattmann, A.; Lorenz, D.; Esser, P.; and Om-mer, B. 2022. High-Resolution Image Synthesis with La-tent Diffusion Models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,10684–10695. Saharia, C.; Chan, W.; Saxena, S.; Li, L.; Whang, J.; Denton, E. L.; Ghasemipour, K.; Gontijo Lopes, R.; Karagol Ayan, B.; Salimans, T.; Ho, J.; Fleet, D. J.; and Norouzi, M. 2022. Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding. In Advances in Neural Information Processing Systems , volume 35, 36479–36494. Salimans, T.; and Ho, J. 2022. Progressive Distillation for Fast Sampling of Diffusion Models. In International Con-ference on Learning Representations .Selvaraju, P.; Ding, T.; Chen, T.; Zharkov, I.; and Liang, L. 2024. FORA: Fast-Forward Caching in Diffusion Trans-former Acceleration. arXiv:2407.01425. Song, Y.; Dhariwal, P.; Chen, M.; and Sutskever, I. 2023. Consistency Models. In Proceedings of the 40th Interna-tional Conference on Machine Learning , volume 202 of Pro-ceedings of Machine Learning Research , 32211–32252. Song, Y.; Sohl-Dickstein, J.; Kingma, D. P.; Kumar, A.; Er-mon, S.; and Poole, B. 2021. Score-Based Generative Mod-eling through Stochastic Differential Equations. In Interna-tional Conference on Learning Representations .Wang, Z.; Bovik, A. C.; Sheikh, H. R.; and Simoncelli, E. P. 2004. Image Quality Assessment: From Error Visibility to Structural Similarity. IEEE Transactions on Image Process-ing , 13(4): 600–612. Wu, B.; Zou, C.; Li, C.; Huang, D.; Yang, F.; Tan, H.; Peng, J.; Wu, J.; Xiong, J.; Jiang, J.; Linus; Patrol; Zhang, P.; Chen, P.; Zhao, P.; Tian, Q.; Liu, S.; Kong, W.; Wang, W.; He, X.; Li, X.; Deng, X.; Zhe, X.; Li, Y.; Long, Y.; Peng, Y.; Wu, Y.; Liu, Y.; Wang, Z.; Dai, Z.; Peng, B.; Li, C.; Gong, G.; Xiao, G.; Tian, J.; Lin, J.; Liu, J.; Zhang, J.; Lian, J.; Pan, K.; Wang, L.; Niu, L.; Chen, M.; Chen, M.; Zheng, M.; Yang, M.; Hu, Q.; Yang, Q.; Xiao, Q.; Wu, R.; Xu, R.; Yuan, R.; Sang, S.; Huang, S.; Gong, S.; Huang, S.; Guo, W.; Yuan, X.; Chen, X.; Hu, X.; Sun, W.; Wu, X.; Ren, X.; Yuan, X.; Mi, X.; Zhang, Y.; Sun, Y.; Lu, Y.; Li, Y.; Huang, Y.; Tang, Y.; Li, Y.; Deng, Y.; Zhou, Y.; Hu, Z.; Liu, Z.; Yang, Z.; Yang, Z.; Lu, Z.; Zhou, Z.; and Zhong, Z. 2025a. HunyuanVideo 1.5 Technical Report. arXiv:2511.18870. Wu, C.; Li, J.; Zhou, J.; Lin, J.; Gao, K.; Yan, K.; Yin, S.-m.; Bai, S.; Xu, X.; Chen, Y.; Chen, Y.; Tang, Z.; Zhang, Z.; Wang, Z.; Yang, A.; Yu, B.; Cheng, C.; Liu, D.; Li, D.; Zhang, H.; Meng, H.; Wei, H.; Ni, J.; Chen, K.; Cao, K.; Peng, L.; Qu, L.; Wu, M.; Wang, P.; Yu, S.; Wen, T.; Feng, W.; Xu, X.; Wang, Y.; Zhang, Y.; Zhu, Y.; Wu, Y.; Cai, Y.; and Liu, Z. 2025b. Qwen-Image Technical Report. arXiv:2508.02324. Xu, J.; Liu, X.; Wu, Y.; Tong, Y.; Li, Q.; Ding, M.; Tang, J.; and Dong, Y. 2023. ImageReward: Learning and Evalu-ating Human Preferences for Text-to-Image Generation. In 
+
+Advances in Neural Information Processing Systems , vol-ume 36, 15903–15935. Zhang, R.; Isola, P.; Efros, A. A.; Shechtman, E.; and Wang, O. 2018. The Unreasonable Effectiveness of Deep Features as a Perceptual Metric. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , 586–595. Zhao, X.; Jin, X.; Wang, K.; and You, Y. 2025. Real-Time Video Generation with Pyramid Attention Broadcast. In 
+
+International Conference on Learning Representations .Zou, C.; Liu, X.; Liu, T.; Huang, S.; and Zhang, L. 2025. Ac-celerating Diffusion Transformers with Token-wise Feature Caching. In International Conference on Learning Repre-sentations .

@@ -1,0 +1,4671 @@
+Title: Where and When to Commit: Candidate-Aware Decoding for Diffusion Language Models
+
+URL Source: https://arxiv.org/pdf/2607.28166v1
+
+Published Time: Fri, 31 Jul 2026 01:01:49 GMT
+
+Number of Pages: 36
+
+Markdown Content:
+Candidate-Aware Decoding for Diffusion Language Models 
+
+# Where and When to Commit: Candidate-Aware De-coding for Diffusion Language Models 
+
+Chia-Ming Lee 1,2, Ming-Ching Chang 2, Xin Li 2, Yu-Lun Liu 1, Chih-Chung Hsu 11National Yang Ming Chiao Tung University 2University at Albany, SUNY 
+
+Abstract 
+
+Diffusion language models (DLMs) expose a provisional prediction at every de-noising step, creating an opportunity for generation-time early exit that stops decoding before the schedule is exhausted. Existing early-exit gates decide ter-mination from fixed-region confidence statistics or schedule-dependent rules, ev-idence too coarse for a decision that freezes every remaining position at once, so they fire prematurely on long chain-of-thought outputs whose answers stabilize only near the end. Adaptive sampling , the other axis of training-free acceleration, paces how quickly positions commit while decoding continues but never verifies that the output itself has stabilized. We introduce a training-free, candidate-aware early-exit framework that keeps the two axes separate and matches each decision to evidence of its own scope. Confidence-Verified Commit (CVC) governs when the sequence may stop by verifying confidence and sustained argmax stability over the dynamically extracted candidate span using a deterministic parser specified from each task’s output format. Block-Wise Early Commit (BWEC) governs where to accelerate by applying a cheaper local rule to non-final blocks, while leaving the final block and global termination under CVC. We refer to their combination as 
+
+LATCH (Localized Acceleration with Tracked-Candidate Halting ). Unlike prior methods, LATCH needs no suffix-prompt construction; it is prompt-anchor-free but format-aware. We evaluate LATCH end to end on 11 tasks under zero-shot settings using LLaDA and Dream. LATCH stays within 2.0 percentage points of full-decoding accuracy across all 22 evaluation settings, with one frozen hyper-parameter set that transfers cross-backbone untuned, while achieving end-to-end TPS speedups of 9.3–17 .8× on short-answer tasks and 2.0–3.3× on long-reasoning tasks. Code is available at https://github.com/ming053l/LATCH-dLLM .
+
+1 Introduction 
+
+Diffusion language models (DLMs) generate text by iteratively denoising a fully-masked sequence, in contrast to autoregressive models’ left-to-right pass (Nie et al., 2025; Ye et al., 2025); at every intermediate step the model already holds a provisional guess for every position, and on many tasks this candidate matches its full-decoding value well before the last denoising step. Training-free acceleration exploits that slack along two separate axes; adaptive-sampling rules such as Wu et al. (2026)’s Fast-dLLM , Wei et al. (2026)’s SlowFast Sampling , and Kim et al. (2025)’s KLASS change how quickly positions are committed while decoding continues, whereas generation-time early-exit 
+
+rules such as Li et al. (2026)’s Prophet decide when the whole sequence may stop. A sampling commit fixes one position; termination freezes every remaining position at once, the answer included. The two axes therefore demand different evidence, and existing methods fail precisely where one axis’s evidence settles the other’s. The termination axis carries the harder decision, trusting that a run has genuinely converged. Anatural proxy is decoding progress. Under a matched protocol, however, short-answer tasks meet an operational convergence criterion after roughly 4% of decoding while multi-step tasks do not until the final 4% , so elapsed progress is a poor surrogate for convergence. Existing early-exit gates substitute an aggregate position-level signal instead, evidence of sampling grade for a sequence-scope decision. Prophet’s fixed monitoring region can look stable even while the underlying candidate keeps changing, so its threshold fires and fills every remaining masked position in one shot, with no chance 1arXiv:2607.28166v1 [cs.CL] 30 Jul 2026 Candidate-Aware Decoding for Diffusion Language Models to revisit it, and SchED (Mohamed et al., 2026b) inherits the same trigger in smoothed form (Section 3 formalizes both). Evaluated under the same free-form zero-shot protocol across five long-reasoning tasks and both models, these termination gates exceed our 2.0-point accuracy tolerance in every setting, by up to 69 points; Prophet fails the same way under its own suffix-prompt construction, confirming the gap lies in what counts as evidence, not in prior knowledge of the answer region. To address this, we introduce Confidence-Verified Commit (CVC) , which re-extracts and relocates the candidate answer at every step and requires both confidence and sustained argmax stability over that specific span before allowing the sequence to terminate. Because the verified quantity is the candidate itself, not a proxy for it, a transiently stable guess cannot satisfy the gate. CVC’s verification is deliberately conservative and governs only the sequence’s global fill-and-stop decision, not the pace of individual blocks. Under block-wise decoding, only the final block typically carries the answer, so non-final blocks, usually intermediate reasoning, fall outside what CVC’s identity-tracking machinery was designed to speed up. Pace is exactly what the sampling axis addresses, and SlowFast and KLASS show a local confidence signal can drive it. Applied buffer-wide, however, the same cheap evidence also commits the answer span, and no sampler decides termination; SlowFast exceeds the accuracy tolerance on every long-reasoning setting, while KLASS stays within it only on its calibration backbone, dropping 5–52 points on Dream. Even a safe sampler, moreover, still decodes every token a verified stop would skip. This motivates our second design, Block-Wise Early Commit (BWEC) , which adopts the sampling axis’s cheaper, locally evaluated confidence threshold but confines it to non-final blocks, while leaving the final block and the global fill-and-stop decision entirely to CVC. Together, CVC and BWEC form LATCH , one gate per axis; CVC verifies the identity and stability of the answer candidate itself before the sequence stops ( when ), and BWEC paces commitment under evidence whose reach never exceeds a single block ( where ). Both transfer to Dream from one LLaDA calibration; prior methods’ do not. 0 20 40 60 80 100                                                          
+
+> LLaDA-8B-Instruct
+> Prophet (ICLR'26)
+> SchED (ACL'26)
+> SlowFast (ICLR'26)
+> KLASS (NeurIPS'25)
+> LATCH (BWEC =0.9)
+> 100% 66% (+0)
+> 72% 38% (-28)
+> 88% 59% (-7)
+> 28% 41% (-25)
+> 41% 65% (-1)
+> 37% 67% (+1)
+> Total steps + accuracy, GSM8K
+> 020 40 60 80 100
+> Share of total wall-clock time by block (%)
+> 22 tok/s ( 1.0 × )
+> 25 tok/s ( 1.1 × )
+> 26 tok/s ( 1.2 × )
+> 75 tok/s ( 3.4 × )
+> 50 tok/s ( 2.3 × )
+> 56 tok/s ( 2.5 × )
+> Wall-clock share by block, GSM8K
+> 22 22 22 22 22 22 22 22
+> 18 18 18 19 19 23
+> 23 23 23 23 24 24 29
+> 55 70 79 82 80 78 80 83
+> 50
+> 49 55 64 73 83 81 94 25
+
+Figure 1: Bounded-accuracy acceleration. LATCH matches full-decoding accuracy using 37% 
+
+of the steps (left), while the remaining runtime concentrates in the CVC-gated final block (right). Our contributions are: 
+
+• We show that candidate stabilization is strongly task-dependent, occurring either early or only near the decoding horizon (e.g., 𝑠 0.9, the progress by which 90% of trajectories have stabilized, ranges 
+
+0.04 –0.96 across tasks), which makes progress-only early commitment unreliable (Section 4.1). 
+
+• We propose LATCH , a candidate-aware framework with one gate per axis; Confidence-Verified Commit (CVC) verifies the dynamically extracted candidate span before global termination, and 
+
+Block-Wise Early Commit (BWEC) paces non-final blocks through a cheaper local rule under CVC’s protection (Sections 4.2 and 4.3). 
+
+• We evaluate LATCH across 11 tasks and two model families under one frozen CVC threshold tuple and a fixed BWEC threshold, never retuned per task or model, obtaining 9.3–17 .8× speedup on short-answer tasks and 2.0–3.3× on long-reasoning tasks while staying within 2.0 points of full-decoding accuracy on every task under both models (Section 5). 
+
+2 Related Work 
+
+Diffusion language models. The diffusion framework traces to Sohl-Dickstein et al. (2015), ex-tended to discrete data by Hoogeboom et al. (2021); Austin et al. (2021); Campbell et al. (2022), with Lou et al. (2024) and the masked-diffusion line (Shi et al., 2024; Sahoo et al., 2024; Ou et al., 2025; 2Candidate-Aware Decoding for Diffusion Language Models Zheng et al., 2025) establishing the parameterizations LLaDA and Dream build on; product-level DLMs (Mercury (Inception Labs et al., 2025), Gemini Diffusion (Google DeepMind, 2025), Seed Diffusion (Song et al., 2025)) scale the same paradigm, underscoring the stakes of accelerating this decoding. LLaDA (Nie et al., 2025) and Dream (Ye et al., 2025), the open-weight DLMs we evaluate on, expose a revisable prediction at every masked position and admit an arbitrary step budget at inference; LATCH reduces that budget under block-wise decoding without prematurely terminating the candidate answer. 
+
+Early exit and sequence termination. Early exit has been studied at the layer, reasoning-step, and token level. Gu et al. (2026) apply it to depth via hidden-state stabilization. Among autoregressive CoT methods, S-GRPO (Dai et al., 2025), DEER (Yang et al., 2026), CORE (Zhai et al., 2026), and BMC (Ruan et al., 2026) trigger early stopping via decaying reward, transition confidence, brittle-token revision, and geometric reconstruction, respectively. For DLMs, Prophet (Li et al., 2026) terminates generation once an aggregate confidence gap over a fixed monitoring region clears a staged threshold, and SchED (Mohamed et al., 2026b) smooths that trigger into a decay schedule (Section 3 details both); the decision that freezes the whole remaining sequence thus never inspects the candidate it freezes. LATCH instead conditions global termination on candidate-local convergence evidence, confidence and stability over a dynamically extracted candidate span, not answer correctness. 
+
+Adaptive sampling for DLMs. A separate axis instead paces how many positions commit per step while decoding continues. Fast-dLLM (Wu et al., 2026) commits every position whose confidence clears a threshold in parallel, SlowFast Sampling (Wei et al., 2026) force-commits high-confidence positions across exploratory and accelerated phases, and KLASS (Kim et al., 2025) unmasks per position once confidence and KL-stability jointly clear a threshold. Concurrent work refines the same per-position evidence; LESS (Mohamed et al., 2026a) applies a joint confidence-and-stability rule per masked position, STDec (Chen et al., 2026b) adapts thresholds over spatial neighborhoods and relaxes them for temporally consistent tokens, TACG (Wang et al., 2026) gates commits on EMA-logit trajectories, 𝑅 2-dLLM (Du et al., 2026) finalizes stable tokens via spatio-temporal redundancy while requiring fine-tuning, and Kim et al. (2026) attribute commitment instability to a proximity bias in the denoising order. However refined, these samplers decide which positions to commit next, never whether the sequence is finished; a run they accelerate still decodes every remaining token, whereas a verified stop skips those tokens outright, so the two axes’ savings compose rather than compete. BWEC adopts this axis’s evidence, following Fast-dLLM’s parallel-emission rule, but confines it to non-final blocks, leaving termination to CVC. Orthogonal training-free work lowers per-step cost through KV caching and suffix pruning (Ma et al., 2025; Liu et al., 2026; Hu et al., 2026; Xiao et al., 2026; Chen et al., 2026a), composing with both axes. 
+
+3 Preliminaries 
+
+DLM generation process. A DLM generates a sequence 𝑥 0 of length 𝐿 by learning to reverse a discrete corruption process that progressively masks a clean sequence over forward time 𝑢 ∈ [ 0, 1],
+
+𝑞 (𝑥 𝑢 | 𝑥 0) = Î𝐿 𝑖 =1 𝑞 (𝑥 𝑖 𝑢 | 𝑥 𝑖 
+
+> 0
+
+), (1) 
+
+𝑞 (𝑥 𝑖 𝑢 | 𝑥 𝑖 
+
+> 0
+
+) =
+
+ 𝑥 𝑖 
+
+> 0
+
+, w.p. 1 − 𝑢, (a) token kept 
+
+[MASK] , w.p. 𝑢, (b) token masked (2) so 𝑥 1 is fully masked and 𝑥 0 is the original sequence. The model 𝑝 𝜃 (𝑥 0 | 𝑥 𝑢 ) learns to predict 𝑥 0 from any masked 𝑥 𝑢 ; generation reverses this over 𝑇 discrete decoding steps 𝑡 ∈ { 1, . . . , 𝑇 }, a separate, discrete index unrelated to forward time 𝑢 and the one used throughout the rest of this paper. Each step produces a full prediction ˆ𝑥 for every masked position, then a remasking rule commits some subset permanently and leaves the rest masked. Since 𝑇 is chosen at inference time, how many steps are used and what the remasking rule commits is the design space this paper targets. 
+
+LLaDA’s block-wise schedule. We use LLaDA-8B-Instruct (Nie et al., 2025) as the reference decoder because its fixed per-block budget and explicit commitment schedule expose the two control points LATCH modifies, block advancement through BWEC and sequence termination through CVC. This choice is not model-specific; we apply the same gates to Dream-7B-Instruct. LLaDA partitions the generation region into 𝑁 equal contiguous blocks 𝐵 0, . . . , 𝐵 𝑁 −1, processed from left 3Candidate-Aware Decoding for Diffusion Language Models to right, with each block denoised for 𝑆 = 𝑇 /𝑁 steps via low-confidence remasking (𝑡 resets within each block). Let 𝑐 (𝑡 ) 
+
+> 𝑖
+
+denote the model’s softmax confidence in its top-1 prediction ˆ𝑥 (𝑡 ) 
+
+> 𝑖
+
+for currently masked position 𝑖 , and let 𝑚 be the block’s initial mask count. Writing 𝑞 = ⌊𝑚 /𝑆 ⌋ and 𝑟 = 𝑚 mod 𝑆 ,step 𝑡 commits the 𝑘 𝑡 = 𝑞 + 1[𝑡 ≤ 𝑟 ] highest-confidence masked positions. This rank-based quota is determined solely by 𝑚 and 𝑆 , independent of the confidence values themselves, and guarantees that the block is fully committed by step 𝑆 .
+
+Early-termination gates. Prophet (Li et al., 2026) and SchED (Mohamed et al., 2026b) modify this fixed schedule on the termination axis, deciding when the whole sequence may stop and fill; the adaptive samplers of Section 2 instead pace how quickly positions commit and never make that decision. Prophet averages the top-1/top-2 logit gap over a monitored region R,
+
+¯𝑔 𝑡 = 1
+
+> | R |
+
+Í𝑖 ∈ R 
+
+
+
+ℓ(𝑡 ),1 
+
+> 𝑖
+
+− ℓ(𝑡 ),2
+
+> 𝑖
+
+
+
+, (3) where ℓ(𝑡 ),1 
+
+> 𝑖
+
+, ℓ (𝑡 ),2 
+
+> 𝑖
+
+are the two largest logits at position 𝑖 and step 𝑡 . Here, R is a task-format-specific monitoring region whose definition is held fixed across our free-form evaluation and Prophet’s suffix-prompt setting (Appendices A.2 and E). Prophet fills all remaining masked positions in a single step once ¯𝑔 𝑡 crosses its published three-stage, progress-dependent threshold; SchED smooths this into a decay curve with a stability guard, still firing as one global fill. Both gates aggregate position-level signals into one sequence-wide trigger, never the identity and stability of the dynamically extracted candidate span, so a position can look converged while its predicted token keeps changing. 
+
+4 Candidate-Aware Decoding 
+
+Section 1 motivates one gate per acceleration axis, CVC for when to stop and BWEC for where to accelerate (Figure 2); this section develops both in full. Section 4.1 motivates CVC’s gate, Section 4.2 develops it, and Section 4.3 develops BWEC. BWEC Block-wise early commitment where computation is shortened LOCAL: WHERE 
+
+B0 early commit 
+
+> block ready → advance
+
+B1, ..., BN-2 early commit 
+
+> block ready → advance
+
+BN-1 final block          
+
+> baseline top-k BWEC off CVC on
+> TOKEN COMMIT scheduled top-k or ci
+> (t) ≥τBWEC BLOCK READY Rn(x) = 1 → skip remaining steps
+
+CVC Answer-level verified stopping candidate re-extracted at every step GLOBAL: WHEN 
+
+> PREVIOUS
+
+at-1 = 538  
+
+> run t-1 = k
+> CHANGE / RESET
+
+at = 540  
+
+> run t= 1
+> STABLE / +1
+
+at+1 = 540       
+
+> run t+1 = 2
+> BOTH GATES MUST PASS
+> CONFIDENCE ct≥τCVC
+> STABILITY run t≥ r t
+> rt=max(p min , ceil( γ·changes t))
+> FILL + STOP
+
+540 
+
+Figure 2: LATCH combines global answer-level stopping with local block-wise acceleration. 
+
+CVC provides verified global stopping, while BWEC accelerates non-final blocks 𝐵 0, . . . , 𝐵 𝑁 −2; the final block 𝐵 𝑁 −1 retains baseline top-𝑘 decoding under CVC. The figure’s CVC track makes this concrete; the candidate is re-extracted and relocated every step, so the candidate value and its temporal stability are tracked, not merely a fixed position’s confidence. On the GSM8K trajectory shown, the extractor searches the fixed trailing region specified by the task format (Appendix A.2); within the final block 𝐵 𝑁 −1, the candidate itself flickers ( 538 → 540 ) before 
+
+run 𝑡 accumulates enough successive valid observations to satisfy the joint confidence-and-stability criterion in Eq. 4; commitment is therefore not based on an instantaneous check. 
+
+4.1 Task-Dependent Candidate Stabilization 
+
+The stabilization-timing gap. We collect full (non-early-exited) trajectories for LLaDA-8B-Instruct on 120 zero-shot questions ( 40 each from MMLU, GSM8K, and MATH), under a free-form prompt with no suffix-prompt anchor, and check when each trajectory’s extracted candidate persis-tently matches its own full-decoding output 𝑎 full  
+
+> 𝑗
+
+: let 𝑠 𝑗 = min {𝑠 : 𝑎 𝑗,𝑢 = 𝑎 full  
+
+> 𝑗
+
+∀𝑢 ≥ 𝑠 } be the earliest 4Candidate-Aware Decoding for Diffusion Language Models progress after which the candidate never again changes, a stabilization diagnostic, not correctness (accuracy is separate, Table 1); CVC never has ground-truth access while decoding. For a cohort, define 𝑠 𝑝 as the earliest progress by which a fraction 𝑝 of trajectories satisfy 𝑠 𝑗 ≤ 𝑠 . Crediting a trajectory only once 𝑠 𝑗 is reached, not at the first mere touch, this stricter test confirms a sharp timing gap; short-answer trajectories reach 𝑠 0.9 = 0.04 versus long-reasoning’s 𝑠 0.9 = 0.96 , the same split Figure 3 shows in the gate’s own replayed evidence. This split reappearing under a stricter criterion makes it a property of the trajectories, not the threshold drawing the boundary. 
+
+Why position-level gates trigger prematurely. Prophet’s trigger ignores whether the candidate stays unchanged across steps (Section 3). On GSM8K/MATH, it fires at 76 –77% progress, near its most permissive stage, before most candidates stabilize. Without a suffix anchor, its fixed region only proxies the candidate span. Figure 4 confirms this; Prophet is premature on 73 /93 GSM8K and 
+
+81 /93 MATH trajectories, CVC on 4/93 each. 
+
+4.2 Confidence-Verified Commit: Deciding When to Stop 0 20 40 60 80 100                                                                  
+
+> 0
+> 1
+> P(candidate
+> correct)
+> Prophet, GSM8K+MATH
+> median trigger 75%, 9/40 correct, 31/40 wrong
+> 020 40 60 80 100
+> 0
+> 1
+> P(candidate
+> correct)
+> CVC, MMLU (pooled)
+> median commit 5%, 12/20 correct, 8/20 wrong
+> 020 40 60 80 100
+> 0
+> 1
+> P(candidate
+> correct)
+> CVC, GSM8K+MATH (pooled)
+> median commit 100%, 23/40 correct, 17/40 wrong
+> 020 40 60 80 100
+> 2.5
+> 5.0
+> 7.5
+> Logit gap  Prophet's staged threshold
+> (decays over progress,
+> not a function of ct)
+> median trigger
+> 020 40 60 80 100
+> 0
+> 1
+> Confidence
+> ct CVC = 0.7 (commit threshold)
+> median commit
+> 020 40 60 80 100
+> 0
+> 1
+> Confidence
+> ct CVC = 0.7 (commit threshold)
+> ctundefined until the span fills,
+> near the median commit point
+> median commit
+> 020 40 60 80 100
+> 80
+> 100
+> Tail window
+> still masked (%)
+> median trigger (oneshot fill)
+> 020 40 60 80 100
+> 0
+> 50
+> Run-length  median commit
+> run t
+> max( pmin ,changes t)
+> 020 40 60 80 100
+> 0
+> 50
+> Run-length  median commit
+> run t
+> max( pmin ,changes t)
+> 020 40 60 80 100
+> Decoding progress (%)
+> 2
+> 3
+> Entropy  Ht
+> (bits)
+> median trigger
+> low = stable, high = uncertain
+> 020 40 60 80 100
+> Decoding progress (%)
+> 0
+> 1
+> Entropy  Ht
+> (bits)
+> (n=12)  median commit
+> low = stable, high = uncertain
+> 020 40 60 80 100
+> Decoding progress (%)
+> 0
+> 2
+> Entropy  Ht
+> (bits)
+> median commit
+> low = stable, high = uncertain
+
+Figure 3: Commit timing on diagnostic examples held out from CVC’s own calibration (𝑛 =60 ,disjoint from its 120 -trajectory calibration pool; same protocol as Table 1), confirming the pattern generalizes beyond calibration data. Prophet’s confidence gap often fires before the answer stabilizes on GSM8K/MATH, forcing a premature fill; CVC commits early on MMLU but waits on long-reasoning trajectories. Entropy corroborates this: near 2 bits at Prophet’s trigger, near 0 at CVC’s (𝑛 =12 , MMLU). Shaded bands: bootstrap 50 /80 /95% confidence intervals. 
+
+A joint convergence criterion. A task-agnostic earliest-commit threshold is the wrong proxy (Section 4.1); LLaDA force-commits a fixed quota regardless of confidence (Section 3), so run-length alone cannot separate refinement from scheduling accident, and confidence alone has no notion of temporal stability. Jointly, they give a stronger convergence proxy. At step 𝑡 , let 𝑎 𝑡 be the extracted answer, run 𝑡 the stability counter across successive same-value extractions (pausing, not resetting, absent a candidate; Appendix A.3), changes 𝑡 the flip count, and 𝑐 𝑡 ∈ [ 0, 1] the mean confidence over 𝑎 𝑡 ’s span. The gate commits at the first 𝑡 satisfying 
+
+𝑐 𝑡 ≥ 𝜏 CVC (a) confidence gate 
+
+run 𝑡 ≥ max  𝑝 min , ⌈𝛾 · changes 𝑡 ⌉ (b) stability gate (4) Both must hold jointly : confidence alone cannot rule out a lucky, unstable guess, and stability alone cannot rule out a low-confidence answer that has not changed yet; 𝑝 min prevents immediate commitment before any change occurs, while 𝛾 sets how many further stable steps each additional flip demands. All three hyperparameters ( 𝜏 CVC , 𝛾, 𝑝 min ) are calibrated once and then frozen (next paragraph), unlike Prophet’s own published thresholds, which differ by task family even in its released defaults (Appendix A.1). Appendix F.1 ablates each condition: dropping either is safe on MMLU but fails on at least one long-reasoning task. 
+
+Extractor, missing candidates, and confidence. Both conditions read from the same underlying signals: 𝑎 𝑡 is the extractor’s own normalized output, not a raw token span, so formatting differences alone never register as a change; a step with no extractable candidate leaves run 𝑡 , changes 𝑡 unchanged 5Candidate-Aware Decoding for Diffusion Language Models and fails the confidence gate automatically. 𝑐 𝑡 is the plain mean of per-token softmax confidence over the span, recomputed fresh each step regardless of mask status; it reflects operational agreement rather than epistemic certainty at the point of commitment (Appendix A.3). 
+
+One frozen setting, stronger evidence. Both model families use the same numerical tuple 
+
+(𝜏 CVC , 𝛾, 𝑝 min ), calibrated once on LLaDA across the three development tasks and never retuned per task or per model ; we also restrict the answer-search region on reasoning tasks to the buffer’s trailing portion, suppressing most mid-reasoning arithmetic as a candidate at the source rather than tolerating it downstream. CVC resolves when to stop; we next ask where full verification is unnecessary. 
+
+4.3 Block-Wise Early Commit: Deciding Where to Accelerate 
+
+Separating block-local advancement from global stopping. Non-final blocks often contain in-termediate reasoning rather than the final answer, especially on long-reasoning tasks where the candidate stabilizes only near the decoding horizon (Section 4.1), motivating a cheaper local rule of the kind the adaptive samplers in Section 2 supply. BWEC applies this rule only to non-final blocks, while the final block retains the baseline schedule and global termination remains under CVC. 
+
+Confidence and scheduled top-𝑘 , jointly. CVC does not gate individual non-final-block commits; it monitors the extracted candidate answer over a configured trailing search region of the buffer, wherever it lies within that region, and withholds only the decision to fill and stop the entire 
+
+generation. Non-final blocks are allowed aggressive emission, via a pure confidence-threshold rule with no answer semantics. For block 𝑛 < 𝑁 − 1 at step 𝑡 , every currently masked position 𝑖 ∈ 𝐵 𝑛 
+
+(i.e. 𝑥 (𝑡 ) 
+
+> 𝑖
+
+= [MASK] ; already-committed positions are untouched by this rule) updates as 
+
+𝑥 (𝑡 +1) 
+
+> 𝑖
+
+=
+
+
+
+ˆ𝑥 (𝑡 ) 
+
+> 𝑖
+
+, 𝑐 (𝑡 ) 
+
+> 𝑖
+
+≥ 𝜏 BWEC , (a) confidence commit 
+
+ˆ𝑥 (𝑡 ) 
+
+> 𝑖
+
+, 𝑖 ∈ K (𝑡 ) , (b) scheduled top-𝑘 commit 
+
+𝑥 (𝑡 ) 
+
+> 𝑖
+
+, otherwise , (c) stays masked (5) where K (𝑡 ) is the scheduled top-𝑘 set among block 𝑛 ’s currently masked positions (Section 3). Scheduled top-𝑘 guarantees progress even when no position clears the threshold on a given step; it always commits the 𝑘 highest-confidence still-masked positions, by rank, so a block finishes on schedule regardless. The confidence branch opportunistically commits additional positions the moment the model resolves them ahead of schedule, by value ( 𝑐 (𝑡 ) 
+
+> 𝑖
+
+≥ 𝜏 BWEC , following Fast-dLLM (Wu et al., 2026)) rather than rank; a position commits if either rule would have. Once every position in a block has committed this way, that whole block is done early: we define the block-ready predicate on buffer state 𝑥 , 𝑅 𝑛 (𝑥 ) = Ó𝑖 ∈ 𝐵 𝑛 
+
+𝑥 𝑖 ≠ [MASK] , checked against 𝑥 (𝑡 +1) right after Eq. 5’s update; once 𝑅 𝑛 (𝑥 (𝑡 +1) ) holds, block 𝑛 ’s remaining scheduled steps are skipped and decoding advances straight to block 𝑛 + 1, a genuine block-wise early exit ; the decision to skip a block’s remaining budget rests entirely on that block’s own evidence, never on a sequence-wide average some other, unrelated block could dominate, which is exactly the failure mode Prophet exhibits (Section 4.1). The final block 𝐵 𝑁 −1 is excluded from Eq. 5; it follows the baseline top-𝑘 schedule alone (case (b) only, never the confidence commit), while CVC independently determines whether the entire 
+
+sequence (final block included) may be filled and terminated early (Section 4.2). Scope and caveats on this final-block scoping are deferred to Appendix F. 
+
+5 Experiments 
+
+Datasets and setup. We evaluate LLaDA-8B-Instruct (Nie et al., 2025) and Dream-7B-Instruct (Ye et al., 2025), bfloat16 (bf16), greedy decoding, zero-shot, on a single NVIDIA A100-SXM4-40GB GPU, across 11 tasks, six short-answer tasks (MMLU (Hendrycks et al., 2021a), ARC-Challenge (Clark et al., 2018), HellaSwag (Zellers et al., 2019), WinoGrande (Sakaguchi et al., 2021), PIQA (Bisk et al., 2020), TruthfulQA-MC1 (Lin et al., 2022)) and five long-reasoning tasks (GSM8K (Cobbe et al., 2021), MATH (Hendrycks et al., 2021b), SVAMP (Patel et al., 2021), ASDiv (Miao et al., 2020), GSM-Hard (Gao et al., 2023)). CVC’s tuple ( 𝛾 =2.0, 𝜏 CVC =0.7, 𝑝 min =3), SchED’s decay schedule, and KLASS’s 𝜏 /𝜖 KL (Appendix A.1) are each calibrated once, offline, on LLaDA (𝑛 =120 cached trajectories for CVC, 40 each from MMLU, GSM8K, MATH, the same pool SchED 6Candidate-Aware Decoding for Diffusion Language Models and KLASS also reuse) and reused unchanged for Dream and the other eight tasks, ensuring a fair cross-backbone comparison; only Prophet’s staged thresholds instead come from its own published defaults. 𝜏 BWEC =0.9 is instead fixed a priori, since BWEC’s schedule changes which future steps execute and so cannot be calibrated by offline replay the way CVC is; we instead check its sensitivity end-to-end on the same held-out examples as Table 1 (Appendix G), but never optimize against it. 
+
+Evaluation metrics and protocol fairness. Accuracy and Step follow Prophet’s own evaluation convention, exact match after task-specific answer extraction (Appendix A.3) and the number of decoding steps, respectively; Speedup is the ratio of method tokens per second (TPS) to baseline TPS, measured end-to-end on a dedicated GPU (Appendix B). Paired McNemar tests and bootstrap confidence intervals find no statistically significant accuracy difference between LATCH and Baseline in any cell (Appendix C). We also replicate Prophet’s own suffix-prompt setup (Appendix E), applied identically to Baseline , Prophet, and LATCH ; Prophet’s drop persists even once the answer region no longer needs to be found, while LATCH shows none. 
+
+5.1 Main Results 
+
+We evaluate LATCH by running complete zero-shot decoding on examples not used for calibration, across all 11 tasks and both models (LLaDA-8B-Instruct (Nie et al., 2025), Dream-7B-Instruct (Ye et al., 2025)); results are reported in Table 1. Since every variant shown is already faster than baseline, what separates the outcomes below is whether the accuracy drop stays negligible, judged by the bar applied throughout this paper, accuracy within 2.0 points of Baseline ’s with average Step strictly lower. LATCH is always the full deployed configuration, CVC plus BWEC (Section 4.3), not the final-block gate alone (Table 2). 
+
+Task groups and headline result. Section 4.1’s stabilization-timing contrast carries into the end-to-end results, split by axis. The termination gates fire prematurely on late-stabilizing tasks; Prophet and SchED exceed the 2.0-point tolerance on all ten long-reasoning evaluations. The samplers fail differently; SlowFast also exceeds it on all ten, and KLASS holds tolerance only on LLaDA, its calibration backbone, dropping 5–52 points on Dream. Neither reaches the short-answer speedups a verified stop-and-fill provides. Figure 4 visualizes the premature-termination failure across all held-out trajectories, plotting when each trajectory’s candidate stabilizes against when each gate commits places Prophet below the diagonal (premature commitment) on 73 /93 GSM8K and 81 /93 
+
+MATH trajectories, while CVC does so on only 4/93 each; on MMLU both gates commit at or after stabilization on nearly every trajectory. 
+
+5.2 Efficiency Decomposition and Component Ablation 
+
+The two axes dominate in different regimes. The component ablation reveals a regime-dependent division of labor; CVC, the termination gate, contributes most of the gain on the two short-answer tasks shown here, whereas BWEC, the sampling gate, contributes most on the two long-reasoning tasks (Table 2), consistent with LATCH’s speedup split across the full evaluation (Table 1). The full configuration exceeds either component alone in every row, the two axes’ savings composing rather than competing; the 2.00 × result on MATH/LLaDA reflects the protected final block, not bookkeeping overhead. Scoping the global commit’s eligibility to the final block is load-bearing; making it eligible from any block drops held-out GSM8K and MATH by 4.0 points each, failing exactly like Prophet (Appendix F). 
+
+Both of CVC’s own conditions are load-bearing. Table 2 treats CVC as one unit; Table 9 replays three ablated variants of Eq. 4 against the same held-out trajectories behind Figure 3 and shows neither of its two conditions is safe alone; Appendix F.1 gives the full analysis, together with a candidate-free control gate showing no position-level stability threshold is both safe and useful (Table 10). 
+
+Cheap to calibrate, cheap to transfer, but not equally reliable. Table 4 times each method’s own hyperparameter search, and the split again follows the axes. A termination gate leaves what the model conditions on untouched until it fires, so SchED and CVC calibrate offline by replaying cached trajectories (CVC’s own search takes 39 seconds of CPU time); sampling rules decide what actually executes at later steps, so BWEC and KLASS each demand a fresh GPU decode per setting, and BWEC’s sweep dominates LATCH’s 3h43 m total. Reusing thresholds on Dream is equally cheap 7Candidate-Aware Decoding for Diffusion Language Models 
+
+LLaDA-8B-Instruct Dream-7B-Instruct Task Variant Acc (%) Avg. Step TPS Speedup Acc (%) Avg. Step TPS Speedup 
+
+General / short-answer tasks (single-token or short-span answers) 
+
+MMLU Baseline 64.0 64.0 29.4 1.00 × 71.5 64.0 33.0 1.00 ×
+
+(n=200, sequence length=64) Prophet (Li et al., 2026) 62.5 (-1.5) 8.2 (-55.8) 192.2 6.54 × 71.5 (+0.0) 14.8 (-49.2) 126.8 3.84 ×
+
+(block=16, 4 blocks) SchED (Mohamed et al., 2026b) 61.5 (-2.5) 31.0 (-33.0) 58.8 2.00 × 69.0 (-2.5) 12.9 (-51.1) 156.1 4.73 ×
+
+SlowFast (Wei et al., 2026) 63.0 (-1.0) 17.9 (-46.1) 140.6 4.78 × 74.5 (+3.0) 9.6 (-54.4) 239.2 7.25 ×
+
+KLASS (Kim et al., 2025) 62.5 (-1.5) 29.2 (-34.8) 59.5 2.02 × 72.5 (+1.0) 11.3 (-52.7) 161.1 4.88 ×
+
+LATCH ( 𝜏 BWEC =0.9) 64.0 (+0.0) 5.1 (-58.9) 446.6 15.20 × 70.0 (-1.5) 5.0 (-59.0) 469.3 14.21 ×
+
+ARC-C Baseline 86.5 64.0 30.6 1.00 × 87.5 64.0 35.6 1.00 ×
+
+(n=200, sequence length=64) Prophet (Li et al., 2026) 86.0 (-0.5) 7.5 (-56.5) 273.5 8.95 × 86.0 (-1.5) 14.0 (-50.0) 156.1 4.39 ×
+
+(block=16, 4 blocks) SchED (Mohamed et al., 2026b) 85.0 (-1.5) 41.1 (-22.9) 47.8 1.56 × 88.5 (+1.0) 11.0 (-53.0) 200.0 5.62 ×
+
+SlowFast (Wei et al., 2026) 85.0 (-1.5) 23.7 (-40.3) 97.0 3.17 × 87.0 (-0.5) 10.4 (-53.6) 245.8 6.90 ×
+
+KLASS (Kim et al., 2025) 87.0 (+0.5) 37.5 (-26.5) 50.0 1.63 × 88.5 (+1.0) 11.6 (-52.4) 173.4 4.87 ×
+
+LATCH ( 𝜏 BWEC =0.9) 86.0 (-0.5) 4.0 (-60.0) 473.0 15.47 × 87.0 (-0.5) 4.4 (-59.6) 500.8 14.08 ×
+
+HellaSwag Baseline 75.5 64.0 23.9 1.00 × 75.5 64.0 24.7 1.00 ×
+
+(n=200, sequence length=64) Prophet (Li et al., 2026) 75.0 (-0.5) 6.0 (-58.0) 254.1 10.64 × 75.0 (-0.5) 16.2 (-47.8) 95.0 3.84 ×
+
+(block=16, 4 blocks) SchED (Mohamed et al., 2026b) 75.5 (+0.0) 27.7 (-36.3) 58.7 2.46 × 75.0 (-0.5) 19.0 (-45.0) 83.1 3.37 ×
+
+SlowFast (Wei et al., 2026) 77.0 (+1.5) 10.9 (-53.1) 156.1 6.53 × 72.5 (-3.0) 9.0 (-55.0) 185.1 7.49 ×
+
+KLASS (Kim et al., 2025) 75.0 (-0.5) 19.4 (-44.6) 78.5 3.28 × 69.5 (-6.0) 11.3 (-52.7) 131.0 5.30 ×
+
+LATCH ( 𝜏 BWEC =0.9) 75.5 (+0.0) 4.2 (-59.8) 320.9 13.44 × 75.5 (+0.0) 6.5 (-57.5) 229.6 9.29 ×
+
+WinoGrande Baseline 75.5 64.0 31.1 1.00 × 71.5 64.0 38.6 1.00 ×
+
+(n=200, sequence length=64) Prophet (Li et al., 2026) 76.0 (+0.5) 5.9 (-58.1) 320.6 10.30 × 69.5 (-2.0) 15.3 (-48.7) 153.3 3.97 ×
+
+(block=16, 4 blocks) SchED (Mohamed et al., 2026b) 75.5 (+0.0) 5.8 (-58.2) 336.8 10.83 × 71.0 (-0.5) 2.1 (-61.9) 1035.9 26.84 ×
+
+SlowFast (Wei et al., 2026) 77.5 (+2.0) 8.5 (-55.5) 241.5 7.77 × 71.0 (-0.5) 8.0 (-56.0) 297.3 7.70 ×
+
+KLASS (Kim et al., 2025) 76.5 (+1.0) 13.3 (-50.7) 142.5 4.58 × 72.5 (+1.0) 7.6 (-56.4) 277.3 7.19 ×
+
+LATCH ( 𝜏 BWEC =0.9) 76.0 (+0.5) 3.4 (-60.6) 555.4 17.84 × 71.5 (+0.0) 4.4 (-59.6) 624.6 16.19 ×
+
+PIQA Baseline 81.5 64.0 31.1 1.00 × 87.5 64.0 36.2 1.00 ×
+
+(n=200, sequence length=64) Prophet (Li et al., 2026) 82.0 (+0.5) 10.8 (-53.2) 217.4 6.98 × 87.5 (+0.0) 18.9 (-45.1) 117.4 3.24 ×
+
+(block=16, 4 blocks) SchED (Mohamed et al., 2026b) 81.0 (-0.5) 24.5 (-39.5) 79.0 2.54 × 87.0 (-0.5) 17.1 (-46.9) 125.6 3.47 ×
+
+SlowFast (Wei et al., 2026) 84.0 (+2.5) 10.0 (-54.0) 189.6 6.10 × 89.5 (+2.0) 9.1 (-54.9) 231.0 6.38 ×
+
+KLASS (Kim et al., 2025) 81.5 (+0.0) 18.6 (-45.4) 101.0 3.25 × 91.5 (+4.0) 10.6 (-53.4) 188.3 5.20 ×
+
+LATCH ( 𝜏 BWEC =0.9) 81.5 (+0.0) 3.5 (-60.5) 534.4 17.16 × 87.5 (+0.0) 3.7 (-60.3) 572.2 15.81 ×
+
+TruthfulQA Baseline 66.0 64.0 31.1 1.00 × 64.0 64.0 35.0 1.00 ×
+
+(n=200, sequence length=64) Prophet (Li et al., 2026) 66.5 (+0.5) 9.3 (-54.7) 164.9 5.30 × 63.5 (-0.5) 16.2 (-47.8) 125.6 3.59 ×
+
+(block=16, 4 blocks) SchED (Mohamed et al., 2026b) 57.5 (-8.5) 31.9 (-32.1) 61.2 1.97 × 60.5 (-3.5) 15.4 (-48.6) 140.2 4.01 ×
+
+SlowFast (Wei et al., 2026) 65.0 (-1.0) 17.2 (-46.8) 111.1 3.57 × 56.5 (-7.5) 11.0 (-53.0) 198.2 5.66 ×
+
+KLASS (Kim et al., 2025) 57.5 (-8.5) 28.7 (-35.3) 65.2 2.10 × 62.5 (-1.5) 12.7 (-51.3) 152.5 4.36 ×
+
+LATCH ( 𝜏 BWEC =0.9) 66.0 (+0.0) 4.4 (-59.6) 434.6 13.98 × 64.5 (+0.5) 5.0 (-59.0) 345.5 9.87 ×
+
+Long-reasoning tasks (multi-step CoT) 
+
+GSM8K Baseline 66.0 256.0 22.2 1.00 × 85.0 256.0 23.1 1.00 ×
+
+(n=100, sequence length=256) Prophet (Li et al., 2026) 38.0 (-28.0) 185.0 (-71.0) 25.2 1.14 × 16.0 (-69.0) 76.1 (-179.9) 70.8 3.06 ×
+
+(block=32, 8 blocks) SchED (Mohamed et al., 2026b) 59.0 (-7.0) 224.3 (-31.7) 26.0 1.17 × 18.0 (-67.0) 76.9 (-179.1) 77.9 3.37 ×
+
+SlowFast (Wei et al., 2026) 41.0 (-25.0) 70.9 (-185.1) 74.7 3.37 × 20.0 (-65.0) 89.2 (-166.8) 76.4 3.31 ×
+
+KLASS (Kim et al., 2025) 65.0 (-1.0) 105.5 (-150.5) 50.0 2.25 × 33.0 (-52.0) 96.5 (-159.5) 53.9 2.33 ×
+
+LATCH ( 𝜏 BWEC =0.9) 67.0 (+1.0) 94.0 (-162.0) 55.7 2.51 × 85.0 (+0.0) 90.8 (-165.2) 66.3 2.86 ×
+
+MATH Baseline 31.0 256.0 20.9 1.00 × 41.0 256.0 21.8 1.00 ×
+
+(n=100, sequence length=256) Prophet (Li et al., 2026) 19.0 (-12.0) 192.7 (-63.3) 24.4 1.17 × 15.0 (-26.0) 164.9 (-91.1) 29.3 1.34 ×
+
+(block=32, 8 blocks) SchED (Mohamed et al., 2026b) 26.0 (-5.0) 233.5 (-22.5) 24.1 1.15 × 33.0 (-8.0) 199.0 (-57.0) 29.0 1.33 ×
+
+SlowFast (Wei et al., 2026) 24.0 (-7.0) 100.0 (-156.0) 55.0 2.63 × 9.0 (-32.0) 98.9 (-157.1) 63.2 2.90 ×
+
+KLASS (Kim et al., 2025) 34.0 (+3.0) 133.9 (-122.1) 37.5 1.79 × 4.0 (-37.0) 98.7 (-157.3) 51.5 2.36 ×
+
+LATCH ( 𝜏 BWEC =0.9) 31.0 (+0.0) 124.6 (-131.4) 41.9 2.00 × 41.0 (+0.0) 120.3 (-135.7) 45.1 2.07 ×
+
+SVAMP Baseline 81.0 256.0 22.4 1.00 × 76.0 256.0 23.5 1.00 ×
+
+(n=100, sequence length=256) Prophet (Li et al., 2026) 40.0 (-41.0) 160.1 (-95.9) 31.3 1.39 × 29.0 (-47.0) 48.8 (-207.2) 78.7 3.35 ×
+
+(block=32, 8 blocks) SchED (Mohamed et al., 2026b) 70.0 (-11.0) 196.0 (-60.0) 30.2 1.35 × 20.0 (-56.0) 42.9 (-213.1) 140.9 5.99 ×
+
+SlowFast (Wei et al., 2026) 46.0 (-35.0) 81.7 (-174.3) 76.2 3.40 × 67.0 (-9.0) 49.9 (-206.1) 166.0 7.06 ×
+
+KLASS (Kim et al., 2025) 79.0 (-2.0) 96.4 (-159.6) 55.9 2.49 × 71.0 (-5.0) 58.1 (-197.9) 91.2 3.88 ×
+
+LATCH ( 𝜏 BWEC =0.9) 81.0 (+0.0) 90.6 (-165.4) 64.3 2.87 × 75.0 (-1.0) 77.7 (-178.3) 72.5 3.09 ×
+
+ASDiv Baseline 68.0 256.0 22.6 1.00 × 78.0 256.0 23.5 1.00 ×
+
+(n=100, sequence length=256) Prophet (Li et al., 2026) 37.0 (-31.0) 163.7 (-92.3) 31.6 1.40 × 25.0 (-53.0) 54.8 (-201.2) 119.1 5.08 ×
+
+(block=32, 8 blocks) SchED (Mohamed et al., 2026b) 60.0 (-8.0) 197.0 (-59.0) 30.1 1.33 × 17.0 (-61.0) 53.3 (-202.7) 113.6 4.83 ×
+
+SlowFast (Wei et al., 2026) 34.0 (-34.0) 82.4 (-173.6) 77.3 3.42 × 52.0 (-26.0) 57.9 (-198.1) 169.3 7.20 ×
+
+KLASS (Kim et al., 2025) 66.0 (-2.0) 100.8 (-155.2) 53.5 2.37 × 58.0 (-20.0) 67.2 (-188.8) 78.8 3.35 ×
+
+LATCH ( 𝜏 BWEC =0.9) 68.0 (+0.0) 94.3 (-161.7) 61.9 2.74 × 76.0 (-2.0) 81.4 (-174.6) 78.2 3.33 ×
+
+GSM-Hard Baseline 35.0 256.0 21.7 1.00 × 42.0 256.0 23.0 1.00 ×
+
+(n=100, sequence length=256) Prophet (Li et al., 2026) 18.0 (-17.0) 194.1 (-61.9) 24.4 1.12 × 9.0 (-33.0) 103.9 (-152.1) 49.7 2.16 ×
+
+(block=32, 8 blocks) SchED (Mohamed et al., 2026b) 31.0 (-4.0) 237.4 (-18.6) 23.9 1.10 × 10.0 (-32.0) 123.5 (-132.5) 47.5 2.07 ×
+
+SlowFast (Wei et al., 2026) 21.0 (-14.0) 70.0 (-186.0) 83.2 3.83 × 11.0 (-31.0) 96.8 (-159.2) 77.1 3.35 ×
+
+KLASS (Kim et al., 2025) 35.0 (+0.0) 109.7 (-146.3) 46.9 2.16 × 10.0 (-32.0) 111.7 (-144.3) 45.8 1.99 ×
+
+LATCH ( 𝜏 BWEC =0.9) 36.0 (+1.0) 96.9 (-159.1) 54.8 2.53 × 42.0 (+0.0) 103.2 (-152.8) 57.4 2.50 ×
+
+Table 1: Zero-shot evaluation under free-form generation. LATCH is faster than Prophet, SlowFast, and KLASS on all six short-answer tasks, and keeps accuracy degradation within the 
+
+2.0-point tolerance on all five long-reasoning tasks without a suffix prompt, with hyperparameters frozen across backbones. Red marks accuracy drops beyond that tolerance; the termination gates (Prophet, SchED) and SlowFast exceed it on every long-reasoning setting, while KLASS stays within it only on LLaDA, its calibration backbone. Appendix G.1 gives two faster tiers ( 𝜏 BWEC =0.7, 0.8)trading some margin for extra speedup. 0.0 0.2 0.4 0.6 0.8 1.0 
+
+Stabilization time tstabilize /T
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 
+
+> Commit time  tcommit /T
+
+Prophet CVC: 
+
+Premature: 4% 2% 
+
+Mismatch: 3% 2% 
+
+MMLU (n=198) 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Stabilization time tstabilize /T
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 Prophet CVC: 
+
+Premature: 78% 4% 
+
+Mismatch: 47% 3% 
+
+GSM8K (n=93) 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Stabilization time tstabilize /T
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 Prophet CVC: 
+
+Premature: 87% 4% 
+
+Mismatch: 57% 4% 
+
+MATH (n=93) 
+
+> Prophet, matches baseline
+> Prophet, mismatch
+> CVC, matches baseline
+> CVC, mismatch
+> never fires early
+
+Figure 4: Commit-stabilization phase diagram on held-out LLaDA-8B-Instruct trajectories. 
+
+Each point pairs Prophet (triangle) and CVC (circle) for one trajectory, connected by a faint line; marker fill/outline and per-panel premature-commitment counts are annotated directly in each panel. Panels include only trajectories with a defined stabilization time ( 198 /200 MMLU, 93 /100 GSM8K, 
+
+93 /100 MATH); the rest lack an extractable candidate. 8Candidate-Aware Decoding for Diffusion Language Models                                                                                                                                                       
+
+> LLaDA-8B-Instruct Dream-7B-Instruct Task Variant Acc (%) Step TPS Speedup Acc (%) Step TPS Speedup
+> General / short-answer tasks
+> MMLU Baseline 64.0 64.0 29.4 1.00 ×71.5 64.0 33.0 1.00 ×
+> (n=200, sequence length=64) + CVC 64.0 7.0 358.3 12.20 ×69.5 8.0 130.0 3.94 ×
+> (block=16, 4 blocks) + BWEC 64.0 32.8 56.9 1.94 ×71.0 24.8 88.7 2.69 ×
+> + CVC + BWEC (Full LATCH) 64.0 5.1 446.6 15.20 ×70.0 5.0 469.3 14.21 ×
+> HellaSwag Baseline 75.5 64.0 23.9 1.00 ×75.5 64.0 24.7 1.00 ×
+> (n=200, sequence length=64) + CVC 76.5 6.3 223.0 9.34 ×75.0 11.3 77.4 3.13 ×
+> (block=16, 4 blocks) + BWEC 76.5 26.2 59.6 2.50 ×75.0 24.2 30.5 1.23 ×
+> + CVC + BWEC (Full LATCH) 75.5 4.2 320.9 13.44 ×75.5 6.5 229.6 9.29 ×
+> Long-reasoning tasks (multi-step CoT)
+> GSM8K Baseline 66.0 256.0 22.2 1.00 ×85.0 256.0 23.1 1.00 ×
+> (n=100, sequence length=256) + CVC 66.0 250.0 22.4 1.01 ×85.0 256.0 10.8 0.47 ×
+> (block=32, 8 blocks) + BWEC 67.0 99.4 54.4 2.45 ×85.0 91.3 30.9 1.34 ×
+> + CVC + BWEC (Full LATCH) 67.0 94.0 55.7 2.51 ×85.0 90.8 66.3 2.86 ×
+> MATH Baseline 31.0 256.0 20.9 1.00 ×41.0 256.0 21.8 1.00 ×
+> (n=100, sequence length=256) + CVC 31.0 252.7 20.9 1.00 ×41.0 255.2 10.0 0.46 ×
+> (block=32, 8 blocks) + BWEC 32.0 128.5 41.7 1.99 ×42.0 121.1 20.3 0.93 ×
+> + CVC + BWEC (Full LATCH) 31.0 124.6 41.9 2.00 ×41.0 120.3 45.1 2.07 ×
+
+Table 2: Component ablation study. CVC drives short-answer speedup, BWEC drives long-reasoning speedup. On Dream, CVC-only’s GSM8K/MATH rows run at 0.46 –0.47 × despite near-full steps since Dream rarely leaves an extractable candidate late; CVC+BWEC recovers full speedup via BWEC’s savings. for every method, but only CVC’s transfer holds accuracy; SchED, SlowFast, KLASS, and Prophet all fail there (Table 1). 
+
+The per-block view explains why. Figure 5 shows why long-reasoning speedups plateau; BWEC shortens non-final blocks by committing tokens once they clear the confidence threshold, while the protected final block stays near its full budget under CVC and becomes the bottleneck, an asymmetry Step alone cannot show. Short-answer tasks like MMLU and HellaSwag often terminate within one or two blocks, yielding a higher speedup ceiling than tasks occupying all eight, a pattern no prior gate reproduces, since each applies one undifferentiated rule across the whole buffer. Step is nonetheless only a proxy for wall-clock speed; under continuous 𝜏 BWEC sweeps it can stay flat while TPS-ratio swings 2.2–2.8×, and GSM8K accuracy can collapse with no Step warning at all (Appendix G.3). B0 B1 B2 Final                            
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Steps used (%)  MMLU (n=200)
+> B0 B1 B2 Final
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> HellaSwag (n=200)
+> B0 B1 B2 B3 B4 B5 B6 Final
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> GSM8K (n=100)
+> B0 B1 B2 B3 B4 B5 B6 Final
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> MATH (n=100)
+> Baseline (full budget) Prophet SchED SlowFast KLASS LATCH ( BWEC =0.7) LATCH ( BWEC =0.8) LATCH ( BWEC =0.9)
+
+Figure 5: Per-block step usage comparison. Mean steps used (% of per-block budget) by block, LLaDA-8B-Instruct. KLASS reduces steps gradually, with no final-block protection, while LATCH’s non-final savings shrink as 𝜏 BWEC tightens and the final block stays near 90% . Appendix G.2 repeats this across all 11 tasks and both models. 
+
+6 Conclusion 
+
+Training-free DLM acceleration separates into two axes; adaptive sampling decides how quickly positions commit while decoding continues, and generation-time early exit decides when the whole sequence may stop. LATCH keeps the axes apart and gives each a gate whose evidence matches its scope, Block-Wise Early Commit (BWEC) pacing non-final blocks through a local confidence rule and Confidence-Verified Commit (CVC) governing termination by re-extracting and relocating the candidate answer at every step before committing. What separates LATCH from ever-finer per-position stability rules is the object being verified, not the signal; even if every position individually stabilized, no position-level rule could certify that the answer the task asks for exists and has stopped changing, a question only candidate extraction can pose. A sampler, however refined, also still decodes every remaining token, so verified termination adds a saving that per-position acceleration cannot reach. LATCH stays within 2.0 points of full-decoding accuracy everywhere under one frozen hyperparameter set, reaching 9.3–17 .8× speedup on short-answer tasks and 2.0–3.3× on long-reasoning tasks, transferring cross-backbone untuned; Appendix H discusses where the underlying answer-span assumption breaks down. 9Candidate-Aware Decoding for Diffusion Language Models 
+
+References 
+
+Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg. Structured denoising diffusion models in discrete state-spaces. Advances in Neural Information Processing Systems (NeurIPS) , 34:17981–17993, 2021. Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. PIQA: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI Conference on Artificial Intelligence (AAAI) , 2020. Andrew Campbell, Joe Benton, Valentin De Bortoli, Thomas Rainforth, George Deligiannidis, and Arnaud Doucet. A continuous time framework for discrete denoising models. Advances in Neural Information Processing Systems (NeurIPS) , 35:28266–28279, 2022. Xinhua Chen, Sitao Huang, Cong Guo, Chiyue Wei, Yintao He, Jianyi Zhang, Hai Helen Li, and Yiran Chen. DPad: Efficient diffusion language models with suffix dropout. In 
+
+The Fourteenth International Conference on Learning Representations (ICLR) , 2026a. URL 
+
+https://openreview.net/forum?id=0yOsSMU1eY .Yuzhe Chen, Jiale Cao, Xuyang Liu, Jin Xie, Aiping Yang, and Yanwei Pang. STDec: Spatio-temporal stability guided decoding for dLLMs. arXiv preprint arXiv:2604.06330 , 2026b. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try ARC, the AI2 reasoning challenge. 
+
+arXiv preprint arXiv:1803.05457 , 2018. Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. URL https://arxiv.org/abs/ 2110.14168 .Muzhi Dai, Chenxu Yang, and Qingyi Si. S-GRPO: Early exit via reinforcement learning in reasoning models. In Advances in Neural Information Processing Systems 38 (NeurIPS) , 2025. URL 
+
+https://openreview.net/forum?id=wNMK5o0Vfg .Zhenbang Du, Kejing Xia, Xinrui Zhong, Yonggan Fu, Nicolai Oswald, Binfei Ji, Brucek Khailany, Pavlo Molchanov, and Yingyan Lin. 𝑅 2-dLLM: Accelerating diffusion large language models via spatio-temporal redundancy reduction. arXiv preprint arXiv:2604.18995 , 2026. Luyu Gao, Aman Madaan, Shuyan Zhou, Uri Alon, Pengfei Liu, Yiming Yang, Jamie Callan, and Graham Neubig. PAL: Program-aided language models. International Conference on Machine Learning (ICML) , 2023. Google DeepMind. Gemini diffusion. Google DeepMind blog, 2025. URL https://blog. google/technology/google-deepmind/gemini-diffusion/ .Jiawei Gu, Ziyue Qiao, and Xiao Luo. Detecting the semantic fixed point: A geometric framework for efficient inference. In Proceedings of the 43rd International Conference on Machine Learning (ICML) , 2026. URL https://openreview.net/forum?id=DACN5xM4h7 .Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. In International Conference on Learning Representations (ICLR) , 2021a. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. In 
+
+NeurIPS Datasets and Benchmarks Track (NeurIPS) , 2021b. Emiel Hoogeboom, Didrik Nielsen, Priyank Jaini, Patrick Forré, and Max Welling. Argmax flows and multinomial diffusion: Learning categorical distributions. Advances in Neural Information Processing Systems (NeurIPS) , 34:12454–12465, 2021. 10 Candidate-Aware Decoding for Diffusion Language Models Zhanqiu Hu, Jian Meng, Yash Akhauri, Mohamed S. Abdelfattah, Jae-sun Seo, Zhiru Zhang, and Udit Gupta. FlashDLM: Accelerating diffusion language model inference via efficient KV caching and guided diffusion. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026. URL https://openreview.net/forum?id=KUfKvlX3VY . arXiv:2505.21467. Inception Labs, Samar Khanna, Siddhant Kharbanda, Shufan Li, Harshit Varma, Eric Wang, Sawyer Birnbaum, Ziyang Luo, Yanis Miraoui, Akash Palrecha, Stefano Ermon, Aditya Grover, and Volodymyr Kuleshov. Mercury: Ultra-fast language models based on diffusion. arXiv preprint arXiv:2506.17298 , 2025. URL https://arxiv.org/abs/2506.17298 .Jiyeon Kim, Sungik Choi, Yongrae Jo, Moontae Lee, and Minjoon Seo. Early decisions matter: Proximity bias and initial trajectory shaping in non-autoregressive diffusion language models. 
+
+arXiv preprint arXiv:2604.10567 , 2026. URL https://arxiv.org/abs/2604.10567 .Seo Hyun Kim, Sunwoo Hong, Hojung Jung, Youngrok Park, and Se-Young Yun. KLASS: KL-guided fast inference in masked diffusion models. In Advances in Neural Information Processing Systems 38 (NeurIPS), Spotlight , 2025. arXiv:2511.05664. Pengxiang Li, Yefan Zhou, Dilxat Muhtar, Lu Yin, Shilin Yan, Li Shen, Yi Liang, Soroush Vosoughi, and Shiwei Liu. Diffusion language model knows the answer before it decodes. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026. URL 
+
+https://openreview.net/forum?id=g88nt4ieTG .Stephanie Lin, Jacob Hilton, and Owain Evans. TruthfulQA: Measuring how models mimic human falsehoods. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (ACL) , 2022. Zhiyuan Liu, Yicun Yang, Yaojie Zhang, Junjie Chen, Chang Zou, Qingyan Wei, Shaobo Wang, Yichen Zhu, and Linfeng Zhang. dLLM-Cache: Accelerating diffusion large language models with adaptive caching. In Proceedings of the 43rd International Conference on Machine Learning (ICML) , 2026. URL https://openreview.net/forum?id=DriG3hgh42 . arXiv:2506.06295. Aaron Lou, Chenlin Meng, and Stefano Ermon. Discrete diffusion modeling by estimating the ratios of the data distribution. In Proceedings of the 41st International Conference on Machine Learning (ICML) , volume 235 of Proceedings of Machine Learning Research , pp. 32819–32848, 2024. URL https://proceedings.mlr.press/v235/lou24a.html .Xinyin Ma, Runpeng Yu, Gongfan Fang, and Xinchao Wang. dKV-Cache: The cache for diffusion language models. In Advances in Neural Information Processing Systems 38 (NeurIPS) , 2025. URL https://openreview.net/forum?id=Gppo2JImHs .Shen-Yun Miao, Chao-Chun Liang, and Keh-Yih Su. A diverse corpus for evaluating and developing English math word problem solvers. In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics (ACL) , 2020. Amr Mohamed, Guokan Shang, and Michalis Vazirgiannis. LESS is more: Mutual-stability sampling for diffusion language models. 2026a. arXiv:2606.16908. Amr Mohamed, Yang Zhang, Michalis Vazirgiannis, and Guokan Shang. Fast-decoding diffusion language models via progress-aware confidence schedules. In Findings of the Association for Computational Linguistics: ACL 2026 , 2026b. arXiv:2512.02892. Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. Large language diffusion models. In Advances in Neural Information Processing Systems 38 (NeurIPS) , 2025. URL https://openreview.net/forum? id=KnqiC0znVF . arXiv:2502.09992. Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Jiacheng Sun, Zhenguo Li, and Chongxuan Li. Your absorbing discrete diffusion secretly models the conditional distributions of clean data. In The Thirteenth International Conference on Learning Representations (ICLR) , 2025. URL 
+
+https://openreview.net/forum?id=sMyXP8Tanm .11 Candidate-Aware Decoding for Diffusion Language Models Arkil Patel, Satwik Bhattamishra, and Navin Goyal. Are NLP models really able to solve simple math word problems? In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics (NAACL) , 2021. Jiaoyang Ruan, Xin Gao, Yinda Chen, Hengyu Zeng, Liang Du, Guanghao Li, Jie Fu, and Jian Pu. Reasoning on the manifold: Bidirectional consistency for self-verification in diffusion language models. In Proceedings of the 43rd International Conference on Machine Learning (ICML) , 2026. URL https://openreview.net/forum?id=CUVBdw2tKy . arXiv:2604.16565. Subham Sekhar Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin T. Chiu, Alexander Rush, and Volodymyr Kuleshov. Simple and effective masked diffusion language models. In Advances in Neural Information Processing Systems 37 (NeurIPS) , 2024. URL https://proceedings.neurips.cc/paper_files/paper/2024/ hash/eb0b13cc515724ab8015bc978fdde0ad-Abstract-Conference.html .Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. WinoGrande: An adversarial Winograd schema challenge at scale. Communications of the ACM , 64(9):99–106, 2021. Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis K. Titsias. Simplified and gener-alized masked diffusion for discrete data. In Advances in Neural Information Processing Systems 37 (NeurIPS) , 2024. URL https://proceedings.neurips.cc/paper_files/paper/2024/ hash/bad233b9849f019aead5e5cc60cef70f-Abstract-Conference.html .Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsuper-vised learning using nonequilibrium thermodynamics. In International Conference on Machine Learning (ICML) , pp. 2256–2265, 2015. Yuxuan Song, Zheng Zhang, Cheng Luo, Pengyang Gao, Fan Xia, Hao Luo, Zheng Li, Yuehang Yang, Hongli Yu, Xingwei Qu, Yuwei Fu, Jing Su, Ge Zhang, Wenhao Huang, Mingxuan Wang, Lin Yan, Xiaoying Jia, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Yonghui Wu, and Hao Zhou. Seed diffusion: A large-scale diffusion language model with high-speed inference. arXiv preprint arXiv:2508.02193 , 2025. URL https://arxiv.org/abs/2508.02193 .Chengcheng Wang, Tingzhang Luo, Wenhao Li, Jianyuan Guo, and Chang Xu. TACG: Trajectory-aware commit gating for diffusion language model decoding. arXiv preprint arXiv:2607.03236 ,2026. Qingyan Wei, Yaojie Zhang, Zhiyuan Liu, Puyu Zeng, Yuxuan Wang, Biqing Qi, Dongrui Liu, and Linfeng Zhang. Accelerating diffusion large language models with SlowFast sampling: The three golden principles. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026. URL https://openreview.net/forum?id=Uh17FiwF4q . arXiv:2506.10848. Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. Fast-dLLM: Training-free acceleration of diffusion LLM by enabling KV cache and parallel decoding. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026. URL https://openreview.net/forum?id=3Z3Is6hnOT . arXiv:2505.22618. Andrea Wynn, Metod Jazbec, Charith Peris, Rinat Khaziev, Anqi Liu, Daniel Khashabi, and Eric Nalisnick. Controlling the risk of corrupted contexts for language models via early-exiting. In 
+
+Proceedings of the 43rd International Conference on Machine Learning (ICML) , 2026. URL 
+
+https://openreview.net/forum?id=8bUDbWMo5v . arXiv:2510.02480. Zhongyu Xiao, Zhiwei Hao, Jianyuan Guo, Yong Luo, Jia Liu, Jie Xu, and Han Hu. Streaming-dLLM: Accelerating diffusion LLMs via suffix pruning and dynamic decoding. arXiv preprint arXiv:2601.17917 , 2026. URL https://arxiv.org/abs/2601.17917 .Yangxinyu Xie, Tao Wang, Soham Mallick, Yan Sun, Georgy Noarov, Mengxin Yu, Tanwi Mallick, Weijie J. Su, and Edgar Dobriban. Statistical early stopping for reasoning models. In Proceedings of the 43rd International Conference on Machine Learning (ICML) , 2026. URL https:// openreview.net/forum?id=TJshRZDdyW . arXiv:2602.13935. 12 Candidate-Aware Decoding for Diffusion Language Models Chenxu Yang, Qingyi Si, Yongjie Duan, Zheliang Zhu, Chenyu Zhu, Qiaowei Li, Minghui Chen, Zheng Lin, and Weiping Wang. Dynamic early exit in reasoning models. In The Four-teenth International Conference on Learning Representations (ICLR) , 2026. URL https: //openreview.net/forum?id=NpU7ZXafRi .Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. Dream 7B: Diffusion large language models. arXiv preprint arXiv:2508.15487 , 2025. URL 
+
+https://arxiv.org/abs/2508.15487 .Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. HellaSwag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics (ACL) , 2019. Kevin Zhai, Sabbir Mollah, Zhenyi Wang, and Mubarak Shah. CORE: Context-robust remask-ing for diffusion language models. In Proceedings of the 43rd International Conference on Machine Learning (ICML) , 2026. URL https://openreview.net/forum?id=bmKHxLWkz9 .arXiv:2602.04096. Kaiwen Zheng, Yongxin Chen, Hanzi Mao, Ming-Yu Liu, Jun Zhu, and Qinsheng Zhang. Masked diffusion models are secretly time-agnostic masked models and exploit inaccurate categorical sampling. In The Thirteenth International Conference on Learning Representations (ICLR) , 2025. URL https://openreview.net/forum?id=CTC7CmirNr .13 Candidate-Aware Decoding for Diffusion Language Models 
+
+Appendix Overview 
+
+Grouped by theme, reproducibility, protocol, and statistical validation (Appendices A–C), mechanis-tic evidence and fairness (Appendices D–E), structural ablation and sensitivity (Appendices F–G), and scope extension plus limitations (Appendices H). 
+
+• A Hyperparameters Underlying Table 1, the one deployed configuration, harness details, and answer-search-region ( search_mode ) convention. 
+
+• B Timing Protocol, direct end-to-end TPS/Speedup measurement, dedicated GPU, batch size 1.
+
+• C Is the Negligible Accuracy Drop Real, or Noise? Paired significance and output-identical rate. 
+
+• D Mechanistic Failure Case, Prophet vs. LATCH on real GSM8K/SVAMP/PIQA trajectories, signal traces and literal decoded text. 
+
+• E Answer-Region Determination, LATCH vs. Prophet’s own suffix-prompt structure, tested head-to-head, plus why short-answer tasks search differently from long-reasoning ones ( search_mode ). 
+
+• G Sensitivity, continuous 𝜏 BWEC sweep, all 11 tasks and both models. 
+
+• H Limitations. 
+
+A Hyperparameters Underlying Table 1 
+
+A.1 Harness Details and the Deployed Configuration 
+
+Harness details deferred from Section 5. Zero-shot means a bare question plus, for reasoning tasks, a one-line “Let’s think step by step” CoT cue, with no exemplars and no answer-format scaffolding beyond that. Dream-7B-Instruct retains a causal-LM next-token indexing convention; our harness applies its own official one-position logit shift, otherwise decoding matches LLaDA. The Prophet peer row ports the official gate (unchanged published defaults) into this same harness, monitoring our own answer region, rather than citing numbers from Prophet’s own repo, which uses a different prompt template. Table 1’s central claim is that LATCH needs exactly one numerical hyperparameter set, 𝜏 CVC =0.7,
+
+𝛾 =2.0, 𝑝 min =3 (Eq. 4), 𝜏 BWEC =0.9 (Eq. 5), tail_frac =0.3 (Section 4), identical across all 11 tasks and both models, with no per-task or per-model retuning (the deterministic extractor and search region follow each task’s own output format, search_mode below, but neither is tuned). Table 3 makes this explicit alongside the one setting that does vary by task, Prophet’s own staged confidence-gap thresholds, which vary by task family (Section 5). That is exactly the per-task tuning LATCH is designed to avoid needing.                                                                                                                                                                                          
+
+> Task 𝑛 len Steps Block Batch search_mode Prophet ( 𝜏 high /𝜏 mid /𝜏 low )SchED (mode/patience) KLASS ( 𝜏 /𝜖 KL )MMLU 200 64 64 16 1first5 7.5/5.0/2.5cosine / 00.7/0.015
+> ARC-C 200 64 64 16 1first5 7.5/5.0/2.5cosine / 00.7/0.015
+> HellaSwag 200 64 64 16 1first5 7.5/5.0/2.5cosine / 00.7/0.015
+> WinoGrande 200 64 64 16 1first5 7.5/5.0/2.5cosine / 00.7/0.015
+> PIQA 200 64 64 16 1first5 7.5/5.0/2.5cosine / 00.7/0.015
+> TruthfulQA 200 64 64 16 1first5 7.5/5.0/2.5cosine / 00.7/0.015
+> GSM8K 100 256 256 32 1last 8.0/5.0/3.5linear / 40.6/0.015
+> MATH 100 256 256 32 1last 8.0/5.0/3.5linear / 40.6/0.015
+> SVAMP 100 256 256 32 1last 8.0/5.0/3.5linear / 40.6/0.015
+> ASDiv 100 256 256 32 1last 8.0/5.0/3.5linear / 40.6/0.015
+> GSM-Hard 100 256 256 32 1last 8.0/5.0/3.5linear / 40.6/0.015
+
+Table 3: Per-task settings underlying Table 1. 𝑛 is the held-out sample size; len is generation length; Steps is the full decode budget; Block is the block-diffusion block size (Section 4); Batch is 1 throughout (Appendix B). search_mode (explained below) is fixed by answer format, never tuned. Prophet’s staged thresholds are taken unchanged from its own paper/repo, not tuned by us. LATCH’s five hyperparameters are identical on every row (listed above). SchED’s mode/patience are its calibrated decay-curve shape and stability-guard patience ( 𝜏 high /𝜏 low reuse Prophet’s values above); KLASS’s 𝜏 /𝜖 KL are its two frozen-per-family calibrated values. Other hyperparameters (both) are fixed and not shown per row. 14 Candidate-Aware Decoding for Diffusion Language Models                    
+
+> Prophet SchED SlowFast KLASS LATCH LLaDA (wall-clock) –57 m–2h50 m3h43 mGPU-free? –✓–××
+> Transfers to Dream? ××××✓
+
+Table 4: Calibration wall-clock time (discussed in Section 5.2). “–” denotes no separate calibration (hyperparameters are published or inherited). GPU-free: ✓ offline, × needs GPU. Transfers to Dream: ✓ holds, × fails. 
+
+A.2 What search_mode Controls 
+
+search_mode fixes, per task family, which region of the buffer the extractor reads and where the gate relocates the answer span (never tuned; details in Appendix E.1). "last" (GSM8K, MATH, SVAMP, ASDiv, GSM-Hard) restricts both to the trailing tail_frac =0.3 fraction; "first5" 
+
+(MMLU, ARC-C, HellaSwag, WinoGrande, PIQA, TruthfulQA) reads the whole buffer but restricts the search to the first 5 positions. 
+
+A.3 Extractor Normalization, Missing Candidates, and Confidence Aggregation 
+
+The change-tracking comparison in Eq. 4 uses the extractor’s own normalized output, never a raw token span. Numeric answers have currency symbols and punctuation stripped, boxed math answers have L ATEX spacing/macros canonicalized, so formatting changes and span movement never register as a change; only the normalized value is compared. 
+
+run 𝑡 is an implementation-maintained stability counter, not a step count; it increments across suc-cessive valid extractions with the same value and pauses, rather than resets, when no candidate is extractable ( changes 𝑡 likewise holds; 𝑐 𝑡 is undefined, failing the gate automatically). Across 120 
+
+calibration trajectories, 30% show such a gap and 21% show the counter resuming through it; a strict-restart-at-one counterfactual reproduces the same commit outcome everywhere, so resumption is common but never decision-changing. Confidence 𝑐 𝑡 is the model’s per-step softmax mean over the span, recomputed each step regardless of mask status, so it may partly reflect self-reconstruction rather than genuine uncertainty; we treat it as an operational agreement score, not an epistemic estimate. We use the plain mean rather than a minimum or geometric mean to avoid penalizing longer answers, though run 𝑡 ’s joint requirement limits how much one lucky token can do alone. 
+
+B Timing Protocol 
+
+Every TPS/Speedup number in this paper is timed directly, end-to-end , not extrapolated from a shared per-step constant. For every cell we wrap one complete call to the decode loop (full step-by-step decoding, CVC/BWEC gate bookkeeping including the per-step answer-stability extractor, and the final-fill commit when the gate stops early) in torch.cuda.synchronize() immediately before/after, timed on the host with time.time() (wall clock, not a CUDA event timer). This applies uniformly to Baseline , Prophet , LATCH , SlowFast Sampling (Wei et al., 2026), SchED (Mohamed et al., 2026b), and KLASS (Kim et al., 2025) in Table 1, and the Aggressive /Normal 𝜏 BWEC tiers (Table 11). 
+
+Protocol. Every cell uses the identical, fixed 𝑛 =20 subsample (the first 20 of the same held-out examples Table 1 uses, seed =0, skip =40 ) for all timing within that cell. 2 warmup examples (a disjoint, immediately-following slice) are decoded and discarded first to absorb first-call overhead (CUDA context/kernel warmup), then 3 timed passes run back to back over the same 20 examples; we report the mean of the 3 pass-level means, plus their coefficient of variation (CV%), so no cell’s number rests on a single run. Every cell runs on a GPU with no other job co-resident (verified before launch, Table 5), batch size 1 (matching Prophet ’s and SlowFast Sampling ’s own released protocols, Section 5; SchED and KLASS run under this same fixed batch size for a controlled comparison, since neither paper specifies its own), bf16 , greedy decoding. 15 Candidate-Aware Decoding for Diffusion Language Models                         
+
+> LLaDA-8B-Instruct Dream-7B-Instruct GPU NVIDIA A100-SXM4-40GB, no co-resident job Batch size 1
+> PyTorch / CUDA 2.5.1+cu124 / 12 .4
+> Sync. method torch.cuda.synchronize() around each timed call; host time.time()
+> 𝑛 / warmup / repeats 20 /2/3,seed=0 ,skip=40
+> Per-cell CV% 0.01 –2.13% (mean 0.43% ,𝑛 =117 )0.01 –2.55% (mean 0.23% ,𝑛 =117 )
+
+Table 5: Direct end-to-end TPS measurement protocol. Shared by every table/figure in Ap-pendix B’s scope. CV% is the coefficient of variation across each cell’s 3 timed passes; every cell lands under 2.6% , evidence the 3-pass mean is stable, not noise-dominated. 
+
+C Is the Negligible Accuracy Drop Real, or Noise? Paired Significance and Output-Identical Rate 
+
+Table 1 reports point estimates, and the ±2.0-point threshold is a prespecified practical tolerance rather than a confidence interval. Baseline and LATCH are not independent samples, however; every example is decoded from the identical prompt, model, and seed, so the right comparison is 
+
+paired , and paired uncertainty is tighter than a naive independent-sample CI would be (e.g. ≈ ± 6–
+
+7pt at GSM8K/MATH’s 𝑛 =100 under a binomial approximation). Because Baseline and LATCH 
+
+decode the same examples, this appendix assesses uncertainty using paired McNemar tests and paired bootstrap intervals; no cell shows a statistically detectable accuracy difference, although these intervals are not equivalence tests for the ±2.0-point margin: some reach [− 5.0, +0.0] or [− 3.0, +3.0]
+
+(Table 6), wide enough that they do not themselves certify the margin holds. We report three paired statistics per task, both models, on the same held-out sample as Table 1, output-identical rate (the fraction of examples where LATCH’s extracted answer exactly matches the full-budget baseline’s, the direct evidence that early-commit did not change the answer, independent of whether that answer happens to be correct), McNemar’s exact test on the examples where the two disagree ( 𝑏 =baseline-only-correct, 𝑐 = LATCH-only-correct; a symmetric split is consistent with equal accuracy, an asymmetric one is not), and a paired bootstrap 95% CI on Δacc (resampling example indices, not independent baseline/LATCH draws). Table 6 reports the full per-task breakdown. Output-identical rate is 88 –100% on every task; LATCH’s early commitment overwhelmingly re-produces the exact same answer the full-budget decode would have reached, not merely a similarly-accurate different one. 𝑏 (baseline-only-correct) and 𝑐 (LATCH-only-correct) are small enough everywhere ( ≤ 3 out of 100 –200 examples per task) that McNemar’s exact test has essentially no power to reject anything at this sample size, itself informative; the two variants disagree on at most a handful of examples per task, and no task reaches conventional significance (the smallest 𝑝 -value is 
+
+0.25 , Dream/MMLU). The paired bootstrap 95% CI behind each Δacc is substantially narrower than the naive independent-sample binomial SE ( ≈ 4.7pt at GSM8K’s 𝑛 =100 /acc ≈ 0.66 ) and centered at or near 0 on every task. On this evidence, the ±2.0pt tolerance used throughout this paper is not quietly measuring noise. 
+
+Reading the disagreements. 𝑏 and 𝑐 are the counts of examples where the two variants land on opposite sides of correct/incorrect; the underlying per-example diffs show these are exactly the kind of noise any two similarly-accurate decodes would produce, not a systematic direction. GSM-Hard/LLaDA’s lowest identical rate (consistent with that task’s own long floating-point-noisy targets) is still mostly both-wrong on different wrong numbers, not LATCH converting a right answer to a wrong one. Dream/MMLU is the one cell with a one-sided split worth naming ( 𝑏 =3, 𝑐 =0), still far short of significance ( 𝑝 =0.25 ) at this sample size, and the paired bootstrap CI’s upper bound still touches 0.0, so it is not evidence that the drop turns severe, but it is the single most CVC-unfavorable cell in the whole sweep. 16 Candidate-Aware Decoding for Diffusion Language Models 
+
+LLaDA-8B-Instruct Dream-7B-Instruct Task 𝑛 𝑏 𝑐 𝑝 Δacc [ 95% CI] Ident.(%) 𝑛 𝑏 𝑐 𝑝 Δacc [ 95% CI] Ident.(%) MMLU 200 1 1 1.000 +0.0 [−1.5, +1.5] 99.0 200 3 0 0.250 −1.5 [−3.5, +0.0] 97.5 ARC-C 200 1 0 1.000 −0.5 [−1.5, +0.0] 99.5 200 1 0 1.000 −0.5 [−1.5, +0.0] 99.5 HellaSwag 200 0 0 1.000 +0.0 [+0.0, +0.0] 99.5 200 0 0 1.000 +0.0 [+0.0, +0.0] 100.0 WinoGrande 200 1 2 1.000 +0.5 [−1.0, +2.5] 98.5 200 0 0 1.000 +0.0 [+0.0, +0.0] 100.0 PIQA 200 2 2 1.000 +0.0 [−2.0, +2.0] 98.0 200 0 0 1.000 +0.0 [+0.0, +0.0] 100.0 TruthfulQA 200 0 0 1.000 +0.0 [+0.0, +0.0] 100.0 200 0 1 1.000 +0.5 [+0.0, +1.5] 99.0 GSM8K 100 1 2 1.000 +1.0 [−2.0, +5.0] 97.0 100 0 0 1.000 +0.0 [+0.0, +0.0] 100.0 MATH 100 1 1 1.000 +0.0 [−3.0, +3.0] 94.0 100 0 0 1.000 +0.0 [+0.0, +0.0] 96.0 SVAMP 100 1 1 1.000 +0.0 [−3.0, +3.0] 98.0 100 1 0 1.000 −1.0 [−3.0, +0.0] 98.0 ASDiv 100 1 1 1.000 +0.0 [−3.0, +3.0] 95.0 100 2 0 0.500 −2.0 [−5.0, +0.0] 97.0 GSM-Hard 100 0 1 1.000 +1.0 [+0.0, +3.0] 88.0 100 1 1 1.000 +0.0 [−3.0, +3.0] 93.0 
+
+Table 6: Paired statistics for the accuracy difference in Table 1. For each task and model, 𝑏 and 
+
+𝑐 denote Baseline -only-correct and LATCH -only-correct examples in McNemar’s exact test; Δacc reports the paired bootstrap point estimate and 95% CI; Ident.(%) is the output-identical rate. No cell reaches conventional significance, and every CI stays near zero. 
+
+D Mechanistic Failure Case: Prophet vs. LATCH on Real Trajectories 30 60 90 120   
+
+> (none)
+> noisy guess
+> 21 (correct)
+> Candidate
+> answer
+> hits the correct 21 2 times in passing, but nothing locks it in --
+> one-shot fill freezes "(garbled/empty)" at t= 139 , wrong
+
+Prophet (peer), GSM8K (gt = 21)     
+
+> 12345
+> A
+> D
+> Candidate
+> answer
+> wrong answer D at step 1, flips to correct A at step 2
+
+Ours, MMLU (gt = A)    
+
+> 40 80 120 160
+> (none)
+> 1
+> 2
+> 11
+> 21
+> 22
+> 222
+> Candidate
+> answer
+> 6 distinct candidates before settling on 21
+
+Ours, GSM8K (gt = 21)                                                 
+
+> 30 60 90 120
+> 2
+> 4
+> 6
+> 8
+> Logit gap
+> gap never rises -- the staged threshold decays down
+> to meet it, not the other way around
+> 12345
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Confidence
+> ct
+> = 0.7
+> confidence jumps right as the flip happens
+> 40 80 120 160
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Confidence
+> ct
+> = 0.7
+> ctundefined until the span is filled: nothing to verify yet
+> 30 60 90 120
+> 0
+> 25
+> 50
+> 75
+> 100
+> Tail window
+> still masked (%)
+> fires at t= 139
+> 100% still masked force filled
+> 12345
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Run-length
+> fire at t= 5
+> run-length clears its (low) threshold 3 steps later
+> run t
+> max( pmin ,changes t)
+> 40 80 120 160
+> 0
+> 10
+> 20
+> 30
+> Run-length
+> fire at t= 178
+> threshold grows as flips accumulate; commits at t= 178 , correct
+> run t
+> max( pmin ,changes t)
+> 30 60 90 120
+> Decoding step (of 256)
+> 1
+> 2
+> 3
+> Entropy  Ht
+> (bits, tail window)  still 0.5 bits of real uncertainty left
+> when the one-shot fill commits
+> 12345
+> Decoding step (of 64)
+> 0.5
+> 1.0
+> 1.5
+> Entropy  Ht
+> (bits)
+> 40 80 120 160
+> Decoding step (of 256)
+> 1
+> 2
+> 3
+> Entropy  Ht
+> (bits)
+
+Prophet: unverified guess / force-filled Ours: unstable (candidate final) Ours: stable (candidate = final) Gate / threshold 
+
+Figure 6: Prophet vs. CVC on representative trajectories. Why Prophet fails and how Confidence-Verified Commit fixes it, on one representative real GSM8K trajectory (Figure 3 in Section 4 pools 
+
+𝑛 =40 such trajectories with bootstrap CIs, so this single example is not the paper’s evidence by itself). Columns 1 and 3 replay the identical trajectory (gt = 21 ): Prophet commits at 54% progress to a garbled non-answer ( 100% of its window still masked); ours withholds until 70% and gets it right. Column 2 (MMLU) succeeds after one false start. Columns 1 and 3 replay the same GSM8K decode, so every intermediate output is identical and the two gates’ decisions are directly comparable, one model run, two gate outcomes. All three columns replay the exact deployed hyperparameters ( 𝜏 CVC =0.7, 𝛾 =2.0, 𝑝 min =3). Every column shares the same four-panel structure (candidate answer identity, the model’s own verification signal, the evidence behind the eventual commit decision, and the answer-region predictive entropy 𝐻 𝑡 
+
+against decoding progress), so the contrast is legible panel-for-panel. 
+
+Prophet (column 1): the correct answer surfaces repeatedly, but nothing locks it in. The candidate hits the correct value, 21, twice in passing before the gate fires at step 139 of 256; Prophet’s own top1-top2 logit gap simply has no mechanism to distinguish a passing correct guess from any other transient one. The gap panel shows why the gate fires anyway . The gap itself never rises appreciably; it is Prophet’s own staged threshold, tuned for this task family (Appendix A.1), that 17 Candidate-Aware Decoding for Diffusion Language Models decays until the noisy gap crosses it. At that exact moment the tail window monitored by the gate is 
+
+100% masked (row 3); every token in it is force-filled from a single, unrefined forward pass in one shot, and the entropy panel (row 4) shows why that is dangerous; 𝐻 𝑡 ≈0.48 bits of real uncertainty remain in that same window at the instant of commit, not the near-zero value a genuine convergence would show. The one-shot fill lands on a truncated, garbled continuation with no extractable number at all (graded wrong by construction), the same failure mode, corrupted trailing text rather than a clean wrong digit, as the gt = 288 case in Appendix E (Figures 11 and 12). This is the mechanism behind the 12 –69 point collapses in Table 1, not a badly-tuned threshold, but a gate with no way to tell a transient guess from a verified one. 
+
+LATCH (columns 2–3): the same two mechanisms (confidence and run-length) rule out exactly this failure. On MMLU (column 2), the candidate is wrong (D) at step 1, flips to the correct answer (A) at step 2 with confidence jumping from 0.42 to 0.83 (crossing 𝜏 CVC in the same step as the flip, not gradually), and the gate fires three steps later once the run-length requirement is also satisfied, at step 5 of 64 ( 8% of budget); entropy over that same span has already collapsed to ≈0.5 bits by the time it fires. GSM8K (column 3) shows the opposite regime and illustrates the late-stabilization mechanism characterized in Section 4.1, the identical trajectory Prophet fails on in column 1: the answer position is still under a fully- or partially-masked span for most of the trajectory, so 𝑐 𝑡 is undefined there (dotted gray baseline, row 2); there is nothing to verify a candidate against yet, unlike Prophet’s gap statistic, which stays defined (and noisy) even over pure mask tokens. Once the span is populated the candidate genuinely oscillates across 6 distinct values before settling on the correct one, 21; the gate withholds commitment until step 178 of 256 ( 70% of budget), since run 𝑡 ’s required threshold has itself grown from the accumulated flip count ( changes 𝑡 =17 by the time it fires); the same run-length that would have looked sufficient on a stability-only gate early in the trace is not sufficient here, because this trace has already shown itself to be unreliable. On this exact same model output, Prophet commits 39 steps earlier to a garbled non-answer; our gate waits and gets it right. 
+
+The literal decoded text, not just the signal traces above. Figure 7 shows the actual decoded buffer underlying the GSM8K trace just discussed (gt = 21 ) at each method’s own commit point (step counts in each column header), not a stylized transcript. Baseline and Prophet share the exact same decode up to Prophet’s trigger step; LATCH is the same trajectory replayed under our own gate. Baseline runs to completion and is correct; Prophet’s one-shot fill lands on a truncated, garbled tail with no extractable number at all, while LATCH commits correctly with budget still unspent. We observed the same mechanism on MATH, including cases where the reasoning remained correct throughout but Prophet’s one-shot fill corrupted only the final \boxed{} span itself, the one part of the derivation the whole answer depends on; Figures 8 and 9 repeat the same comparison on SVAMP and PIQA, showing the same one-shot-fill signature is not specific to this single GSM8K trajectory. 18 Candidate-Aware Decoding for Diffusion Language Models Prompt: Liam and Mitchell own competing lemonade stands across the street from one another. When Liam bragged that he had made $63 one weekend, Mitchell laughed and told Liam he had sold 21 lemonades at $4 apiece the same weekend. How many more dollars did Mitchell make selling lemonade that weekend than Liam? 
+
+Baseline (256/256 steps) ✓ Correct 
+
+To determine how many more dollars Mitchell made compared to Liam, we need to follow these steps: 
+
+1. Calculate Mitchell's earnings: 
+
+Mitchell sold 21 lemonades. Each lemonade was sold for $4. Therefore: 21 x 4 = 84 dollars 
+
+2. Determine the difference: 
+
+Liam made $63. Mitchell made $84. 84 - 63 = 21 dollars So, Mitchell made $21 more than Liam. 
+
+Prophet (139/256 steps) ✗ Wrong 
+
+To determine how many more dollars Mitchell made compared to Liam, we need to follow these steps: 
+
+1. Calculate Mitchell's earnings: 
+
+Mitchell sold 21 lemonades. Each lemonade was sold for $4. Therefore: 21 x 4 = 84 dollars 
+
+2. Determine the difference: 
+
+Liam made $63. Mitchell made $84. 84 - 63 = 21 dollars So, Mitchell made $21 more than than.. 
+
+(one-shot fill froze mid-flicker; no number extractable) 
+
+LATCH (178/256 steps) ✓ Correct 
+
+To determine how many more dollars Mitchell made compared to Liam, we need to follow these steps: 
+
+1. Calculate Mitchell's earnings: 
+
+Mitchell sold 21 lemonades. Each lemonade was sold for $4. Therefore: 21 x 4 = 84 dollars 
+
+2. Determine the difference: 
+
+Liam made $63. Mitchell made $84. 84 - 63 = 21 dollars So, Mitchell made $21 more dollars than Liam. 
+
+(committed here; budget left unspent) 
+
+Figure 7: Literal decoded text at each method’s own commit point. Qualitative comparison for one real GSM8K trajectory (gt = 21 ), the same trace as Figure 6. Extracted final answer highlighted in blue (correct); Prophet’s one-shot fill leaves no number to extract at all. 19 Candidate-Aware Decoding for Diffusion Language Models SVAMP (ground truth = 15) 
+
+Baseline (256/256 steps) ✓ Correct 
+
+Sure, let's break it down step by step: 
+
+1. Initial number of cakes: 
+
+The baker initially made 155 cakes. 
+
+2. Cakes bought by the friend: 
+
+The friend bought 140 cakes from the baker. To find out how many cakes the baker still has, we need to subtract the number of cakes bought by the friend from the initial number of cakes. 155 - 140 = 15 So, the baker still has 15 cakes. 
+
+Prophet (92/256 steps) ✗ Wrong 
+
+Sure, let's break it down step by step: 
+
+1. Initial number of cakes: 
+
+The baker initially made 155 cakes. 
+
+2. Cakes bought by the friend: 
+
+The friend bought 140 cakes from the baker. To find out how many cakes the baker still has, we need to subtract the number of cakes bought by the friend from the initial number of cakes. 155 - 140 = 15 SoSo, the would still still 15 cakes cakes. 
+
+(one-shot fill collides two overlapping continuations into one garbled sentence) 
+
+LATCH (256/256 steps) ✓ Correct 
+
+Sure, let's break it down step by step: 
+
+1. Initial number of cakes: 
+
+The baker initially made 155 cakes. 
+
+2. Cakes bought by the friend: 
+
+The friend bought 140 cakes from the baker. To find out how many cakes the baker still has, we need to subtract the number of cakes bought by the friend from the initial number of cakes. 155 - 140 = 15 So, the baker still has 15 cakes. 
+
+(CVC never clears its confidence bar early on this example; runs to the full budget and still lands on clean, correct text) 
+
+Figure 8: A third real trajectory (SVAMP). The same literal-decoded-text comparison as Figure 7. CVC correctly declines to commit early when nothing in the trajectory clears its confidence bar, rather than forcing an early exit regardless. PIQA (ground truth = A) 
+
+Baseline (64/64 steps) ✓ Correct 
+
+A. Pile your dirty clothing items into a zip it compressor bag and place bottom of your suitcase. 
+
+Prophet (16/64 steps) ✓ Correct 
+
+A. Pile packing dirty clothing items into zip it compressor bag and place in the bottom of your suitcase. 
+
+(the extracted letter is still correct, but the one-shot fill drops and reorders words downstream of the answer token itself) 
+
+LATCH (3/64 steps) ✓ Correct 
+
+A. Pile your dirty clothing items into a zip it compressor bag and place in the bottom of your suitcase. 
+
+(committed after 3 steps; the rest of the buffer is still filled in by the ordinary schedule, not frozen mid-word) 
+
+Figure 9: A fourth real trajectory (PIQA). The same literal-decoded-text comparison as Figure 7. Even where Prophet’s extracted letter is still correct, its one-shot fill can leave the surrounding text measurably more garbled than either Baseline or LATCH , a formatting cost the accuracy metric alone does not capture. 20 Candidate-Aware Decoding for Diffusion Language Models 
+
+E Answer-Region Determination: LATCH vs. Prophet’s Suffix-Prompt Structure 
+
+Section 4.1 attributes Prophet’s long-reasoning failure to where its one-shot fill is allowed to land, not to its confidence statistic per se. A closer read of Prophet’s own Appendix C.1 (Li et al., 2026) reveals a second, compounding gap; how the answer region itself is located differs structurally between the two setups, not just in threshold values. 
+
+Prophet’s construction. Their Appendix C.1 states the answer region is built into the prompt directly: “ The suffix prompt is inserted as a semantic anchor near the end of the generation window, followed by mask tokens reserved for the final answer. The resulting sequence structure is: [Question] [MASKs for Reasoning Chain] The answer is [MASKs for Final Result]. ” For mathematical reasoning specifically: “ The dataset provides a standard separator between the reasoning chain and the final result. We define the answer region as the tokens following this separator. ” Critically, this suffix construction is used for both Prophet and their full-step baseline in Table 1 of their paper. The answer region’s location is never searched for at inference time; it is a fixed, pre-allocated span known before decoding starts. 
+
+Our construction. Every prompt in this paper is a free-form prompt (Section 5, "Q: {question}\nA: Let’s think step by step." , no suffix prompt, no answer-position cue). The gate has no pre-allocated location for the answer; at every step it must search the trailing 
+
+tail_frac window of whatever text has been generated so far, re-extracting a provisional answer candidate and relocating its token span from scratch (Section 4). This is a strictly harder problem; the model is free to place its final numeric answer anywhere, at any length, after any amount of intermediate arithmetic. 
+
+Concrete example. Table 7 shows one real GSM8K trajectory from our diagnostic cache (ground truth 350 ). Our tail-window extractor encounters five distinct numeric candidates over the course of generation ( 130 , 100 , 120 , 220 , then finally 350 ), each of which is briefly "the last number seen so far" and therefore a candidate the gate must evaluate and reject before the true final answer even appears. Under Prophet’s suffix-prompt construction, none of this search exists; the final-answer mask span is at a known position from step 0, so the model’s own output at that fixed span is the only thing ever monitored. This is precisely what CVC’s confidence-and-run-length requirement (Section 4) exists to survive without needing a suffix prompt; a candidate like 130 or 220 is briefly "the answer" and may even hold run ≥ 1 for a step or two, but it is competing against four later re-writes, so it rarely accumulates the argmax stability and confidence needed to pass the gate, whereas Prophet’s ¯𝑔 𝑡 has no equivalent protection, monitoring the same free-form buffer with no positional anchor at all in our replication (Appendix A.1). 
+
+Does Prophet’s own suffix-prompt construction rescue it? We reproduce this construction and test it directly. The final block’s buffer is initialized with the literal token ids for " The answer is" pinned at fixed positions from step 0 (never masked, never subject to any gate), with the remaining positions of that block reserved purely for the numeric result, an exact reproduction of Appendix C.1’s [Question] [MASKs for Reasoning Chain] The answer is [MASKs for Final Result] structure, applied identically to baseline, Prophet, and LATCH so the comparison isolates the gate itself. Table 8 reports the result on 𝑛 =100 held-out GSM8K and MATH examples, both models, Prophet under its own corrected per-task thresholds (Li et al., 2026’s Table 6). Even with the answer region’s location no longer something the model or the gate has to find (Prophet’s own construction, at its own thresholds), Prophet’s accuracy still collapses sharply on GSM8K (LLaDA 
+
+68 .0% → 41 .0% , −27 pt; Dream 72 .0% → 54 .0% , −18 pt) and degrades severely on MATH (LLaDA 
+
+31 .0% → 24 .0% , −7pt; Dream 43 .0% → 28 .0% , −15 pt); LATCH keeps the drop negligible on both tasks, both models. This refutes the hypothesis that the suffix-prompt structure alone explains the negligible-drop claim in Prophet’s own paper; the gap is in what counts as evidence of convergence ,not merely in where the answer region is , and a hard structural anchor for the answer location does not prevent Prophet’s position-level confidence-gap trigger from firing before the candidate value stabilizes. 21 Candidate-Aware Decoding for Diffusion Language Models 
+
+# Text excerpt (free-form prompt, in decode order) Candidate’s fate 1 “. . . Total pesos Axel has: 50 + 80 = 130 . . . ” superseded by #2 2 “. . . twice as many silver pesos as Axel: 2 × 50 = 100 silver pesos . . . ” superseded by #3 3 “. . . 40 more gold pesos than Axel: 80 + 40 = 120 gold pesos . . . ” superseded by #4 4 “. . . Total pesos Anna has: 100 + 120 = 220 . . . ” superseded by #5 5 “. . . total pesos together: 130 + 220 = 350 . So, the total . . . is 350 .” FINAL, committed Prophet’s construction (Appendix C.1): answer region fixed by prompt design, not searched 
+
+[Question] [MASKs for Reasoning Chain] The answer is [MASKs] . Final span’s position is fixed and known before decoding starts; candidates #1–#4 never occupy it, by construction, so Prophet’s gate never has to distinguish them from #5 in the first place. 
+
+Table 7: Five candidates rejected before the true answer. Same GSM8K example (gt = 350 ). Our tail-window extractor encounters and must evaluate five numeric candidates in turn, four transient (#1–#4, each briefly "the last number seen so far" until overwritten) and one final (#5, the one that survives to the end of generation and gets committed), versus Prophet’s structurally pre-allocated span, which by construction only ever contains #5 and never has to make this distinction at all. 
+
+Prophet’s suffix-prompt construction , final block (positions 224 –255 of 256 , GSM8K): 
+
+[pos 224]   
+
+> The ans is
+
+[pos 255]     
+
+> pinned to " The answer is" from step 0, never masked free/masked, model fills
+
+Our free-form-prompt protocol , same final block, no reservation at all: 
+
+[pos 224] [pos 255] 
+
+> every position starts masked; the model decides where and how the answer surfaces, and our extractor locates it after the fact (task-format-specific search region, Appendix A.2)
+
+Figure 10: Prophet’s suffix-prompt construction vs. ours. The suffix-prompt construction (top) pins the literal tokens " The answer is" at fixed positions from step 0, so the answer’s location is never in question; only the 29 remaining positions are free. Our free-form-prompt protocol (bottom) reserves nothing: every position in every block starts masked, identically to Baseline .                                                                
+
+> LLaDA-8B-Instruct Dream-7B-Instruct Task Variant Acc (%) Avg. Step TPS Speedup Acc (%) Avg. Step TPS Speedup GSM8K Baseline 68.0 256.0 22.5 1.00 ×72.0 256.0 23.5 1.00 ×
+> (n=100, sequence length=256) Prophet (Li et al., 2026) 41.0 194.0 25.4 1.13 ×54.0 176.3 28.7 1.22 ×
+> (block=32, 8 blocks) LATCH 67.0 252.1 22.4 1.00 ×72.0 252.7 23.5 1.00 ×
+> MATH Baseline 31.0 256.0 21.3 1.00 ×43.0 256.0 22.2 1.00 ×
+> (n=100, sequence length=256) Prophet (Li et al., 2026) 24.0 199.4 23.5 1.10 ×28.0 194.7 24.4 1.10 ×
+> (block=32, 8 blocks) LATCH 31.0 252.4 21.2 1.00 ×43.0 253.8 21.7 0.98 ×
+
+Table 8: Prophet remains vulnerable with a pinned answer region. GSM8K/MATH, with Prophet’s own suffix-prompt buffer construction (Appendix C.1) applied identically to all three variants; the answer region’s position is fixed and known from step 0, removing the search problem Table 7 illustrates. LATCH is essentially 1.00 × here since the suffix prompt leaves almost nothing for CVC to shorten. Prophet’s accuracy still degrades severely on both tasks and both models; LATCH 
+
+keeps the drop negligible throughout. A separate, weaker probe (pinning only a single "Answer:" anchor token, not the full suffix prompt) shifted GSM8K’s early-convergence distribution the direction Prophet’s Figure 1 predicts, but cost end-task accuracy ( 30 /40 → 25 /40 ) without Prophet’s accompanying concision instruction. This reaches the same conclusion as above; locating the answer region alone is not what makes a gate safe. 
+
+The literal text, under Prophet’s own suffix-prompt construction. Figures 11 and 12 show two of the trajectories behind Table 8’s numbers as literal decoded text, not just accuracy; even with the 22 Candidate-Aware Decoding for Diffusion Language Models answer region’s location pinned from step 0 and never masked, Prophet’s one-shot fill still overwrites the reserved numeric span itself with a corrupted value on both examples, while LATCH runs to the same full budget as Baseline and reproduces it exactly. Prompt: Q: To kick off summer, Jolene is having a water balloon fight with her friends. They fill up 10 packs of balloons that have 30 balloons per pack. By the end of the afternoon, 12 balloons are left. How many balloons did they throw? 
+
+Baseline (256/256 steps) ✓ Correct 
+
+To determine how many balloons were thrown, we need to follow these steps: 
+
+1. Calculate the total number of balloons initially: 
+
+10 x 30 = 300 balloons. 
+
+2. Balloons thrown: 
+
+300 - 12 = 288 balloons. Therefore, Jolene and her friends threw 288 balloons. 
+
+Prophet (188/256 steps) ✗ Wrong 
+
+To determine how many balloons were thrown, we need to follow these steps: 
+
+1. Calculate the total number of balloons initially: 
+
+10 x 30 = 300 balloons. 
+
+2. Balloons thrown: 
+
+300 - 12 = 288 balloons. Therefore, ,,ene and her friends threw 288 balloons. The answer is: 282. 
+
+(one-shot fill overwrites the pinned numeric span itself, replacing the correct 288 with a corrupted 282, even though the reasoning above it still says 288) 
+
+LATCH (256/256 steps) ✓ Correct 
+
+To determine how many balloons were thrown, we need to follow these steps: 
+
+1. Calculate the total number of balloons initially: 
+
+10 x 30 = 300 balloons. 
+
+2. Balloons thrown: 
+
+300 - 12 = 288 balloons. Therefore, Jolene and her friends threw 288 balloons. 
+
+(runs to the full suffix-prompt budget, identical to Baseline) 
+
+Figure 11: Literal text under Prophet’s own suffix-prompt construction (GSM8K, balloon ex-ample). One of the trajectories behind Table 8’s numbers, Prophet’s own suffix-prompt construction (Appendix C.1) applied identically to all three variants. Baseline and LATCH reach the same correct answer at the same full step budget; Prophet’s one-shot fill overwrites the pinned answer span itself with a corrupted value unrelated to the correct one, confirming at the text level that pinning the answer region’s location does not by itself protect against a premature commit. Prompt: Q: Jessica is trying to figure out how much to pay on all her debts each month. Her student loans have a minimum payment of $300/month, her credit card's minimum is $200/month, and her mortgage's minimum is $500/month. If Jessica wants to pay 50% more than the minimum, how much does she pay in a year? 
+
+Baseline (256/256 steps) ✓ Correct 
+
+1. Total minimum payment: 
+
+$300 + $200 + $500 = $1000/month. 
+
+2. Jessica's monthly payment: 
+
+50% more than minimum =$1000 + $500 = $1500/month. Therefore, Jessica pays $18,000 in a year. 
+
+Prophet (194/256 steps) ✗ Wrong 
+
+1. Total minimum payment: 
+
+$300 + $200 + $500 = $1000/month. 
+
+2. Jessica's monthly payment: 
+
+50% more than minimum =$1000 + $500 = $1500/month. 3, **Jessica payment $11 in a year:** The answer is: 1500000 a. 
+
+(one-shot fill both breaks the sentence structure and overwrites the suffix prompt with 1500000, unrelated to the correct $18,000 or any quantity computed above it) 
+
+LATCH (256/256 steps) ✓ Correct 
+
+1. Total minimum payment: 
+
+$300 + $200 + $500 = $1000/month. 
+
+2. Jessica's monthly payment: 
+
+50% more than minimum =$1000 + $500 = $1500/month. Therefore, Jessica pays $18,000 in a year. 
+
+(runs to the full suffix-prompt budget, identical to Baseline) 
+
+Figure 12: Literal text under Prophet’s own suffix-prompt construction (GSM8K, debts exam-ple). A second trajectory behind Table 8’s numbers, same construction and variants as Figure 11. Prophet’s one-shot fill again overwrites the pinned answer span with a corrupted value; Baseline and 
+
+LATCH reach the same correct answer. 23 Candidate-Aware Decoding for Diffusion Language Models 
+
+E.1 Task-Format-Specific Answer Search 
+
+The implementation uses two fixed search regions, a trailing window for long-form reasoning and the first five positions for short-answer tasks ( search_mode in the reproduction config, Appendix A.2). Everything above is the long-reasoning search setting ( "last" ); the gate searches a trailing window because a CoT answer can appear anywhere, arbitrarily late. Short- answer/MC tasks (MMLU, ARC-C, HellaSwag, WinoGrande, PIQA, TruthfulQA) use the other setting, "first5" , and the reason is visible directly in the prompt template itself, not a separate design choice. 
+
+> Prompt template, long-reasoning (search mode last)
+> Q: {question}\nA: Let’s think step by step.
+> Prompt template, short-answer/MC (search mode first5)
+> {question}\nA. {a}\nB. {b}\nC. {c}\nD. {d}\nAnswer:
+
+The CoT template ends mid-thought, on purpose; the model has to write its way to an answer, so the gate has nowhere fixed to look and must search. The MC template ends on the literal word 
+
+"Answer:" , which is itself a positional anchor; an instruction-tuned model’s very next tokens are the letter, not more reasoning. This task-format-specific search is answer-aware in exactly the sense Section 4 claims: it is not one global window, it is a per-task encoding of where the answer structurally has to live given the prompt that was used to elicit it , and the two settings are read directly off the two templates above, not tuned separately. 
+
+Concrete example. A real MMLU trajectory from our diagnostic cache (ground truth A, held out from calibration) generates:  
+
+> Model output (LLaDA-8B-Instruct, greedy, first 200 characters)
+> A. Antidiuretic hormone.\n\nAntidiuretic hormone, also known as vasopressin, is primarily responsible for fluid regulation. It is produced by the posterior pituitary gland and helps regulate water balan[...]
+
+The letter is already correct and fully formed at position 0, before the model has written a single word of the (unrequested, unrewarded) elaboration that follows it. Table 1’s 𝜏 CVC /run-length check only ever has to look at this first token: "first5" searches the leading 5 positions of the generation buffer for a match, finds "A" immediately, and the gate commits as soon as 𝑐 𝑡 ≥ 𝜏 CVC holds for 
+
+run 𝑡 ≥ 𝑝 min steps, typically within the first handful of denoising steps (Table 2: MMLU’s own 
+
++CVC row commits at avg Step ≈ 5–9 out of a 64 -step budget). "last" mode searches the tail window for CoT tasks; doing the same here instead would be actively wrong, since the elaboration after the answer is free-running commentary the model was never asked for and the gate was never designed to grade, and nothing guarantees a second, tail-window-visible restatement of the letter exists to be found at all (the example above never repeats "A" again in the visible window). The two search settings are therefore not an implementation convenience; they encode, per task family, the one structural fact that makes either family’s early-commit problem tractable at all, where the prompt itself guarantees the answer will be written .
+
+F Ablation Studies 
+
+F.1 CVC Component Ablation: Which Signal Is Load-Bearing? 
+
+Eq. 4 requires two conditions to jointly hold before CVC commits, confidence ( 𝑐 𝑡 ≥ 𝜏 CVC ) and adaptive stability ( run 𝑡 ≥ max ( 𝑝 min , ⌈𝛾 · changes 𝑡 ⌉) ). We isolate which condition is load-bearing by replaying four gate variants against the exact same held-out diagnostic pool used for Figure 3 (𝑛 =60 , disjoint from the 120 trajectories used to calibrate CVC, MMLU/GSM8K/MATH, LLaDA-8B-Instruct), namely Full CVC (both conditions, deployed hyperparameters); Confidence only (the stability condition removed); Stability only (the confidence condition removed); and Fixed patience 
+
+(confidence kept, but the adaptive run-length bar replaced with a constant 𝑝 min ). This replay is 24 Candidate-Aware Decoding for Diffusion Language Models entirely offline against cached trajectories, since a full, non-early-exited decode already contains everything any of these gates would have seen (Appendix A.1).                             
+
+> Task ( 𝑛 )Baseline Acc Full CVC Confidence only Stability only Fixed patience MMLU (20) 64.0 +0.0 (7.9%) +0.0 (6.4%) +0.0 (6.1%) +0.0 (7.8%) GSM8K (20) 65.0 +0.0 (97.5%) +0.0 (85.4%) -25.0 (31.6%) +0.0 (85.7%) MATH (20) 55.0 -5.0 (97.0%) -25.0 (87.0%) -25.0 (7.4%) -10.0 (88.2%)
+
+Table 9: CVC component ablation. Each cell: accuracy change vs. Baseline (pt), with average decoding steps used (% of budget) in parentheses; bold marks the best variant per row, and shading marks accuracy cost (yellow: none; red: darker is worse). Table 9 shows that no single ablated variant is safe across all three tasks. Stability only fails catastrophically on both long-reasoning tasks ( −25 .0pt on GSM8K, −25 .0pt on MATH); without a confidence check, a candidate that merely stops changing for a few steps is accepted regardless of how uncertain the model still is, exactly the low-confidence-plateau failure mode a stability-only rule cannot distinguish from genuine convergence. Confidence only is safe on GSM8K but fails just as severely on MATH ( −25 .0pt); without a stability check, a momentarily confident candidate that has not stopped flipping is accepted, and which task this bites depends on how often the model revisits a wrong candidate late in decoding. Fixed patience stays safe on GSM8K but degrades on MATH (−10 .0pt, worse than Full CVC ’s −5.0pt on the same pool); a flat patience floor is not conservative enough for trajectories whose candidate keeps flipping late, which is exactly what the adaptive term 
+
+⌈𝛾 ·changes 𝑡 ⌉ is designed to raise the bar against. Full CVC is the only variant close to safe on all three tasks. The −5.0pt deviation on MATH corresponds to one example in this 𝑛 =20 diagnostic pool; the 𝑛 =100 CVC-only result in Table 2 shows no accuracy change. MMLU stabilizes early enough (6–8% of budget) that all four variants are safe there, consistent with Section 4.1’s stabilization-gap finding; ablating either condition only matters once a task’s answer takes long to settle. 
+
+Same signal, wrong object. The ablation above removes CVC’s two conditions one at a time; a sharper question is whether those signals suffice without the candidate , since cross-step argmax stability is exactly the per-position evidence adaptive samplers track (Section 2). We therefore replay a candidate-free control gate against the full Table 1 held-out trajectories ( 𝑛 =200 /100 /100 , LLaDA), terminating with a one-shot fill at the first step where every monitored position’s argmax has been unchanged for 𝑘 consecutive steps, monitored either over the whole buffer or, more charitably, only over positions the block schedule has already reached (predictions in unreached blocks are noise by construction). Table 10 sweeps 𝑘 under both scopes. No frozen setting is both safe and useful. The only settings within the 2.0-point tolerance on all three tasks (whole-buffer, 𝑘 ≥ 8) commit at 
+
+56 .9–74 .6% of budget on MMLU, five to seven times later than deployed CVC’s 10 .9% , while saving nothing on GSM8K/MATH; every setting that matches CVC’s early MMLU commit point exceeds the tolerance on long-reasoning tasks by up to 57 points, and the charitable scope is the worse offender precisely because it fires earlier. The gate cannot tell which regime it is in; position-level evidence never identifies where the answer lives, which is exactly the information candidate extraction adds and Section 4.1’s stabilization-timing gap demands. 
+
+F.2 Structural Ablation: BWEC Applied Uniformly 
+
+Scope and caveats. Final-block protection should not be read as an assumption that the answer resides in the final block; answer locality varies substantially across tasks and backbones (see below). Its purpose is instead to separate actions with different failure costs. BWEC advances only the current block, whereas CVC’s fill-and-stop action terminates the entire sequence and makes all remaining predictions irreversible. LATCH therefore permits aggressive local commitment in non-final blocks but reserves global termination for the final block, where it is conditioned on the candidate’s identity and temporal stability. This asymmetry, not final-answer locality itself, is the intended safety mechanism. A natural question about Eq. 5’s scoping to non-final blocks arises. Is the final/non-final distinction itself load-bearing, or would BWEC’s threshold-plus-schedule rule be safe applied everywhere ,making CVC’s separate final-block gate a redundant safety margin? A related, narrower check confirms the confidence signal itself was never the problem. Deployed CVC updates its candidate statistics at every step, but its global fill-and-stop action becomes eligible only after decoding enters 25 Candidate-Aware Decoding for Diffusion Language Models                                            
+
+> Monitored region 𝑘 MMLU ( 𝑛 =200 )GSM8K ( 𝑛 =100 )MATH ( 𝑛 =100 )whole buffer 2-2.0 (24.3%) -14.0 (82.5%) -8.0 (82.3%) whole buffer 4-0.5 (45.4%) -2.0 (95.9%) +1.0 (96.7%) whole buffer 8-0.5 (56.9%) +0.0 (98.6%) +1.0 (98.5%) whole buffer 16 +0.0 (74.6%) +0.0 (99.9%) +1.0 (99.3%) reached blocks 2-2.5 (7.1%) -57.0 (5.0%) -23.0 (5.0%) reached blocks 4-0.5 (22.8%) -53.0 (24.3%) -23.0 (18.1%) reached blocks 8+0.0 (47.9%) -17.0 (77.6%) -7.0 (54.6%) reached blocks 16 +0.0 (74.0%) -3.0 (97.6%) +1.0 (87.1%) CVC (deployed) –+0.0 (10.9%) +0.0 (97.7%) +0.0 (98.7%)
+
+Table 10: Position-stability termination control gate. Each cell: accuracy change vs. Baseline 
+
+(pt) with average decoding steps used (% of budget) in parentheses, replayed on the Table 1 held-out split; the gate stops and fills once every monitored position’s argmax has been unchanged for 𝑘 steps. The CVC row (from Table 2) is the candidate-aware reference. Shading as in Table 9. The +1.0
+
+MATH cells sit above baseline because of a single grading-boundary example (the replayed full decode grades 32 .0 against Table 1’s 31 .0). the final block; we call the ablation that instead makes this same fill-and-stop action eligible from 
+
+any block the any-block-eligible CVC commit ; it removes the final-block scoping from the global 
+
+commit decision, not from BWEC’s local rule (Section 4.3). This drops a fresh held-out GSM8K to 
+
+62 .0% and MATH to 27 .0% (both −4.0pt); it fails exactly like Prophet does, because where an early, one-shot commit is allowed to become eligible is what matters, not the statistic used to justify it. 
+
+How often does the answer actually land in the final block? Under LLaDA’s block-wise schedule, the final answer lands in the last block on 43 .6–94 .7% of held-out examples across five long-reasoning tasks (lowest on SVAMP), far lower and less predictive on Dream (as low as 2.6% on GSM8K, which nonetheless shows only a negligible accuracy drop), a real, model-dependent risk factor, never the sole argument for scoping the global commit decision to the final block. SlowFast Sampling (Wei et al., 2026) omits this distinction from the opposite direction (no final/non-final split), leaving short-answer speedup on the table while accuracy still degrades severely on long-reasoning (Section 5); one undifferentiated rule cannot be maximally aggressive and maximally cautious at once. 
+
+G Sensitivity 
+
+G.1 Discrete 𝜏 BWEC Tiers 
+
+The two undeployed 𝜏 BWEC tiers: an accuracy/speedup trade, not a second safe default. Table 1 reports only the deployed tier ( 𝜏 BWEC =0.9), the conservative end of the range that keeps every cell within the paper’s own ±2.0pt tolerance. Table 11 gives the same breakdown for two looser, non-deployed tiers ( 𝜏 BWEC =0.7 and 𝜏 BWEC =0.8), which exist only to characterize how far the trade can be pushed, not as recommended alternatives, and require no query-time selection since 𝜏 BWEC =0.9 alone is what LATCH deploys; 6 of 44 task ×model ×tier combinations here exceed the same tolerance. This is expected of the looser tiers by design, not a failure of the method; they trade safety margin for speed and should be read as a sensitivity sweep, not a second deployment-ready configuration. 
+
+An a priori choice, swept only afterward. 𝜏 BWEC = 0.9 was not tuned on the held-out examples reported here; we chose it a priori as a conservative confidence level above the final gate’s own 
+
+𝜏 CVC = 0.7, and only afterward swept it on a disjoint held-out sample ( 𝑛 =50 , GSM8K and MATH). GSM8K plateaus by 𝜏 BWEC ≥ 0.85 while MATH degrades smoothly as the threshold loosens; 0.9
+
+sits just past GSM8K’s knee. 
+
+G.2 Per-Block and Total-Step Behavior, All Tasks 
+
+The same measurements, extended to all 11 tasks, both models. Figure 5 in the main text shows a 4-task/LLaDA-only subset; Figures 13–20 repeat the identical protocol across the full 11 -task, 
+
+2-model matrix, confirming the same two patterns throughout. The final block stays near full budget while non-final blocks empty out (Figure 14), and accuracy stays flat on short-answer tasks while 26 Candidate-Aware Decoding for Diffusion Language Models                                                                                                                                                                                                                 
+
+> LLaDA-8B-Instruct Dream-7B-Instruct Task Tier Acc (%) Avg. Step TPS Speedup Acc (%) Avg. Step TPS Speedup
+> General / short-answer tasks (single-token or short-span answers)
+> MMLU Aggressive 63.5 4.6 405.9 13.81 ×70.0 4.2 457.7 13.87 ×
+> (n=200, sequence length=64, block=16) Normal 63.5 5.1 399.7 13.60 ×70.5 4.5 520.1 15.76 ×
+> ARC-C Aggressive 86.0 3.8 581.9 19.02 ×88.5 3.7 554.3 15.57 ×
+> (n=200, sequence length=64, block=16) Normal 86.0 3.8 481.7 15.74 ×87.5 4.1 547.2 15.37 ×
+> HellaSwag Aggressive 76.0 4.2 353.1 14.78 ×75.5 5.4 323.2 13.08 ×
+> (n=200, sequence length=64, block=16) Normal 76.5 4.3 333.4 13.95 ×75.0 5.9 274.1 11.10 ×
+> WinoGrande Aggressive 75.5 3.3 580.5 18.67 ×71.0 3.8 710.4 18.40 ×
+> (n=200, sequence length=64, block=16) Normal 75.5 3.3 575.6 18.51 ×71.0 4.0 682.2 17.67 ×
+> PIQA Aggressive 81.0 4.0 407.3 13.10 ×84.5 3.5 681.0 18.81 ×
+> (n=200, sequence length=64, block=16) Normal 81.5 3.6 455.0 14.63 ×84.0 3.5 681.7 18.83 ×
+> TruthfulQA Aggressive 62.0 4.6 489.0 15.72 ×64.0 4.8 328.3 9.38 ×
+> (n=200, sequence length=64, block=16) Normal 63.0 4.4 464.3 14.93 ×63.0 4.9 355.6 10.16 ×
+> Long-reasoning tasks (multi-step CoT)
+> GSM8K Aggressive 67.0 69.3 78.5 3.54 ×77.0 72.7 81.6 3.53 ×
+> (n=100, sequence length=256, block=32) Normal 69.0 79.3 65.9 2.97 ×84.0 80.6 75.5 3.27 ×
+> MATH Aggressive 32.0 95.0 55.6 2.66 ×39.0 92.0 59.6 2.73 ×
+> (n=100, sequence length=256, block=32) Normal 32.0 107.6 49.4 2.36 ×41.0 104.0 53.0 2.43 ×
+> SVAMP Aggressive 85.0 63.1 93.7 4.18 ×78.0 64.4 90.6 3.86 ×
+> (n=100, sequence length=256, block=32) Normal 85.0 75.1 77.3 3.45 ×78.0 70.5 83.6 3.56 ×
+> ASDiv Aggressive 63.0 69.0 85.6 3.79 ×78.0 67.4 94.8 4.03 ×
+> (n=100, sequence length=256, block=32) Normal 64.0 78.9 75.2 3.33 ×79.0 73.4 86.6 3.68 ×
+> GSM-Hard Aggressive 33.0 72.3 78.3 3.61 ×40.0 80.0 73.7 3.20 ×
+> (n=100, sequence length=256, block=32) Normal 33.0 83.3 68.2 3.14 ×41.0 90.6 64.5 2.80 ×
+
+Table 11: The two undeployed 𝜏 BWEC tiers, all 11 tasks. Aggressive ( 𝜏 BWEC =0.7) and Normal (𝜏 BWEC =0.8) tiers, all 11 tasks, both models, same TPS-ratio Speedup convention as Table 1; the deployed 𝜏 BWEC =0.9 tier is in Table 1. long-reasoning tasks show the same smooth collapse as 𝜏 BWEC loosens (Figures 19–20), exactly the dichotomy Section 4.1 characterizes. 
+
+The same per-block usage, totaled into one bar per method. Figures 15 and 16 lay the same per-block segments end to end into a single bar per method, with accuracy shown as a thinner bar beneath so step savings can be read against whether they cost accuracy. At the deployed 𝜏 BWEC =0.9,LATCH’s accuracy bar stays within tolerance of Baseline ’s on every short-answer task regardless of step-bar length, though looser tiers and peer methods can deviate more (e.g. TruthfulQA/Dream SlowFast, −7.5pt), while on long-reasoning tasks Prophet’s and SlowFast’s accuracy bars shrink visibly even where their step bars match LATCH’s, the same severe-drop pattern Table 1 reports as numbers. 
+
+Per-block wall-clock share: which block is actually the bottleneck. Figures 17 and 18 break the same data down by time instead of step count; segment width is that block’s share of wall-clock time, apportioned from the directly-measured aggregate TPS by step-count share (Table 1), not an independent per-block measurement. This makes “final filling” legible; on long-reasoning tasks, the final block’s time share grows toward the full bar under LATCH simply because every other block has been cut so much its fixed cost now dominates. 
+
+G.3 Continuous 𝜏 BWEC Sweep 
+
+Loosening 𝜏 BWEC too far can cost speed, not just accuracy. BWEC’s force-commit rule reads as monotonic in isolation; lowering 𝜏 BWEC should only make commits easier, never require more 
+
+steps. The three-tier comparison in Tables 1 and 11 shows this holds on most tasks under both models, but not all; Figures 19–20 trace the mechanism continuously (Section 5.2, a premature commitment corrupts the context later blocks condition on, causing them to consume more steps). On HellaSwag/LLaDA, Step is U-shaped for exactly this reason, yet TPS-ratio peaks elsewhere; on HellaSwag/Dream, Step stays flat while TPS-ratio swings 2.2–2.8×. On GSM8K, accuracy can fall sharply with no corresponding warning in Step at all ( 67% → 3% LLaDA, 85% → 5% Dream), the more dangerous failure shape, since nothing in the step count or TPS alone would flag it, which is exactly why threshold choice cannot be made on efficiency metrics alone. Both are the same confidence-is-not-convergence failure (Section 4.2) recurring at block scope, and are why 𝜏 BWEC ’s a priori conservatism (Section 4) is not a one-sided bet against accuracy: on long-reasoning tasks the downside is not even visible in the metric an aggressive choice is trying to improve. 27 Candidate-Aware Decoding for Diffusion Language Models B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+MMLU (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+ARC-C (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+HellaSwag (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+WinoGrande (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+PIQA (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+TruthfulQA (n=200) 
+
+LLaDA-8B-Instruct          
+
+> Baseline (full budget) Prophet SchED SlowFast LATCH ( BWEC =0.7) LATCH ( BWEC =0.8) LATCH ( BWEC =0.9)
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+MMLU (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+ARC-C (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+HellaSwag (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+WinoGrande (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+PIQA (n=200) 
+
+B0 B1 B2 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+TruthfulQA (n=200) 
+
+Dream-7B-Instruct          
+
+> Baseline (full budget) Prophet SchED SlowFast LATCH ( BWEC =0.7) LATCH ( BWEC =0.8) LATCH ( BWEC =0.9)
+
+Figure 13: Per-block step usage, all short-answer tasks. All six general/short-answer tasks, both models (same convention as Figure 5; LLaDA-8B-Instruct top, Dream-7B-Instruct bottom). Under LATCH, all six short-answer tasks complete within one or two blocks for both models. 28 Candidate-Aware Decoding for Diffusion Language Models B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+GSM8K (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+MATH (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+SVAMP (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+ASDiv (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+GSM-Hard (n=100) 
+
+LLaDA-8B-Instruct          
+
+> Baseline (full budget) Prophet SchED SlowFast LATCH ( BWEC =0.7) LATCH ( BWEC =0.8) LATCH ( BWEC =0.9)
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+GSM8K (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+MATH (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+SVAMP (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+> Steps used (%)
+
+ASDiv (n=100) 
+
+B0 B1 B2 B3 B4 B5 B6 Final 
+
+0
+
+25 
+
+50 
+
+75 
+
+100 
+
+GSM-Hard (n=100) 
+
+Dream-7B-Instruct          
+
+> Baseline (full budget) Prophet SchED SlowFast LATCH ( BWEC =0.7) LATCH ( BWEC =0.8) LATCH ( BWEC =0.9)
+
+Figure 14: Per-block step usage, all long-reasoning tasks. All five long-reasoning tasks, both models (same convention as Figure 5; LLaDA-8B-Instruct top, Dream-7B-Instruct bottom). The final-block-stays-near-full-budget pattern holds throughout; BWEC’s non-final savings grow block by block under LATCH where Prophet and SlowFast do not. 29 Candidate-Aware Decoding for Diffusion Language Models 0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 64% 
+
+13% 62% (-2) 
+
+48% 62% (-2) 
+
+28% 63% (-1) 
+
+46% 62% (-2) 
+
+7% 64% (0) 
+
+8% 64% (0) 
+
+8% 64% (+0) 
+
+MMLU 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 86% 
+
+12% 86% (-0) 
+
+64% 85% (-2) 
+
+37% 85% (-2) 
+
+59% 87% (+0) 
+
+6% 86% (+0) 
+
+6% 86% (+0) 
+
+6% 86% (0) 
+
+ARC-C 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 76% 
+
+9% 75% (-0) 
+
+43% 76% (+0) 
+
+17% 77% (+2) 
+
+30% 75% (-0) 
+
+6% 74% (1) 
+
+6% 76% (+0) 
+
+7% 76% (+0) 
+
+HellaSwag 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 76% 
+
+9% 76% (+0) 
+
+9% 76% (+0) 
+
+13% 78% (+2) 
+
+21% 76% (+1) 
+
+5% 76% (+0) 
+
+5% 76% (+0) 
+
+5% 76% (+0) 
+
+WinoGrande 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 82% 
+
+17% 82% (+0) 
+
+38% 81% (-0) 
+
+16% 84% (+2) 
+
+29% 82% (+0) 
+
+6% 81% (0) 
+
+6% 82% (+0) 
+
+6% 82% (+0) 
+
+PIQA 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 66% 
+
+14% 66% (+0) 
+
+50% 57% (-9) 
+
+27% 65% (-1) 
+
+45% 58% (-8) 
+
+7% 65% (1) 
+
+6% 66% (+0) 
+
+7% 66% (+0) 
+
+TruthfulQA 
+
+LLaDA-8B-Instruct 
+
+Total steps used, all blocks (thick bar, % of full budget) Accuracy (thin bar, %) 0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 72% 
+
+23% 72% (+0) 
+
+20% 69% (-2) 
+
+15% 74% (+3) 
+
+18% 72% (+1) 
+
+7% 70% (2) 
+
+7% 70% (1) 
+
+8% 70% (2) 
+
+MMLU 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 88% 
+
+22% 86% (-2) 
+
+17% 88% (+1) 
+
+16% 87% (-0) 
+
+18% 88% (+1) 
+
+6% 89% (+2) 
+
+7% 88% (+0) 
+
+7% 87% (0) 
+
+ARC-C 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 76% 
+
+25% 75% (-0) 
+
+30% 75% (-0) 
+
+14% 72% (-3) 
+
+18% 70% (-6) 
+
+9% 76% (+0) 
+
+10% 76% (+0) 
+
+10% 76% (+0) 
+
+HellaSwag 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 72% 
+
+24% 70% (-2) 
+
+3% 71% (-0) 
+
+12% 71% (-0) 
+
+12% 72% (+1) 
+
+6% 72% (+1) 
+
+6% 72% (+0) 
+
+7% 72% (+0) 
+
+WinoGrande 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 88% 
+
+29% 88% (+0) 
+
+27% 87% (-0) 
+
+14% 90% (+2) 
+
+17% 92% (+4) 
+
+5% 88% (+0) 
+
+5% 88% (+0) 
+
+6% 88% (+0) 
+
+PIQA 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 64% 
+
+25% 64% (-0) 
+
+24% 60% (-4) 
+
+17% 56% (-8) 
+
+20% 62% (-2) 
+
+7% 66% (+2) 
+
+7% 64% (+0) 
+
+8% 64% (+0) 
+
+TruthfulQA 
+
+Dream-7B-Instruct 
+
+Total steps used, all blocks (thick bar, % of full budget) Accuracy (thin bar, %) 
+
+Figure 15: Total steps and accuracy, all short-answer tasks. Total steps used (thick bars) and accuracy (thin bars beneath), all six general/short-answer tasks, both models (LLaDA-8B-Instruct top, Dream-7B-Instruct bottom); same per-block data as Figure 13, concatenated into one bar per method. At the deployed 𝜏 BWEC =0.9, LATCH remains within tolerance throughout; looser tiers and peer methods can deviate. 30 Candidate-Aware Decoding for Diffusion Language Models 0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 66% 
+
+72% 38% (-28) 
+
+88% 59% (-7) 
+
+28% 41% (-25) 
+
+41% 65% (-1) 
+
+27% 67% (+1) 
+
+31% 69% (+3) 
+
+37% 67% (+1) 
+
+GSM8K 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 31% 
+
+75% 19% (-12) 
+
+91% 26% (-5) 
+
+39% 24% (-7) 
+
+52% 34% (+3) 
+
+37% 32% (+1) 
+
+42% 32% (+1) 
+
+48% 32% (+1) 
+
+MATH 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 81% 
+
+63% 40% (-41) 
+
+77% 70% (-11) 
+
+32% 46% (-35) 
+
+38% 79% (-2) 
+
+25% 81% (+0) 
+
+30% 79% (2) 
+
+35% 81% (+0) 
+
+SVAMP 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 68% 
+
+64% 37% (-31) 
+
+77% 60% (-8) 
+
+32% 34% (-34) 
+
+39% 66% (-2) 
+
+27% 65% (3) 
+
+31% 70% (+2) 
+
+37% 68% (+0) 
+
+ASDiv 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 35% 
+
+76% 18% (-17) 
+
+93% 31% (-4) 
+
+27% 21% (-14) 
+
+43% 35% (+0) 
+
+28% 35% (+0) 
+
+32% 35% (+0) 
+
+38% 36% (+1) 
+
+GSM-Hard 
+
+LLaDA-8B-Instruct 
+
+Total steps used, all blocks (thick bar, % of full budget) Accuracy (thin bar, %) 0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 85% 
+
+30% 16% (-69) 
+
+30% 18% (-67) 
+
+35% 20% (-65) 
+
+38% 33% (-52) 
+
+28% 77% (8) 
+
+31% 84% (1) 
+
+35% 85% (+0) 
+
+GSM8K 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 41% 
+
+64% 15% (-26) 
+
+78% 33% (-8) 
+
+39% 9% (-32) 
+
+39% 4% (-37) 
+
+36% 39% (2) 
+
+41% 41% (+0) 
+
+47% 42% (+1) 
+
+MATH 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 76% 
+
+19% 29% (-47) 
+
+17% 20% (-56) 
+
+19% 67% (-9) 
+
+23% 71% (-5) 
+
+25% 75% (1) 
+
+27% 75% (1) 
+
+30% 75% (1) 
+
+SVAMP 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 78% 
+
+21% 25% (-53) 
+
+21% 17% (-61) 
+
+23% 52% (-26) 
+
+26% 58% (-20) 
+
+26% 74% (4) 
+
+28% 76% (2) 
+
+32% 76% (2) 
+
+ASDiv 
+
+0 20 40 60 80 100 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+100% 42% 
+
+41% 9% (-33) 
+
+48% 10% (-32) 
+
+38% 11% (-31) 
+
+44% 10% (-32) 
+
+31% 43% (+1) 
+
+35% 44% (+2) 
+
+40% 42% (+0) 
+
+GSM-Hard 
+
+Dream-7B-Instruct 
+
+Total steps used, all blocks (thick bar, % of full budget) Accuracy (thin bar, %) 
+
+Figure 16: Total steps and accuracy, all long-reasoning tasks. Total steps used (thick bars) and accuracy (thin bars beneath), all five long-reasoning tasks, both models (LLaDA-8B-Instruct top, Dream-7B-Instruct bottom); same per-block data as Figure 14, concatenated into one bar per method. Prophet’s and SlowFast’s accuracy bars shrink visibly relative to Baseline ’s even where their step bars are comparable in length to LATCH’s. 31 Candidate-Aware Decoding for Diffusion Language Models 0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+29 tok/s 
+
+192 tok/s 
+
+59 tok/s 
+
+141 tok/s 
+
+59 tok/s 
+
+406 tok/s 
+
+400 tok/s 
+
+447 tok/s 
+
+MMLU 
+
+29 29 29 29 
+
+52 706 
+
+37 63 73 89 
+
+151 129 133 152 
+
+59 
+
+137 903 1091 
+
+137 956 1608 956 
+
+144 1321 1306 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+31 tok/s 
+
+274 tok/s 
+
+48 tok/s 
+
+97 tok/s 
+
+50 tok/s 
+
+582 tok/s 
+
+482 tok/s 
+
+473 tok/s 
+
+ARC-C 
+
+31 31 31 31 
+
+73 1038 
+
+36 49 51 62 
+
+112 85 88 109 
+
+50 
+
+166 
+
+138 
+
+134 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+24 tok/s 
+
+254 tok/s 
+
+59 tok/s 
+
+156 tok/s 
+
+78 tok/s 
+
+353 tok/s 
+
+333 tok/s 
+
+321 tok/s 
+
+HellaSwag 
+
+24 24 24 24 
+
+69 753 
+
+27 48 152 240 
+
+158 152 153 161 
+
+78 
+
+125 630 741 
+
+114 690 711 
+
+110 738 606 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+31 tok/s 
+
+321 tok/s 
+
+337 tok/s 
+
+242 tok/s 
+
+142 tok/s 
+
+581 tok/s 
+
+576 tok/s 
+
+555 tok/s 
+
+WinoGrande 
+
+31 31 31 31 
+
+81 
+
+91 
+
+240 242 242 242 
+
+142 
+
+158 
+
+153 
+
+146 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+31 tok/s 
+
+217 tok/s 
+
+79 tok/s 
+
+190 tok/s 
+
+101 tok/s 
+
+407 tok/s 
+
+455 tok/s 
+
+534 tok/s 
+
+PIQA 
+
+31 31 31 31 
+
+61 534 
+
+34 75 214 304 
+
+196 181 188 194 
+
+101 
+
+141 650 1411 
+
+130 1136 
+
+145 1897 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+31 tok/s 
+
+165 tok/s 
+
+61 tok/s 
+
+111 tok/s 
+
+65 tok/s 
+
+489 tok/s 
+
+464 tok/s 
+
+435 tok/s 
+
+TruthfulQA 
+
+31 31 31 31 
+
+45 444 
+
+32 71 88 111 
+
+123 99 108 118 
+
+65 
+
+161 1000 1697 
+
+129 1297 
+
+119 1577 
+
+LLaDA-8B-Instruct 
+
+Non-final block (labeled: estimated block TPS) Final block 0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+33 tok/s 
+
+127 tok/s 
+
+156 tok/s 
+
+239 tok/s 
+
+161 tok/s 
+
+458 tok/s 
+
+520 tok/s 
+
+469 tok/s 
+
+MMLU 
+
+33 33 33 33 
+
+37 227 
+
+65 186 311 581 
+
+238 233 241 245 
+
+161 
+
+177 614 1060 
+
+183 869 1494 
+
+156 1139 1235 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+36 tok/s 
+
+156 tok/s 
+
+200 tok/s 
+
+246 tok/s 
+
+173 tok/s 
+
+554 tok/s 
+
+547 tok/s 
+
+501 tok/s 
+
+ARC-C 
+
+36 36 36 36 
+
+44 328 
+
+73 367 452 717 
+
+247 242 245 249 
+
+173 
+
+212 639 1657 
+
+198 884 1163 
+
+165 1444 1097 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+25 tok/s 
+
+95 tok/s 
+
+83 tok/s 
+
+185 tok/s 
+
+131 tok/s 
+
+323 tok/s 
+
+274 tok/s 
+
+230 tok/s 
+
+HellaSwag 
+
+25 25 25 25 
+
+31 110 
+
+37 59 264 
+
+183 186 186 186 
+
+131 
+
+140 1166 251 
+
+116 209 
+
+94 179 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+39 tok/s 
+
+153 tok/s 
+
+1036 tok/s 
+
+297 tok/s 
+
+277 tok/s 
+
+710 tok/s 
+
+682 tok/s 
+
+625 tok/s 
+
+WinoGrande 
+
+39 39 39 39 
+
+39 
+
+259 
+
+297 297 297 297 
+
+277 
+
+254 1003 2401 
+
+209 1561 
+
+182 2310 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+36 tok/s 
+
+117 tok/s 
+
+126 tok/s 
+
+231 tok/s 
+
+188 tok/s 
+
+681 tok/s 
+
+682 tok/s 
+
+572 tok/s 
+
+PIQA 
+
+36 36 36 36 
+
+38 129 
+
+48 106 
+
+231 231 231 231 
+
+188 
+
+215 1046 
+
+192 1747 
+
+151 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+35 tok/s 
+
+126 tok/s 
+
+140 tok/s 
+
+198 tok/s 
+
+152 tok/s 
+
+328 tok/s 
+
+356 tok/s 
+
+346 tok/s 
+
+TruthfulQA 
+
+35 35 35 35 
+
+38 181 
+
+47 192 571 
+
+199 196 198 201 
+
+152 
+
+115 664 631 
+
+112 1229 784 
+
+104 788 
+
+Dream-7B-Instruct 
+
+Non-final block (labeled: estimated block TPS) Final block 
+
+Figure 17: Per-block wall-clock share and estimated TPS, all short-answer tasks. Per-block time share (segment width) and estimated per-block TPS (segment label), all six general/short-answer tasks, both models (LLaDA-8B-Instruct top, Dream-7B-Instruct bottom); final block outlined in black. Segment-level TPS is apportioned from the directly-measured aggregate TPS (bold, at bar end) by step-count share; see the paragraph above for the exact derivation and its uniform-per-step-cost assumption. 32 Candidate-Aware Decoding for Diffusion Language Models 0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+22 tok/s 
+
+25 tok/s 
+
+26 tok/s 
+
+75 tok/s 
+
+50 tok/s 
+
+79 tok/s 
+
+66 tok/s 
+
+56 tok/s 
+
+GSM8K 
+
+22 22 22 22 22 22 22 22 
+
+18 18 18 19 19 23 
+
+23 23 23 23 24 24 29 
+
+55 70 79 82 80 78 80 83 
+
+50 
+
+75 93 108 123 126 131 147 26 
+
+62 70 81 94 100 110 122 25 
+
+49 55 64 73 83 81 94 25 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+21 tok/s 
+
+24 tok/s 
+
+24 tok/s 
+
+55 tok/s 
+
+37 tok/s 
+
+56 tok/s 
+
+49 tok/s 
+
+42 tok/s 
+
+MATH 
+
+21 21 21 21 21 21 21 21 
+
+18 19 19 19 19 21 
+
+22 22 22 22 23 24 25 41 
+
+28 54 60 66 67 67 67 67 
+
+37 
+
+50 64 66 71 78 81 86 24 
+
+43 53 56 60 68 64 73 24 
+
+36 42 45 49 55 53 58 23 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+22 tok/s 
+
+31 tok/s 
+
+30 tok/s 
+
+76 tok/s 
+
+56 tok/s 
+
+94 tok/s 
+
+77 tok/s 
+
+64 tok/s 
+
+SVAMP 
+
+22 22 22 22 22 22 22 22 
+
+20 20 21 25 28 38 
+
+23 23 23 24 28 34 49 
+
+55 73 76 81 86 84 84 82 
+
+56 
+
+90 107 104 121 150 190 32 
+
+70 84 81 91 124 144 29 
+
+55 66 63 69 94 111 29 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+23 tok/s 
+
+32 tok/s 
+
+30 tok/s 
+
+77 tok/s 
+
+54 tok/s 
+
+86 tok/s 
+
+75 tok/s 
+
+62 tok/s 
+
+ASDiv 
+
+23 23 23 23 23 23 23 23 
+
+20 21 22 25 28 35 
+
+23 24 24 25 28 32 44 
+
+51 74 83 86 87 85 86 84 
+
+54 
+
+80 96 109 119 137 162 28 
+
+65 79 87 94 115 138 29 
+
+51 60 67 72 90 108 28 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+22 tok/s 
+
+24 tok/s 
+
+24 tok/s 
+
+83 tok/s 
+
+47 tok/s 
+
+78 tok/s 
+
+68 tok/s 
+
+55 tok/s 
+
+GSM-Hard 
+
+22 22 22 22 22 22 22 22 
+
+19 19 19 19 19 20 
+
+22 22 22 22 22 22 25 42 
+
+57 84 86 92 91 89 90 92 
+
+47 
+
+79 98 111 141 131 118 142 25 
+
+63 75 86 110 111 106 114 25 
+
+48 55 64 80 86 80 90 23 
+
+LLaDA-8B-Instruct 
+
+Non-final block (labeled: estimated block TPS) Final block 0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+23 tok/s 
+
+71 tok/s 
+
+78 tok/s 
+
+76 tok/s 
+
+54 tok/s 
+
+82 tok/s 
+
+75 tok/s 
+
+66 tok/s 
+
+GSM8K 
+
+23 23 23 23 23 23 23 23 
+
+22 28 53 
+
+27 38 59 104 
+
+37 69 89 95 96 96 97 97 
+
+54 
+
+47 71 113 24 
+
+40 60 96 24 
+
+34 49 74 138 24 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+22 tok/s 
+
+29 tok/s 
+
+29 tok/s 
+
+63 tok/s 
+
+51 tok/s 
+
+60 tok/s 
+
+53 tok/s 
+
+45 tok/s 
+
+MATH 
+
+22 22 22 22 22 22 22 22 
+
+19 19 22 25 26 29 
+
+23 23 25 27 29 33 38 51 
+
+34 49 61 73 82 84 88 89 
+
+51 
+
+48 59 76 90 95 115 22 
+
+41 50 66 70 77 90 108 23 
+
+35 41 50 61 64 64 87 22 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+24 tok/s 
+
+79 tok/s 
+
+141 tok/s 
+
+166 tok/s 
+
+91 tok/s 
+
+91 tok/s 
+
+84 tok/s 
+
+72 tok/s 
+
+SVAMP 
+
+24 24 24 24 24 24 24 24 
+
+17 38 116 
+
+31 93 203 
+
+78 186 196 199 200 200 203 203 
+
+91 
+
+47 94 23 
+
+40 76 23 
+
+33 58 141 22 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+24 tok/s 
+
+119 tok/s 
+
+114 tok/s 
+
+169 tok/s 
+
+79 tok/s 
+
+95 tok/s 
+
+87 tok/s 
+
+78 tok/s 
+
+ASDiv 
+
+24 24 24 24 24 24 24 24 
+
+31 58 132 
+
+33 65 119 222 
+
+81 172 200 206 205 209 209 209 
+
+79 
+
+48 99 25 
+
+42 78 145 25 
+
+37 62 117 25 
+
+0 20 40 60 80 100 
+
+Share of total wall-clock time by block (%) 
+
+Baseline 
+
+Prophet 
+
+SchED 
+
+SlowFast 
+
+KLASS 
+
+LATCH ( BWEC =0.7) 
+
+LATCH ( BWEC =0.8) 
+
+LATCH ( BWEC =0.9) 
+
+23 tok/s 
+
+50 tok/s 
+
+48 tok/s 
+
+77 tok/s 
+
+46 tok/s 
+
+74 tok/s 
+
+64 tok/s 
+
+57 tok/s 
+
+GSM-Hard 
+
+23 23 23 23 23 23 23 23 
+
+21 22 32 72 87 
+
+24 27 33 45 65 
+
+38 70 82 94 100 98 101 102 
+
+46 
+
+48 73 87 130 24 
+
+40 59 71 112 23 
+
+35 50 58 88 24 
+
+Dream-7B-Instruct 
+
+Non-final block (labeled: estimated block TPS) Final block 
+
+Figure 18: Per-block wall-clock share and estimated TPS, all long-reasoning tasks. Per-block time share (segment width) and estimated per-block TPS (segment label), all five long-reasoning tasks, both models (LLaDA-8B-Instruct top, Dream-7B-Instruct bottom); final block outlined in black, growing toward the entire bar under LATCH as 𝜏 BWEC tightens; see the paragraph above for why. 33 Candidate-Aware Decoding for Diffusion Language Models 0.2 0.4 0.6 0.8 
+
+> BWEC
+
+50 
+
+55 
+
+60 
+
+65 
+
+70 
+
+> Accuracy (%)
+
+MMLU, LLaDA8BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+75.0 
+
+77.5 
+
+80.0 
+
+82.5 
+
+85.0 
+
+87.5 
+
+90.0 
+
+> Accuracy (%)
+
+ARCC, LLaDA8BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+50 
+
+55 
+
+60 
+
+65 
+
+70 
+
+75 
+
+80 
+
+> Accuracy (%)
+
+HellaSwag, LLaDA8BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+65.0 
+
+67.5 
+
+70.0 
+
+72.5 
+
+75.0 
+
+77.5 
+
+80.0 
+
+82.5 
+
+> Accuracy (%)
+
+WinoGrande, LLaDA8BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+76 
+
+78 
+
+80 
+
+82 
+
+84 
+
+86 
+
+> Accuracy (%)
+
+PIQA, LLaDA8BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+40 
+
+45 
+
+50 
+
+55 
+
+60 
+
+65 
+
+70 
+
+> Accuracy (%)
+
+TruthfulQA, LLaDA8BInstruct (n=200) 
+
+4.6 
+
+4.7 
+
+4.8 
+
+4.9 
+
+5.0 
+
+5.1 
+
+5.2 
+
+> Avg. Step
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+> Speedup
+
+3.8 
+
+4.0 
+
+4.2 
+
+4.4 
+
+4.6 
+
+4.8 
+
+5.0 
+
+5.2 
+
+> Avg. Step
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+> Speedup
+
+4
+
+5
+
+6
+
+7
+
+8
+
+> Avg. Step
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+> Speedup
+
+3.1 
+
+3.2 
+
+3.3 
+
+3.4 
+
+> Avg. Step
+
+1.000 
+
+1.025 
+
+1.050 
+
+1.075 
+
+1.100 
+
+1.125 
+
+1.150 
+
+> Speedup
+
+3.4 
+
+3.6 
+
+3.8 
+
+4.0 
+
+> Avg. Step
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+1.3 
+
+> Speedup
+
+5
+
+6
+
+7
+
+8
+
+> Avg. Step
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+> Speedup
+
+LLaDA8BInstruct 0.2 0.4 0.6 0.8 
+
+> BWEC
+
+60.0 
+
+62.5 
+
+65.0 
+
+67.5 
+
+70.0 
+
+72.5 
+
+75.0 
+
+> Accuracy (%)
+
+MMLU, Dream7BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+82 
+
+84 
+
+86 
+
+88 
+
+90 
+
+92 
+
+> Accuracy (%)
+
+ARCC, Dream7BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+68 
+
+70 
+
+72 
+
+74 
+
+76 
+
+78 
+
+80 
+
+> Accuracy (%)
+
+HellaSwag, Dream7BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+60 
+
+65 
+
+70 
+
+75 
+
+> Accuracy (%)
+
+WinoGrande, Dream7BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+78 
+
+80 
+
+82 
+
+84 
+
+86 
+
+88 
+
+90 
+
+92 
+
+> Accuracy (%)
+
+PIQA, Dream7BInstruct (n=200) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+50 
+
+55 
+
+60 
+
+65 
+
+70 
+
+> Accuracy (%)
+
+TruthfulQA, Dream7BInstruct (n=200) 
+
+4.00 
+
+4.25 
+
+4.50 
+
+4.75 
+
+5.00 
+
+5.25 
+
+5.50 
+
+5.75 
+
+> Avg. Step
+
+1.0 
+
+1.1 
+
+1.2 
+
+1.3 
+
+1.4 
+
+> Speedup
+
+3.8 
+
+4.0 
+
+4.2 
+
+4.4 
+
+4.6 
+
+> Avg. Step
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+1.3 
+
+1.4 
+
+> Speedup
+
+5.50 
+
+5.75 
+
+6.00 
+
+6.25 
+
+6.50 
+
+6.75 
+
+7.00 
+
+> Avg. Step
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+1.3 
+
+1.4 
+
+> Speedup
+
+4.0 
+
+4.5 
+
+5.0 
+
+5.5 
+
+6.0 
+
+> Avg. Step
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+> Speedup
+
+3.2 
+
+3.3 
+
+3.4 
+
+3.5 
+
+3.6 
+
+3.7 
+
+3.8 
+
+> Avg. Step
+
+1.00 
+
+1.05 
+
+1.10 
+
+1.15 
+
+1.20 
+
+1.25 
+
+1.30 
+
+> Speedup
+
+3.8 
+
+4.0 
+
+4.2 
+
+4.4 
+
+4.6 
+
+4.8 
+
+5.0 
+
+> Avg. Step
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+2.0 
+
+> Speedup
+
+Dream7BInstruct 
+
+Figure 19: Continuous 𝜏 BWEC sweep, all short-answer tasks. All six general/short-answer tasks, both models (LLaDA-8B-Instruct top, Dream-7B-Instruct bottom). Solid curves show accuracy (left axis, Wilson-score 95% CI); dashed curves show average Step; dash-dot curves show TPS-ratio Speedup relative to each panel’s own 𝜏 BWEC =0.9 value, measured independently at each 𝜏 BWEC 
+
+(Appendix B). Accuracy is generally stable near the deployed range, whereas more aggressive thresholds degrade several tasks. 34 Candidate-Aware Decoding for Diffusion Language Models 0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+> Accuracy (%)
+
+GSM8K, LLaDA8BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+> Accuracy (%)
+
+MATH, LLaDA8BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+> Accuracy (%)
+
+SVAMP, LLaDA8BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+> Accuracy (%)
+
+ASDiv, LLaDA8BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+> Accuracy (%)
+
+GSMHard, LLaDA8BInstruct (n=100) 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> Avg. Step
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+> Speedup
+
+40 
+
+60 
+
+80 
+
+100 
+
+120 
+
+> Avg. Step
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+3.5 
+
+> Speedup
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> Avg. Step
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+2.0 
+
+2.2 
+
+> Speedup
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> Avg. Step
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+2.0 
+
+2.2 
+
+2.4 
+
+> Speedup
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> Avg. Step
+
+1.00 
+
+1.25 
+
+1.50 
+
+1.75 
+
+2.00 
+
+2.25 
+
+2.50 
+
+2.75 
+
+> Speedup
+
+LLaDA8BInstruct 0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+> Accuracy (%)
+
+GSM8K, Dream7BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+50 
+
+> Accuracy (%)
+
+MATH, Dream7BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+> Accuracy (%)
+
+SVAMP, Dream7BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+20 
+
+40 
+
+60 
+
+80 
+
+> Accuracy (%)
+
+ASDiv, Dream7BInstruct (n=100) 
+
+0.2 0.4 0.6 0.8 
+
+> BWEC
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+50 
+
+> Accuracy (%)
+
+GSMHard, Dream7BInstruct (n=100) 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+> Avg. Step
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+2.0 
+
+2.2 
+
+> Speedup
+
+40 
+
+60 
+
+80 
+
+100 
+
+120 
+
+> Avg. Step
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+> Speedup
+
+40 
+
+50 
+
+60 
+
+70 
+
+> Avg. Step
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+2.0 
+
+> Speedup
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+> Avg. Step
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+> Speedup
+
+40 
+
+50 
+
+60 
+
+70 
+
+80 
+
+90 
+
+100 
+
+> Avg. Step
+
+1.00 
+
+1.25 
+
+1.50 
+
+1.75 
+
+2.00 
+
+2.25 
+
+2.50 
+
+> Speedup
+
+Dream7BInstruct 
+
+Figure 20: Continuous 𝜏 BWEC sweep, all long-reasoning tasks. All five long-reasoning tasks, both models (LLaDA-8B-Instruct top, Dream-7B-Instruct bottom). Solid curves show accuracy (left axis, Wilson-score 95% CI); dashed curves show average Step; dash-dot curves show TPS-ratio Speedup relative to each panel’s own 𝜏 BWEC =0.9 value, measured independently at each 𝜏 BWEC (Appendix B). Across tasks, loosening 𝜏 BWEC eventually causes substantial accuracy degradation, while Step and TPS-ratio provide no reliable advance warning. 35 Candidate-Aware Decoding for Diffusion Language Models 
+
+H Limitations 
+
+• Requires a localizable answer. CVC needs a localizable answer, a short span the task’s own extractor can pull out of the buffer and relocate every step. Locating that span means searching a task-specific side of the buffer for a task-specific value type, a structural prior CVC’s design requires rather than a hyperparameter tuned per task (Appendix A.2). This holds for every task family evaluated here (a number, a letter, a boxed expression), but breaks for tasks with no single extractable answer span at all, code generation being the clearest case; the entire generated program 
+
+is the output, so there is no sub-span for CVC to track separately from the rest of the buffer, and no extractor generalizes to it. BWEC alone still applies to non-final blocks of a multi-block generation there, but the answer-verification half of the gate has no defined target, so LATCH’s termination guarantee does not extend to such tasks. 
+
+• Commits are monotonic. All of LATCH’s commits are also monotonic; once a position clears BWEC’s threshold or scheduled top-𝑘 quota, it is never revisited, even if a later step’s now-richer context would predict it differently. CVC’s joint gate protects only the final answer span this way; an intermediate reasoning token committed under BWEC’s cheaper, non-final-block rule has no equivalent safety net. A mask-and-reconstruct verification pass, checking whether the model’s own updated context would reconstruct the same candidate before committing, could provide an additional safety check, but would require an extra forward pass per candidate, directly competing with the speedup this paper targets; evaluating this trade-off, and whether the cost is better reinvested to justify a lower, more aggressive 𝜏 BWEC , is left to future work. 
+
+• Extending beyond single localizable answers. CVC’s verification currently targets one identity-tracked answer span per example. Long-form generation has no single span playing that role, and falling back to whole-buffer distributional stability would collapse into the same aggregate-confidence failure mode Section 4.1 identifies in Prophet, not a genuine extension of CVC’s own logic. A more promising route decomposes the output into candidate units, each sub-answer of a multi-hop response or each function of a generated program, and applies CVC’s identity-and-stability test per unit; BWEC’s final-block asymmetry would also need a different structural prior once no block is privileged this way. Pursuing this decomposition, and adding distribution-free risk control (Xie et al., 2026; Wynn et al., 2026) on top of the empirical tolerance used throughout this paper, are natural next steps. 36
