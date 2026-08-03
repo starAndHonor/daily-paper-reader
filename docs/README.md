@@ -18,19 +18,26 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-08-02
-- 运行时间：2026-08-02 21:08:26 UTC
+- 最新运行日期：2026-08-03
+- 运行时间：2026-08-03 21:45:23 UTC
 - 运行状态：成功
-- 本次总论文数：0
-- 精读区：0
+- 本次总论文数：2
+- 精读区：2
 - 速读区：0
 
 ### 今日简报（AI）
-> 今日无新推荐，系统未产出可展示论文。
-- 详情：[/202608/02/README](/202608/02/README)
+今日精读2篇，聚焦扩散模型推理加速与多模态内容漂移诊断。  
+最值得关注：OnlineCache动态缓存策略可提升扩散推理效率，而加速多模态模型需警惕内容漂移。  
+建议下一步重点验证缓存纠错机制在真实场景的收益，并评估内容漂移对生成质量的影响。
+- 详情：[/202608/03/README](/202608/03/README)
 
 ### 精读区论文标签
-- 本次无精读推荐。
+1. [OnlineCache: Learning Dynamic Caching Policies with Error Correction for Efficient Diffusion Inference](/202608/03/2607.29398v1-onlinecache-learning-dynamic-caching-policies-with-error-correction-for-efficient-diffusion-inference)  
+   标签：评分：9.0/10、query:diff-accel
+   evidence：面向高效扩散推理的动态缓存与误差校正
+2. [Faster but Different: Diagnosing and Controlling Content Drift in Accelerated Multimodal Diffusion Language Models](/202608/03/2607.29079v1-faster-but-different-diagnosing-and-controlling-content-drift-in-accelerated-multimodal-diffusion-language-models)  
+   标签：评分：8.0/10、query:diff-accel
+   evidence：诊断并控制加速多模态扩散语言模型中的内容漂移
 
 ### 速读区论文标签
 - 本次无速读推荐。
