@@ -1,0 +1,537 @@
+Title: WorldDynCache: Risk-Controlled Latent Dynamics Approximation for Diffusion World Model
+
+URL Source: https://arxiv.org/pdf/2608.01845v1
+
+Published Time: Tue, 04 Aug 2026 01:59:32 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# WorldDynCache: Risk-Controlled Latent Dynamics Approximation for Diffusion World Models 
+
+Leyang Chen, Junyi Wu, Shaoqiu Zhang, Yulun Zhang ∗
+
+Shanghai Jiao Tong University 
+
+Abstract 
+
+Diffusion world models generate high-quality futures, but re-peated transformer evaluations make inference prohibitively slow. Existing caches reuse intermediate features, selectively update tokens, or reuse and extrapolate denoising outputs ac-cording to local drift or short native-space histories. These criteria can miss both approximation-induced latent transition defects that accumulate across skipped steps and phase- or condition-dependent changes in the direction of latent evo-lution. We propose WorldDynCache, a risk-controlled latent dynamics approximation framework with two core compo-nents. First, a lightweight latent-transition risk estimator tracks the accumulated future impact of approximation defects and calibrates its predictions against counterfactual defects ob-served at exact anchors. Second, a condition- and phase-aware lifted latent surrogate approximates latent evolution without extra transformer evaluations. On HunyuanVoyager-13B and Aether-5B, WorldDynCache achieves 4.92 × and 
+
+2.15 × speedups, respectively, while attaining the best gen-eration quality among the compared caching methods across WorldScore, PSNR, SSIM, and LPIPS. 
+
+Introduction 
+
+Diffusion video world models (Huang et al. 2025; Zhu et al. 2025) extend generative video models from unconstrained synthesis to conditional prediction of an environment’s vi-sual evolution. Given observed context, camera trajectories, and geometric cues, they generate spatially and temporally consistent views for controllable scene exploration and vi-sual simulation (Zhu et al. 2025; Huang et al. 2025). This capability is especially valuable when explicit scene models or exhaustive capture of an environment are unavailable (Zhu et al. 2025; Huang et al. 2025). This capability, however, comes with substantial inference cost (Akbari et al. 2026). A diffusion world model evolves a latent world state through many denoising steps, each of which typically invokes a large transformer (Peebles and Xie 2023; Zhu et al. 2025; Huang et al. 2025): 
+
+zt−1 = Ψ t(zt, F θ (zt, t, c )) ,
+
+> ∗
+
+Corresponding author. Copyright © 2027, Association for the Advancement of Artificial Intelligence (www.aaai.org). All rights reserved. 
+
+Figure 1: Visualization comparison on two representative WorldScore cases. Each row compares WorldCache, native output (Native), and our method (Ours). The red boxes high-light representative regions in which WorldDynCache better preserves native output than worldcache. where Fθ denotes the learned denoising model, Ψt is the scheduler transition, and c denotes the model conditions. High-dimensional spatio-temporal tokens, large model ca-pacity, and repeated full-model evaluations make the trans-former the dominant computational cost of a rollout (Liu et al. 2025a; Feng et al. 2026b). This latency limits applications that require rapid generation or repeated prediction. Caching methods reduce this cost by exploiting redun-dancy across neighboring denoising steps. Feature- and block-level methods reuse intermediate activations (Ma, Fang, and Wang 2024; Wimbauer et al. 2024); token-level methods selectively update predictable tokens (Zou et al. 2025, 2024); output-level methods reuse or extrapolate de-noising outputs and transformation vectors (Liu et al. 2025a; Zhou et al. 2025); and trajectory methods forecast future features from recent histories (Liu et al. 2025b; Feng et al. 2026a). For diffusion world models, WorldCache further se-lects token predictors according to local token dynamics and resumes exact computation when accumulated token drift be-comes large (Feng et al. 2026b). Despite different prediction spaces, these methods share a local cacheability view: ap-proximation is safe when the current representation remains predictable from nearby observations. This local view is incomplete for diffusion world model. Once an approximate result is committed, its error enters the next latent state and is subsequently evolved by later denois-ing transitions. Thus, a small defect at the current step does not necessarily imply limited degradation over the remain-ing rollout. Moreover, the displacement observed in a short arXiv:2608.01845v1 [cs.LG] 3 Aug 2026 0.00 0.02 0.04 0.06 0.08 0.10        
+
+> Local defect dt
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Downstream impact  Ddown
+> t
+> τd
+> False-safe region
+> (a) Aether local defect
+> vs. downstream impact
+> Other decisions
+> False-safe
+> Low Medium High
+> Camera-depth dynamics
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> False-safe rate
+> (b) False-safe rate
+> under dynamics
+> Instantaneous risk
+> Future-weighted risk
+> 12345
+> Cache streak
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Direction error
+> (c) Direction error
+> over cache streak
+> Reuse
+> Native 1st-order
+> WorldCache proxy
+> Native linear
+> Lifted no cond.
+> WorldDynCache
+
+Figure 2: Latent-transition safety diagnostics for World-DynCache. (a) Local transition defect dt versus down-stream impact Ddown  
+
+> t
+
+, using thresholds τD /τ d =0.060 /0.025 for Aether and 0.080 /0.030 for Voy-ager. (b) Instantaneous/future-weighted false-safe rates of 5.2% /3.8% , 14 .6% /5.4% , and 20 .9% /9.5% in the Low/Medium/High camera–depth dynamics bins. (c) Direc-tion errors of different approximation methods over increas-ing cache-streak lengths. Full experimental details are pro-vided in the supplementary material. native-space history may cease to be informative when the denoising phase, camera motion, or scene geometry changes the direction of latent evolution. Based on carefully designed experiments, Figure 2 evaluates these two gaps: the mis-match between instantaneous transition defect and down-stream degradation, and the loss of transition-direction ac-curacy over consecutive surrogate steps. These observations suggest that skipped computation should be treated as an approximation of the composed diffusion latent transition, whose reliability depends on both accumulated approxima-tion risk and the current phase and conditions. Based on this insight, we propose WorldDynCache , a risk-controlled latent-transition approximation framework. Instead of first approximating a denoising output and then applying the scheduler, WorldDynCache directly constructs a candidate next latent, using exact transitions previously observed under compatible latent, scheduler-phase, camera, and geometry conditions. The candidate is constructed in a condition-augmented lifted representation using locally re-trieved transition increments, following the observable-based modeling principle of Koopman methods without learn-ing or identifying a global Koopman operator. A nonlinear memory-based observation then reconstructs the candidate in the original latent space. WorldDynCache further determines whether this candi-date should be committed. Exact steps expose counterfactual next-latent defects, which are used to calibrate an inexpensive online defect proxy. The controller increases the estimated risk when the current denoising phase or condition changes indicate greater sensitivity, accumulates this empirical risk across consecutive surrogate transitions, and falls back to the original transformer transition when the candidate is unsup-ported or its accumulated risk is excessive. Thus, the surro-gate determines how to approximate the next latent, while the controller determines when that approximation is suffi-ciently reliable. Both components use cached exact anchors and lightweight condition summaries, require no auxiliary training, and introduce no additional transformer evaluation when a surrogate transition is accepted. As shown in Fig-ure 1, WorldDynCache significantly outperforms previous sota method in representing the native output. This paper makes three contributions: 
+
+• We identify and empirically characterize two limitations of local cacheability criteria in diffusion world models: instantaneous transition defects can underestimate down-stream rollout degradation, and native-space extrapola-tion can lose transition-direction accuracy as conditions and denoising phases evolve. 
+
+• We introduce WorldDynCache, which combines acondition- and phase-aware latent-transition surrogate with an online-calibrated risk controller. The surrogate di-rectly approximates the composed next-latent transition, while the controller accumulates a condition-sensitive empirical risk and selectively falls back to exact trans-former evaluation, without auxiliary training or additional transformer computation on accepted surrogate steps. 
+
+• We evaluate WorldDynCache on HunyuanVoyager-13B and Aether-5B world generation and on Aether 3D re-construction. Under the evaluated protocols, it achieves 
+
+4.92 × and 2.15 × generation speedups while provid-ing the strongest WorldScore and native-fidelity results among the evaluated accelerated methods, and reaches 
+
+3.42 × speedup on reconstruction with depth and pose metrics that outperform the compared caching baselines. 
+
+Related Work 
+
+Diffusion Models and Video World Models 
+
+Diffusion models generate samples through iterative latent transitions (Ho, Jain, and Abbeel 2020; Rombach et al. 2022). Efficient samplers reduce denoiser evaluations using non-Markovian trajectories, diffusion-specific ODE solvers, redesigned noise parameterizations, or progressive distilla-tion (Song, Meng, and Ermon 2021; Lu et al. 2022; Karras et al. 2022; Salimans and Ho 2022). Unlike caching, these approaches shorten or learn the sampling trajectory. Sequen-tial coupling can propagate local prediction errors into later states (Li and van der Schaar 2024). Video diffusion adds temporal conditioning (Ho et al. 2022); large latent or transformer models scale it to high-resolution generation (Blattmann et al. 2023; Yang et al. 2025; Team Wan et al. 2025). Camera-controlled systems inject pose or 3D guidance for viewpoint control and con-sistency (He et al. 2025; Ren et al. 2025). Diffusion world models further condition on camera trajectories, geometry or depth, and history to generate videos that blend seamlessly with the real world (Peebles and Xie 2023; Zhu et al. 2025). Broader world-model research learns compact predictive states for simulation and control (Ha and Schmidhuber 2018), including latent imagination in Dreamer (Hafner et al. 2020) and latent trajectory optimization in TD-MPC2 (Hansen, Su, and Wang 2024). Although their objectives differ from gen-erative video world models, they motivate compact represen-tations of environment dynamics. Transition Risk Controller                              
+
+> (Online Decision)
+> Local Defect Prediction
+> Future-Impact Weighting Subspace-Constrained
+> Risk Contribution
+> Latent Dynamics Surrogate
+> Stage A: Lift to High-Dimensional Space
+> Stage B: Local Koopman-Inspired Evolution
+> Stage C: Reconstruc tion based on similarity
+> =
+> 𝐀 𝐀
+> 𝐀 𝐀 −𝐀 𝐀
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 𝐀 𝐀 ℎ
+> 𝐀 (⋅)
+> 𝐀 𝐀
+> 𝐀 𝐀
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀
+> …
+> Memory Bank
+> 𝐀
+> 𝐀 𝐀 =𝐀𨀀𝐀𧀀𝐀𤰀𝐀 𝐀𨀀𝐀 𝐀 𝐀 −1,𝐀 𝐀
+> 𝐀
+> 𝐀 𝐀 −1
+> 𝐀 𝐀 𝐀 =𨀀
+> 𝐀 𝐀 𝐀 𝐀
+> (𝐀 𝐀 ≤𝐀 𝐀 )
+> Reliable
+> Surrogate?
+> Risk Update
+> 𝐀 𝐀 =𝐀 𝐀 𝐀 −1+𝐀 𝐀
+> 𝐀 𝐀 𝐀 𝐀 −1
+> 𝐀 𝐀
+> (Most recent anchor)
+> (Previous anchor) 𝐀 𝐀 𝐀 𝐀 𝐀
+> 𝐀
+> 𝐀 𝐀 𝐀 𝐀
+> 𝐀
+> 𝐀 𝐀 𝐀 𝐀 𝐀 ℎ
+> 𝐀
+> 𝐀 𝐀
+> 𝐀
+> 𝐀 𝐀 −1
+> Similarity
+> Computation
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀
+> camera
+> motion
+> depth
+> evolution
+> trajectory
+> sensitivity
+> Weighting
+> Block
+> 𝐀 𝐀 =𝐀 𝐀 𝐀 ,𝐀 𝐀 𝐀 𝐀 ,𝐀 𝐀 ℎ𝐀 𝐀 𝐀 ,𝐀 𝐀 𝐀
+> Predicted Local Defect
+> 𝐀 𝐀
+> 𝐀 𝐀 −1
+> 𝐀 𝐀 𝐀 𝐀 𝐀
+> 𝐀 𝐀 𝐀 𝐀
+> distance from
+> latest anchor
+> 𝐀 𝐀 𝐀 𝐀
+> Steps since
+> last anchor
+> 𝐀 𝐀 ℎ𝐀 𝐀 𝐀
+> denoising step(t)
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 −1
+> 𝐀 𝐀 𝐀 𝐀 𝐀 𝐀 𝐀 −1
+> 𝐀 𝐀
+> counterfactual
+> residual calibration
+> Predicted defect direction
+> 𝐀 𝐀 =𝐀 𝐀 𝐀 𝐀 ，where
+> 𝐀 𝐀
+> 𝐀 𝐀
+> 𝐀
+> 𝐀 𝐀 −1
+> future
+> weight
+> projected
+> local defect
+> Final risk
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 −1
+> 𝐀 𝐀 𝐀
+> 𝐀 𝐀 −1
+> 𝐀 𝐀 𝐀
+> current latent
+> history latent
+
+𝐀 𝐀 
+
+> 𝐀 𝐀
+
+Figure 3: Overview of WorldDynCache. The latent dynamics surrogate (green) lifts the current state, applies trajectory-local Koopman-inspired evolution, and reconstructs a can-didate next latent from exact-anchor memory. The risk con-troller (orange) predicts and accumulates its future-weighted transition risk. A low-risk candidate is committed; other-wise, WorldDynCache executes an exact transition, which refreshes memory and calibrates subsequent risk estimates. 
+
+Diffusion Feature and Representation Caching 
+
+Diffusion caching exploits redundancy at several granulari-ties. DeepCache and Block Caching reuse intermediate fea-tures or blocks (Ma, Fang, and Wang 2024; Wimbauer et al. 2024); ToCa and DuCa selectively update spatial or token states (Zou et al. 2025, 2024); TeaCache and EasyCache reuse denoising outputs or transformation vectors (Liu et al. 2025a; Zhou et al. 2025); and TaylorSeer and HiCache fore-cast feature trajectories from short histories (Liu et al. 2025b; Feng et al. 2026a). Despite operating in different representa-tion spaces, these methods generally determine cacheability from local feature, token, output, or trajectory changes. How-ever, they may miss how the local defect propagates through later denoising stages and greatly ruins the final output. For diffusion world models, WorldCache adapts token predictors to local dynamics and resumes exact compu-tation when accumulated token drift grows (Feng et al. 2026b). HERO instead exploits layer-dependent temporal redundancy by selectively refreshing temporally variable patches and extrapolating more stable deep features (Song et al. 2025). In contrast, WorldDynCache directly approx-imates the composed diffusion latent transition and con-trols its use according to the predicted and accumulated transition risk. Its lifted representation is loosely inspired by the observable-based view of Koopman modeling, from the original linear-operator formulation for nonlinear dy-namics to finite-dimensional invariant-subspace and learned-observable approximations (Koopman 1931; Brunton et al. 2016; Williams, Kevrekidis, and Rowley 2015; Lusch, Kutz, and Brunton 2018). WorldDynCache, however, uses only a fixed non-learned map and does not identify or assume a globally valid Koopman operator. 
+
+Motivation and Observations 
+
+Observation 1: Instantaneous transition defects do not fully reflect their downstream consequences. 
+
+Our first insight is that the reliability of a surrogate transition cannot be determined solely by its current defect, because the resulting perturbation is subsequently evolved by the re-maining denoising transitions. To test this insight, we inject a single surrogate transition from an exact latent state and then resume exact inference, measuring both its local defect 
+
+dt and downstream rollout impact Ddown 
+
+t . Figure 2(a) re-veals false-safe cases whose local defects remain below τd
+
+while their downstream impacts exceed τD . Panel (b) shows that this problem becomes more pronounced under stronger camera–depth dynamics: the instantaneous-defect criterion produces false-safe rates of 5.2%, 14.6%, and 20.9% in the Low, Medium, and High regimes, respectively. These re-sults motivate our Transition Risk Controller, which weights the predicted defect by phase and condition sensitivity and accumulates risk across consecutive surrogate steps. The re-sulting future-weighted criterion reduces the corresponding false-safe rates to 3.8%, 5.4%, and 9.5%, demonstrating more reliable decisions particularly under strong dynamics. 
+
+Observation 2: Short native-space histories do not reliably preserve latent transition directions. 
+
+Our second insight is that a displacement estimated from recent native-space states may cease to predict the next tran-sition direction as denoising phase and world conditions evolve, with the mismatch compounding over consecutive surrogate steps. To test this insight, we measure the angular disagreement between approximate and exact latent incre-ments from the same current state and compare different ap-proximation strategies over increasing cache-streak lengths. Figure 2(c) shows that native-space reuse and extrapolation accumulate increasingly large direction errors as the streak grows. A lifted representation reduces this misalignment, and incorporating phase and condition information provides a further improvement. These findings motivate our condition-and phase-aware Latent Dynamics Surrogate, which retrieves compatible exact transition increments in the lifted space. WorldDynCache consequently maintains the lowest direc-tion error across the evaluated cache streaks. 
+
+Method 
+
+Overview 
+
+WorldDynCache approximates a complete latent transition rather than an intermediate denoising output. Let Ht denote the recent exact-anchor history available at denoising step t.The exact and surrogate transitions are 
+
+zexact 
+
+t−1 = Ψ t(zt, F θ (zt, t, c )) ,
+
+ˆzt−1 = Gt(zt, H t). (1) Here Fθ is the expensive transformer denoising dynamics, 
+
+c is the model condition, and Ψt is the scheduler transition. Thus, WorldDynCache approximates the composed world-state transition zt → zt−1; it does not directly approximate the denoising output yt = Fθ (zt, t, c ).0.0 0.5 1.0         
+
+> Pred. defect ^dt
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Obs. defect  dcf
+> t
+> Pearson r=0.85
+> Spearman rho=0.86
+> (a) Defect proxy
+> Aether
+> Voyager
+> y=x
+> fit
+> 0.0 0.5 1.0
+> ^dt
+> Downstream degr.  Pearson r=0.59
+> Spearman rho=0.66
+> (b) Local defect
+> 0.0 0.5 1.0
+> Δt=wt^dt
+> Pearson r=0.74
+> Spearman rho=0.77
+> (c) Weighted risk
+
+Figure 4: Latent-transition risk diagnostics. Panel (a) com-pares ˆdt with dcf  
+
+> t
+
+, with Pearson/Spearman correlations of 0.85/0.86. Panels (b,c) compare downstream degradation with the local defect ˆdt and future-weighted risk ∆t.Figure 3 summarizes the inference pipeline. The left green block constructs a candidate ˆzt−1 with the Latent Dynam-ics Surrogate ; the right orange Transition Risk Controller 
+
+then decides whether to commit it. An accepted candidate becomes the next sampler state; a rejected candidate trig-gers the original transformer and scheduler. Exact transitions also expose counterfactual surrogate defects that calibrate later decisions. In summary, the surrogate answers how to approximate the next latent, and the controller answers when that approximation should be trusted. 
+
+Latent Dynamics Surrogate 
+
+Motivated by Observation 2, the surrogate predicts the tran-sition direction in a representation that exposes condition-and phase-dependent world dynamics, rather than extrapo-lating native-space denoising outputs. The left green block of Figure 3 therefore lifts the current state, evolves it with a trajectory-local approximation, and maps it back to latent space through a nonlinear memory operator. 
+
+Condition-Aware Lifted State Koopman-inspired mod-eling suggests that nonlinear state evolution may admit a simpler local approximation when expressed through suit-able observables (Williams, Kevrekidis, and Rowley 2015; Lusch, Kutz, and Brunton 2018). Let za be the latest ex-act anchor and let Ht contain recent exact-transition tuples. WorldDynCache constructs 
+
+ϕt = Φ( zt, H t) = ν(zt), ν (zt − za), ∆zcam ,
+
+∆zdepth , q t, h (Ht). (2) The blocks are the RMS-normalized current world latent and anchor-relative displacement, normalized camera/motion and depth/geometry descriptors, normalized scheduler phase 
+
+qt, and a summary h(Ht) of recent exact transitions. Unavail-able condition descriptors are set to zero, and normalized timestep replaces unavailable scheduler phase. The map Φ
+
+is fixed and non-learned; normalization details and history summaries are specified in the supplementary material. 
+
+Local Lifted Evolution Alongside Ht, we maintain a uni-fied joint exact-transition bank Bt. Each record stores the lifted input and output, their increment, the exact output la-tent, and the corresponding scheduler phases. The bank is up-dated only after an exact transition under FIFO replacement; surrogate transitions are never inserted. Lifted-transition re-trieval uses the input/lifted-increment view of Bt, while ker-nelized observation uses its exact-output view. At the current step, WorldDynCache retrieves only records whose lifted inputs are locally compatible with ϕt, form-ing Nt ⊆ B t. The transition-retrieval score and normalized weight are 
+
+ℓi = sim  s(ϕt), s (ϕin  
+
+> i
+
+) − γq qt − qin 
+
+> i
+> 22
+
+,πi = exp( ℓi/τ in )
+
+P 
+
+> j∈N t
+
+exp( ℓj /τ in ) . (3) Here πi is the normalized transition-retrieval weight: higher state/condition similarity increases πi, while larger scheduler-phase mismatch decreases it. The scheduler scal-ing and lifted-state evolution are 
+
+αt = clip 
+
+ |qt−1 − qt||qa−1 − qa| + ϵ , α min , α max 
+
+
+
+,
+
+ˆϕt−1 = ϕt + αt
+
+X
+
+> i∈N t
+
+πi∆ϕi. (4) Thus πi selects compatible historical transition directions, and αt rescales their magnitude to the current scheduler interval; a → a − 1 denotes the latest exact transition in-terval. Memory capacity, compatibility thresholds, temper-atures, clip bounds, and fallback details are provided in the supplementary material. The update is used only over a recent-anchor-supported short horizon and is a trajectory-conditioned, Koopman-inspired local approximation rather than an identified or globally learned Koopman operator. 
+
+Kernelized Nonlinear Observation WorldDynCache maps the predicted lifted state back to the next world latent us-ing the exact-output view of the same bank Bt. For notation, let Mt denote the corresponding set of exact-output pairs 
+
+(ϕout  
+
+> i
+
+, z out  
+
+> i
+
+); Mt is not a separately maintained memory. A fixed 256-dimensional summary s(·) supports lightweight retrieval with temperature τ :
+
+¯κi = exp   sim( s( ˆϕt−1), s (ϕout  
+
+> i
+
+)) /τ P 
+
+> j
+
+exp   sim( s( ˆϕt−1), s (ϕout  
+
+> j
+
+)) /τ  ,
+
+ˆzt−1 = X
+
+> i
+
+¯κizout  
+
+> i
+
+.
+
+(5) Because ¯κi depends on s( ˆϕt−1), the observation is query-dependent and nonlinear rather than a fixed linear projection. It uses no learned decoder and evaluates no transformer. Equations (2)–(5) define Gt in Eq. (1). A fixed linear readout is evaluated as an ablation in the supplementary material. 
+
+Transition Risk Controller 
+
+Motivated by Observation 1, a decision should not depend on the instantaneous local defect alone: similar defects can have very different remaining-rollout consequences under differ-ent phases and camera/geometry changes, and their effects can persist across cache streaks. The controller therefore pre-dicts the local defect of the candidate, weights it by future sensitivity, and accumulates the resulting risk. The right or-ange block of Figure 3 summarizes this procedure. Figure 5: Qualitative world-generation comparisons. Left: Aether-5B verdant-landscape sample 091. Right: Voyager-13B stylized indoor-workspace sample. Rows show Native, TeaCache, WorldCache, and WorldDynCache; each row contains four frames from the same input scene. The boxes highlight representative regions where WorldDynCache better preserves the native output. 
+
+Calibrated Local Defect Prediction. At a candidate sur-rogate step the exact next latent is unavailable, so WorldDyn-Cache predicts the normalized local defect from inexpensive pre-decision signals: 
+
+ˆdt = ηdpt,pt = ωz dz (t) + ωage dage (t) + ωphase dphase (t)+ ωcam dcam (t) + ωdepth ddepth (t).
+
+(6) Here dz is the distance from the latest exact anchor, 
+
+dage counts consecutive surrogate steps, dphase measures scheduler-phase displacement, and dcam /ddepth summarize camera/motion and depth/geometry change. Missing condi-tion signals contribute zero; fixed nonnegative weights and normalizations are given in the supplementary material. Exact transitions calibrate this proxy. At an exact step, the pre-insertion surrogate produces the counterfactual candi-date zcf  
+
+> t−1
+
+= Gt(zt, H t). The observed counterfactual defect is 
+
+dcf  
+
+> t
+
+= mean zexact  
+
+> t−1
+
+− zcf 
+
+> t−1
+
+mean zexact  
+
+> t−1
+
++ ϵ . (7) The online calibration update is 
+
+ηd ← clamp 
+
+
+
+βdηd + (1 − βd) dcf 
+
+> t
+
+pt + ϵ , η min , η max 
+
+
+
+. (8) The counterfactual query uses pre-insertion history after the exact result is available, adding no transformer evaluation and preventing self-retrieval. Figure 4(a) validates ˆdt against dcf 
+
+> t
+
+at exact anchors. On pooled Aether and Voyager transitions, Pearson/Spearman correlations of 0.85/0.86 show strong lin-ear and rank agreement, while concentration near the iden-tity line suggests approximate magnitude calibration. This supports online candidate screening, but by Observation 1, instantaneous defect alone cannot characterize downstream consequences; Figures 4(b,c) test this limitation. 
+
+Future-Impact-Aware Risk Accumulation. The same lo-cal defect can be more consequential at a sensitive denois-ing phase or under substantial camera/geometry change. So WorldDynCache forms the future-sensitivity weight, current risk contribution, and accumulated candidate risk jointly: 
+
+wt = min 
+
+n
+
+2, 1 + αcam ucam (t) + αdepth udepth (t)+ αphase uphase (t)
+
+o
+
+,
+
+∆t = wt ˆdt, Rcand  
+
+> t
+
+= λR + ∆ t.
+
+(9) Here wt is an empirical future-sensitivity weight, ∆t is the current future-weighted risk contribution, and R carries de-cayed risk inherited from earlier surrogate steps. The fea-tures ucam , udepth , and uphase summarize camera motion, depth/geometry evolution, and phase sensitivity; missing sig-nals contribute zero, and their precise definitions appear in the supplementary material. Figures 4(b) and 4(c) compare downstream degrada-tion with the unweighted local defect and with the future-weighted increment. Future weighting raises the Pear-son/Spearman correlations from 0.59/0.66 to 0.74/0.77. Eq. (9) accumulates over a surrogate streak, several indi-vidually moderate defects can jointly trigger exact fallback. 
+
+Reliability Decision. The Boolean Available t indicates whether the surrogate has valid, sufficiently supported exact-anchor memory, a non-expired anchor of pre-decision age at most six, compatible scheduler phase, finite candidate val-ues, and adequate retrieval support, and whether the current step lies outside mandatory-exact initialization and refine-ment phases. With threshold τrisk , the controller selects 
+
+at =
+
+Surrogate , Available t and Rcand  
+
+> t
+
+≤ τrisk ,
+
+Exact , otherwise . (10) After a surrogate decision, the controller sets R ← Rcand 
+
+> t
+
+and commits ˆzt−1. After an exact transition, it decays the Table 1: World generation on HunyuanVoyager-13B (left) and Aether-5B (right). WS-S/WS-D denote WorldScore-Static/Dynamic; Mem is peak memory in GB. The best result among accelerated methods is bold.                                                                                                                                                                 
+
+> HunyuanVoyager-13B (512 ×768 , 49 frames)
+> Method WS-S ↑WS-D ↑PSNR ↑SSIM ↑LPIPS ↓Speed ↑Mem ↓
+> Voyager 66.28 46.40 ∞1.000 0.000 1.00 ×50.44 DuCa 53.87 37.71 16.66 0.508 0.486 1.30 ×109.70 ToCa 47.49 33.24 15.51 0.409 0.558 1.01 ×107.35 TaylorSeer 62.46 43.72 18.32 0.615 0.293 0.88 ×163.79 HiCache 63.80 44.66 18.56 0.623 0.281 0.96 ×163.79 TeaCache 60.88 42.61 16.25 0.565 0.372 3.38 ×56.52 EasyCache 64.16 44.91 21.76 0.737 0.208 3.58 ×50.98 HERO 62.37 43.67 17.71 0.601 0.315 0.96 ×173.42 WorldCache 64.89 45.43 23.49 0.770 0.176 3.65 ×50.58
+> WorldDynCache 65.23 45.78 25.61 0.812 0.158 4.92 ×50.48
+> Aether-5B (480 ×720 , 41 frames)
+> Method WS-S ↑WS-D ↑PSNR ↑SSIM ↑LPIPS ↓Speed ↑Mem ↓
+> Aether 64.60 45.22 ∞1.000 0.000 1.00 ×46.58 DuCa 60.17 42.12 26.68 0.838 0.151 1.63 ×61.44 ToCa 60.15 42.11 26.68 0.839 0.151 1.62 ×61.78 TaylorSeer 57.11 39.97 22.92 0.713 0.324 1.66 ×77.32 HiCache 58.96 41.27 24.93 0.784 0.226 1.65 ×77.32 TeaCache 60.95 42.67 26.60 0.843 0.138 1.57 ×46.78 EasyCache 62.89 44.02 22.84 0.720 0.186 1.49 ×46.59 HERO 58.62 41.04 23.56 0.741 0.259 1.36 ×75.08 WorldCache 63.68 44.72 31.87 0.924 0.066 1.68 ×46.59
+> WorldDynCache 64.32 45.07 33.21 0.955 0.061 2.15 ×46.59
+
+stored risk as R ← λR , commits zexact  
+
+> t−1
+
+, calibrates ηd when a supported pre-insertion counterfactual is available, and re-freshes exact-anchor memory. Unsupported candidates al-ways fall back to exact inference. 
+
+Inference and Complexity 
+
+At each denoising step, WorldDynCache constructs a lifted candidate, estimates its accumulated transition risk, and either commits the surrogate or falls back to the exact transformer–scheduler transition. The complete inference al-gorithm is provided in the supplementary material. WorldDynCache adds only scalar proxy updates, lifted-state construction, small-memory similarity, kernelized la-tent interpolation, and one cheap counterfactual surrogate on supported exact steps. It requires no extra transformer forward, backward pass, custom kernel, sparse attention, or learned decoder. The surrogate branch bypasses the full trans-former as an implementation consequence of directly approx-imating the composed latent transition; the scientific target remains the world-state evolution zt → zt−1.
+
+Experiments 
+
+Experimental Settings 
+
+We evaluate world generation on HunyuanVoyager-13B (Huang et al. 2025) at 512 × 768 with 49 frames and Aether-5B (Zhu et al. 2025) at 480 × 720 with 41 frames, and evaluate 3D reconstruction using the Aether protocol. Baselines include DuCa (Zou et al. 2024), ToCa (Zou et al. 2025), TaylorSeer (Liu et al. 2025b), HiCache (Feng et al. 2026a), TeaCache (Liu et al. 2025a), EasyCache (Zhou et al. 2025), HERO (Song et al. 2025), WorldCache (Feng et al. 2026b), and the native models (Zhu et al. 2025). Generation metrics are WS-S/WS-D (Duan et al. 2025), PSNR, SSIM (Wang et al. 2004), and LPIPS (Zhang et al. 2018); following the Aether evaluation protocol (Zhu et al. 2025), reconstruction metrics are AbsRel, δ1/δ 2, ATE, and RPE-t/RPE-r. We also report speedup and peak memory. All the experiments are conducted on eight NVIDIA A6000 48GB GPUs. For world generation, the target exact-call ratios are 20% for HunyuanVoyager-13B and 47% for Aether-5B. Together, these metrics assess perceptual and Speedup     
+
+> WS-S
+> WS-D
+> PSNR
+> SSIM
+> LPIPS
+> Speedup
+> WS-S
+> WS-D
+> PSNR
+> SSIM
+> LPIPS
+> HiCache TeaCache EasyCache WorldCache WorldDynCache
+
+Figure 6: Speed–quality tradeoffs for HunyuanVoyager-13B (left) and Aether-5B (right). Each axis is normalized within the corresponding model block among the five plotted meth-ods; larger values are better, with LPIPS inverted. world-level fidelity for generation, geometric and pose accu-racy for reconstruction, and the practical cost of acceleration. 
+
+World Generation Task 
+
+Table 1 and Figure 6 compare speed and quality on both world models. On HunyuanVoyager-13B, WorldDynCache reaches 4.92 × speedup versus WorldCache’s 3.65 × and im-proves all reported quality metrics, including WS-S/WS-D from 64.89/45.43 to 65.23/45.78 and LPIPS from 0.176 to 0.158. Its WorldScores remain within 1.05/0.62 points of native Voyager, indicating near-native world-level fidelity. On Aether-5B, WorldDynCache similarly improves WorldCache’s speedup from 1.68 × to 2.15 ×, raises WS-S/WS-D from 63.68/44.72 to 64.32/45.07, and reduces LPIPS from 0.066 to 0.061. Its WorldScores are within 0.28/0.15 points of native Aether. Peak memory remains near native inference on both models, indicating that acceleration does not rely on a large auxiliary cache. Relative to the com-pared caching baselines, these gains yield a more favorable speed–quality tradeoff on both backbones. Figure 5 shows that WorldDynCache also preserves the main scene layout across the selected rollouts while remain-ing visually close to native generation. Table 2: 3D reconstruction on Aether-5B. δ1/δ2 denote ac-curacy thresholds 1.25 /1.25 2; RPE-t/RPE-r denote transla-tional/rotational RPE; Mem is peak memory in GB. Method AbsRel ↓ δ1 ↑ δ2 ↑ ATE ↓ RPE-t ↓ RPE-r ↓ Spd. ↑ Mem ↓                                                                                
+
+> Aether 0.340 0.502 0.738 0.177 0.068 0.780 1.00 ×50.19 DuCa 0.341 0.475 0.694 0.209 0.069 0.904 1.97 ×52.70 ToCa 0.341 0.476 0.694 0.209 0.069 0.904 1.98 ×52.70 TaylorSeer 0.361 0.460 0.718 0.197 0.068 1.134 2.07 ×58.57 HiCache 0.346 0.472 0.712 0.204 0.069 1.004 2.09 ×58.57 TeaCache 0.341 0.496 0.724 0.183 0.068 0.797 2.14 ×50.20 EasyCache 0.390 0.479 0.725 0.183 0.069 1.061 2.00 ×50.20 HERO 0.347 0.490 0.716 0.181 0.071 0.861 1.96 ×61.56 WorldCache 0.341 0.508 0.741 0.184 0.068 0.796 2.61 ×50.20
+> WorldDynCache 0.337 0.511 0.768 0.174 0.065 0.679 3.42 ×50.20
+
+3D Reconstruction Task 
+
+The reconstruction task tests whether acceleration preserves geometry rather than only appearance. Unlike world gen-eration, Aether reconstruction uses a separate task-specific budget. Its realized exact-call ratio is 14%, corresponding to 7 exact denoiser calls out of 50 denoising steps per rollout. As Table 2 shows, WorldDynCache gives the strongest reported depth and pose results while reaching the highest speedup. Compared with WorldCache, AbsRel decreases from 0.341 to 0.337, δ1 increases from 0.508 to 0.511, and δ2 increases from 0.741 to 0.768. The trajectory metrics improve concur-rently: ATE decreases from 0.184 to 0.174, RPE-t from 0.068 to 0.065, and RPE-r from 0.796 to 0.679. The 14.7% relative reduction in RPE-r is the largest of these improvements and suggests less accumulated rotational drift. Efficiency improves together with geometry: WorldDyn-Cache raises speedup from 2.61 × for WorldCache to 3.42 ×,a 31.0% relative gain, while retaining the same 50.20 GB memory footprint. It also slightly improves every reported reconstruction metric over native Aether. We interpret this result conservatively: the surrogate is not a physical simu-lator, but risk-controlled latent approximation can avoid the depth and pose degradation seen for more aggressive local reuse methods under this protocol. 
+
+Ablation Study 
+
+Evaluation protocol. We compare all variants under matched surrogate-transition budgets, so they use approxi-mately the same number of exact transformer calls. We first dissect the controller and surrogate on Aether-5B, then repeat their factorization on HunyuanVoyager-13B. 
+
+Aether component analysis. Table 3 yields three findings. (1) In the core factorization, risk guidance improves the native-secant baseline from 41.23/0.236 to 42.45/0.124 WS-D/LPIPS, while the lifted surrogate under periodic place-ment reaches 43.76/0.092. Combining both performs best at 45.07/0.061 and also gives the lowest AbsRel and RPE-r, confirming that reliable placement and accurate transition construction are complementary. (2) Removing condition de-scriptors or replacing kernelized observation with a linear readout degrades every metric, validating condition-aware lifting and nonlinear observation. (3) Using instantaneous risk, removing future-impact weighting or counterfactual cal-ibration, and removing the support constraint all reduce WS-D and worsen LPIPS and RPE-r; removing support causes Table 3: Matched-budget component ablation on Aether-5B.                                             
+
+> Variant WS-D ↑LPIPS ↓AbsRel ↓RPE-r ↓
+> Core factorization
+> Periodic + native latent secant 41.23 0.236 0.365 1.029 Risk + native latent secant 42.45 0.124 0.348 0.836 Periodic + full surrogate 43.76 0.092 0.341 0.764
+> Full model 45.07 0.061 0.337 0.679
+> Surrogate design
+> Risk + lifted surrogate, no condition 43.02 0.104 0.345 0.719 Risk + linear observation 43.37 0.099 0.343 0.765
+> Risk controller
+> Instantaneous risk 44.05 0.084 0.340 0.732 w/o impact weighting 44.51 0.078 0.339 0.710 w/o CF calibration 44.24 0.089 0.337 0.691 w/o support constraint 43.87 0.070 0.340 0.748
+
+Table 4: Matched-budget controller–surrogate factorization on HunyuanVoyager-13B.                          
+
+> Controller Surrogate WS-S ↑WS-D ↑PSNR ↑LPIPS ↓
+> Periodic Native latent secant 60.12 41.06 16.24 0.385 Proposed risk Native latent secant 62.36 43.22 17.63 0.262 Periodic Proposed lifted surrogate 63.09 44.17 22.46 0.234
+> Proposed risk (Full) Proposed lifted surrogate 65.23 45.78 25.61 0.158
+
+the largest WS-D drop among controller variants (45.07 to 43.87). AbsRel also worsens except without counterfactual calibration, where it remains 0.337. 
+
+Cross-model validation. Table 4 confirms the same factor-ization on HunyuanVoyager-13B: (1) risk guidance improves the native-secant baseline from 60.12/41.06 to 62.36/43.22 WS-S/WS-D and lowers LPIPS from 0.385 to 0.262, show-ing that adaptive placement alone benefits both dynamic quality and perceptual fidelity; (2) the lifted surrogate with periodic placement reaches 63.09 WS-S, 44.17 WS-D, and 22.46 PSNR, demonstrating that more accurate transition construction remains valuable without adaptive switching; and (3) their combination again performs best, with 65.23 WS-S, 45.78 WS-D, 25.61 PSNR, and 0.158 LPIPS. This consistent ordering mirrors the Aether results and indicates complementary rather than redundant gains. Thus, neither component is sufficient alone, and their interaction general-izes beyond Aether’s denoising schedule. 
+
+Conclusion 
+
+We presented WorldDynCache, a training-free framework that approximates composed latent transitions with acondition- and phase-aware lifted surrogate and controls their use through online-calibrated accumulated risk. WorldDyn-Cache achieves 4.92 × generation speedup on HunyuanVoy-ager and 2.15 × on Aether with strong fidelity, together with 
+
+3.42 × acceleration on Aether reconstruction while preserv-ing depth and pose. Ablations confirm the complementary roles of the surrogate and controller. These results establish risk-controlled latent-transition approximation as an effective route to efficient diffusion world-model inference. References 
+
+Akbari, A.; Zhang, C.; Akbari, A.; Zhao, L.; Chen, Y.; Chen, W.; Zhang, X.; Yuan, G.; and Wang, Y. 2026. Flash-WAM: Modality-Aware Distillation for World Action Models. arXiv preprint arXiv:2606.05254 .Blattmann, A.; Dockhorn, T.; Kulal, S.; Mendelevitch, D.; Kilian, M.; Lorenz, D.; Levi, Y.; English, Z.; Voleti, V.; Letts, A.; Jampani, V.; and Rombach, R. 2023. Stable Video Diffusion: Scaling Latent Video Diffusion Models to Large Datasets. arXiv preprint arXiv:2311.15127 .Brunton, S. L.; Brunton, B. W.; Proctor, J. L.; and Kutz, J. N. 2016. Koopman Invariant Subspaces and Finite Linear Rep-resentations of Nonlinear Dynamical Systems for Control. 
+
+PLOS ONE .Duan, H.; Yu, H.-X.; Chen, S.; Fei-Fei, L.; and Wu, J. 2025. WorldScore: A Unified Evaluation Benchmark for World Generation. In Proceedings of the IEEE/CVF International Conference on Computer Vision .Feng, L.; Zheng, S.; Liu, J.; Lin, Y.; Zhou, Q.; Cai, P.; Wang, X.; Chen, J.; Zou, C.; Ma, Y.; and Zhang, L. 2026a. HiCache: A Plug-in Scaled-Hermite Upgrade for Taylor-Style Cache-then-Forecast Diffusion Acceleration. In International Con-ference on Learning Representations .Feng, W.; Fan, G.; Qin, H.; Wu, M.; Li, Y.; Li, X.; An, Z.; Huang, L.; Wang, D.; Liao, L.; Magno, M.; Xu, Y.; and Yang, C. 2026b. WorldCache: Accelerating World Models for Free via Heterogeneous Token Caching. In International Conference on Machine Learning .Ha, D.; and Schmidhuber, J. 2018. World Models. arXiv preprint arXiv:1803.10122 .Hafner, D.; Lillicrap, T.; Ba, J.; and Norouzi, M. 2020. Dream to Control: Learning Behaviors by Latent Imagination. In 
+
+International Conference on Learning Representations .Hansen, N.; Su, H.; and Wang, X. 2024. TD-MPC2: Scalable, Robust World Models for Continuous Control. In Interna-tional Conference on Learning Representations .He, H.; Xu, Y.; Guo, Y.; Wetzstein, G.; Dai, B.; Li, H.; and Yang, C. 2025. CameraCtrl: Enabling Camera Control for Video Diffusion Models. In International Conference on Learning Representations .Ho, J.; Jain, A.; and Abbeel, P. 2020. Denoising Diffusion Probabilistic Models. In Advances in Neural Information Processing Systems .Ho, J.; Salimans, T.; Gritsenko, A.; Chan, W.; Norouzi, M.; and Fleet, D. J. 2022. Video Diffusion Models. In Advances in Neural Information Processing Systems .Huang, T.; Zheng, W.; Wang, T.; Liu, Y.; Wang, Z.; Wu, J.; Jiang, J.; Li, H.; Lau, R. W. H.; Zuo, W.; and Guo, C. 2025. Voyager: Long-Range and World-Consistent Video Diffusion for Explorable 3D Scene Generation. ACM Transactions on Graphics .Karras, T.; Aittala, M.; Aila, T.; and Laine, S. 2022. Elucidat-ing the Design Space of Diffusion-Based Generative Models. In Advances in Neural Information Processing Systems .Koopman, B. O. 1931. Hamiltonian Systems and Trans-formation in Hilbert Space. Proceedings of the National Academy of Sciences .Li, Y.; and van der Schaar, M. 2024. On Error Propagation of Diffusion Models. In International Conference on Learning Representations .Liu, F.; Zhang, S.; Wang, X.; Wei, Y.; Qiu, H.; Zhao, Y.; Zhang, Y.; Ye, Q.; and Wan, F. 2025a. Timestep Embedding Tells: It’s Time to Cache for Video Diffusion Model. In Pro-ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition .Liu, J.; Zou, C.; Lyu, Y.; Chen, J.; and Zhang, L. 2025b. From Reusing to Forecasting: Accelerating Diffusion Models with TaylorSeers. In Proceedings of the IEEE/CVF International Conference on Computer Vision .Lu, C.; Zhou, Y.; Bao, F.; Chen, J.; Li, C.; and Zhu, J. 2022. DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps. In Advances in Neural Information Processing Systems .Lusch, B.; Kutz, J. N.; and Brunton, S. L. 2018. Deep Learn-ing for Universal Linear Embeddings of Nonlinear Dynam-ics. Nature Communications .Ma, X.; Fang, G.; and Wang, X. 2024. DeepCache: Ac-celerating Diffusion Models for Free. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition .Peebles, W.; and Xie, S. 2023. Scalable Diffusion Models with Transformers. In Proceedings of the IEEE/CVF Inter-national Conference on Computer Vision .Ren, X.; Shen, T.; Huang, J.; Ling, H.; Lu, Y.; Nimier-David, M.; Müller, T.; Keller, A.; Fidler, S.; and Gao, J. 2025. GEN3C: 3D-Informed World-Consistent Video Gen-eration with Precise Camera Control. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition .Rombach, R.; Blattmann, A.; Lorenz, D.; Esser, P.; and Om-mer, B. 2022. High-Resolution Image Synthesis with Latent Diffusion Models. In Proceedings of the IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition .Salimans, T.; and Ho, J. 2022. Progressive Distillation for Fast Sampling of Diffusion Models. In International Con-ference on Learning Representations .Song, J.; Meng, C.; and Ermon, S. 2021. Denoising Diffusion Implicit Models. In International Conference on Learning Representations .Song, Q.; Wang, X.; Zhou, D.; Lin, J.; Chen, C.; and Ma, Y. 2025. HERO: Hierarchical Extrapolation and Refresh for Efficient World Models. arXiv preprint arXiv:2508.17588 .Team Wan; Wang, A.; Ai, B.; Wen, B.; Mao, C.; Xie, C.-W.; Chen, D.; et al. 2025. Wan: Open and Advanced Large-Scale Video Generative Models. arXiv preprint arXiv:2503.20314 .Wang, Z.; Bovik, A. C.; Sheikh, H. R.; and Simoncelli, E. P. 2004. Image Quality Assessment: From Error Visibility to Structural Similarity. IEEE Transactions on Image Process-ing .Williams, M. O.; Kevrekidis, I. G.; and Rowley, C. W. 2015. A Data-Driven Approximation of the Koopman Operator: Extending Dynamic Mode Decomposition. Journal of Non-linear Science .Wimbauer, F.; Wu, B.; Schoenfeld, E.; Dai, X.; Hou, J.; He, Z.; Sanakoyeu, A.; Zhang, P.; Tsai, S.; Kohler, J.; Rupprecht, C.; Cremers, D.; Vajda, P.; and Wang, J. 2024. Cache Me if You Can: Accelerating Diffusion Models through Block Caching. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition .Yang, Z.; Teng, J.; Zheng, W.; Ding, M.; Huang, S.; Xu, J.; Yang, Y.; Hong, W.; Zhang, X.; Feng, G.; Yin, D.; Zhang, Y.; Wang, W.; Cheng, Y.; Xu, B.; Gu, X.; Dong, Y.; and Tang, J. 2025. CogVideoX: Text-to-Video Diffusion Models with An Expert Transformer. In International Conference on Learning Representations .Zhang, R.; Isola, P.; Efros, A. A.; Shechtman, E.; and Wang, O. 2018. The Unreasonable Effectiveness of Deep Features as a Perceptual Metric. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition .Zhou, X.; Liang, D.; Chen, K.; Feng, T.; Chen, X.; Lin, H.; Ding, Y.; Tan, F.; Zhao, H.; and Bai, X. 2025. Less is Enough: Training-Free Video Diffusion Acceleration via Runtime-Adaptive Caching. arXiv preprint arXiv:2507.02860 .Zhu, H.; Wang, Y.; Zhou, J.; Chang, W.; Zhou, Y.; Li, Z.; Chen, J.; Shen, C.; Pang, J.; and He, T. 2025. Aether: Geometric-Aware Unified World Modeling. In Proceedings of the IEEE/CVF International Conference on Computer Vi-sion .Zou, C.; Liu, X.; Liu, T.; Huang, S.; and Zhang, L. 2025. Ac-celerating Diffusion Transformers with Token-wise Feature Caching. In International Conference on Learning Repre-sentations .Zou, C.; Zhang, E.; Guo, R.; Xu, H.; He, C.; Hu, X.; and Zhang, L. 2024. Rethinking Token-wise Feature Caching: Accelerating Diffusion Transformers with Dual Feature Caching. arXiv preprint arXiv:2412.18911 .

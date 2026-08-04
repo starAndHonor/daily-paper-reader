@@ -1,0 +1,609 @@
+Title: xPress: Parallel Refinement for Diffusion Drafters in Speculative Decoding
+
+URL Source: https://arxiv.org/pdf/2608.02438v1
+
+Published Time: Tue, 04 Aug 2026 02:47:23 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# xPress : Parallel Refinement for Diffusion Drafters in Speculative Decoding 
+
+Zheng Wang 1, Davis Wertheimer 2, Yu Chin Fabian Lim 2, Mudhakar Srivatsa 2, Raghu K. Ganti 2, Minjia Zhang 1, and Naigang Wang 21University of Illinois Urbana-Champaign 
+
+> 2
+
+IBM 
+
+Abstract 
+
+Block-diffusion drafters like dFlash generate an entire block of draft tokens in a single forward pass, drastically reducing the overhead of multiple-token drafting in speculative decoding. The crucial final step of the single-pass discrete denoising process involves using the logit distribution at each position to sample conditionally independent tokens. The resulting draft is thus a set of per-position marginals, rather than a joint distribution: no draft token is guaranteed to depend on its predecessors. Such independently sampled marginals tend to produce sequences with tokens that are individually likely, but jointly improbable under the target model’s distribution, which verifies each token conditionally. This can cause early rejection and limits acceptance length. To address this, we propose xPress as a means to restore the missing causality in diffusion drafters. xPress is a lightweight causal refiner that reconciles the whole diffusion block at once through parallel refinement, restoring and propagating causal dependencies across the draft without a token-by-token loop. On Qwen3-8B, across seven math, code, and chat benchmarks, xPress raises acceptance length by ∼30% on average (up to +56% ) and its 
+
+end-to-end decoding throughput by ∼1.3× on average (up to 1.7×) compared to the original dFlash diffusion drafter. 
+
+# 1 Introduction 
+
+Speculative decoding (SD) [1, 2] accelerates autoregressive generation by using a lightweight draft model to propose future tokens, which the larger target model verifies in one parallel forward pass. A single multi-token verification pass costs about the same as a standard single-token target-model decoding step in low concurrency scenarios, so every draft token that matches target model outputs is another token produced at no additional target cost. The speedup achieved by SD is mainly governed by two factors: the acceptance length (the number of drafted tokens the target accepts per verification step) and the cost of the drafting process itself. A larger acceptance length amor-tizes each target verification pass over more generated tokens, while a cheaper drafter reduces the overhead paid to produce them. This forms a natural trade-off: we want to maximize the expected acceptance length of the drafter, while avoiding a proportional increase to drafting overhead. Autoregressive (AR) generation has long been the default approach to drafting models, and the 
+
+EAGLE series [3, 4, 5] is one of the most representative AR-drafting SD methods. EAGLE’s drafter is remarkably lightweight, as small as a single layer, yet it yields high-quality drafts. However, because drafting is autoregressive, generating n draft tokens involves n sequential forward passes of the draft model. As n becomes larger, the drafting overhead becomes increasingly pronounced, but 1arXiv:2608.02438v1 [cs.AI] 3 Aug 2026 GSM8K            
+
+> MATH-500
+> AIME25
+> HumanEval
+> MBPP
+> LCB
+> MT-Bench 0
+> 2
+> 4
+> 6
+> 8
+> Speedup over AR baseline (×)
+> 4.8
+> 6.8
+> 5.1 5.0 4.7
+> 5.2
+> 2.6
+> 7.8
+> 7.2
+> 5.4
+> 6.3
+> 5.7 5.7
+> 3.3
+> 8.2
+> 7.5
+> 5.8
+> 6.6
+> 5.9 6.1
+> 3.5
+> Temperature = 0
+> GSM8K
+> MATH-500
+> AIME25
+> HumanEval
+> MBPP
+> LCB
+> MT-Bench
+> 4.5
+> 3.8
+> 3.1
+> 3.9 3.5 3.9
+> 2.3
+> 6.4
+> 5.4
+> 4.2
+> 5.1 4.7 4.4
+> 3.0
+> 7.2
+> 6.0
+> 4.6
+> 5.7 5.3
+> 4.8
+> 3.2
+> Temperature = 1
+> dFlash drafter Markov head XPress (ours)
+
+Figure 1: End-to-end decoding throughput speedup over the autoregressive baseline on Qwen3-8B with a block-16 dFlash drafter under greedy decoding ( T =0 , left) and lossless sampling (T =1 , right). The throughput speedup values are measured on H200. xPress consistently outper-forms the Markov head and dFlash diffusion drafter. acceptance length, which requires an unbroken chain of accepted verifications, does not. dFlash [6] resolves this via a block-diffusion model that proposes an entire block of draft tokens in a single forward pass. By turning n serial steps into a single parallel one, dFlash enables longer drafts (and downstream speedups for the target model) at near-constant overhead. But the parallelism brought by the diffusion drafter carries an inherent limitation in accuracy. Unlike an AR drafter, where each position is conditioned on the preceding tokens, positions in a diffusion drafter are decoded from their marginal distributions. The token k is drawn without seeing what the token k−1 turned out to be, so the block is a set of individually plausible tokens with no guarantee of causality. This can violate natural linguistic dependencies across positions, even when every token is locally high-probability [7, 8, 9]. For example, a drafter predicting each position independently can put a plural verb after a singular subject and produce “she are,” where each word is fine on its own but the verb contradicts the subject. At verification, these locally reasonable but jointly incoherent samples are rejected early by the left-to-right target model, limiting the achievable acceptance length. One line of prior work tries to address this limitation by constructing a draft token tree. Tree-based drafting proposes a tree of candidate continuations and verifies the whole tree in a single target pass, so that the longest accepted path through the tree can be selected. Recent works, like PRESTO [9] and DDTree [10], have demonstrated that tree drafting can effectively enhance the achievable acceptance length of diffusion-drafter-based SD methods. Nevertheless, tree drafting has real limitations. Fundamentally, it hedges around the non-causality of the diffusion drafter by targeting recall rather than accuracy. On top of that, the required sparse, irregular tree attention is expensive and complex to serve. Moreover, because a candidate tree typically spans tens to hundreds of tokens, its gains fade quickly at large batch sizes, where the target pass is already compute-bound and those extra tokens are no longer free. Therefore, we ask the following research question: 
+
+Can we cheaply inject causal information into the diffusion drafter at training time, so as to increase acceptance length and raise end-to-end decoding throughput without sacrificing its parallel drafting? 
+
+2What makes this plausible is a property already established for diffusion drafters: the correct token is frequently among the drafter’s top-k candidates at each position [9]. The drafter’s block-level marginals already narrow each position to a small candidate set, it just lacks the causal information needed to identify the right token within that set. The problem of correction therefore reduces to picking the right token from a narrow preexisting set. Therefore, we formalize this as a logits refinement problem and address it with xPress , a lightweight causal refiner that injects causal information into the diffusion drafter. Specifically, xPress keeps the diffusion drafter’s parallel block proposal intact and reranks it in place: a small head reads the drafter’s block hidden states together with the preceding tokens, and emits a per-position additive bias on the diffusion drafter’s own logits. Naively, such causal refinement would reintroduce the very autoregressive dependency that diffusion drafting removes: each position conditions on the previous one, forcing a sequential sweep over the block. To avoid this, xPress resolves the refinement with Jacobi decoding: all positions are updated in parallel from the previous iterate, and K ≪ B such passes, where B is the diffusion block size, suffice to reach the sequential fixed point in practice. We summarize the contributions of xPress as follows: 
+
+• Causal dependency injection at near-zero cost. xPress inject causal information to diffu-sion drafter with a deliberately minimal mechanism: token embeddings and drafter hidden states are projected into a low-rank r-space, where a light-weight single strictly lower-triangular linear mixer lets every position aggregate information from all of its predecessors. The resultant logits bias are then added to the diffusion drafter’s own logits to do the causal refinement. 
+
+• Parallel refinement. xPress resolves the refiner’s causal dependency with K parallel Jacobi iterations over the whole block instead of a conventional auto-regressive left-to-right decoding process. Empirically, these iterations converge in far fewer steps than the diffusion block length (K ≪ B), so a handful of batched forwards reproduce the effect of B dependent auto-regressive steps while retaining the decoding parallelism. 
+
+• Consistent end-to-end gains. On the Qwen3-8B target with the dFlash drafter, xPress en-hances acceptance length by 18–56% under greedy decoding and by 19–58% under T =1 sampling, across seven math, coding, and chat benchmarks compared to the dFlash’s diffusion drafter. The gains convert into end-to-end decoding speedup: ∼1.3× over the drafter on average (up to 1.7×)at T =0 , growing to ∼1.46 × on average (up to 1.6×) at T =1 as shown in Figure 1. 
+
+# 2 Related Works 
+
+2.1 Diffusion drafters 
+
+A recent line of speculative decoding work pairs diffusion based parallel drafting with autoregressive verification. One direction makes the drafter itself stronger: TiDAR [8] trains a hybrid model that performs quadratic self-speculation to achieve parallel decoding, although its final generations are not lossless. DiffuSpec [11] and SpecDiff-2 [12] employ large pretrained dLLMs as speculative drafters, with inference-time search or train–test alignment to improve acceptance. However, these approaches reply on massive drafters (e.g., 7B parameters), which incur substantial memory and latency overhead. On the contrary, dFlash [6] harnesses a small block-diffusion drafter conditioned on context features of the target fills an entire block in one forward pass, reporting over 6× lossless acceleration. More recently, Nemotron-Labs-Diffusion [13] also demonstrates impressive decoding speedup in linear self-speculation decoding mode where the model itslef can serve as a diffuison drafter as well as an AR target. A second direction improves how the drafter’s marginals are spent 3at verification stage. Because a diffusion drafter independently predicts a full distribution at every position in parallel, each position carries several plausible candidates, and committing to a single linear draft discards this breadth. PRESTO [9], DDTree [10], and JetSPec [14] instead expand the per-position candidate space into a draft tree, enumerating multiple continuations per position and verifying them jointly in one target pass, so that a mismatch at a single position no longer forces the entire block to be rejected. This raises the acceptance length without modifying or retraining the drafter. xPress is orthogonal to both directions: it neither enlarges the drafter nor changes verification, but repairs the marginal distribution itself, injecting the intra-block causal conditioning that one-pass diffusion drafting omits. Because it operates on any block drafter’s hidden states and logits, it composes with lighter or heavier drafters alike, and tree methods built on refined logits inherit a better backbone. 
+
+2.2 Causal information injection for diffusion drafters 
+
+Closest to us, two concurrent works, Domino [15] and DSpark [16], share our goal of restoring causality to a diffusion drafter by attaching a correction head that makes a position’s logits depend on the tokens before it. Domino walks the block left to right with a GRU, carrying a recurrent state and emitting a per-position logit correction. DSpark sheds the GRU’s overhead with an even lighter Markov head. Both heads restore causal structure, but both pay for it in ways xPress does not. First, both are serial: Domino’s GRU passes state position to position, and DSpark’s bias for token k is indexed by the sampled id of token k−1, so a block of B tokens takes B−1 steps that must run in order. Second, both feed the correction narrow inputs. DSpark conditions on a single previous token id, repairing local two-token clashes but blind to the rest of the block and to the drafter’s hidden states, which are precomputed representations that encode far more than any token id [17]. Domino’s GRU state carries more history, but still never sees the whole block at once. 
+
+xPress mixes over positions explicitly and, despite its causal output structure, reads the entire block’s drafter hidden states and resolves its causal dependency with K parallel Jacobi passes. 
+
+# 3 Background 
+
+3.1 Speculative decoding 
+
+Speculative decoding (SD) accelerates the decoding process of a target model by pairing it with a cheap drafter. Each round, the drafter proposes a window of future tokens. The target scores the whole window in one forward pass and accepts the longest acceptable prefix plus one bonus token of its own. Under greedy decoding the accpeted tokens are identical to standard decoding, and under sampling at temperature T > 0, rejection sampling against the draft distribution preserves the target distribution exactly. Let τ denote the expected number of tokens accepted per SD step, the average per-token latency is 
+
+L = Tdraft + Tverify 
+
+τ , (1) so speedup over the target’s autoregressive latency mainly comes from two levers: raising the ac-ceptance length τ , or lowering the drafting cost Tdraft [6]. 
+
+3.2 Block-diffusion drafters 
+
+Block-diffusion drafters decouple the two levers. Let c denote the verified context (the accepted prefix so far) and consider a draft block of B positions indexed by t ∈ { 1, . . . , B }, with xt the token 4at position t, x<t its realized prefix within the block, and |V | the vocabulary size. Conditioned on 
+
+c, the drafter consumes a masked block and fills all B positions in a single bidirectional forward pass, producing logits ℓt ∈ R|V | for every position t. Drafting cost is a single parallel forward pass, independent of B, in contrast to the B sequential passes required by auto-regressive (AR) drafters. Therefore, the block can be long without inflating Tdraft . Unlike AR-based drafters, diffusion-based drafters predict all positions independently and in parallel, so qt(xt | c) = softmax( ℓt) is a marginal that conditions on c but not on x<t , rather than the target model’s auto-regressive conditional 
+
+p(xt | c, x <t ). The drafter’s joint proposal is therefore the factorized distribution QBt=1 qt(xt | c),whereas the target it is verified against, QBt=1 p(xt | c, x <t ), is path-conditioned. Verification walks the block left to right and stops at the first token inconsistent with the realized prefix. This is the inherent mismatch between drafting and verification in diffusion-based SD methods [9], which limits the achievable acceptance length. 
+
+3.3 Jacobi decoding 
+
+Autoregressive decoding produces a block of B tokens in B dependent steps: yt = arg max y p(y |
+
+c, y <t ) for t = 1 , . . . , B . Jacobi decoding [18, 19] reformulates this as solving a system of B equations in B unknowns, yt − arg max y p(y | c, y <t ) = 0 , by fixed-point iteration: from an initial guess y(0) ,all positions are updated simultaneously, 
+
+y(k+1)  
+
+> t
+
+= arg max  
+
+> y
+
+p
+
+
+
+y | c, y (k)
+
+> <t
+
+
+
+, t = 1 , . . . , B, (2) which costs one parallel forward pass of the model per iteration (a causal attention mask evaluates all 
+
+B conditionals at once). The iteration stops when y(k) = y(k−1) . Because the dependency structure is strictly causal, position 1 is exact after one iteration, position 2 after two, and the fixed point, which can be reached in at most B iterations, is provably identical to the greedy autoregressive output [18]. In practice, however, Jacobi decoding applied directly to a language model yields little speedup: from a cold-start initialization, the iteration can settle more than one token per pass [19]. This also motivates training methods that explicitly further shorten the Jacobi trajectory, such as consistency LLMs (CLLMs) [20]. CLLMs add a consistency loss that, from any intermediate state on a Jacobi trajectory, pulls the model’s per-position predictions directly toward the trajectory’s fixed point, so that many tokens collapse to their converged values in fewer passes. 
+
+# 4 xPress : Parallel Refinement for Diffusion Drafters 
+
+In this section, we first introduce the designed lightweight causal refiner that refines the diffusion drafter’s per-position marginals under intra-block causal dependencies(Section 4.1). We then elab-orate how to resolve the refiner’s causal dependency in parallel via Jacobi decoding, so a block converges in a few joint iterations instead of a serial left-to-right pass (Section 4.2). Furthermore, we describe how the refiner is co-trained with the drafter under an acceptance-oriented objective, together with a consistency term that aligns training with the self-conditioned inputs seen during the refinement process (Section 4.3). 
+
+4.1 A lightweight causal refiner 
+
+We first formulate the correction process as a causal refinement with four properties. First, it should be lightweight : the drafter’s single parallel forward pass is already highly streamlined and perfor-mant, leaving little room for new parameters or architectural complexity, and this existing capability 5Input Projection Fused Input Projection MLP Layer Causal Linear Mixer Low-rank LM head bidirectional attention layer Prefix KV Cache + Masked Tokens Draft Layer 1 Draft Layer 2 Draft Layer 3 Draft Layer 4 hidden states Target LM head Causal Refiner base logits final logits    
+
+> (a) Diffusion Drafter + Causal Refiner
+> Token ID Global Hidden State Per-Pos Hidden State [V x r] [h x r] [h x r] [3r x r] [b x b x c] [r x 2r x r] [r x V] logits bias
+> (b) XPress's Causal Refiner
+
+Figure 2: (a) The full pipeline. The block-diffusion drafter produces hidden states, the target LM head reads out the base logits, and the refiner adds a learned logits bias to form the final logits. 
+
+(b) Inside the refiner. The three inputs, the token id, the global hidden state, and the per-position hidden state, are down-projected into r-space, fused, mixed causally across block positions, passed through the r-space MLP, and read back out to vocabulary by the shared low-rank head. should be preserved. Second, within that small resource budget it should be causal , injecting real causal information by conditioning each token on its discretely sampled predecessors rather than merely smoothing the drafter’s marginals locally. Third, it should be drafter-grounded , making good use of what the diffusion drafter already computes, such as its hidden states, which typically carry richer information about the block than the pure token id [17]. Finally, it should incur low overhead : refinement cost at inference should stay a small fraction of the total drafting time, and in particular must avoid reintroducing a fully serial, left-to-right pass. We design a lightweight causal refiner instantiating all four properties. Figure 2(a) shows the full pipeline: the diffusion drafter proposes the initial block in one pass, the target LM head reads out the base logits sk, and the refiner adds a learned correction on top. Consistent with the aforementioned top-k observation, the refiner does not score the vocabulary from scratch. It adds a small per-position logit bias δk that re-ranks the handful of candidates the drafter already favours. Formally, the refiner is a map 
+
+Rθ :  h1: B , x 0: B−1
+
+ 7 −→ (δ1, . . . , δ B ) ∈ RB×V , (3) where h1: B are the drafter’s block hidden states and x0: B−1 the current token guesses ( x0 a fixed 6anchor). Composed with the base logits, it induces a per-position refined distribution 
+
+prk(· | x<k , h 1: B ) = softmax  sk + δk
+
+, δk = Rθ(h1: B , x 0: B−1)k. (4) Figure 2(b) details Rθ. Let V be the vocabulary size, H the drafter’s hidden width, B the block length, and r=256 the low-rank dimension. Using a column-vector convention, the refiner is the composition Rθ = Read ◦ Trans ◦ Mix ◦ Fuse of four typed stages. Write A = [ a1, . . . , a B ] ∈ Rr×B
+
+and let a(d) ∈ RB denote its d-th channel across positions: 
+
+Fuse : ak = Win 
+
+ Whhk ∥ Wgg ∥ We[xk−1]  ∈ Rr, (5) 
+
+Mix : c(d) =  IB + L(d) a(d) ∈ RB , L(d) ∈ RB×B strictly lower-triangular , ∀d, (6) 
+
+Trans : zk = ck + W2 σ W1ck
+
+ ∈ Rr, W1 ∈ R2r×r, W 2 ∈ Rr×2r, (7) 
+
+Read : δk = Wr zk ∈ RV , (8) 
+
+Correct : ℓk = sk + δk ∈ RV . (9) The three inputs are the drafter’s per-position hidden state hk ∈ RH , the previous-token id xk−1,and a block-global summary g = 1
+
+> B
+
+PBj=1 hj ∈ RH obtained by mean-pooling the drafter’s hidden states over the block; σ is a pointwise nonlinearity. On the output side, sk is the drafter’s own base logit vector for position k, δk the learned correction, and ℓk the corrected logit the block is re-decoded from. Among the learned maps, We ∈ Rr×V is the token embedding, Wh, W g ∈ Rr×H
+
+the down-projections for hk and g, Win ∈ Rr×3r the input fusion projection, Wr ∈ RV ×r the readout head, and L ∈ Rr×B×B the per-channel causal mixer whose channel slices L(d) are strictly lower-triangular. Each design choice earns back one property elaborated as follows. 
+
+Lightweight. Everything except the two vocabulary matrices We, W r lives in r-space, and these are the embedding and prediction head required by any logit-bias model. On top of them the refiner adds only small r-space components, so by (4) it acts as an additive correction to sk rather than overwriting the base drafter outputs. 
+
+Drafter-grounded. Feeding the per-position hidden hk and the block-global summary g into the correction gives it strictly more signal than a bare token id [17], and both are obtained for free from the drafter. 
+
+Causal. By (6) position k mixes only over its prefix j ≤ k, and because Mix acts on features that already carry the prior sampled tokens through Fuse , this is genuine causal conditioning rather than a local smoothing of the marginals. The refined distribution inherits exactly this structure: 
+
+Proposition 1 (Causal in the sampled tokens) . For every position k, the correction δk depends on the drafter features h1: B only through (hk, g ) and on the sampled tokens only through the prefix x<k .Consequently the refined block factorizes autoregressively in the token argument, 
+
+pr(x1: B | h1: B ) = 
+
+> B
+
+Y
+
+> k=1
+
+prk
+
+ xk | x<k , h 1: B
+
+, (10) 
+
+recovering the path-conditioned structure that the drafter’s marginals Q 
+
+> k
+
+qk(xk | c) lack. 
+
+The claim is immediate from the dependency structure of (5)–(6): Fuse reads only xk−1, and Mix 
+
+aggregates aj for j ≤ k, each depending only on xj−1; hence δk is a function of x0: k−1 alone. The mixer is also lighter than a conventional attention layer, being a fixed triangular combination rather than a computed attention score, yet remains expressive: 7Remark 1. If L(d) 
+
+> k,j
+
+depends only on the offset k − j (Toeplitz), Mix reduces to a causal depthwise conv1d of kernel size B; allowing it to depend on (k, j ) generalizes this to position-dependent causal mixing at the same O(rB 2) parameter cost. 
+
+Low overhead. Mix is a cheap r-space operation and Trans adds only an r → 2r → r residual MLP. Crucially, Fuse and Mix are both linear, so their composition folds into a single operator at inference: with ˜aj = Whhj ∥ Wgg ∥ We[xj−1] we have ck = P 
+
+> j≤k
+
+Mk,j ˜aj , where Mk,j =
+
+ ⊮[j=k] + ⊮[j≤k] L(·)
+
+> k,j
+
+⊙Win is precomputed once, so the fuse–mix path costs a single matmul per iteration. 
+
+4.2 Parallel refinement via Jacobi decoding 
+
+The causal mixer restricts the visibility of every position to its own prefix ( j ≤ k), so the refiner naturally supports autoregressive generation. However, this left-to-right generation process pays an additional B−1-step loop cost over a block of B draft tokens. Instead of finalizing one position before moving to the next, xPress updates all positions at once and repeats this a few times, correcting any prior mistakes via Jacobi decoding. 
+
+Algorithm 1 Parallel refinement via Jacobi decoding 
+
+Require: drafter hidden states {hk}Bk=1 , global summary g, base logits {sk}Bk=1 , max iterations K
+
+Ensure: refined block Y 
+
+> 1:
+
+Y (0) ←   arg max v sk,v 
+
+Bk=1 ▷ seed from the drafter’s one-shot predictions  
+
+> 2:
+
+for j = 0 , 1, . . . , K − 1 do  
+
+> 3:
+
+(δ1, . . . , δ B ) ← Refiner  Y (j), {hk}, g  ▷ one parallel forward; k sees only prefix ≤ k 
+
+> 4:
+
+for k = 1 , . . . , B in parallel do  
+
+> 5:
+
+y(j+1)  
+
+> k
+
+← arg max v
+
+ sk + δk
+
+ 
+
+> v
+> 6:
+
+end for  
+
+> 7:
+
+if Y (j+1) = Y (j) then  
+
+> 8:
+
+break ▷ fixed point = sequential decode  
+
+> 9:
+
+end if  
+
+> 10:
+
+end for  
+
+> 11:
+
+return Y (j+1) 
+
+Formally, sequential greedy decoding computes yk = arg max v pk(v | y<k , h, g ) in order, whereas Jacobi decoding solves the same equations from a seed Y (0) by updating every position at once, 
+
+y(j+1)  
+
+> k
+
+= arg max  
+
+> v
+
+pk
+
+ v | y(j)
+
+> <k
+
+, h, g , k = 1 , . . . , B. (11) Each iteration updates every position from the block as it currently stands, and a position stops changing once the tokens before it have also halted. The detailed refinement process is shown in Algorithm 1. The key structural fact enabling convergence of Jacobi decoding here is that the drafter features h, g are computed once and held fixed across iterations, so (11) is a fixed-point iteration on the finite block V B whose only per-position dependence is on the prefix y<k . This makes the outcome exact and cheap to bound. 
+
+Theorem 1 (Finite convergence to the sequential decode) . Assume the per-position arg max in 
+
+(11) is unique (ties broken by a fixed rule) and that h, g are constant across iterations. Let Y ⋆ =(y⋆ 
+
+> 1
+
+, . . . , y ⋆B ) be the sequential greedy decode, y⋆k = arg max v pk(v | y⋆<k , h, g ). Then from any seed 
+
+8Y (0) , the Jacobi iteration (11) satisfies 
+
+y(j) 
+
+> k
+
+= y⋆k for all j ≥ k, (12) 
+
+so it reaches Y ⋆ in at most B iterations. Moreover Y ⋆ is the unique fixed point of (11) .Proof. By the causal structure of the refiner (Proposition 1), each pk(· | y<k , h, g ) depends on the token guesses only through the prefix y<k ; combined with h, g being fixed, the update at position k
+
+is a function of y<k alone. We now prove the invariant “ y(j) 
+
+> k
+
+= y⋆k for all k ≤ j” by induction on j.The base case j=0 is vacuous. Assume it holds after iteration j. Fix any k ≤ j+1 ; then k−1 ≤ j,so by the hypothesis y(j) 
+
+> <k
+
+= y⋆<k . Since h, g are fixed, the update gives 
+
+y(j+1)  
+
+> k
+
+= arg max  
+
+> v
+
+pk
+
+ v | y(j)
+
+> <k
+
+, h, g  = arg max  
+
+> v
+
+pk
+
+ v | y⋆<k , h, g  = y⋆k,
+
+establishing the invariant for j+1 and hence (12). Taking j=B gives Y (B) = Y ⋆. For uniqueness, any fixed point Y obeys yk = arg max v pk(v | y<k , h, g ) for all k; induction on k (position 1 depends only on the anchor and constants, then each yk is determined by the already-pinned prefix) forces 
+
+Y = Y ⋆.Intuitively, each iteration pins one more leading position: once a prefix of length n is correct it never changes, and it makes position n+1 correct on the next pass, so stability spreads rightward from the anchor. Theorem 1 is thus the worst case; in practice the drafter’s seed is already a good guess, so many positions settle at once and K iterations lock in far more than K tokens. We find 
+
+K ≈ 6 iterations suffice to match the acceptance length of a 15 -step sequential decode. 
+
+4.3 Training xPress 
+
+The causal refiner is co-trained with the (co-adapted) drafter, using ground-truth token sequences and the predictions of the frozen target model. Both provide useful training signal, that we incor-porate into two separate loss terms. The first is a teacher-forced cross-entropy against the ground truth token sequence. Conditioning each position on the ground-truth prefix y<k , it maximizes the probability of the correct token x∗
+
+> k
+
+. This is the standard next-token training objective that instills language capability into the refiner. But it optimizes the data likelihood, whereas what sets the speedup of SD is the acceptance rate. Under speculative sampling, the probability that a token drawn from vocabulary distribution p is accepted against the target model distribution pt can be expressed as P 
+
+> x
+
+min  p(x), p t(x) = 1 − TV( p, p t), with TV = 12 ∥p − pt∥1 [2]. So 
+
+∥pk − ptk∥1 = 2 TV = 2 (1 − accept rate k), (13) and minimizing this total-variation distance to the target is exactly maximizing acceptance, so we make it the second loss term in our training objective. The two are complementary: the cross-entropy points the refiner at the right token, while the total-variation term shapes the distribution to the target the way acceptance is scored. The per-position loss is their weighted sum, with 
+
+wk = exp( −(k−1) /γ ) emphasizing earlier positions [6], since an inference-time verification mismatch disqualifies not just that position but all following positions in the draft: 
+
+L(p) = X
+
+> k
+
+wk
+
+h
+
+αce 
+
+ −log pk(x∗
+
+> k
+
+) + αℓ1 ∥pk − ptk∥1
+
+i
+
+. (14) 9During a forward pass, the drafter produces a base distribution pb, which the refiner then uses to produce the refined distribution pr. A naive application of our loss to pr yields a performant refiner, and a drafter co-adapted to its behavior. Yet this can be problematic at inference time: the Jacobi iteration begins from the drafter’s predictions, so if pb drifts from the target pt, the refiner is starting from a worse seed. We cannot differentiate through the token-sampling operation in the drafter that captures this dynamic, so we instead add an auxiliary loss on pb, anchoring it to desired behavior. An additional concern is the fact that minimizing the loss on pr in a teacher-forced setting yields a refiner that is good at correcting gold prefixes, yet untested on the self-conditioned inputs it actually receives in the Jacobi decoding process. Therefore, we also introduce a consistency loss to solve this misalignment between training and inference stages. Refiner forward passes are cheap by design, so during training we run a second forward pass whose token inputs come from the drafter’s argmax (pb), and apply our two-term loss to that output ˆpr as well. The full objective thus applies L to three distributions: 
+
+Ltotal = L(pr)
+
+| {z } 
+
+> refiner
+
++λ L(pb)
+
+| {z } 
+
+> drafter anchor
+
++β L(ˆ pr)
+
+| {z } 
+
+> consistency
+
+. (15) The first loss optimizes the refiner under teacher forcing, the second drafter-anchor loss preserves the quality of the diffusion drafter itself, and the final consistency loss allows the refiner to better operate under inference conditions. 
+
+# 5 Experiments 
+
+5.1 Evaluation Settings 
+
+Models and Datasets. We evaluate xPress on Qwen3-8B [21] as the target model, using its non-thinking mode throughout for efficient decoding, with the released block-16 dFlash drafter [6] as the base diffusion drafter. For training data we use Open-PerfectBlend [22], an open instruction mixture spanning math, coding, and chat. Following the dFlash recipe, assistant responses are regenerated by the target model under its chat template in non-thinking mode, so the refiner is trained on the distribution it must correct at inference. We evaluate on math benchmarks including GSM8K [23], MATH-500 [24], and AIME25 [25]; coding benchmarks including HumanEval [26], MBPP [27], and LiveCodeBench [28]; and open-ended conversational tasks including MT-Bench [29]. None of the evaluation sets overlap the training corpus. 
+
+Baselines and Training Settings. We compare against the plain dFlash drafter [6] and DSpark’s sequential Markov head [16]. The dFlash baseline measures the drafter as released, with no correc-tion head. We report two metrics: the acceptance length τ , the average number of tokens committed per target verification; end-to-end decoding throughput speedup , the ratio of speculative throughput to the autoregressive baseline of the same target. All heads are co-trained with the drafter against the frozen target with AdamW, learning rate 6 × 10 −4. The diffusion block size is set to 16. The consistency loss on the drafter-seeded second pass is weighted by λ=0 .3. The anchor term that holds the base drafter to the target is annealed from β=0 .6 to a floor of 0.2 over training, shifting capacity toward the refiner once the drafter has adapted. For a controlled head-to-head comparison, we train the Markov head under the identical setup as xPress : the same co-training recipe, the same data, the same loss schedule, and the same step budget, so the two systems differ only in the correction architecture. 10 Table 1: Decoding speedup over the autoregressive baseline (Sp.) and average acceptance length (τ ) on Qwen3-8B with a dFlash block-16 drafter, single-sequence decoding, at most 2048 generated tokens. At T =1 , τ is averaged over 5 seeds. × Gain is xPress ’s throughput over the plain dFlash diffusion drafter.                                                                                                                                                            
+
+> Method Math Code Chat Avg.
+> GSM8K MATH-500 AIME25 HumanEval MBPP LCB MT-Bench Avg.
+> Temperature = 0 Sp. τSp. τSp. τSp. τSp. τSp. τSp. τSp. τ
+> dFlash 4.8 ×6.48 6.8 ×7.71 5.1 ×7.10 5.0 ×6.44 4.7 ×5.75 5.2 ×7.11 2.6 ×3.18 4.9 ×6.25 Markov head 7.8 ×9.67 7.2 ×9.24 5.4 ×7.95 6.3 ×7.76 5.7 ×6.90 5.7 ×7.85 3.3 ×4.13 6.1 ×7.64
+> xPress (ours) 8.2 ×10.11 7.5 ×9.62 5.8 ×8.35 6.6 ×8.15 5.9 ×7.11 6.1 ×8.40 3.5 ×4.38 6.2 ×8.02
+> ×Gain 1.70 ×1.10 ×1.12 ×1.32 ×1.25 ×1.17 ×1.36 ×1.29 ×
+> Temperature = 1 Sp. τSp. τSp. τSp. τSp. τSp. τSp. τSp. τ
+> dFlash 4.5 ×5.83 3.8 ×5.71 3.1 ×4.35 3.9 ×5.40 3.5 ×4.83 3.9 ×5.58 2.3 ×2.90 3.6 ×4.94 Markov head 6.4 ×8.76 5.4 ×7.60 4.2 ×6.22 5.1 ×6.99 4.7 ×6.39 4.4 ×6.43 3.0 ×3.97 4.7 ×6.62
+> xPress (ours) 7.2 ×9.20 6.0 ×8.12 4.6 ×6.68 5.7 ×7.36 5.3 ×6.68 4.8 ×6.65 3.2 ×4.13 5.3 ×6.97
+> ×Gain 1.60 ×1.58 ×1.48 ×1.46 ×1.51 ×1.23 ×1.39 ×1.46 ×
+
+Table 2: Serving-engine results on vLLM (FlashAttention-3 attention backend, Qwen3-8B target, greedy decoding, 1024 generated tokens): throughput (tok/s) with speedup over the autoregressive baseline below. τ varies by <1% across batch sizes, and we report its mean. 
+
+Method GSM8K MATH-500 HumanEval MBPP MT-Bench 
+
+τ dFlash 6.41 7.62 6.40 5.75 3.20 
+
+xPress 10.13 9.67 8.05 7.18 4.31 
+
+bs = 16 AR 2794 2665 2722 2432 2415 dFlash 8812 3.2 ×
+
+9756 3.7 ×
+
+8504 3.1 ×
+
+7706 3.2 ×
+
+4304 1.8 ×
+
+xPress 12049 4.3 ×
+
+11530 4.3 ×
+
+9516 3.5 ×
+
+8770 3.6 ×
+
+5337 2.2 ×
+
+bs = 32 AR 4731 4455 4553 3832 3789 dFlash 9702 2.1 ×
+
+11798 2.6 ×
+
+9858 2.2 ×
+
+8856 2.3 ×
+
+4890 1.3 ×
+
+xPress 13594 2.9 ×
+
+13667 3.1 ×
+
+11166 2.5 ×
+
+9859 2.6 ×
+
+5982 1.6 ×
+
+Implementation Details. For the single-batch evaluation, we use HuggingFace-based harness with torch.compile on all modules and CUDA-graph capture of the correction rollout. For serving-engine evaluation, we integrate xPress into vLLM’s speculative-decoding stack [30] to evaluate 
+
+xPress performance on large batch sizes. Because GPU clocks on a shared cluster drift by several percent, every throughput number is the mean of five measured rounds. For evaluation, we use a single H200. For the training process, we use 32 H100 GPUs to train each setting. 
+
+5.2 Results 
+
+Single Batch. Table 1 reports decoding speedup (Sp.) and average acceptance length ( τ ) on Qwen3-8B with a dFlash block-16 drafter across math, code, and chat benchmarks under single batch setting. xPress attains the best average in every setting. Under greedy decoding ( T =0 ) it 11 1 4 8 12 16                         
+
+> 9.2
+> 9.4
+> 9.6
+> 9.8
+> 10.0
+> 10.2
+> 10.4
+> Acceptance length
+> GSM8K
+> 14812 16
+> 8.8
+> 9.0
+> 9.2
+> 9.4
+> 9.6
+> 9.8
+> MATH-500
+> 14812 16
+> 7.2
+> 7.4
+> 7.6
+> 7.8
+> 8.0
+> 8.2
+> HumanEval
+> 14812 16
+> Jacobi iterations K
+> 6.4
+> 6.6
+> 6.8
+> 7.0
+> 7.2
+> Acceptance length
+> MBPP
+> 14812 16
+> Jacobi iterations K
+> 7.4
+> 7.6
+> 7.8
+> 8.0
+> 8.2
+> 8.4
+> LCB
+> 14812 16
+> Jacobi iterations K
+> 4.0
+> 4.1
+> 4.2
+> 4.3
+> 4.4
+> MT-Bench
+> XPress (ours) Markov head
+
+Figure 3: Per-step τ versus the number of Jacobi iterations K, from K=1 to 16 , with the Markov head as a horizontal baseline (dashed). τ climbs past the baseline within a few iterations, then flat-tens; the small non-monotone wiggles past the plateau are dataset-dependent (e.g. LiveCodeBench). reaches a 6.2× average speedup at 8.02 accepted tokens per step, improving over the plain dFlash drafter ( 4.9×, 6.25 ) by 1.29 × on average and up to 1.70 × on GSM8K, while matching or exceeding the Markov-head refiner on every benchmark and consistently so in acceptance length (e.g. 8.40 vs. 
+
+7.85 on LCB). The gap widens sharply once sampling is turned on: under T =1 the plain diffusion drafter degrades severely, its average speedup collapsing from 4.9× to 3.6× as its per-position marginals diverge from the target’s path-conditioned distribution and are rejected early, whereas 
+
+xPress sustains a 5.3× average speedup ( τ =6 .97 ) for a 1.46 × throughput gain over dFlash, rising to 
+
+1.24 × on LCB and 1.50 × on AIME25. These gains hold across all three domains: chat (MT-Bench) is the hardest regime for diffusion drafting in absolute terms, yet xPress still delivers 1.36 × (T =0 )and 1.39 × (T =1 ) over dFlash, indicating the correction helps precisely where the base drafter is weakest rather than only on easy, high-acceptance workloads. 
+
+Large Batches on vLLMs. Table 2 evaluates xPress inside vLLM’s speculative-decoding stack at serving batch sizes, where the GPU shifts from memory- to compute-bound and the headroom for speculation necessarily shrinks. As expected, every method’s speedup over the AR baseline compresses as the batch grows. On GSM8K, xPress moves from 4.3× at bs =16 to 2.9× at bs =32 ,and dFlash from 3.2× to 2.1×, since AR throughput itself nearly doubles with batching while the speculative methods already saturate compute. The key observation is that xPress remains the fastest method in absolute throughput in every cell and retains a meaningful speedup even at bs =32 (2.5–3.1× on math and code), so the refiner’s benefit survives into the batched serving regime rather than vanishing under load. Moreover, its advantage over the plain dFlash drafter is essentially batch-invariant: xPress sustains a 1.2–1.4× throughput edge over dFlash at both batch sizes (e.g. 13594 vs. 9702 tok/s on GSM8K at bs =32 ), because its higher acceptance length ( τ =10 .13 
+
+vs. 6.41 on GSM8K) accepts more tokens per verification and thus amortizes the expensive target forward passes that dominate cost at scale. The trend holds across domains, with chat (MT-Bench) 12 Table 3: Refinement latency per block ( μs): xPress with K parallel Jacobi passes versus the Markov head’s 15-step sequential decode.                     
+
+> xPress ,KJacobi passes Markov head
+> K=1 2345678(15 serial steps) Latency ( μs)150 227 301 379 452 530 603 681 601
+
+Figure 4: Composition of the draft-side latency per block for the Markov head (GSM8K, block 16, H200/sdpa). The drafter forward and the base lm_head are shared across heads; the refiner is the CUDA-graphed 15-step serial decode, about a quarter of the draft cost. again the hardest case yet still improved ( 2.2× and 1.6× over AR at the two batch sizes). 
+
+How many iterations are needed? More Jacobi iterations lock in more of the prefix, but that is not the same as acceptance rising monotonically with K. When the accepted prefix already reaches past the settled region, one more iteration can overwrite a not-yet-converged tail token that happened to match the target, so τ can dip slightly. As shown in Figure 3, we can see that in practice τ rises quickly, crosses the Markov baseline within a few iterations, and plateaus by K ≈ 7.Pushing to K=16 never beats the plateau, so a small K captures essentially all of the gain. 
+
+Drafting-time latency. As shown in Table 3, xPress ’s cost grows with the number of Jacobi iterations: each Jacobi iteration adds about 75 μs, so the refiner runs from 150 μs at K=1 to 681 μs
+
+at K=8 . The Markov head is a fixed 601 μs, due to its fixed 15-step serial decode regardless of K,so the two cross near K=7 . As Figure 3 shows, xPress never needs to run that far. It matches or beats the Markov head’s per-step acceptance on every benchmark by K=4 , and at K=4 the refiner costs just 379 μs, a 1.6× speedup over the Markov head. In other words, at the first point where 
+
+xPress is already more accurate, it is also markedly faster. Pushing on to the accuracy plateau at 
+
+K=6 still leaves it cheaper ( 530 μs, a 1.13 × speedup). Figure 4 breaks the draft step into its three parts: the drafter’s forward pass, the base lm_head 
+
+readout, and the causal refiner. The first two are shared by every head; the only difference is the refiner. But that refiner cost is non-trivial: even run as a compiled unrolled loop, the Markov head’s 15-step serial decode is about 24% of the draft-side cost. xPress acts to minimize this slice, replacing the 15-step serial decode with a handful of Jacobi iterations. 
+
+# 6 Conclusion 
+
+xPress is a lightweight causal refiner for block-diffusion drafters. It reads the drafter’s own hidden states and reconciles the whole block through a few parallel Jacobi iterations, restoring the token-to-token dependencies that a parallel drafter drops, without falling back to a serial, left-to-right decode. Across seven math, code, and chat benchmarks on Qwen3-8B, xPress raises the dFlash 13 drafter’s acceptance length by about 30% and its end-to-end throughput by about 1.3×. Moreover, by running four Jacobi iterations, xPress already matches or beats the Markov head’s acceptance length while running about 1.6× faster. There are several parts that could be further optimized. The iteration count K is currently fixed for a whole run, but most blocks converge with a small number of iterations, so an adaptive rule that stops a block once it stops changing, or a schedule that spends iterations only where the draft is still unsettled, could cut the average K with no loss in acceptance. More broadly, the philosophy introduced by xPress is not specific to speculative decoding. Reconciling a block of mutually dependent predictions in a few parallel iterations may help wherever a model emits many interdependent outputs at once. 
+
+# References 
+
+[1] Charlie Chen, Sebastian Borgeaud, Geoffrey Irving, Jean-Baptiste Lespiau, Laurent Sifre, and John Jumper. Accelerating large language model decoding with speculative sampling, 2023. [2] Yaniv Leviathan, Matan Kalman, and Yossi Matias. Fast inference from transformers via speculative decoding. ICML , 2023. arXiv:2211.17192. [3] Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. Eagle: Speculative sampling requires rethinking feature uncertainty. ICML , 2024. arXiv:2401.15077. [4] Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. Eagle-2: Faster inference of language models with dynamic draft trees, 2024. [5] Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. Eagle-3: Scaling up inference acceleration of large language models via training-time test, 2025. [6] J. Chen, Y. Liang, and Z. Liu. Dflash: Block diffusion for flash speculative decoding. 2026. arXiv:2602.06036. [7] Chengyue Wu, Hao Zhang, Shuchen Xue, Shizhe Diao, Yonggan Fu, Zhijian Liu, Pavlo Molchanov, Ping Luo, Song Han, and Enze Xie. Fast-dllm v2: Efficient block-diffusion llm, 2025. [8] Jingyu Liu, Xin Dong, Zhifan Ye, Rishabh Mehta, Yonggan Fu, Vartika Singh, Jan Kautz, Ce Zhang, and Pavlo Molchanov. Tidar: Think in diffusion, talk in autoregression, 2025. [9] Z. Wang, Z. Ye, Y. Fu, Q. Cheng, Z. Wang, F. Zhu, H. Zhao, H. Shi, P. Molchanov, and M. Zhang. Presto: Prefix-aligned tree drafting for diffusion speculative decoding. In ICML Workshop (AdaptFM) , 2026. OpenReview:VKD70LJaDy. [10] L. Ringel and Y. Romano. Accelerating speculative decoding with block diffusion draft trees (ddtree). 2026. arXiv:2604.12989. [11] Guanghao Li, Zhihui Fu, Min Fang, Qibin Zhao, Ming Tang, Chun Yuan, and Jun Wang. Diffuspec: Unlocking diffusion language models for speculative decoding, 2025. [12] Jameson Sandler, Jacob K. Christopher, Thomas Hartvigsen, and Ferdinando Fioretto. Specdiff-2: Scaling diffusion drafter alignment for faster speculative decoding, 2025. [13] Yonggan Fu, Lexington Whalen, Abhinav Garg, Chengyue Wu, Maksim Khadkevich, Nicolai Oswald, Enze Xie, Daniel Egert, Sharath Turuvekere Sreenivas, Shizhe Diao, Chenhan Yu, 14 Ye Yu, Weijia Chen, Sajad Norouzi, Jingyu Liu, Shiyi Lan, Ligeng Zhu, Jin Wang, Jindong Jiang, Morteza Mardani, Mehran Maghoumi, Song Han, Ante Jukić, Nima Tajbakhsh, Jan Kautz, and Pavlo Molchanov. Nemotron-labs-diffusion: A tri-mode language model unifying autoregressive, diffusion, and self-speculation decoding, 2026. [14] Lanxiang Hu, Zhaoxiang Feng, Yulun Wu, Haoran Yuan, Yujie Zhao, Yu-Yang Qian, Bojun Wang, Peng Zhao, Daxin Jiang, Yibo Zhu, Tajana Rosing, and Hao Zhang. Jetspec: Breaking the scaling ceiling of speculative decoding with parallel tree drafting, 2026. [15] Huang et al. Domino: Decoupling causal modeling from autoregressive drafting in speculative decoding. 2026. arXiv:2605.29707. [16] X. Cheng, X. Yu, C. Shao, J. Li, Y. Xiong, et al. Dspark: Confidence-scheduled speculative decoding with semi-autoregressive generation. 2026. DeepSeek-AI, arXiv:2607.05147. [17] S. L. Wang, P. Isola, and B. Cheung. The truth lies somewhere in the middle (of the generated tokens). 2026. arXiv:2605.09969. [18] Yang Song, Chenlin Meng, Renjie Liao, and Stefano Ermon. Accelerating feedforward compu-tation via parallel nonlinear equation solving. ICML , 2021. arXiv:2002.03629. [19] A. Santilli et al. Accelerating transformer inference for translation via parallel decoding. ACL ,2023. arXiv:2305.10427. [20] S. Kou, L. Hu, Z. He, Z. Deng, and H. Zhang. Cllms: Consistency large language models. 
+
+ICML , 2024. arXiv:2403.00835. [21] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. Qwen3 technical report, 2025. [22] Tengyu Xu, Eryk Helenowski, Karthik Abinav Sankararaman, Di Jin, Kaiyan Peng, Eric Han, Shaoliang Nie, Chen Zhu, Hejia Zhang, Wenxuan Zhou, Zhouhao Zeng, Yun He, Karishma Mandyam, Arya Talabzadeh, Madian Khabsa, Gabriel Cohen, Yuandong Tian, Hao Ma, Sinong Wang, and Han Fang. The perfect blend: Redefining rlhf with mixture of judges, 2024. [23] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training verifiers to solve math word problems, 2021. [24] Hunter Lightman, Vineet Kosaraju, Yura Burda, Harri Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step, 2023. [25] MAA. American invitational mathematics examination (aime). https://maa.org/ math-competitions/aime . Mathematics Competition Series; n.d.a. [26] Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul 15 Puri, Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders, Christopher Hesse, Andrew N. Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan Morikawa, Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language models trained on code, 2021. [27] Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, and Charles Sutton. Program synthesis with large language models, 2021. [28] Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Ar-mando Solar-Lezama, Koushik Sen, and Ion Stoica. Livecodebench: Holistic and contamination free evaluation of large language models for code, 2024. [29] Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica. Judging llm-as-a-judge with mt-bench and chatbot arena, 2023. [30] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention, 2023. 16

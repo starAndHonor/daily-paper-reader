@@ -1,0 +1,595 @@
+Title: REFLEX: Rethinking MoE Inference as Refinement-Aware Compute Allocation in Diffusion Language Models
+
+URL Source: https://arxiv.org/pdf/2608.01784v1
+
+Published Time: Tue, 04 Aug 2026 01:55:22 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# REFLEX: Rethinking MoE Inference as Refinement-Aware Compute Allocation in Diffusion Language Models 
+
+## Xiang Xia, Cheng Yan, Yiming Zhang, Jiazheng Liu, Hongyu Zhang, Wuyang Zhang ∗
+
+University of Science and Technology of China, Hefei, China xxia@mail.ustc.edu.cn, wuyangz@ustc.edu.cn 
+
+Abstract 
+
+Mixture-of-experts (MoE) models increase parameter capac-ity by activating only a small subset of experts for each token. This conditional-computation paradigm has enabled autore-gressive language models to scale model capacity without a proportional increase in per-token computation. In diffusion language models (DLMs), however, each denoising forward jointly revisits all token positions despite their sharply differ-ent refinement demands, while the default fixed token-choice routing assigns them a uniform expert budget, creating a mis-match between expert computation and refinement demand. We argue that MoE inference in DLMs should therefore be viewed as refinement-aware compute allocation across het-erogeneous token refinement states. We propose REFLEX (RE finement-aware FLEX ible expert allocation), a training-free method that keeps the default router unchanged while reorganizing expert computation around the evolving refine-ment process. Specifically, REFLEX introduces a coarse-to-fine hierarchy for expert-budget allocation that aligns com-putation with block-relative refinement roles while using the Frontier-Progress Score to resolve active-block priorities. Across multiple widely used benchmarks on two represen-tative MoE-based DLMs, LLaDA-MoE and LLaDA2.0-mini, REFLEX reduces allocated expert computation by 15% on av-erage while preserving or even improving generation quality on most benchmarks relative to default routing. Compared with autoregressive-style variable-expert routing methods, REFLEX also yields a more consistent quality–computation trade-off, further supporting the importance of allocating ex-pert computation according to the heterogeneous refinement demands exposed within each denoising forward. 
+
+## Introduction 
+
+Mixture-of-experts (MoE) models scale parameter capacity by replacing dense feed-forward layers with multiple experts and routing each token to only a subset of them (Shazeer et al. 2017; Lepikhin et al. 2021; Fedus, Zoph, and Shazeer 2022). This conditional-computation design decouples total model capacity from the computation activated for each token. In autoregressive language models (Brown et al. 2020), it has enabled model scaling and strong generation quality without a proportional increase in per-token computation (Du et al. 2022; Jiang et al. 2024; Dai et al. 2024). 
+
+> ∗
+
+Corresponding author. 
+
+Diffusion language models (DLMs) have emerged as an alternative generation paradigm that replaces strictly left-to-right prediction with iterative denoising (Austin et al. 2021a; Li et al. 2022; Arriola et al. 2025). Rather than generating one token at a time, each denoising forward revisits all token positions and can refine multiple positions in parallel through bidirectional attention. Recent models such as LLaDA (Nie et al. 2025b), Dream (Ye et al. 2025), and SDAR (Cheng et al. 2026) verify the practical potential of this parallel gen-eration paradigm. To expand model capacity in this setting, MoE architectures have likewise been adopted by scaled DLMs, as exemplified by LLaDA-MoE (Zhu et al. 2025) and LLaDA2.0 (Bie et al. 2025). Consequently, MoE routing now operates over jointly evolving token states rather than a single left-to-right decoding step. MoE-based DLMs commonly use fixed token-choice (TC) routing, which activates the same number of experts for to-kens in different refinement states. However, the shift in gen-eration paradigm creates a new allocation problem for MoE inference: token states jointly processed within a denoising forward can have substantially different refinement demands, so the same expert budget need not be equally useful for all of them. Variable-expert strategies developed for autoregres-sive MoEs determine expert counts from router scores or global budgets (Huang et al. 2024; Wen et al. 2025; Jin et al. 2026). These refinement-agnostic strategies control selected expert counts but do not condition expert-count allocation on token refinement state. In particular, jointly processed states may differ in both their structural role within itera-tive diffusion and their progress toward commitment . The resulting mismatch can waste expert computation on states with limited refinement demand while under-allocating it to states where further refinement remains valuable. Recent DLM-specific methods optimize complementary aspects of MoE inference: dMoE (Feng et al. 2026) limits unique ex-perts within each block to reduce expert-loading overhead, whereas EC-DLM (Zhang et al. 2026) adapts expert ca-pacity across denoising timesteps through a global schedule and expert-choice routing. This leaves open how to allocate a bounded expert budget across heterogeneous refinement states while preserving the default router. 
+
+Problem. How should MoE inference in DLMs allocate ex-pert computation across the heterogeneous token refinement states jointly revisited within each denoising forward? arXiv:2608.01784v1 [cs.AI] 3 Aug 2026 Contribution. To address this problem, we rethink MoE inference in DLMs as expert-budget allocation across the token refinement states encountered throughout iterative dif-fusion. Standard token-choice routing determines which ex-perts process each token, but does not determine how many experts different refinement states should receive. We decou-ple these decisions: the default router preserves its learned expert ranking, while a refinement-aware allocator assigns expert counts under a per-layer selected-expert budget at each denoising forward. We formalize this decision as a con-strained state-wise allocation problem over iterative diffu-sion, in which heterogeneous refinement states may warrant different amounts of expert computation. This formulation establishes token refinement state, rather than router scores or denoising progress alone, as the organizing unit of MoE computation allocation. 
+
+To operationalize this formulation, we propose RE-FLEX ( RE finement-aware FLEX ible expert allocation), a training-free method that realizes refinement-aware alloca-tion through a coarse-to-fine hierarchy while leaving the de-fault router unchanged. REFLEX characterizes token refine-ment state along two complementary dimensions: its struc-tural role within iterative diffusion and its dynamic progress toward commitment. Refinement-Role Budgeting converts block-relative roles into a structural allocation prior over all token refinement states processed in a denoising forward. Conditioned on this prior, Frontier-Guided Expert Realloca-tion uses the Frontier-Progress Score as dynamic evidence to resolve active-block priorities while preserving the block’s total expert budget. Across mathematical reasoning and cod-ing benchmarks on LLaDA-MoE and LLaDA2.0-mini, RE-FLEX reduces selected expert-token pairs by 15% on aver-age while preserving or even improving generation quality on most benchmarks relative to the default Fixed TC top-8 routing. It also yields a more consistent quality–computation trade-off than autoregressive-style variable-expert routing methods. Together, these results support our central view that MoE inference in DLMs should allocate expert compu-tation according to the heterogeneous refinement demands exposed throughout iterative diffusion. 
+
+## Related Work 
+
+Discrete Diffusion Language Models. Discrete diffusion models extend diffusion-based generation to vocabularies through forward corruption and reverse denoising over dis-crete states (Ho, Jain, and Abbeel 2020; Austin et al. 2021a; Chang et al. 2022). Diffusion language models (DLMs) (Lou, Meng, and Ermon 2024; Sahoo et al. 2024; Nie et al. 2025a; Arriola et al. 2025; Nie et al. 2025b) bring iterative denois-ing to text generation. Unlike the left-to-right prediction of autoregressive models, DLMs use bidirectional attention to refine multiple positions in parallel, offering flexible gen-eration orders and greater parallelism. LLaDA (Nie et al. 2025b), Dream (Ye et al. 2025), and SDAR (Cheng et al. 2026) have established the viability of this paradigm across language tasks. Recent models advance scale and efficiency. LLaDA2.0 (Bie et al. 2025) scales open DLMs to 100B total parameters, and Seed Diffusion (Song et al. 2025) achieves high-throughput diffusion decoding for code generation. 
+
+MoE in DLMs. Sparse MoE layers scale model capacity by routing each token representation to a subset of ex-perts (Shazeer et al. 2017; Lepikhin et al. 2021; Fedus, Zoph, and Shazeer 2022). LLaDA-MoE (Zhu et al. 2025) and LLaDA2.0 (Bie et al. 2025) extend this conditional ar-chitecture to DLMs. Recent work reduces repeated expert activation during denoising. TEAM (Wei et al. 2026) tailors activation to decoded, hot, and cold tokens, dMoE (Feng et al. 2026) limits unique experts within blocks, and TIDE (Chen et al. 2026) schedules expert offloading based on tempo-ral activation stability. EC-DLM (Zhang et al. 2026) instead varies expert capacity across denoising timesteps through a global schedule and expert-choice routing. These methods optimize expert reuse, unique-expert activation, offloading, or timestep-level capacity. Per-token expert-count allocation across heterogeneous refinement states within a denoising forward remains underexplored. 
+
+Dynamic Routing in Autoregressive MoEs. Dynamic rout-ing in autoregressive MoEs varies the number of activated experts according to input difficulty or a computation budget. Threshold-based methods derive expert counts from router scores. Top-p (Huang et al. 2024) uses cumulative routing mass, Expert-Threshold Routing (Sun et al. 2026) selects experts whose routing scores exceed score thresholds, and DTop-p (Jin et al. 2026) dynamically controls the threshold under a global sparsity constraint. Budget-based methods distribute an activation budget. Alloc-MoE (Liu et al. 2026) allocates this budget across layers and tokens, while Seq-TopK (Wen et al. 2025) shifts it from individual tokens to the sequence. These methods are tailored to sequential decoding and organize expert allocation around router scores or global budgets. DLM inference revisits token states with hetero-geneous refinement roles and progress toward commitment, requiring expert allocation to account for both dimensions. 
+
+## Preliminaries: Rethinking MoE in DLMs 
+
+Block-Wise DLM Inference 
+
+Let u be a prompt with position set P, disjoint from the tar-get positions. A prompt-conditioned DLM generates a target sequence of length n over a vocabulary V augmented with 
+
+[MASK] . Block-wise inference partitions the target positions into ordered, non-overlapping blocks B = {B 1, . . . , BQ}
+
+covering {1, . . . , n }. We write b(i) = j when target position 
+
+i belongs to Bj and set b(i) = 0 for prompt positions i ∈ P .Starting from an all-mask target x0, denoising forward t
+
+maintains a partially decoded target xt ∈ (V ∪{ [MASK] })n,its masked-position set Mt = {i : xti = [MASK] }, and an active-block index at ∈ { 1, . . . , Q }. The active block is refined until its masked positions are resolved, after which inference advances to the next block. At masked position i, the DLM predicts pti(·) = pϕ(· | 
+
+u, xt), the candidate ˆxti = arg max v∈V pti(v), and confi-dence cti = max v∈V pti(v). Commitment is restricted to masked active-block positions, indexed by Jt = Mt ∩B at =
+
+{i ∈ M t : b(i) = at}. Let Ct ⊆ J t denote positions com-mitted by the decoding strategy at denoising forward t. For the confidence-threshold decoding strategy (Wu et al. 2026), Ct = {i ∈ J t : cti ≥ θ}. The target sequence then updates as 
+
+xt+1  
+
+> i
+
+=
+
+
+
+ˆxti, i ∈ C t,
+
+[MASK] , i ∈ J t \ C t,xti, i / ∈ J t.
+
+(1) Blocks are decoded sequentially, while active-block positions are refined and committed in parallel across forwards. Let It = P ∪{ 1, . . . , n } be the set of all prompt and target positions processed by denoising forward t. For each i ∈ I t,let sti denote the token refinement state of position i under the current partial sequence xt and, when available, its prediction history. This state describes context-dependent computation during refinement, whether or not the token value remains masked. The same position can induce different states as its context evolves, while states within the same forward can have heterogeneous refinement demands. 
+
+MoE-Based DLM Inference 
+
+Consider a DLM with MoE feed-forward layers Lmoe and E
+
+experts per layer. At layer ℓ ∈ L moe , state sti has representa-tion htℓ,i and router scores rtℓ,i,e over experts e ∈ { 1, . . . , E }.Given an expert count ktℓ,i , token-choice routing selects 
+
+T tℓ,i = TopK e
+
+
+
+rtℓ,i,e , k tℓ,i 
+
+
+
+and computes 
+
+MoE ℓ(htℓ,i ; ktℓ,i ) = X 
+
+> e∈T tℓ,i
+
+αtℓ,i,e Eℓ,e (htℓ,i ), (2) where Eℓ,e (·) denotes the e-th expert at layer ℓ, and αtℓ,i,e is its normalized router weight. Router scores rtℓ,i,e determine expert preference. The selected expert count ktℓ,i specifies how many router-ranked experts process token i in state sti at layer ℓ. Default fixed token-choice routing sets ktℓ,i = K for every state, whereas variable-count routing allows it to vary. Per-sample expert computation is measured by selected expert-token pairs, pairs = P
+
+> t
+
+P
+
+> ℓ∈L moe
+
+P 
+
+> i∈I t
+
+ktℓ,i . Its normalized average is AvgK, K = pairs /(|L moe | P 
+
+> t
+
+|I t|),the mean selected expert count per token and MoE layer. These metrics quantify selected expert computation, not unique experts loaded into memory. 
+
+Refinement-Aware MoE Compute Allocation 
+
+We decompose token-choice MoE inference into two de-cisions: expert ranking and expert-count allocation. Router scores rank experts for each token, while the count specifies how many ranked experts process that token in its refine-ment state. We preserve router rankings and formulate counts jointly. Let St = {sti : i ∈ I t} collect the states processed by forward t, and let kt = ( kti )i∈I t . Given a per-layer selected-expert budget KΣ 
+
+> t
+
+, a refinement-aware allocator satisfies 
+
+kt = Π( St, K Σ 
+
+> t
+
+), X
+
+> i∈I t
+
+kti = KΣ 
+
+> t
+
+, (3) where kti ∈ { Kmin , . . . , K max }. Each count is shared across MoE layers, ktℓ,i = kti , and the default router retains the top 
+
+kti experts in its score ranking. Default fixed token-choice routing is the uniform special case kti = K and KΣ 
+
+> t
+
+= K|I t|.Thus, the default router still determines which experts are selected, whereas their number is allocated across refinement states under a shared budget. Let At denote the feasible allocation set defined by Eq. (3) and the count bounds above. Let U ti (k) be the idealized downstream refinement utility of processing token i with 
+
+k experts in state sti. Using an additive state-wise utility surrogate, we write the idealized allocation as 
+
+k⋆t ∈ arg max 
+
+> kt∈A t
+
+X
+
+> i∈I t
+
+U ti (kti ). (4) Its i-th component, (k⋆t )i = kt,⋆ i , is the ideal expert count for token i in state sti. Define the marginal utility ∆U ti (k) = 
+
+U ti (k + 1) − U ti (k). Under diminishing returns, the alloca-tion favors tokens with larger marginal utility. Because the budget couples processed tokens, kt,⋆ i depends on both the token’s refinement state and the refinement demands of other states in St, not on router scores alone. Since U ti is unob-servable, Eq. (4) defines an allocation principle rather than an executable utility estimator. A practical allocator must therefore organize observable refinement-state information without equating any signal with utility. 
+
+## Methodology 
+
+To align expert computation with heterogeneous refinement demands during iterative diffusion, we propose REFLEX (RE finement-aware FLEX ible expert allocation), a training-free realization of our formulation that preserves the default router. We overview REFLEX and detail Refinement-Role Budgeting and Frontier-Guided Expert Reallocation. 
+
+Overview 
+
+REFLEX instantiates the allocator Π( St, K Σ 
+
+> t
+
+) in Eq. (3) by organizing observable refinement-state information at two complementary resolutions. Structural role within it-erative diffusion establishes an allocation prior, while dy-namic progress toward commitment provides evidence to re-fine it. As illustrated in Figure 1, Refinement-Role Budgeting maps block-relative roles to a structural allocation prior over positions per denoising forward. Given this prior, Frontier-Guided Expert Reallocation uses the Frontier-Progress Score to resolve active-block priorities while preserving the block’s expert budget. This coarse-to-fine hierarchy preserves the de-fault router’s expert ranking. 
+
+Refinement-Role Budgeting 
+
+Refinement-Role Budgeting (RRB) establishes the structural allocation prior using the active block as a moving refer-ence for expert computation. States processed in a denoising forward can play different roles relative to that block. RRB therefore organizes expert counts by block-relative role rather than absolute position or forward index. At denoising forward t, the block-relative distance dt(i) = 
+
+|b(i) − at| describes token i’s block-relative role, where at is the active-block index and b(i) is the block index of position i.We treat prompt positions as block 0, enabling prompt tokens to follow the same role-dependent allocation rule as the active Refinement -Role Budgeting （RRB ）          
+
+> 3+3+3=4+3+2
+
+active -block budget preserved 
+
+Each row is one joint denoising forward 
+
+Same expert count across refinement states Each token retains its default router ranking. 
+
+(a) Fixed TC routing (b) REFLEX 
+
+Refinement states evolve, 
+
+while the expert count remains fixed. 
+
+Frontier -Guided Expert Reallocation （FGER ）
+
+> selected
+> not selected
+> C: far from frontier
+> limited progress
+> A: near frontier
+> limited progress 1.0
+> 0.0
+> 0.5
+
+Forward 𝑡 Prompt B!                                                                                                            
+
+> 3
+> 𝑘 =1
+> 𝐸 %>𝐸 &>𝐸 '>𝐸 (
+> Mid
+> 2
+> 𝑘 =2
+> 𝐸 &>𝐸 %>𝐸 (>𝐸 '
+> Near
+> 1
+> 𝑘 =3
+> 𝐸 '>𝐸 %>𝐸 (>𝐸 &
+> Active
+> 0
+> Block3
+> 𝑘 =2
+> 𝐸 '>𝐸 (>𝐸 &>𝐸 %
+> Near
+> 1
+> 𝑘 =3
+> 𝐸 %>𝐸 '>𝐸 (>𝐸 &
+> Mid
+> 2
+> 𝑘 =2
+> 𝐸 (>𝐸 %>𝐸 &>𝐸 '
+> Far
+> 3
+> 𝑘 =1
+> 𝐸 '>𝐸 %>𝐸 (>𝐸 &
+> 3→4(+1)
+> 𝐸 ">𝐸 #>𝐸 $>𝐸 %
+> Block -relative distance to active block 𝑑 #𝑖 =𝑏 𝑖 −𝑎 #
+> Prompt is
+> treated as
+> block B!
+> 𝐤 !=3,3,3
+> budget before
+> reallocation
+> Block1
+> 𝑘 =2
+> 𝐸 (>𝐸 '>𝐸 &>𝐸 %
+> Prompt
+> 𝑘 =2
+> 𝐸 %>𝐸 &>𝐸 '>𝐸 (
+> Block2
+> 𝑘 =2
+> 𝐸 &>𝐸 '>𝐸 %>𝐸 (
+> Active block
+> 𝑘 =2
+> 𝐸 %>𝐸 '>𝐸 (>𝐸 &
+
+Forward 𝑡 + 1                                                               
+
+> Block3
+> 𝑘 =2
+> 𝐸 '>𝐸 (>𝐸 &>𝐸 %
+> Block1
+> 𝑘 =2
+> 𝐸 (>𝐸 '>𝐸 &>𝐸 %
+> Prompt
+> 𝑘 =2
+> 𝐸 %>𝐸 &>𝐸 '>𝐸 (
+> Block2
+> 𝑘 =2
+> 𝐸 &>𝐸 '>𝐸 %>𝐸 (
+> Active block
+> 𝑘 =2
+> 𝐸 %>𝐸 '>𝐸 (>𝐸 &
+> B: near frontier
+> fast progress
+> 𝑑 #at forward 𝑡
+> 3→3(+0)
+> 𝐸 $>𝐸 ">𝐸 %>𝐸 #
+> 3→2(−1)
+> 𝐸 $>𝐸 %>𝐸 #>𝐸 "
+> Confidence
+> history
+> 𝑐 &
+> '($,𝑐 &
+> '("
+> Frontier
+> proximity
+> 𝐹 &
+> '
+> 𝐹𝑃 𝑆 &
+> '
+> =𝐹 &
+> '×𝑝 &
+> '
+> Priority
+> group Limited
+> progress
+> 𝑝 &
+> '
+> Budget
+> update
+> Δ𝑘 &
+> '
+> A
+
+B C 
+
+> A
+
+B C
+
+> commitment
+> frontier
+
+Figure 1: Overview of REFLEX. (a) Fixed token-choice routing assigns the same expert count as token refinement states evolve across denoising forwards. (b) REFLEX preserves each token’s default router ranking while organizing expert-count allocation through a coarse-to-fine hierarchy. Refinement-Role Budgeting establishes a structural prior from block-relative roles, and Frontier-Guided Expert Reallocation redistributes the active-block budget according to the Frontier-Progress Score to prioritize tokens with greater immediate refinement demand, without changing its total. block advances during iterative denoising. The base budget 
+
+Kbase establishes the nominal level of expert computation, while the role offset δrole controls how strongly computation is differentiated across block-relative roles. RRB sets the initial count to kti, role = H(dt(i)) , where 
+
+H(d) = 
+
+
+
+Kbase + δrole , d ≤ 1,Kbase , d = 2 ,Kbase − δrole , d ≥ 3.
+
+(5) For REFLEX, this profile determines the per-layer forward budget KΣ
+
+t = P
+
+i∈I t H(dt(i)) . The subsequent active-block reallocation preserves this total. The three-level map encodes a block-relative structural allocation prior without treating distance as an estimate of refinement utility. RRB allocates more expert computation to nearby blocks, retains the nom-inal allocation for intermediate blocks, and reduces it for distant blocks. As at advances, each position’s computation follows its evolving block-relative role. The resulting profile provides the structural prior for active-block reallocation. 
+
+Frontier-Guided Expert Reallocation 
+
+The RRB prior accounts for block-relative refinement roles, but unresolved active-block tokens can exhibit different progress toward commitment. Conditioned on this prior, Frontier-Guided Expert Reallocation (FGER) uses confi-dence history as dynamic evidence for redistributing expert computation within the active block while preserving its to-tal budget. It concentrates computation where commitment proximity coincides with limited confidence progress. Expert counts for denoising forward t must be deter-mined before computing that forward. FGER therefore in-fers allocation priorities from confidence history. For each 
+
+i ∈ J t, where Jt contains unresolved token positions in the active block, it reuses the two latest confidence ob-servations ct−1
+
+i and ct−2
+
+i . The commitment-frontier width 
+
+wcf > 0 controls the frontier interval and maximum ex-trapolated confidence change. With both observations, the lagged confidence change is vt−1
+
+i = ct−1
+
+i − ct−2
+
+i , clipped to 
+
+¯vt−1
+
+i = clip( vt−1
+
+i , −wcf /2, w cf /2) . Without an additional denoising forward, first-order extrapolation forecasts the un-observed confidence as ˆcti = clip( ct−1
+
+i + ¯ vt−1
+
+i , 0, 1) , where 
+
+clip( z, l, u ) truncates z to [l, u ]. If ct−2
+
+i is unavailable, we set 
+
+vt−1
+
+i = 0 and use ˆcti = ct−1
+
+i . Clipping prevents an atypical confidence change from dominating the priority estimate. We next place a smooth gate over the commitment-frontier interval. The commitment threshold θ is inherited from the decoding strategy. The gate temperature τ > 0 controls the smoothness of both commitment proximity and confidence progress, and σ(·) denotes the sigmoid function. We define the frontier factor as 
+
+F ti = σ (ˆ cti − θ + wcf )/τ  σ (θ − ˆcti)/τ  . (6) The frontier factor F ti assigns high values for forecasts within the commitment-frontier interval [θ − wcf , θ ], emphasizing tokens whose refinement can affect the commitment decision. To distinguish tokens resolving from those making limited progress, the velocity reference vref sets the boundary below which confidence progress is treated as slow. We define 
+
+P ti = σ (vref − ¯vt−1
+
+i )/τ  . (7) The factor P ti encodes limited confidence progress, increas-ing as ¯vt−1
+
+i falls below vref . These conditions jointly define the Frontier-Progress Score (FPS): 
+
+Sti = F ti P ti . (8) The multiplicative form suppresses tokens satisfying only one condition, so proximity or slow progress alone is insuf-ficient evidence of refinement demand. When ct−2 
+
+> i
+
+is un-available, the forecast above uses zero velocity and we set 
+
+P ti = 1 , yielding frontier-only prioritization. We use Sti to rank active-block tokens from dynamic evidence, not to es-timate marginal utility in Eq. (4). Finally, FGER converts this priority ordering into expert counts while preserving the total active-block expert budget established by RRB. The quantity Kcur = Kbase +δrole is the RRB count for an active-block token. The reallocation off-set δcur controls the strength of computation redistribution, while q ∈ (0 , 1/2] controls its coverage among unresolved tokens. Ranking Jt by Sti partitions it into high-, middle-, and low-priority groups Ghigh , Gmid , and Glow with proportions 
+
+q, 1 − 2q, and q. FGER assigns 
+
+kti =
+
+
+
+Kcur + δcur , i ∈ G high ,Kcur , i ∈ G mid ,Kcur − δcur , i ∈ G low ,
+
+(9) where kti is the expert count for token i at forward t.Without confidence history, active-block tokens retain Kcur ;other tokens retain the RRB count in Eq. (5). Equal-sized high- and low-priority groups have canceling count changes, so P 
+
+> i∈J t
+
+kti = |J t|Kcur . FGER redistributes active-block computation without changing its total budget. This coarse-to-fine allocation combines a block-relative structural alloca-tion prior with dynamic evidence from progress toward com-mitment while preserving the default router’s expert ranking. 
+
+## Experiments 
+
+We evaluate whether REFLEX improves the trade-off be-tween generation quality and allocated expert computation on two representative MoE-based DLMs across multiple benchmarks. This section presents the experimental setup, comparative results, ablation studies, and hyper-parameter analysis. The experiments address four main questions: 
+
+Q1: Can REFLEX preserve or even improve quality with less expert computation than Fixed TC routing? 
+
+Q2: Is REFLEX better suited to MoE-based DLM inference than existing variable-expert allocation strategies? 
+
+Q3: How does modeling each refinement-state dimension in-fluence the quality–computation trade-off of REFLEX? 
+
+Q4: How do hyper-parameter changes affect the expert allo-cation behavior of REFLEX? 
+
+Experimental Setup 
+
+Models, tasks, and metrics. We evaluate two represen-tative publicly available MoE-based DLMs, LLaDA-MoE (7B) (Zhu et al. 2025) and LLaDA2.0-mini (16B) (Bie et al. 2025), on GSM8K 5-shot (Cobbe et al. 2021), Math500 4-shot (Lightman et al. 2024), HumanEval 0-shot (Chen et al. 2021), and MBPP 3-shot (Austin et al. 2021b). We use task accuracy or pass@1 to evaluate generation quality, and use AvgK, the average selected expert count per token at each MoE layer, together with selected expert-token pairs per sam-ple to evaluate expert computation. For a fixed model and processed sequence length, Pairs ∝ AvgK × NFE , where NFE is the number of model forward passes per sample. Appendix A explains how selected expert-token pairs reflect routed-expert linear-layer FLOPs. 
+
+Compared methods. We first compare REFLEX with three types of token-choice strategies: fixed, budget-based, and threshold-based. Fixed TC selects a fixed number of token-choice experts per token. Budgeted TC (Liu et al. 2026; Wen et al. 2025) assigns a variable number of token-choice ex-perts under a target average expert budget. Threshold-based strategies select experts according to routing-score thresh-olds: Top-p (Huang et al. 2024) selects experts until the cumulative routing mass reaches a threshold, DTop-p (Jin et al. 2026) adjusts this threshold to target an average budget, and Expert-Threshold Routing (Sun et al. 2026) selects ex-perts whose routing scores exceed a global threshold. These methods vary expert count without modeling diffusion refine-ment roles. Because EC-DLM (Zhang et al. 2026) replaces token-choice routing with expert-choice routing, we further compare REFLEX with an EC-DLM-style late-high timestep schedule under the default router. 
+
+Experimental setting. For a fair comparison, all experi-ments use the following hyper-parameter settings unless oth-erwise specified. All experiments are conducted on NVIDIA A100 80GB GPUs. All methods are evaluated with the lm-evaluation-harness under deterministic decoding with tem-perature 0. All methods use generation length n = 256 ,block length nblk = 32 , and commitment threshold θ =0.9. For REFLEX, Refinement-Role Budgeting (RRB) uses base role budget Kbase = 8 and role offset δrole = 4 .Frontier-Guided Expert Reallocation (FGER) uses active-block reallocation offset δcur = 2 and outer-group fraction 
+
+q = 0 .25 . The Frontier-Progress Score (FPS) uses velocity reference vref = 0 .01 and gate temperature τ = 0 .05 . The commitment-frontier width is wcf = 0 .30 for LLaDA-MoE and wcf = 0 .25 for LLaDA2.0-mini. For comparison strate-gies, Fixed TC includes top-4 and top-8. Budgeted TC uses target AvgK 6 and 7 for its low/high settings, respectively. Threshold-based strategies are calibrated to low/high com-putation levels around AvgK 6 and 8. Appendix B details the comparison strategies and implementation settings. 
+
+Main Results 
+
+To answer Q1. Table 1 compares REFLEX with default Fixed TC top-8 and its lower-computation top-4 setting. Top-8 tests whether REFLEX can preserve or even improve default routing quality with less expert computation, while top-4 provides a fixed-count reference at a lower budget. Relative to default Fixed TC top-8, REFLEX consistently reduces selected expert-token pairs. On most benchmarks, REFLEX improves generation quality despite the lower bud-get, while using 15% fewer pairs on average across all set-tings. The main boundary case is LLaDA2.0-mini GSM8K, where REFLEX uses 10% fewer pairs but loses 1.5 points. Although AvgK decreases by 19.5%, NFE increases by 11.6%, offsetting part of the expected computation reduc-tion without fully preserving quality. By contrast, Fixed TC top-4 also reduces expert computation but degrades every task on both models. Both reduce expert computation, but Family Method GSM8K (5-shot) Math500 (4-shot) MBPP (3-shot) HumanEval (0-shot) AvgK 
+
+Acc ⇑ Pairs (M) ⇓ Acc ⇑ Pairs (M) ⇓ Acc ⇑ Pairs (M) ⇓ Acc ⇑ Pairs (M) ⇓
+
+LLaDA-MoE 
+
+Fixed Fixed TC (top-4) 66.8 −9.7 16.3 ↓49% 34.6 −4.6 12.6 ↓50% 44.8 −10 .0 8.9 ↓48% 43.9 −8.5 5.0 ↓49% 4.0 Fixed TC (top-8) 76.5 32.2 39.2 25.3 54.8 17.2 52.4 9.8 8.0 Budget Budgeted TC (low) 76.8 +0 .3 24.6 ↓23% 38.0 −1.2 19.6 ↓22% 51.4 −3.4 13.4 ↓22% 53.7 +1 .3 7.1 ↓27% 6.0 Budgeted TC (high) 76.2 −0.3 28.7 ↓11% 38.6 −0.6 22.9 ↓9% 52.0 −2.8 13.5 ↓22% 49.4 −3.0 8.2 ↓16% 7.0 Threshold Top-p (low) 67.3 −9.2 26.5 ↓18% 31.6 −7.6 19.5 ↓23% 40.0 −14 .8 13.1 ↓24% 33.5 −18 .9 7.1 ↓28% 6.0 Top-p (high) 73.5 −3.0 34.8 ↑8% 39.0 −0.2 26.5 ↑5% 49.2 −5.6 16.4 ↓5% 52.4 0.0 9.3 ↓6% 8.1 DTop-p (low) 71.2 −5.3 24.1 ↓25% 36.4 −2.8 18.7 ↓26% 43.6 −11 .2 14.3 ↓17% 42.7 −9.7 6.9 ↓29% 6.0 DTop-p (high) 75.4 −1.1 31.2 ↓3% 38.8 −0.4 25.0 ↓1% 52.2 −2.6 16.5 ↓4% 52.4 0.0 9.2 ↓6% 8.0 Expert-thr (low) 70.7 −5.8 24.4 ↓24% 37.2 −2.0 20.5 ↓19% 46.8 −8.0 8.4 ↓52% 43.3 −9.1 8.1 ↓18% 6.0 Expert-thr (high) 76.5 0.0 33.5 ↑4% 40.8 +1 .6 27.3 ↑8% 51.4 −3.4 15.9 ↓8% 49.4 −3.0 10.3 ↑5% 8.1 EC-DLM-style 77.0 +0 .5 32.7 ↑1% 40.0 +0 .8 26.2 ↑4% 50.4 −4.4 19.4 ↑13% 51.8 −0.6 10.3 ↑5% 8.2 
+
+REFLEX 76.4 −0.1 27.7 ↓14% 41.8 +2 .6 21.5 ↓15% 55.2 +0 .4 12.9 ↓25% 54.3 +1 .9 9.0 ↓9% 6.6 
+
+LLaDA2.0-mini 
+
+Fixed Fixed TC (top-4) 61.0 −22 .8 17.5 ↓32% 20.0 −3.0 12.3 ↓46% 45.0 −10 .0 10.0 ↓23% 15.2 −19 .6 6.0 ↓37% 4.0 Fixed TC (top-8) 83.8 25.8 23.0 22.7 55.0 12.9 34.8 9.6 8.0 Budget Budgeted TC (low) 82.6 −1.2 20.8 ↓19% 23.8 +0 .8 17.3 ↓24% 53.4 −1.6 11.4 ↓12% 28.0 −6.8 7.6 ↓20% 6.0 Budgeted TC (high) 82.9 −0.9 23.0 ↓11% 22.8 −0.2 19.8 ↓13% 54.8 −0.2 11.6 ↓10% 32.9 −1.9 9.0 ↓6% 7.0 Threshold Top-p (low) 70.3 −13 .5 24.2 ↓6% 19.6 −3.4 17.3 ↓24% 44.0 −11 .0 12.0 ↓7% 15.2 −19 .6 9.4 ↓2% 6.3 Top-p (high) 81.4 −2.4 27.6 ↑7% 24.2 +1 .2 21.5 ↓5% 52.6 −2.4 13.4 ↑4% 25.0 −9.8 10.7 ↑12% 8.1 DTop-p (low) 64.9 −18 .9 25.1 ↓3% 19.6 −3.4 17.9 ↓21% 48.8 −6.2 13.2 ↑2% 15.9 −18 .9 9.9 ↑4% 6.0 DTop-p (high) 78.5 −5.3 30.1 ↑16% 23.6 +0 .6 22.6 ↓1% 55.0 0.0 14.2 ↑10% 20.1 −14 .7 11.3 ↑19% 8.0 Expert-thr (low) 81.7 −2.1 21.7 ↓16% 23.8 +0 .8 18.3 ↓19% 55.8 +0 .8 12.7 ↓2% 28.0 −6.8 7.9 ↓17% 6.2 Expert-thr (high) 84.9 +1 .1 26.4 ↑2% 23.2 +0 .2 23.0 ↑1% 54.6 −0.4 13.9 ↑8% 33.5 −1.3 10.1 ↑6% 8.0 EC-DLM-style 74.9 −8.9 28.5 ↑10% 22.0 −1.0 23.6 ↑4% 52.8 −2.2 15.3 ↑19% 23.2 −11 .6 10.5 ↑9% 7.9 
+
+REFLEX 82.3 −1.5 23.2 ↓10% 24.8 +1 .8 18.2 ↓20% 56.2 +1 .2 10.3 ↓21% 38.4 +3 .6 8.9 ↓7% 6.5 
+
+Table 1: Main results on LLaDA-MoE and LLaDA2.0-mini. For each task, we report accuracy (Acc, %), using pass@1 for coding tasks, and selected expert-token pairs per sample in millions; AvgK is averaged across tasks. Expert-thr denotes Expert-Threshold Routing. Acc and Pairs subscripts denote percentage-point and relative changes from Fixed TC (top-8), respectively; green indicates higher Acc or fewer Pairs, and red indicates the reverse. Best accuracies are shown in bold. only REFLEX conditions this reduction on token refinement state. A lower uniform budget therefore cannot explain the quality–computation improvement of REFLEX. 
+
+This reflects the coarse-to-fine allocation of REFLEX. Refinement-Role Budgeting varies expert counts with block-relative structural role, while Frontier-Guided Expert Reallo-cation redistributes the fixed active-block budget according to progress toward commitment. REFLEX therefore reduces overall computation without imposing the same reduction on all refinement states. Appendix A further analyzes how the resulting allocation determines the computation reduc-tion. In a nutshell, REFLEX improves the Fixed TC quality– computation trade-off by aligning expert computation with heterogeneous refinement demands, which answers Q1. 
+
+To answer Q2. As shown in Table 1, we compare REFLEX with autoregressive-style variable-expert methods and a DLM-specific alternative. Budgeted TC varies expert counts under a global budget, whereas Top-p, DTop-p, and Expert-Threshold Routing derive them from router-score statistics. The EC-DLM-style late-high schedule varies expert counts −10 0 10 20 30 40 50             
+
+> −15
+> −12
+> −9
+> −6
+> −3
+> 0
+> 3
+> Mean quality change vs. top-8 (pp)
+> top-8
+> REFLEX +15.5%, +1.20 pp
+> (a) LLaDA-MoE
+> better
+> −10 010 20 30 40
+> top-8
+> REFLEX +14.3%, +1.28 pp
+> (b) LLaDA2.0-mini
+> better
+> Reduction in selected expert-token pairs vs. top-8 (%)
+> Fixed TC Budgeted TC Top-p DTop-p Expert-thr EC-DLM REFLEX Pareto frontier
+
+Figure 2: Cross-task quality–computation trade-off on LLaDA-MoE and LLaDA2.0-mini. Each point averages four tasks, and both axes report changes from Fixed TC top-8. Hollow and filled markers denote low and high settings, re-spectively; dashed lines show the empirical Pareto frontier. with denoising progress under the default router. Together, these strategies test whether variable-expert criteria effec-tively allocate computation for MoE-based DLM inference. Figure 2 summarizes the cross-task quality–computation Configuration GSM8K (5-shot) Math500 (4-shot) MBPP (3-shot) HumanEval (0-shot) AvgK                                                    
+
+> Acc ⇑Pairs (M) ⇓Acc ⇑Pairs (M) ⇓Acc ⇑Pairs (M) ⇓Acc ⇑Pairs (M) ⇓
+> Fixed TC (top-8) 76.5 32.2 39.2 25.3 54.8 17.2 52.4 9.8 8.0 RRB Only 76.0 −0.527.6 ↓14% 40.2 +1 .021.5 ↓15% 53.6 −1.212.9 ↓25% 55.5 +3 .18.8 ↓10% 6.6 FGER Only 77.9 +1 .432.6 ↑1% 40.2 +1 .025.8 ↑2% 54.0 −0.817.5 ↑2% 54.3 +1 .99.6 ↓2% 8.0
+> REFLEX 76.4 −0.127.7 ↓14% 41.8 +2 .621.5 ↓15% 55.2 +0 .412.9 ↓25% 54.3 +1 .99.0 ↓9% 6.6
+
+Table 2: Component ablation on LLaDA-MoE. For each task, we report accuracy, using pass@1 for coding tasks, and selected expert-token pairs per sample in millions; AvgK is averaged across tasks. Accuracy subscripts are percentage-point changes from Fixed TC (top-8), while Pairs subscripts are relative changes. All other settings are identical to those in Table 1. trade-off. Across the four tasks, REFLEX improves the ag-gregate trade-off over default Fixed TC top-8 on both models, reducing selected expert-token pairs by 15.5% and 14.3%, respectively, while also improving average generation qual-ity. Its results also lie on the empirical Pareto frontier among the evaluated strategies. Competing strategies obtain larger computation reductions only with lower average quality, or approach default quality while forfeiting most of the com-putation saving. The EC-DLM-style schedule similarly pro-vides a weaker trade-off and increases selected pairs on both models. The advantage of REFLEX therefore cannot be at-tributed to varying expert counts or adapting them to global denoising progress alone. 
+
+These differences reflect how each method allocates ex-pert computation. Budgeted TC controls expert computation without conditioning it on refinement state. Threshold-based methods derive expert counts from router scores, which express expert preference rather than refinement demand. The EC-DLM-style schedule adapts expert counts to denois-ing progress, but not to refinement-state differences within the forward. REFLEX conditions expert-count allocation on structural role within iterative diffusion and progress toward commitment while preserving the default router’s ranking. In a nutshell, REFLEX is better suited to MoE-based DLM in-ference because it explicitly aligns expert allocation with het-erogeneous token refinement demands, which answers Q2. 
+
+Ablation of Allocation Components 
+
+To answer Q3. Table 2 separates the two allocation levels of REFLEX. RRB Only applies the block-relative profile without active-block reallocation, whereas FGER Only real-locates the active-block budget over uniform top-8 allocation. RRB Only reduces selected pairs by 10–25% across all tasks while improving Math500 and HumanEval. This shows that block-relative refinement role identifies where expert counts can be reduced without imposing a uniform reduc-tion. FGER Only improves three tasks while retaining AvgK 8 and essentially the same selected-pair count as Fixed TC top-8. It therefore improves where active-block computation is placed, but does not itself reduce the overall budget. Com-bining both levels improves three tasks over RRB Only at the same AvgK and nearly identical selected-pair counts. RRB accounts for the computation reduction, whereas FGER im-proves allocation within the resulting structural profile. 
+
+Appendix C further validates RRB’s block-relative profile and compares FGER ranking signals at matched computa-tion. FPS leads on both tasks, supporting joint use of com-mitment proximity and confidence progress. In a nutshell, RRB establishes the computation-saving profile, while FPS improves active-block allocation, which answers Q3. 
+
+Hyper-parameter Analysis 
+
+To answer Q4. To examine the expert allocation behavior of REFLEX across hyper-parameter settings, we vary the commitment-frontier width wcf , velocity reference vref , gate temperature τ , and outer-group fraction q on LLaDA-MoE. Detailed results and analysis are provided in Appendix D. In a nutshell, REFLEX shows broadly consistent allocation be-havior across the tested hyper-parameter values, while quality remains task dependent, which answers Q4. 
+
+## Conclusion and Discussion 
+
+Conclusion. We rethink MoE inference in DLMs as refinement-aware expert-budget allocation across token re-finement states during iterative diffusion. REFLEX real-izes this view through two complementary dimensions. Refinement-Role Budgeting organizes expert computation by block-relative structural role, while Frontier-Guided Expert Reallocation resolves active-block priorities from progress toward commitment through the Frontier-Progress Score. Across two representative MoE-based DLMs, REFLEX achieves a better quality–computation trade-off than default Fixed TC routing and autoregressive-style variable-expert methods. These results support allocating MoE computation according to refinement state rather than applying a uniform expert budget throughout diffusion generation. 
+
+Discussion. REFLEX performs refinement-aware expert-budget allocation across token refinement states. Accord-ingly, reductions in selected expert-token pairs quantify al-located expert computation rather than end-to-end latency, which depends on unique-expert activation, memory traffic, and kernel efficiency. These complementary dimensions sug-gest that REFLEX could be combined with dMoE (Feng et al. 2026) and fused expert dispatch. The current formulation shares the expert count kti across all MoE layers. A layer-dependent allocation ktℓ,i could account for depth-specific expert specialization, but would require estimating refine-ment demand jointly across tokens and layers under a shared expert budget. EC-DLM (Zhang et al. 2026) explores expert-choice routing for DLM inference. Extending refinement-aware expert-budget allocation to this routing paradigm is therefore a promising direction. References 
+
+Arriola, M.; Gokaslan, A.; Chiu, J. T.; Yang, Z.; Qi, Z.; Han, J.; Sahoo, S. S.; and Kuleshov, V. 2025. Block Diffusion: In-terpolating Between Autoregressive and Diffusion Language Models. In Proceedings of the 13th International Conference on Learning Representations . Singapore, Singapore. Austin, J.; Johnson, D. D.; Ho, J.; Tarlow, D.; and van den Berg, R. 2021a. Structured Denoising Diffusion Models in Discrete State-Spaces. In Advances in Neural Information Processing Systems 34 , 17981–17993. Virtual Event. Austin, J.; Odena, A.; Nye, M. I.; Bosma, M.; Michalewski, H.; Dohan, D.; Jiang, E.; Cai, C. J.; Terry, M.; Le, Q. V.; and Sutton, C. 2021b. Program Synthesis with Large Language Models. CoRR , abs/2108.07732. Bie, T.; Cao, M.; Chen, K.; Du, L.; Gong, M.; Gong, Z.; Gu, Y.; Hu, J.; Huang, Z.; Lan, Z.; Li, C.; Li, C.; Li, J.; Li, Z.; Liu, H.; Liu, L.; Lu, G.; Lu, X.; Ma, Y.; Tan, J.; Wei, L.; Wen, J.; Xing, Y.; Zhang, X.; Zhao, J.; Zheng, D.; Zhou, J.; Zhou, J.; Zhou, Z.; Zhu, L.; and Zhuang, Y. 2025. LLaDA2.0: Scaling Up Diffusion Language Models to 100B. CoRR ,abs/2512.15745. Brown, T. B.; Mann, B.; Ryder, N.; Subbiah, M.; Kaplan, J.; Dhariwal, P.; Neelakantan, A.; Shyam, P.; Sastry, G.; Askell, A.; Agarwal, S.; Herbert-Voss, A.; Krueger, G.; Henighan, T.; Child, R.; Ramesh, A.; Ziegler, D. M.; Wu, J.; Winter, C.; Hesse, C.; Chen, M.; Sigler, E.; Litwin, M.; Gray, S.; Chess, B.; Clark, J.; Berner, C.; McCandlish, S.; Radford, A.; Sutskever, I.; and Amodei, D. 2020. Language Models are Few-Shot Learners. In Advances in Neural Information Processing Systems 33 , 1877–1901. Virtual Event. Chang, H.; Zhang, H.; Jiang, L.; Liu, C.; and Freeman, W. T. 2022. MaskGIT: Masked Generative Image Transformer. In 
+
+Proceedings of the 35th IEEE/CVF Conference on Computer Vision and Pattern Recognition , 11305–11315. New Orleans, LA. Chen, M.; Tworek, J.; Jun, H.; Yuan, Q.; de Oliveira Pinto, H. P.; Kaplan, J.; Edwards, H.; Burda, Y.; Joseph, N.; Brock-man, G.; Ray, A.; Puri, R.; Krueger, G.; Petrov, M.; Khlaaf, H.; Sastry, G.; Mishkin, P.; Chan, B.; Gray, S.; Ryder, N.; Pavlov, M.; Power, A.; Kaiser, L.; Bavarian, M.; Winter, C.; Tillet, P.; Such, F. P.; Cummings, D.; Plappert, M.; Chantzis, F.; Barnes, E.; Herbert-Voss, A.; Guss, W. H.; Nichol, A.; Paino, A.; Tezak, N.; Tang, J.; Babuschkin, I.; Balaji, S.; Jain, S.; Saunders, W.; Hesse, C.; Carr, A. N.; Leike, J.; Achiam, J.; Misra, V.; Morikawa, E.; Radford, A.; Knight, M.; Brundage, M.; Murati, M.; Mayer, K.; Welinder, P.; Mc-Grew, B.; Amodei, D.; McCandlish, S.; Sutskever, I.; and Zaremba, W. 2021. Evaluating Large Language Models Trained on Code. CoRR , abs/2107.03374. Chen, Z.; Zhao, Y.; Sui, Y.; Wang, J.; and Shang, Y. 2026. TIDE: Efficient and Lossless MoE Diffusion LLM Inference with I/O-aware Expert Offload. CoRR , abs/2605.20179. Cheng, S.; Bian, Y.; Liu, D.; Jiang, Y.; Liu, Y.; Zhang, L.; Yao, Q.; Tian, Z.; Wang, W.; Guo, Q.; Chen, K.; Qi, B.; and Zhou, B. 2026. SDAR: A Synergistic Diffusion-AutoRegression Paradigm for Scalable Sequence Genera-tion. In Findings of the 64th Annual Meeting of the As-sociation for Computational Linguistics , 22058–22075. San Diego, CA. Cobbe, K.; Kosaraju, V.; Bavarian, M.; Chen, M.; Jun, H.; Kaiser, L.; Plappert, M.; Tworek, J.; Hilton, J.; Nakano, R.; Hesse, C.; and Schulman, J. 2021. Training Verifiers to Solve Math Word Problems. CoRR , abs/2110.14168. Dai, D.; Deng, C.; Zhao, C.; Xu, R. X.; Gao, H.; Chen, D.; Li, J.; Zeng, W.; Yu, X.; Wu, Y.; Xie, Z.; Li, Y. K.; Huang, P.; Luo, F.; Ruan, C.; Sui, Z.; and Liang, W. 2024. DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics , 1280–1297. Bangkok, Thailand. Du, N.; Huang, Y.; Dai, A. M.; Tong, S.; Lepikhin, D.; Xu, Y.; Krikun, M.; Zhou, Y.; Yu, A. W.; Firat, O.; Zoph, B.; Fedus, L.; Bosma, M. P.; Zhou, Z.; Wang, T.; Wang, Y. E.; Webster, K.; Pellat, M.; Robinson, K.; Meier-Hellstern, K. S.; Duke, T.; Dixon, L.; Zhang, K.; Le, Q. V.; Wu, Y.; Chen, Z.; and Cui, C. 2022. GLaM: Efficient Scaling of Language Models with Mixture-of-Experts. In Proceedings of the 39th International Conference on Machine Learning , 5547–5569. Baltimore, MD. Fedus, W.; Zoph, B.; and Shazeer, N. 2022. Switch Trans-formers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity. Journal of Machine Learning Re-search , 23: 120:1–120:39. Feng, S.; Chen, Z.; Fang, G.; Ma, X.; and Wang, X. 2026. dMoE: dLLMs with Learnable Block Experts. CoRR ,abs/2605.30876. Ho, J.; Jain, A.; and Abbeel, P. 2020. Denoising Diffusion Probabilistic Models. In Advances in Neural Information Processing Systems 33 , 6840–6851. Virtual Event. Huang, Q.; An, Z.; Zhuang, N.; Tao, M.; Zhang, C.; Jin, Y.; Xu, K.; Chen, L.; Huang, S.; and Feng, Y. 2024. Harder Task Needs More Experts: Dynamic Routing in MoE Models. In 
+
+Proceedings of the 62nd Annual Meeting of the Associa-tion for Computational Linguistics , 12883–12895. Bangkok, Thailand. Jiang, A. Q.; Sablayrolles, A.; Roux, A.; Mensch, A.; Savary, B.; Bamford, C.; Chaplot, D. S.; de Las Casas, D.; Hanna, E. B.; Bressand, F.; Lengyel, G.; Bour, G.; Lample, G.; Lavaud, L. R.; Saulnier, L.; Lachaux, M.; Stock, P.; Sub-ramanian, S.; Yang, S.; Antoniak, S.; Scao, T. L.; Gervet, T.; Lavril, T.; Wang, T.; Lacroix, T.; and Sayed, W. E. 2024. Mixtral of Experts. CoRR , abs/2401.04088. Jin, C.; Peng, H.; Xiang, M.; Zhang, Q.; Yuan, X.; Hasan, A.; Dibua, O.; Gong, Y.; Kang, Y.; and Metaxas, D. N. 2026. DTop-p MoE: Sparsity-Controlled Dynamic Top-p MoE for Foundation Model Pre-training. In Proceedings of the 43rd International Conference on Machine Learning .Seoul, South Korea. Lepikhin, D.; Lee, H.; Xu, Y.; Chen, D.; Firat, O.; Huang, Y.; Krikun, M.; Shazeer, N.; and Chen, Z. 2021. GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding. In Proceedings of the 9th International Conference on Learning Representations . Virtual Event. Li, X. L.; Thickstun, J.; Gulrajani, I.; Liang, P.; and Hashimoto, T. B. 2022. Diffusion-LM Improves Control-lable Text Generation. In Advances in Neural Information Processing Systems 35 , 4328–4343. New Orleans, LA. Lightman, H.; Kosaraju, V.; Burda, Y.; Edwards, H.; Baker, B.; Lee, T.; Leike, J.; Schulman, J.; Sutskever, I.; and Cobbe, K. 2024. Let’s Verify Step by Step. In Proceedings of the 12th International Conference on Learning Representations .Vienna, Austria. Liu, B.; Tian, K.; Wang, W.; Zhang, Z.; Qiao, L.; and Li, D. 2026. Alloc-MoE: Budget-Aware Expert Activation Al-location for Efficient Mixture-of-Experts Inference. In Pro-ceedings of the 64th Annual Meeting of the Association for Computational Linguistics , 9653–9667. San Diego, CA. Lou, A.; Meng, C.; and Ermon, S. 2024. Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution. In Proceedings of the 41st International Conference on Ma-chine Learning , 32819–32848. Vienna, Austria. Nie, S.; Zhu, F.; Du, C.; Pang, T.; Liu, Q.; Zeng, G.; Lin, M.; and Li, C. 2025a. Scaling up Masked Diffusion Models on Text. In Proceedings of the 13th International Conference on Learning Representations . Singapore, Singapore. Nie, S.; Zhu, F.; You, Z.; Zhang, X.; Ou, J.; Hu, J.; Zhou, J.; Lin, Y.; Wen, J.; and Li, C. 2025b. Large Language Diffu-sion Models. In Advances in Neural Information Processing Systems 38 . San Diego, CA. Sahoo, S. S.; Arriola, M.; Schiff, Y.; Gokaslan, A.; Mar-roquin, E.; Chiu, J. T.; Rush, A.; and Kuleshov, V. 2024. Simple and Effective Masked Diffusion Language Models. In Advances in Neural Information Processing Systems 37 .Vancouver, Canada. Shazeer, N.; Mirhoseini, A.; Maziarz, K.; Davis, A.; Le, Q. V.; Hinton, G. E.; and Dean, J. 2017. Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer. In Proceedings of the 5th International Conference on Learning Representations . Toulon, France. Song, Y.; Zhang, Z.; Luo, C.; Gao, P.; Xia, F.; Luo, H.; Li, Z.; Yang, Y.; Yu, H.; Qu, X.; Fu, Y.; Su, J.; Zhang, G.; Huang, W.; Wang, M.; Yan, L.; Jia, X.; Liu, J.; Ma, W.; Zhang, Y.; Wu, Y.; and Zhou, H. 2025. Seed Diffusion: A Large-Scale Diffusion Language Model with High-Speed Inference. CoRR , abs/2508.02193. Sun, H.; Liu, Y.; Wu, Y.; and Sun, L. 2026. Expert Thresh-old Routing for Autoregressive Language Modeling with Dy-namic Computation Allocation and Load Balancing. CoRR ,abs/2603.11535. Wei, L.; Luo, Z.; Tang, P.; and Li, M. 2026. TEAM: Temporal-Spatial Consistency Guided Expert Activation for MoE Diffusion Language Model Acceleration. In Proceed-ings of the 43rd International Conference on Machine Learn-ing . Seoul, South Korea. Wen, T.; Wang, Y.; Feng, A.; Ma, L.; Liu, X.; Wang, Y.; Guo, L.; Chen, B.; Jegelka, S.; and You, C. 2025. Route Experts by Sequence, not by Token. CoRR , abs/2511.06494. Wu, C.; Zhang, H.; Xue, S.; Liu, Z.; Diao, S.; Zhu, L.; Luo, P.; Han, S.; and Xie, E. 2026. Fast-dLLM: Training-free Acceleration of Diffusion LLM by Enabling KV Cache and Parallel Decoding. In Proceedings of the 14th International Conference on Learning Representations . Rio de Janeiro, Brazil. Ye, J.; Xie, Z.; Zheng, L.; Gao, J.; Wu, Z.; Jiang, X.; Li, Z.; and Kong, L. 2025. Dream 7B: Diffusion Large Language Models. CoRR , abs/2508.15487. Zhang, S.; Zhuang, C.; Cui, C.; Yang, Z.; Peng, F. Z.; Zhang, Y.; Bai, H.; Jia, Z.; Zhou, Y.; Chen, G.; and Liu, M. 2026. Expert-Choice Routing Enables Adaptive Computation in Diffusion Language Models. CoRR , abs/2604.01622. Zhu, F.; You, Z.; Xing, Y.; Huang, Z.; Liu, L.; Zhuang, Y.; Lu, G.; Wang, K.; Wang, X.; Wei, L.; Guo, H.; Hu, J.; Ye, W.; Chen, T.; Li, C.; Tang, C.; Feng, H.; Hu, J.; Zhou, J.; Zhang, X.; Lan, Z.; Zhao, J.; Zheng, D.; Li, C.; Li, J.; and Wen, J. 2025. LLaDA-MoE: A Sparse MoE Diffusion Language Model. CoRR , abs/2509.24389. This appendix provides supporting analyses and addi-tional experimental evidence for REFLEX. Appendix A con-nects selected expert-token pairs to routed-expert linear-layer FLOPs and decomposes the realized computation reduction. Appendix B details the comparison strategies and their set-tings. Appendix C examines block-relative allocation and active-block reallocation signals. Appendix D analyzes the behavior of REFLEX under different hyper-parameter set-tings. 
+
+## A Analysis of Allocated Expert Computation 
+
+Selected expert-token pairs and routed-expert FLOPs. 
+
+For a SwiGLU routed expert with hidden size h and expert intermediate width dexp , each selected expert-token pair cor-responds to two input projections and one output projection. Counting a multiplication and addition as two FLOPs, the routed-expert linear-layer cost is 
+
+Clinear routed = 6 hd exp pairs . (10) Within a fixed model, h and dexp are constant, so Eq. (10) makes relative changes in selected expert-token pairs identi-cal to those in routed-expert linear-layer FLOPs. The normal-ized metric AvgK separates the selected expert count from the number of processed states. Letting Lmoe denote the MoE layers, its definition gives pairs = |L moe |K P 
+
+> t
+
+|I t|. Thus, realized selected pairs depend on both the average expert count assigned to a processed token and the number of to-ken refinement states visited along its generation trajectory. For fixed prompt and generation lengths, the latter is gov-erned primarily by NFE, the number of denoising forwards. Selected pairs exclude attention, router scoring, shared ex-perts, and dispatch overhead, and therefore measure selected routed-expert linear-layer computation rather than end-to-end FLOPs or latency. 
+
+Sources of computation reduction. Refinement-Role Bud-geting (RRB) establishes the expert-count profile across block-relative roles and directly determines the reduction in AvgK. Frontier-Guided Expert Reallocation (FGER) then assigns equal-sized high- and low-priority groups around the active-block count established by RRB, so the positive and negative count changes cancel within that block. FGER consequently changes where active-block computation is as-signed without changing its total budget for the current de-noising forward. Its allocation can nevertheless influence which tokens are committed and hence the number of states processed in later forwards. The final reduction in selected expert-token pairs therefore combines a direct per-state effect from the lower RRB profile with an indirect trajectory effect through NFE. This decomposition explains why configura-tions with similar AvgK can realize slightly different pair counts and why AvgK alone does not completely determine per-sample computation. 
+
+## B Compared Methods and Settings 
+
+All comparison strategies use the same model checkpoints, evaluation prompts, decoding strategy, and default router ranking as REFLEX. They differ in how the number of router-ranked experts is assigned to each token. This con-trolled setup isolates the expert-count allocation criterion while retaining the model’s learned expert preferences. 
+
+Fixed TC. Fixed TC applies the default token-choice router with the same selected expert count for every token, re-gardless of refinement state. We report top-4 as a lower-computation uniform reference and top-8 as the default routing setting. Their comparison distinguishes refinement-aware allocation from simply lowering the expert count ev-erywhere. 
+
+Budgeted TC. Budgeted TC is one comparison method im-plemented with a shared budget-allocation rule for both con-figurations (Liu et al. 2026; Wen et al. 2025). It distributes variable expert counts under a sequence-level average budget using router-derived priorities. The low and high configura-tions differ only in their target average budgets, with target AvgK 6 and 7, respectively. Budgeted TC therefore tests whether controlling total expert computation is sufficient without explicitly conditioning the allocation on structural role within iterative diffusion or progress toward commit-ment. 
+
+Threshold-based methods. Threshold-based methods de-rive selected expert counts directly from router-score statis-tics. To keep their computation range comparable, all threshold-based configurations use selected expert-count bounds [1 , 12] .
+
+• Top-p (Huang et al. 2024) selects the smallest pre-fix of router-ranked experts whose cumulative routing mass reaches a threshold. Its low/high thresholds are 
+
+p = 0 .15 /0.20 for LLaDA-MoE and p = 0 .25 /0.325 
+
+for LLaDA2.0-mini. 
+
+• DTop-p (Jin et al. 2026) adapts the cumulative-mass threshold online to target AvgK 6 or 8. We constrain the threshold to [0 .01 , 0.95] .
+
+• Expert-Threshold Routing (Sun et al. 2026), abbrevi-ated as Expert-thr in the main table, retains experts whose individual router weights exceed a calibrated global threshold. Its low/high thresholds are 0.0215 /0.0190 for LLaDA-MoE and 0.0270 /0.0220 for LLaDA2.0-mini. Although their thresholding rules differ, all three strategies treat router scores as the criterion for varying expert counts. They therefore evaluate whether expert preference alone pro-vides an adequate signal for expert-count allocation during iterative denoising. 
+
+EC-DLM-style timestep allocation. EC-DLM (Zhang et al. 2026) combines expert-choice routing with timestep-dependent capacity and allocates more capacity at low-mask-ratio timesteps. To isolate its temporal allocation criterion without changing the routing type, we implement an EC-DLM-style late-high schedule under the default token-choice router. The schedule increases the selected expert count from 4 to 12 as denoising progresses, assigning more compu-tation to later forwards at the global schedule level. This comparison is not a reproduction of EC-DLM because it re-tains token-choice routing and requires no retraining; it tests whether global denoising progress alone provides a sufficient allocation criterion under the routing interface shared by the other methods. Benchmark Configuration Acc AvgK Pairs (M) Math500 RRB Only 40.2 6.28 21.5 Role-Shuffled RRB 36 .5±1.9 6.29 20.0        
+
+> HumanEval RRB Only 55.5 6.94 8.8 Role-Shuffled RRB 46 .7±2.56.98 8.7
+
+Table A: Validation of block-relative RRB allocation on LLaDA-MoE. Math500 uses math-verify accuracy and Hu-manEval uses postprocessed pass@1. Role-Shuffled RRB reports mean accuracy and standard deviation over three al-location seeds; AvgK and Pairs are seed averages. It preserves the RRB expert-count distribution while randomly reassign-ing counts among processed token positions. 
+
+Scope relative to block-level expert aggregation. REFLEX is complementary to methods such as dMoE (Feng et al. 2026), which reduce unique-expert activation within a decod-ing block to lower expert-loading overhead. Such methods optimize which distinct experts must be loaded or dispatched, whereas REFLEX controls how many router-ranked experts are assigned across token refinement states. We therefore report selected expert-token pairs, which measure the allo-cation directly controlled by REFLEX, rather than unique-expert counts or memory traffic. 
+
+## C Analysis of Refinement-Aware Allocation 
+
+Block-relative allocation behavior. RRB uses the active block as a moving reference and treats prompt positions as block 0. It assigns more expert computation to tokens in the active and nearby blocks, retains the nominal count at intermediate block-relative roles, and reduces computation for distant blocks. As the active block advances, a position’s allocation changes with its evolving structural role rather than its absolute index. This profile is a structural allocation prior, not an estimate of latent refinement utility. Conditioned on that prior, FGER uses dynamic evidence within the active block to redistribute expert counts across priority groups while preserving the total RRB budget. 
+
+Validation of block-relative allocation. To test whether the block-relative correspondence of RRB matters beyond its expert-count distribution, we construct Role-Shuffled RRB from RRB Only. At every denoising forward, this interven-tion preserves the multiset of selected expert counts and their total budget but randomly reassigns those counts among the processed token positions. It therefore removes the corre-spondence between expert count and block-relative structural role without changing the available computation for that for-ward. We vary only the allocation seed and report results over three seeds. As shown in Table A, Role-Shuffled RRB retains nearly the same AvgK as RRB Only but lowers Math500 and Hu-manEval accuracy by 3.7 and 8.8 points, respectively. The reported standard deviations are smaller than the correspond-ing mean gaps to RRB Only. Because the expert-count multi-set is preserved within every forward, the comparison cannot be explained by the per-forward expert-count distribution alone. The remaining pair-count differences arise from NFE                                   
+
+> Benchmark Signal Acc AvgK Pairs (M) Math500
+> Confidence Only 40.0 6.3 21.6 Uncertainty Only 38.4 6.3 21.4 Frontier Only 39.2 6.3 21.7 Progress Only 40.0 6.3 21.5
+> FPS 41.8 6.3 21.5
+> HumanEval
+> Confidence Only 51.2 6.9 8.9 Uncertainty Only 51.8 6.9 8.8 Frontier Only 52.4 6.9 8.8 Progress Only 51.8 6.9 8.7
+> FPS 54.3 6.9 9.0
+
+Table B: Ablation of active-block reallocation signals on LLaDA-MoE. Math500 uses math-verify accuracy and Hu-manEval uses postprocessed pass@1. Configurations differ only in the reallocation signal; all other settings match the corresponding REFLEX experiments in the main paper. changes along the altered generation trajectories. Preserving the amount and distribution of expert computation is there-fore insufficient when its correspondence with block-relative structural role is removed. This intervention supports the structural assignment used by RRB rather than its average budget alone. 
+
+Ablation of active-block reallocation signals. 
+
+We isolate the FGER ranking signal while holding the RRB profile, active-block expert-count levels, and group proportions fixed. The Frontier-Progress Score (FPS) uses 
+
+Sti = F ti P ti , where F ti measures commitment proximity and 
+
+P ti measures limited confidence progress. Frontier Only and Progress Only retain one factor while removing the other. Confidence Only ranks tokens by lagged confidence ct−1 
+
+> i
+
+,whereas Uncertainty Only uses 1 − ct−1 
+
+> i
+
+. Since these con-figurations share the same available budget and reallocation levels, their comparison isolates how the active-block rank-ing signal places computation rather than how much compu-tation is allocated. As shown in Table B, AvgK and selected pairs vary little across signals, so the quality differences primarily reflect where the shared active-block budget is assigned. FPS reaches 41.8 on Math500, exceeding the strongest single-factor result by 1.8 points, and reaches 54.3 on Hu-manEval, 1.9 points above the closest alternative. Frontier Only captures commitment proximity but cannot distinguish tokens making limited progress from those already resolv-ing. Progress Only identifies slow confidence change but can prioritize tokens whose commitment is not imminent. Confidence Only and Uncertainty Only use the current con-fidence level without the temporal evidence contained in confidence progress. The multiplicative FPS assigns higher priority when commitment proximity coincides with lim-ited progress. These matched-computation results support the joint ranking criterion used by FGER without treating FPS as a calibrated estimate of marginal refinement utility. Taken together, the role-shuffling intervention and matched-computation signal ablation isolate the two levels of REFLEX. The former supports assigning the structural Metric 0.20 0.25 0.30 0.35 0.40                               
+
+> HE Acc. 51.83 51.83 54.27 57.32 54.88 HE AvgK 6.93 6.95 6.95 6.95 6.95 HE Pairs 8.73 8.85 8.95 8.96 8.66 M500 Acc. 40.60 40.60 41.80 41.00 40.20 M500 AvgK 6.27 6.29 6.28 6.29 6.28 M500 Pairs 21.61 21.65 21.48 21.47 21.34
+
+Table C: Sensitivity to the commitment-frontier width wcf on LLaDA-MoE. The default is 0.30 . HE denotes HumanEval postprocessed pass@1, and M500 denotes Math500 math-verify accuracy. Acc. is reported in percent and Pairs in mil-lions; best task accuracies are shown in bold. expert-count profile by block-relative role, while the latter supports using joint frontier and progress evidence to re-fine active-block allocation within that profile. Their effects therefore correspond to the structural prior and dynamic re-finement evidence in the coarse-to-fine hierarchy. 
+
+## D Hyper-parameter Sensitivity 
+
+We vary one REFLEX hyper-parameter at a time on LLaDA-MoE while keeping the other three at their defaults. The default values are wcf = 0 .30 , vref = 0 .01 , τ = 0 .05 , and 
+
+q = 0 .25 . Each default column reuses the corresponding main experiment, and every other column changes only the indicated parameter. We report postprocessed HumanEval pass@1 and Math500 math-verify accuracy together with AvgK and selected expert-token pairs per sample. This setup separates changes in allocation amount from changes in how FGER ranks tokens within the active block. 
+
+Commitment-frontier width wcf . The commitment-frontier width determines the confidence interval below the commitment threshold that receives a high frontier factor. It also bounds the confidence change used in the one-forward forecast. Increasing wcf therefore broadens the region treated as close to commitment, but does not change the RRB profile or FGER group sizes. Table C shows that AvgK remains within 0.02 across the sweep for both tasks, while selected pairs also vary within a narrow range. The width therefore primarily changes which active-block tokens receive the higher count rather than the total allocation. Quality varies across tasks and settings, and we retain one shared default without task-specific selection. 
+
+Velocity reference vref . The velocity reference determines when recent confidence progress is considered limited. Rais-ing vref makes the progress factor less selective with respect to positive confidence change, while lowering it emphasizes tokens whose confidence is nearly stationary or decreasing. Because FGER still assigns fixed proportions to its priority groups, this parameter changes their ordering criterion rather than their total budget. As reported in Table D, AvgK changes by at most 0.01 
+
+and pair counts remain close across all five values. Quality varies by task because the velocity reference changes which confidence trajectories are treated as slow. We retain the shared default across tasks without task-specific selection.                                    
+
+> Metric 00.005 0.01 0.025 0.05
+> HE Acc. 53.05 52.44 54.27 56.71 54.27 HE AvgK 6.94 6.94 6.95 6.94 6.94 HE Pairs 8.81 8.75 8.95 8.96 8.94 M500 Acc. 42.00 40.20 41.80 41.00 40.60 M500 AvgK 6.28 6.29 6.28 6.28 6.27 M500 Pairs 21.51 21.43 21.48 21.53 21.58
+
+Table D: Sensitivity to the velocity reference vref on LLaDA-MoE. The default is 0.01 . HE denotes HumanEval postpro-cessed pass@1, and M500 denotes Math500 math-verify ac-curacy. Acc. is reported in percent and Pairs in millions; best task accuracies are shown in bold.                                    
+
+> Metric 0.01 0.025 0.05 0.10 0.20
+> HE Acc. 52.44 51.22 54.27 53.05 56.71
+> HE AvgK 6.94 6.94 6.95 6.94 6.94 HE Pairs 8.84 8.96 8.95 8.93 8.81 M500 Acc. 39.60 38.80 41.80 39.00 40.00 M500 AvgK 6.29 6.29 6.28 6.30 6.28 M500 Pairs 21.51 21.51 21.48 21.51 21.49
+
+Table E: Sensitivity to the gate temperature τ on LLaDA-MoE. The default is 0.05 . HE denotes HumanEval post-processed pass@1, and M500 denotes Math500 math-verify accuracy. Acc. is reported in percent and Pairs in millions; best task accuracies are shown in bold. 
+
+Gate temperature τ . The temperature controls the smooth-ness of both factors in FPS. Smaller values produce sharper changes around the commitment-frontier and velocity ref-erences, whereas larger values soften these boundaries and yield a more gradual ranking signal. The temperature does not alter the expert-count levels or the size of the reallocation groups. Table E again shows nearly unchanged AvgK and selected pairs, indicating that τ mainly changes active-block ranking. Quality varies by task as gate smoothness changes, while the allocation amount remains stable. We retain the shared default without task-specific selection. 
+
+Outer-group fraction q. The outer-group fraction sets the proportion of active-block tokens assigned to each of the high- and low-priority groups. Increasing q applies the posi-tive and negative expert-count offsets to more tokens. Since the two groups have equal size, their changes cancel and the active-block total remains fixed; q controls the coverage of reallocation rather than its net budget. As shown in Table F, AvgK remains essentially fixed as expected from the symmetric reallocation. The default q =0.25 gives the highest quality on both evaluated tasks, while narrower and broader group coverage yield lower quality under nearly unchanged AvgK. The selected-pair differences are small and reflect the resulting trajectory changes rather than a direct change in the per-forward active-block total. Across all four analyses, the allocation amount remains comparatively stable because wcf , vref , and τ modify the Metric 0.125 0.25 0.375                   
+
+> HE Acc. 50.61 54.27 52.44 HE AvgK 6.94 6.95 6.94 HE Pairs 8.99 8.95 8.68 M500 Acc. 39.80 41.80 39.20 M500 AvgK 6.28 6.28 6.27 M500 Pairs 21.54 21.48 21.69
+
+Table F: Sensitivity to the outer-group fraction q on LLaDA-MoE. The default is 0.25 . HE denotes HumanEval post-processed pass@1, and M500 denotes Math500 math-verify accuracy. Acc. is reported in percent and Pairs in millions; best task accuracies are shown in bold. ranking signal, while q preserves the active-block total through symmetric groups. Generation quality is more task dependent because each parameter changes which token tra-jectories receive additional computation. We therefore use one shared configuration across HumanEval and Math500 without task-specific hyper-parameter selection.

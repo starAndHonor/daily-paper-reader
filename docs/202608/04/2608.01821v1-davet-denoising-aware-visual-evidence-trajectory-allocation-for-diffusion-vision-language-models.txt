@@ -1,0 +1,646 @@
+Title: DAVET: Denoising-Aware Visual Evidence Trajectory Allocation for Diffusion Vision-Language Models
+
+URL Source: https://arxiv.org/pdf/2608.01821v1
+
+Published Time: Tue, 04 Aug 2026 01:57:50 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# DAVET: Denoising-Aware Visual Evidence Trajectory Allocation for Diffusion Vision-Language Models 
+
+## Yongkang Zhou ∗, Xiang Xia ∗, Cheng Yan, Fan Xu, Wuyang Zhang †
+
+University of Science and Technology of China Hefei, China yongkangz@mail.ustc.edu.cn, xxia@mail.ustc.edu.cn, wuyangz@ustc.edu.cn 
+
+Abstract 
+
+Diffusion vision-language models (dVLMs) iteratively de-noise masked responses while conditioning each denoising step on visual evidence, making visual conditioning a sub-stantial recurring inference cost. Unlike autoregressive de-coding, diffusion generation repeatedly revisits the entire re-sponse as uncertainty evolves. Our analysis reveals that vi-sual evidence demand is strongly step-dependent, motivating adaptive allocation across denoising steps. Existing inference acceleration methods operate through decoding-side strate-gies or visual token compression via pruning and merging, but do not explicitly treat visual evidence as a resource whose demand evolves across the diffusion process. Therefore, we present Denoising-Aware Visual Evidence Trajectory Alloca-tion (DAVET), a training-free framework that allocates visual evidence according to the evolving generation state. Starting from a phase-conditioned evidence trajectory, the proposed allocation policy uses operation demand to set an evidence re-serve whose allocation at each denoising step is modulated by trajectory risk. DAVET realizes the resulting budgets through a hierarchy of evidence views constructed from a single visual encoding, separating when and how much evidence is needed from how the evidence views are constructed. Evaluated on two representative dVLMs, LLaDA-V and LaViDa, across multiple visual-understanding benchmarks, DAVET achieves an average speedup of 1.55 × with an average relative perfor-mance drop of 1.86%, showing that denoising-aware visual evidence allocation can reduce visual conditioning cost while largely preserving generation quality. 
+
+## 1 Introduction 
+
+Recently, diffusion language models (DLMs) are emerging as a promising alternative to autoregressive language mod-els (Austin et al. 2021; Sahoo et al. 2024; Arriola et al. 2025). Rather than factorizing a sequence strictly from left to right, DLMs generate by iteratively denoising a corrupted sequence through bidirectional attention, allowing multiple positions to be refined in parallel and in flexible orders. LLaDA (Nie et al. 2025) and Dream (Ye et al. 2025) provide initial validation of this paradigm in large language models. LLaDA2.0 (Bie et al. 2025) further extends this paradigm to 100B parameters, showing that DLMs can scale to substan-tially larger model capacities. Beyond general language mod-
+
+> ∗
+
+These authors contributed equally. 
+
+> †
+
+Corresponding author. 
+
+eling, DLMs are widely applied to complex reasoning (Ye et al. 2024), code generation (Gong et al. 2026), and protein sequence design (Wang et al. 2024). Building on this progress, diffusion vision-language mod-els (dVLMs), including LLaDA-V (You et al. 2026) and LaViDa (Li et al. 2025), extend DLMs to multimodal un-derstanding by conditioning denoising on visual representa-tions. Given an image and a query, a visual encoder produces visual tokens, while the diffusion language model conditions on these tokens to refine multiple answer positions in parallel through bidirectional attention. This extension introduces an efficiency bottleneck: high-resolution inputs often produce hundreds or thousands of visual tokens, far outnumbering the tokens in short answers, yet these visual representations participate in denoising computation at every step (Wan et al. 2026; Chang et al. 2026). Consequently, producing even a short answer incurs repeated computation over a long visual token sequence throughout the diffusion process, making visual conditioning a substantial cumulative burden, partic-ularly for document, chart, and scene-text understanding. Crucially, visual evidence demand varies substantially at different denoising steps across the diffusion process. As shown in Figure 1, we design controlled interventions that apply high-evidence conditioning for the same number of de-noising steps during different phases of the diffusion process and observe markedly different generation quality. This evi-dence sensitivity is backbone-dependent: LLaDA-V is more sensitive to high-evidence conditioning during early denois-ing steps, whereas LaViDa is more sensitive during late de-noising steps, patterns consistent with early grounding and late verification, respectively. Thus, the temporal pattern of visual evidence demand can differ across dVLM backbones. Efficient dVLM inference therefore depends not only on how much visual evidence is supplied, but also on when it is sup-plied across the diffusion process. Yet existing dVLM inference acceleration methods are not designed around this step-dependent visual evidence de-mand. They primarily follow two directions. Decoding-side strategies accelerate generation through visual-token KV caching across denoising steps (Wu et al. 2026) or by adapt-ing which answer positions are committed in parallel (Yuan, Zhao, and Meng 2026). Visual token compression methods reduce visual conditioning cost by pruning (Wan et al. 2026; Xu et al. 2026b) or merging visual tokens (Chang et al. arXiv:2608.01821v1 [cs.CV] 3 Aug 2026 Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8          
+
+> High-evidence pulse phase
+> 60
+> 70
+> 80
+> 90
+> 100
+> Quality retained (%)  (a) LLaDA-V
+> Early grounding
+> Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8
+> High-evidence pulse phase
+> (b) LaViDa
+> Late verification
+> InfoVQA ChartQA Static High
+
+Figure 1: Backbone-dependent visual evidence demand across the diffusion process. With mixed evidence elsewhere, we shift a fixed-duration high-evidence pulse across eight equal denoising phases, from the earliest (Q1) to the latest (Q8). We report quality relative to full-evidence inference (Static High) on InfoVQA and ChartQA. LLaDA-V peaks early (Q2–Q3), whereas LaViDa peaks late (Q8), consis-tent with early grounding and late verification, respectively. Shading marks the corresponding peak regions. 2026). Decoding-side strategies do not determine when or how much visual evidence is supplied. Visual token com-pression methods can vary visual evidence across denoising steps, but define this variation through a particular pruning or merging rule. As a result, existing methods provide no general policy for allocating visual evidence according to the evolving generation state. 
+
+Problem. How can we allocate visual evidence across the diffusion process according to the evolving generation state, thereby reducing total visual conditioning cost while pre-serving generation quality, without retraining the model? 
+
+Contribution. Using controlled interventions that hold to-tal high-evidence exposure constant, we reveal that visual evidence demand varies across denoising steps and exhibits backbone-specific early-grounding and late-verification pat-terns. Motivated by this finding, we formulate efficient vi-sual conditioning in dVLMs as denoising-aware visual ev-idence allocation , explicitly modeling when and how much visual evidence should be supplied as the generation state evolves. We then introduce Denoising-Aware Visual Evi-dence Trajectory Allocation (DAVET), a training-free frame-work that separates evidence allocation from evidence real-ization. Starting from a phase-conditioned evidence trajec-tory, the proposed allocation policy uses operation demand to set an evidence reserve whose allocation at each denois-ing step is modulated by trajectory risk. By separating evi-dence budgets from view construction, DAVET allows pool-ing, pruning, or merging to serve as evidence realizers with-out redefining the allocation policy. Empirically, we evalu-ate DAVET on two representative dVLMs, LLaDA-V and LaViDa, across multiple visual-understanding benchmarks. DAVET achieves a 1.55 × average speedup with a 1.86% aver-age relative performance drop, yielding a favorable quality– efficiency trade-off compared with static-resolution, visual token pruning, and token merging methods. Further analy-ses show that the three allocation signals are complementary and that the policy remains effective across evidence realizers and nearby parameter settings. Together, these results sup-port denoising-aware visual evidence allocation as a general framework for efficient dVLM inference. 
+
+## 2 Related Work 
+
+2.1 Diffusion Vision-Language Models 
+
+Diffusion vision-language models (dVLMs) extend masked diffusion generation to multimodal inputs. LLaDA-V (You et al. 2026) equips LLaDA with a visual encoder and con-nector through visual instruction tuning, while LaViDa (Li et al. 2025) introduces complementary masking and a prefix-oriented diffusion formulation for multimodal understand-ing. Beyond these, Dimple (Yu, Ma, and Wang 2025) com-bines autoregressive and diffusion training stages, whereas MMaDA (Yang et al. 2025) uses a unified diffusion architec-ture for text reasoning, multimodal understanding, and image generation. These models establish distinct architectures and denoising dynamics for multimodal diffusion. We focus on reducing visual conditioning cost in understanding-oriented dVLMs through training-free visual evidence allocation. 
+
+2.2 Efficient Inference in dVLMs 
+
+Existing dVLM inference acceleration methods primarily follow decoding-side strategies and visual token compres-sion. Decoding-side strategies accelerate answer refinement through parallel commitment, masked-token truncation, or visual-token KV caching. Dimple (Yu, Ma, and Wang 2025) adapts how many answer positions are committed at each step; Sparse-LaViDa (Li et al. 2026) truncates redundant masked tokens and uses register tokens as compact represen-tations; and VRCD (Yuan, Zhao, and Meng 2026) prioritizes answer positions with complementary visual grounding dur-ing parallel commitment. Fast-dVLM (Wu et al. 2026) adopts block diffusion to enable visual-token KV caching across de-noising steps and speculative block decoding. These methods accelerate masked-response updates, but do not determine when or how much visual evidence is supplied. Visual token compression methods instead reduce vi-sual conditioning cost by shortening the visual token se-quence (Chen et al. 2024; Xing et al. 2025; Zhang et al. 2025). LLaDA-FastV (Wan et al. 2026) prunes visual to-kens during the first denoising step and reuses the reduced sequence thereafter. RedVTP (Xu et al. 2026b) estimates visual-token importance from masked-response signals for pruning, while D3ToM (Chang et al. 2026) uses the evolv-ing response to guide visual token merging across denoising steps. Although these methods differ in whether compression is fixed or dynamic, their decisions are defined by which to-kens to retain, remove, or merge. DAVET instead allocates an evidence budget according to the evolving generation state. Pruning and merging can therefore serve as evidence realiz-ers without defining the allocation policy itself. 
+
+2.3 Adaptive Visual Computation in VLMs 
+
+Adaptive visual computation varies visual inputs or visual to-ken sequences by sample or generation state. CARES (Kimhi et al. 2026) selects a sufficient image resolution for each image–query pair before encoding, while ResAdapt (Liao et al. 2026) allocates input resolution across video frames. During autoregressive generation, DyRate (Liang et al. 2025) progressively adjusts the visual-token compression rate, and DyVTE (Wu et al. 2025) predicts when visual tokens can exit according to the generation state. VisionPulse (Xu et al. 2026a) estimates a visual-token retention budget per step from visual attention mass and applies step-wise pruning. These methods reflect varying visual evidence demand, but use input selection or autoregressive decoding. They leave open how visual evidence should be allocated across denois-ing steps in the diffusion process, where multiple answer positions are refined in parallel and visual evidence demand can evolve differently across dVLM backbones. 
+
+## 3 Preliminaries and Problem Formulation 
+
+3.1 Diffusion Vision-Language Model Inference 
+
+Given an image x and a query q, a visual encoder Eϕ produces a visual token sequence v = Eϕ(x). Let y = ( y1, . . . , y L)
+
+denote an answer sequence of length L, and let y(t) be its state after denoising step t. A diffusion vision-language model (You et al. 2026; Li et al. 2025) initializes every po-sition in y(0) with the special mask token [MASK ] and refines the sequence over T steps. At step t, the unresolved positions are Mt = {i | y(t−1)  
+
+> i
+
+= [ MASK ]}. The model predicts their token distributions in parallel through bidirectional attention, 
+
+Pt,i = pθ
+
+
+
+· | y(t−1) , v, q 
+
+
+
+, i ∈ M t. (1) Let ˆyt,i = arg max w Pt,i (w), and let Ut ⊆ M t denote the positions selected for commitment by the decoding strategy. The state is updated as 
+
+y(t) 
+
+> i
+
+=
+
+
+
+ˆyt,i , i ∈ U t,
+
+[MASK ], i ∈ M t \ U t,y(t−1)  
+
+> i
+
+, i / ∈ M t.
+
+(2) Repeating this update gradually resolves the masked posi-tions until the final answer ˆy = y(T ) is obtained. Although Mt and the generation state evolve throughout the diffusion process, standard dVLM inference supplies the same v each step. It repeatedly incurs the cost of conditioning on the unmodified visual sequence even when the current state may not require the same amount of visual evidence. 
+
+3.2 Denoising-Aware Visual Evidence Allocation 
+
+Motivated by this mismatch, we treat visual evidence as a step-dependent resource rather than a fixed input. Let st
+
+denote the generation state available before step t, comprising the denoising progress, query, current masked answer, and inference-time predictive statistics. Given a target average allocation budget B, an allocation policy π determines the normalized budget at each step, 
+
+bt = π(st; B) ∈ [0 , 1] . (3) The sequence b1: T = ( b1, . . . , b T ) forms a visual evidence trajectory that specifies when and how much evidence is supplied across the diffusion process. To separate visual evidence allocation from evidence re-alization, an evidence realizer A maps the encoded visual tokens v and budget bt to the step-specific representation 
+
+vt = A(v; bt). Here, bt = 1 leaves v unchanged, while smaller budgets provide lower-granularity evidence at lower cost. This abstraction fixes neither the number of evidence levels nor their construction. Pooling, pruning, or merging can instantiate A through an ordered evidence–cost interface. Under vt, Equation (1) becomes pθ ( · | y(t−1) , v t, q ).Without changing the model or visual encoder parameters, the allocation problem is to preserve generation quality under a bounded average allocation budget: 
+
+min  
+
+> π
+
+E[L(ˆ yπ , y )] s.t. 1
+
+T
+
+> T
+
+X
+
+> t=1
+
+bt ≤ B, (4) where ˆyπ is the answer under policy π and L is the task loss. The policy decides when and how much visual evidence is needed, whereas A determines how each budget level is represented. The normalized budget constrains allocation in the ordered evidence–cost space; exact latency depends on the realizer and hardware and is measured empirically. This formulation also clarifies the scope of the problem. Static visual evidence corresponds to a constant trajectory 
+
+bt = b, while pooling, pruning, and merging can serve as different realizations of A. Decoding-side strategies instead reduce the cost of updating the masked answer under a given 
+
+vt and remain complementary to visual evidence allocation. 
+
+## 4 The DAVET Framework 
+
+To account for step-dependent visual evidence demand dur-ing dVLM inference, we propose Denoising-Aware Visual Evidence Trajectory Allocation (DAVET), a training-free framework that allocates visual evidence according to the evolving generation state across the diffusion process. We first provide an overview, then detail the denoising-aware allocation policy and visual evidence realization. 
+
+4.1 Overview 
+
+DAVET comprises a visual evidence allocation policy and an evidence realizer. At denoising step t, its allocation policy specializes Equation (3) using three complementary factors: the phase profile p1: T , operation demand d(o) for opera-tion category o, and trajectory risk rt. The policy outputs a normalized evidence budget bt, which identifies the corre-sponding step-specific representation vt among the evidence views constructed by A:
+
+bt = π(p1: T , d (o), r t; B), vt = A(v; bt). (5) The policy π determines when and how much visual evidence is supplied, whereas the evidence realizer A constructs evi-dence views for different budget levels before denoising. This separation allows the same allocation policy to operate with pooling, pruning, or merging as the underlying realizer. Figure 2 summarizes the allocation policy: the phase-conditioned trajectory distributes evidence across the dif-fusion process, operation demand bounds the reserve, and trajectory risk determines its step-wise use. The resulting budgets form a denoising-aware visual evidence trajectory. [M][M][M ]              
+
+> [M][M]
+> There[M ][M]
+> [M][M]
+> There are [M]
+> [M][M]
+> There are
+> five [M][M]
+> There are five
+> arches[M]
+> There are
+> five arches.
+> Denoising
+> Block
+> Denoising
+> Block
+> Denoising
+> Block
+> Denoising
+> Block
+> Denoising
+> Block
+> Denoising
+> Block
+> coarse coarse mixed mixed high high
+> 𝑡 !𝑡 "𝑡 #𝑡 $𝑡 %𝑡 &
+> b1
+> b2
+> b3 b4
+> b5 b6
+> 2/3
+> 1/3
+> coarse
+> mixed
+> high
+> Evidence
+> Budget 𝐛 !Generated Answer: There are five arches.
+
+Diffusion Process Denoising -Aware Allocation Policy      
+
+> Phase -Conditioned Trajectory
+> t
+> Early Grounding Late Verification
+> t
+> Operation Demand & Operation -Conditioned
+> Evidence Reserve
+> Lexical
+> Readout
+> Numerical
+> Reasoning
+> Entity
+> Grounding
+> Binary
+> Decision
+> General
+> Understanding
+> Operation Demand
+> Operation -conditioned Evidence Reserve(upper Trajectory)
+> e
+> t
+> Reverse
+> Phase -
+> Conditioned
+> Evidence Envelope
+> Trajectory Risk
+> Mean Confidence
+> 1
+> 0
+> Prediction Churn
+> 1
+> 0
+> 𝑟 '
+> Evidence Budget
+> 𝑋 !"#𝑐 !"#
+> 𝑡 $"#𝑡 𝑡 𝑡 $"#
+> Selects Step -wise
+> Evidence Budget
+> within Envelope
+> 𝑡 𝑡 $
+> 𝑒
+
+Initialization    
+
+> 25% coarse 50% mixed
+
+Query 
+
+> How many arches
+> are on the bridge?
+
+Visual Encoder 
+
+Realizer 
+
+> Single Visual Encoding
+> high
+> visual
+> token
+
+Figure 2: Overview of DAVET. During initialization, the image is encoded once, and the evidence realizer constructs an ordered hierarchy of evidence views from this representation. The allocation policy forms an evidence envelope whose lower trajectory follows the backbone-specific phase profile and whose upper trajectory adds a reserve determined by query-level operation demand. For each following denoising step, trajectory risk derived from mean confidence and prediction churn selects a budget within this envelope. The budget maps to an evidence view that conditions the parallel refinement of masked answer positions. 
+
+4.2 Denoising-Aware Allocation Policy 
+
+DAVET represents the evidence budget at each denoising step as an interval, termed the evidence envelope . The phase prior defines its lower trajectory, operation demand deter-mines the reserve capacity and hence the upper trajectory, and trajectory risk selects the budget within these bounds. This factorization assigns each signal a distinct role: tempo-ral structure, reserve capacity, or state-dependent utilization. 
+
+Phase-conditioned evidence trajectory. As shown in Fig-ure 1, visual evidence demand varies across dVLM back-bones over denoising time. We capture these patterns with a two-orientation phase family: pt = 1 − (t − 0.5) /T for early grounding and pt = ( t − 0.5) /T for late verification. The 0.5 offset centers each step in its interval, yielding sym-metric profiles without zero endpoints. Accordingly, DAVET uses a backbone-specific orientation. The profile determines when visual evidence is emphasized, not its total budget. We use N (p1: T ; ·) to rescale the profile and clip it to [0 , 1] so its mean matches the specified average budget. This normal-ization preserves phase ordering without manually assigning evidence levels to denoising windows. 
+
+Operation-conditioned evidence reserve. The demand for fine-grained visual evidence varies across queries. Before denoising, DAVET captures this query-level prior with a shared training-free parser g. Using interrogative form and operation-indicative lexical cues, g maps the query q to a dominant operation category o = g(q). The parser uses neither image content, dataset identity, nor model predic-tions. We use five categories—lexical readout, numerical reasoning, entity grounding, binary decision, and general understanding—each associated with a fixed demand prior 
+
+d(o) ∈ [0 , 1] . The parser, taxonomy, and demand priors are shared across backbones and benchmarks. Appendix A pro-vides the cue rules, precedence, and prior specification. Let ρ ∈ [0 , 1] denote the maximum fraction of the av-erage budget B assigned to the operation-conditioned evi-dence reserve. The phase-conditioned lower trajectory and operation-conditioned upper trajectory are 
+
+b = N (p1: T ; (1 − ρ)B),
+
+b = N (p1: T ; [1 − ρ + ρd (o)] B). (6) Their gap b − b forms the operation-conditioned evidence reserve. Because both boundaries share p1: T , increasing d(o)
+
+widens the evidence envelope without changing its phase ordering. The upper trajectory also has an average budget no greater than B. Thus, operation demand controls how much additional evidence is available, whereas trajectory risk determines how much is used at each step. The deterministic parser is a lightweight training-free re-alization of the query-to-demand interface. Because DAVET consumes the bounded scalar d(o), another demand estima-tor can replace g without changing the allocation policy. 
+
+Trajectory-risk modulation. The lower and upper trajec-tories define the evidence envelope at each denoising step, within which trajectory risk selects the final evidence bud-get as generation evolves. DAVET estimates this risk from two generation-state signals available during denoising. Af-ter step t − 1, let ¯ct−1 denote the mean confidence of pro-visional predictions over unresolved answer positions. We define χt−1 as prediction churn: among answer positions that remain unresolved in both steps t − 2 and t − 1, it is the fraction whose highest-logit token changes between the two updates. For t > 1, DAVET defines trajectory risk as 
+
+rt = 1 − α¯ct−1(1 − χt−1), (7) where α ∈ [0 , 1] controls the influence of trajectory stability. The product ¯ct−1(1 −χt−1) is high only when predictions are both confident and stable. Consequently, confident and stable predictions produce lower risk, whereas low confidence or high churn produces higher risk. Setting α = 0 gives rt = 1 ,while α = 1 applies the full stability signal. Before any prediction state is available, DAVET sets r1 =1. When churn is unavailable after the first update, we set 
+
+χ1 = 0 . Given rt, DAVET selects the final evidence budget by interpolating within the envelope: 
+
+bt = bt + rt
+
+ bt − bt
+
+. (8) Thus, rt = 0 selects the lower trajectory, while rt = 1 se-lects the upper trajectory. At each step t > 1, DAVET uses the preceding update to compute risk and select the corre-sponding evidence view. These signals reuse model outputs, requiring neither an additional forward pass nor thresholded triggering. Since rt ∈ [0 , 1] , selected budget remains inside the evidence envelope and its average does not exceed B.
+
+4.3 Visual Evidence Realization 
+
+Ordered evidence hierarchy. Given the encoded visual se-quence v, the evidence realizer A constructs K ordered ev-idence views {v(1) , . . . , v (K)} before denoising. Each view represents one evidence level, and the hierarchy increases in visual granularity and conditioning cost, with v(K) = v.The number of levels controls how finely the continuous budget maps to visual evidence, but the allocation policy prescribes neither K nor how the evidence views are con-structed. Our implementation uses the special case K = 3 ,yielding coarse , mixed , and high views from a single visual encoding. The coarse view applies structured pool-ing to preserve global coverage with fewer visual tokens. The mixed view augments this pooled representation with a fixed subset of unpooled tokens, restoring selected fine-grained details. The high view retains the uncompressed visual token sequence. All views are constructed before de-noising and reused throughout the diffusion process. A K-level hierarchy partitions the normalized budget range into 
+
+K ordered intervals, using canonical thirds for K = 3 :
+
+vt =
+
+
+
+vcoarse , bt < 13 ,vmixed , 13 ≤ bt < 23 ,vhigh , bt ≥ 23 .
+
+(9) These thresholds define ordinal evidence levels. Equal-width budget intervals do not imply proportional FLOPs or latency. At each denoising step, bt selects among the constructed views without rerunning the visual encoder or reconstructing visual evidence. The hierarchy is ordered by visual sequence length, while generation latency is measured empirically. 
+
+Compatible evidence realizers. Our three-level pooling construction is an evidence realizer, not a DAVET restric-tion. Any construction exposing an ordered evidence–cost hierarchy can instantiate A: pruning varies retention ratios, whereas merging varies aggregation strength. More levels refine budget intervals without changing the allocation pol-icy. Thus, pooling, pruning, and merging realize the same trajectory through different evidence views. 
+
+## 5 Experiments 
+
+We evaluate DAVET on two representative dVLMs across multiple visual-understanding benchmarks to determine whether aligning visual evidence with step-dependent de-mand improves the quality–efficiency trade-off of dVLM in-ference. This section presents the experimental setup, com-parative results, a study of evidence realizers, component ab-lations, and hyper-parameter analysis. The experiments are organized around four main questions: 
+
+Q1: Does DAVET improve the quality–efficiency trade-off across dVLM backbones and visual-understanding tasks? 
+
+Q2: Can the same allocation policy remain effective with evi-dence realizers based on pooling, pruning, and merging? 
+
+Q3: How does each allocation component contribute to the performance of DAVET across dVLM backbones? 
+
+Q4: How does the behavior of DAVET change as its key hyper-parameters vary across dVLM backbones? 
+
+5.1 Experimental Settings 
+
+Backbones, benchmarks, and metrics. We evaluate DAVET on two representative dVLMs, LLaDA-V (You et al. 2026) and LaViDa (Li et al. 2025). For both backbones, we use a generation length and block length of 32 . LLaDA-V and LaViDa use 16 and 32 denoising steps, respectively, and select answer positions for commitment according to confidence ranking. All experiments use deterministic de-coding at temperature 0 and run on NVIDIA A100 80GB GPUs. We evaluate on four widely used benchmarks includ-ing InfoVQA (Mathew et al. 2022), ChartQA (Masry et al. 2022), DocVQA (Mathew, Karatzas, and Jawahar 2021), and TextVQA (Singh et al. 2019). We report ANLS for InfoVQA and DocVQA, relaxed accuracy for ChartQA, and VQA ac-curacy with standard answer normalization for TextVQA. We report the average generation latency over all samples in each benchmark, excluding data loading and evaluation. 
+
+Comparison methods. We include three static-resolution settings as direct efficiency controls. Static High encodes images at their original resolution. Static Mid and Static Low first resize each spatial dimension to approximately 2/3 and 
+
+1/3 of the original, respectively, and then use the same visual encoder. We compare DAVET with the visual-token pruning method RedVTP (Xu et al. 2026b) and the dynamic token-merging method D3ToM (Chang et al. 2026). We use official implementations of both methods where available. Since the D3ToM implementation supports LaViDa but not LLaDA-V, we adapt it to LLaDA-V following the method specification. To ensure a fair comparison, we apply the same visual-token retention ratio to both methods within each backbone, setting it to 0.50 for LLaDA-V and 0.75 for LaViDa. 
+
+DAVET configuration. Both backbones use the same allocation-policy formulation, query parser, operation tax-onomy, and K=3 ordered evidence hierarchy. The average Method InfoVQA ChartQA DocVQA TextVQA 
+
+Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓
+
+LLaDA-V 
+
+Static High 66.30 7.882 79.12 7.039 83.87 7.542 63.04 7.420 Static Mid 65.15 −1.73% 7.501 ↑1.05 × 73.96 −6.52% 4.023 ↑1.75 × 84.59 +0 .86% 7.702 ↓0.98 × 62.42 −0.98% 5.852 ↑1.27 ×
+
+Static Low 50.91 −23 .21% 5.366 ↑1.47 × 38.28 −51 .62% 2.529 ↑2.78 × 79.82 −4.83% 6.076 ↑1.24 × 52.53 −16 .67% 2.597 ↑2.86 ×
+
+RedVTP 64.73 −2.37% 4.497 ↑1.75 × 74.44 −5.92% 4.225 ↑1.67 × 83.49 −0.46% 4.611 ↑1.64 × 63.09 +0 .08% 4.354 ↑1.70 ×
+
+D3ToM 59.81 −9.78% 4.732 ↑1.67 × 73.12 −7.58% 4.432 ↑1.59 × 72.62 −13 .41% 4.819 ↑1.57 × 60.68 −3.73% 4.700 ↑1.58 ×
+
+DAVET 65.57 −1.10% 5.551 ↑1.42 × 78.36 −0.96% 5.277 ↑1.33 × 83.18 −0.82% 5.665 ↑1.33 × 62.86 −0.29% 5.464 ↑1.36 ×
+
+LaViDa 
+
+Static High 36.14 2.801 67.40 3.064 63.52 3.185 58.77 3.176 Static Mid 35.72 −1.15% 2.782 ↑1.01 × 61.80 −8.31% 2.282 ↑1.34 × 63.62 +0 .16% 3.152 ↑1.01 × 58.71 −0.11% 3.110 ↑1.02 ×
+
+Static Low 32.21 −10 .87% 2.420 ↑1.16 × 32.80 −51 .34% 1.677 ↑1.83 × 62.65 −1.36% 3.090 ↑1.03 × 48.94 −16 .74% 1.728 ↑1.84 ×
+
+RedVTP 31.14 −13 .84% 2.280 ↑1.23 × 52.12 −22 .67% 2.350 ↑1.30 × 53.15 −16 .32% 2.428 ↑1.31 × 54.60 −7.10% 2.483 ↑1.28 ×
+
+D3ToM 33.61 −7.00% 2.350 ↑1.19 × 57.56 −14 .60% 2.543 ↑1.21 × 55.18 −13 .12% 2.665 ↑1.20 × 57.38 −2.37% 2.588 ↑1.23 ×
+
+DAVET 35.50 −1.78% 1.663 ↑1.68 × 66.16 −1.84% 1.735 ↑1.77 × 59.18 −6.83% 1.855 ↑1.72 × 58.05 −1.23% 1.796 ↑1.77 ×
+
+Table 1: Main results across two dVLM backbones and four benchmarks. Latency denotes average generation latency over all samples in each benchmark. Quality subscripts denote relative changes from Static High, while latency subscripts denote speedups. Green and red indicate favorable and unfavorable changes, respectively. 1.00 1.25 1.50 1.75 2.00                       
+
+> Average speedup (×)
+> 75
+> 80
+> 85
+> 90
+> 95
+> 100
+> Average quality retention (%)  (a) LLaDA-V
+> 1.69× /97.84%
+> 1.60× /91.37%
+> 1.36× /99.21%
+> Better
+> 1.00 1.25 1.50 1.75 2.00
+> Average speedup (×)
+> (b) LaViDa
+> 1.28× /85.02%
+> 1.20× /90.73% 1.73× /97.08%
+> Better
+> Static High Static Mid Static Low Pareto frontier
+> RedVTP D3ToM DAVET
+
+Figure 3: Average quality–efficiency trade-offs across four benchmarks. For each method, the horizontal axis aver-ages task-wise speedup over Static High, while the vertical axis averages quality retention. Dashed lines connect non-dominated points within each backbone. Annotations report speedup and quality retention; upper right is better. budget B sets the overall evidence scale across the diffu-sion process, the reserve fraction ρ specifies the maximum share of B assigned to the operation-conditioned reserve, and the risk strength α controls how strongly trajectory stability modulates reserve use. As shown in Figure 1, the two back-bones exhibit markedly different evidence-demand dynam-ics. We therefore align the phase orientation with each back-bone: early grounding for LLaDA-V and late verification for LaViDa. Under these orientations, LLaDA-V uses B=0 .75 ,
+
+ρ=0 .20 , and α=1 .0, whereas LaViDa uses B=0 .45 , ρ=0 .20 ,and α=0 .5. Configurations remain fixed across benchmarks. 
+
+5.2 Main Results 
+
+To answer Q1. As shown in Table 1, the comparison methods exhibit strongly task-dependent quality–efficiency behavior. Static Low is fast but loses up to 51 .62% quality, whereas Static Mid preserves quality on some tasks but often pro-vides little acceleration. RedVTP achieves strong quality– efficiency results on LLaDA-V, particularly on DocVQA and TextVQA, but incurs substantially larger quality losses on LaViDa. D3ToM also accelerates both backbones but ex-hibits broader quality degradation. These results show that visual-token compression is strongly backbone-dependent. As shown in Figure 3, DAVET provides a more consis-tent quality-preserving trade-off. On LLaDA-V, it limits the relative quality drop to 0.29 –1.10% while achieving 1.33 –
+
+1.42 × speedup, corresponding to 99 .21% average quality retention at 1.36 × average speedup. On LaViDa, DAVET achieves 97 .08% average quality retention at 1.73 × average speedup and outperforms the selected pruning and merging methods in both dimensions. Across all eight backbone– task pairs, DAVET achieves a 1.55 × average speedup with a 
+
+1.86% average relative quality drop. The latency breakdown in Appendix B further shows that evidence-view construc-tion requires only 0.43 –0.80 ms per sample, while nearly all measured savings arise from reduced time spent on diffu-sion denoising. A reverse-orientation control in Appendix C yields substantial quality loss at similar latency, supporting backbone-aligned evidence trajectories. These results reflect the backbone-dependent evidence de-mand observed in Figure 1. LLaDA-V’s early-grounding trajectory preserves richer evidence near the beginning of denoising and yields a conservative but stable speedup. LaViDa’s late-verification trajectory allows a larger portion of denoising to use reduced evidence before receiving finer-grained evidence near the end, producing greater accelera-tion. LaViDa DocVQA remains the main boundary, with a 
+
+6.83% quality drop, suggesting that dense document under-standing may require fine-grained evidence over a broader portion of the diffusion process. In a nutshell, although DAVET incurs its largest quality drop on LaViDa DocVQA, Realizer InfoVQA ChartQA 
+
+Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓
+
+LLaDA-V 
+
+Pool 65.57 −1.10% 5.551 ↑1.42 × 78.36 −0.96% 5.277 ↑1.33 ×
+
+Prune 65.55 −1.14% 5.595 ↑1.41 × 78.72 −0.51% 5.299 ↑1.33 ×
+
+Merge 65.59 −1.07% 5.663 ↑1.39 × 78.44 −0.86% 5.627 ↑1.25 ×
+
+LaViDa 
+
+Pool 35.50 −1.78% 1.663 ↑1.68 × 66.16 −1.84% 1.735 ↑1.77 ×
+
+Prune 35.70 −1.20% 1.652 ↑1.70 × 66.60 −1.19% 1.725 ↑1.78 ×
+
+Merge 35.62 −1.45% 1.655 ↑1.69 × 66.32 −1.60% 1.726 ↑1.78 ×
+
+Table 2: Comparison of evidence realizers on InfoVQA and ChartQA. Pooling is the default. The allocation policy re-mains fixed, and only the construction of the ordered evi-dence hierarchy varies. Subscripts follow Table 1. it still achieves a favorable average quality–efficiency trade-off across backbones and tasks, which answers Q1. 
+
+5.3 Generality across Evidence Realizers 
+
+To answer Q2. We evaluate whether DAVET’s allocation policy depends on a particular evidence realizer. We keep the policy fixed and construct the ordered evidence hierarchy through pooling, nested visual-token pruning, or hierarchical similarity merging, without introducing separate allocation rules. As shown in Table 2, all eight settings using pruning or merging remain within 0.51 –1.60% of Static High while achieving 1.25 –1.78 × speedup. Quality remains tightly clus-tered among the three realizers within each backbone–task pair. Their latencies are also comparable, except that merging is moderately slower on LLaDA-V. Despite different token contents, all hierarchies achieve similar quality under one allocation policy, while latency differences reflect construction costs. In a nutshell, the same allocation policy remains effective with evidence realizers based on pooling, pruning, and merging, which answers Q2. 
+
+5.4 Ablation of Allocation Components 
+
+To answer Q3. We evaluate additive variants under the same evidence realizer. As shown in Table 3, Phase provides the largest initial efficiency gain but can sacrifice quality, partic-ularly on LaViDa. Adding operation demand substantially re-covers quality, while trajectory-risk modulation regains part of the efficiency with only minor score changes. These changes reveal a functional decomposition rather than a uniform increase in visual evidence. Phase captures backbone-level temporal demand but applies the same trajec-tory across queries, explaining its strong efficiency and oc-casional quality loss. Operation demand exposes additional reserve capacity for queries likely to require fine-grained ev-idence, recovering quality at additional cost. Trajectory risk avoids using the full reserve when the evolving generation state is confident and stable, recovering part of this cost. Ap-pendix A further specifies a uniform-demand control with 
+
+d(o) = 1 that separates query-conditioned demand from uniform exposure to the maximum reserve. In a nutshell, 
+
+Variant InfoVQA ChartQA 
+
+Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓
+
+LLaDA-V 
+
+Phase 64.64 −2.51% 4.940 ↑1.60 × 78.08 −1.31% 4.638 ↑1.52 ×
+
++ Demand 65.59 −1.06% 5.754 ↑1.37 × 78.32 −1.01% 5.386 ↑1.31 ×
+
+DAVET 65.57 −1.10% 5.551 ↑1.42 × 78.36 −0.96% 5.277 ↑1.33 ×
+
+LaViDa 
+
+Phase 32.24 −10 .80% 1.496 ↑1.87 × 54.56 −19 .05% 1.550 ↑1.98 ×
+
++ Demand 35.98 −0.45% 1.722 ↑1.63 × 66.80 −0.89% 1.807 ↑1.70 ×
+
+DAVET 35.50 −1.78% 1.663 ↑1.68 × 66.16 −1.84% 1.735 ↑1.77 ×
+
+Table 3: Additive ablation of DAVET’s allocation compo-nents on InfoVQA and ChartQA. Phase uses only the phase-conditioned evidence trajectory, + Demand adds operation demand, and DAVET further adds trajectory-risk modula-tion. Subscripts follow Table 1. phase provides temporal structure, operation demand pro-vides query-conditioned reserve capacity, and trajectory risk controls state-dependent reserve use, which answers Q3. 
+
+5.5 Hyper-parameter Analysis 
+
+To answer Q4. We conduct a hyper-parameter analysis of the average budget B, reserve fraction ρ, and risk strength α
+
+across both backbones. Detailed results and analysis are pro-vided in Appendix D. In a nutshell, these hyper-parameters induce interpretable quality–efficiency trade-offs around the backbone-specific defaults, with LaViDa showing greater sensitivity to aggressive settings, which answers Q4. 
+
+## 6 Conclusion and Discussion 
+
+Conclusion. This work formulates efficient visual condi-tioning in dVLMs as denoising-aware visual evidence allo-cation. Motivated by backbone-specific early-grounding and late-verification patterns, we present DAVET, a training-free framework that derives an evidence envelope from a phase-conditioned trajectory and operation demand, then modulates the step-wise budget within this envelope according to tra-jectory risk. DAVET further separates this allocation process from evidence realization. Across LLaDA-V and LaViDa on four visual-understanding benchmarks, DAVET achieves a 
+
+1.55 × average speedup with a 1.86% average relative per-formance drop. These results show that step-dependent visual evidence allocation can reduce recurring visual conditioning cost while largely preserving generation quality. 
+
+Discussion. DAVET is an allocation framework rather than a visual-token compression method, allowing pooling, prun-ing, or merging to serve as evidence realizers. The determin-istic parser is a lightweight query-to-demand interface and may be imperfect for ambiguous or compositional queries, but another demand estimator can replace it without changing the allocation policy. Our experiments instantiate the general 
+
+K-level evidence hierarchy with K=3 and use one calibrated configuration per backbone across benchmarks. Automatic calibration, stronger demand estimation, and richer evidence hierarchies are natural directions for future work. References 
+
+Arriola, M.; Gokaslan, A.; Chiu, J. T.; Yang, Z.; Qi, Z.; Han, J.; Sahoo, S. S.; and Kuleshov, V. 2025. Block Diffusion: In-terpolating Between Autoregressive and Diffusion Language Models. In Proceedings of the 13th International Conference on Learning Representations . Singapore, Singapore. Austin, J.; Johnson, D. D.; Ho, J.; Tarlow, D.; and van den Berg, R. 2021. Structured Denoising Diffusion Models in Discrete State-Spaces. In Advances in Neural Information Processing Systems 34 , 17981–17993. Virtual Event. Bie, T.; Cao, M.; Chen, K.; Du, L.; Gong, M.; Gong, Z.; Gu, Y.; Hu, J.; Huang, Z.; Lan, Z.; Li, C.; Li, C.; Li, J.; Li, Z.; Liu, H.; Liu, L.; Lu, G.; Lu, X.; Ma, Y.; Tan, J.; Wei, L.; Wen, J.; Xing, Y.; Zhang, X.; Zhao, J.; Zheng, D.; Zhou, J.; Zhou, J.; Zhou, Z.; Zhu, L.; and Zhuang, Y. 2025. LLaDA2.0: Scaling Up Diffusion Language Models to 100B. CoRR ,abs/2512.15745. Chang, S.; Zhang, X.; Liu, Q.; and Niu, L. 2026. D3ToM: Decider-Guided Dynamic Token Merging for Accelerating Diffusion MLLMs. In Proceedings of the 40th Annual AAAI Conference on Artificial Intelligence , 19961–19969. Singa-pore, Singapore. Chen, L.; Zhao, H.; Liu, T.; Bai, S.; Lin, J.; Zhou, C.; and Chang, B. 2024. An Image is Worth 1/2 Tokens After Layer 2: Plug-and-Play Inference Acceleration for Large Vision-Language Models. In Proceedings of the 18th European Conference on Computer Vision , 19–35. Milan, Italy. Gong, S.; Zhang, R.; Zheng, H.; Gu, J.; Jaitly, N.; Kong, L.; and Zhang, Y. 2026. DiffuCoder: Understanding and Im-proving Masked Diffusion Models for Code Generation. In 
+
+Proceedings of the 14th International Conference on Learn-ing Representations . Rio de Janeiro, Brazil. Kimhi, M.; Shabtay, N.; Giryes, R.; Baskin, C.; and Schwartz, E. 2026. CARES: Context-Aware Resolution Selector for VLMs. In Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics , 2243–2256. San Diego, CA. Li, S.; Gu, J.; Liu, K.; Lin, Z.; Wei, Z.; Grover, A.; and Kuen, J. 2026. Sparse-LaViDa: Sparse Multimodal Dis-crete Diffusion Language Models. In Proceedings of the 39th IEEE/CVF Conference on Computer Vision and Pat-tern Recognition , 36103–36114. Denver, CO. Li, S.; Kallidromitis, K.; Bansal, H.; Gokul, A.; Kato, Y.; Kozuka, K.; Kuen, J.; Lin, Z.; Chang, K.; and Grover, A. 2025. LaViDa: A Large Diffusion Language Model for Mul-timodal Understanding. In Advances in Neural Information Processing Systems 38 , 105101–105134. San Diego, CA. Liang, X.; Guan, C.; Lu, J.; Chen, H.; Wang, H.; and Hu, H. 2025. Dynamic Token Reduction during Generation for Vision Language Models. CoRR , abs/2501.14204. Liao, H.; Jiang, Z.; Hao, Y.; Tan, Y.; He, S.; Wang, B.; Zhao, J.; Xu, K.; and Liu, K. 2026. ResAdapt: Adaptive Resolution for Efficient Multimodal Reasoning. CoRR , abs/2603.28610. Masry, A.; Long, D. X.; Tan, J. Q.; Joty, S. R.; and Hoque, E. 2022. ChartQA: A Benchmark for Question Answering about Charts with Visual and Logical Reasoning. In Findings of the 60th Annual Meeting of the Association for Computa-tional Linguistics , 2263–2279. Dublin, Ireland. Mathew, M.; Bagal, V.; Tito, R.; Karatzas, D.; Valveny, E.; and Jawahar, C. V. 2022. InfographicVQA. In Proceedings of the 22nd IEEE/CVF Winter Conference on Applications of Computer Vision , 2582–2591. Waikoloa, HI. Mathew, M.; Karatzas, D.; and Jawahar, C. V. 2021. DocVQA: A Dataset for VQA on Document Images. In 
+
+Proceedings of the 21st IEEE/CVF Winter Conference on Applications of Computer Vision , 2199–2208. Virtual Event. Nie, S.; Zhu, F.; You, Z.; Zhang, X.; Ou, J.; Hu, J.; Zhou, J.; Lin, Y.; Wen, J.; and Li, C. 2025. Large Language Diffu-sion Models. In Advances in Neural Information Processing Systems 38 , 50608–50646. San Diego, CA. Sahoo, S. S.; Arriola, M.; Schiff, Y.; Gokaslan, A.; Mar-roquin, E.; Chiu, J. T.; Rush, A.; and Kuleshov, V. 2024. Simple and Effective Masked Diffusion Language Models. In Advances in Neural Information Processing Systems 37 ,130136–130184. Vancouver, Canada. Singh, A.; Natarajan, V.; Shah, M.; Jiang, Y.; Chen, X.; Ba-tra, D.; Parikh, D.; and Rohrbach, M. 2019. Towards VQA Models That Can Read. In Proceedings of the 32nd IEEE Conference on Computer Vision and Pattern Recognition ,8317–8326. Long Beach, CA. Wan, Z.; Song, T.; Lin, C.; Zhao, Z.; and Lang, X. 2026. Effi-cient Token Pruning for LLaDA-V. CoRR , abs/2601.20168. Wang, X.; Zheng, Z.; Ye, F.; Xue, D.; Huang, S.; and Gu, Q. 2024. Diffusion Language Models Are Versatile Protein Learners. In Proceedings of the 41st International Con-ference on Machine Learning , volume 235, 52309–52333. Vienna, Austria. Wu, C.; Lan, S.; Fu, Y.; Gao, S.; Wang, J.; Yu, J.; Ál-varez, J. M.; Molchanov, P.; Luo, P.; Han, S.; Zhu, L.; and Xie, E. 2026. Fast-dVLM: Efficient Block-Diffusion VLM via Direct Conversion from Autoregressive VLM. CoRR ,abs/2604.06832. Wu, Q.; Lin, W.; Zhou, Y.; Ye, W.; Zeng, Z.; Sun, X.; and Ji, R. 2025. Accelerating Multimodal Large Language Models via Dynamic Visual-Token Exit and the Empirical Findings. In Advances in Neural Information Processing Systems 38 ,168378–168403. San Diego, CA. Xing, L.; Huang, Q.; Dong, X.; Lu, J.; Zhang, P.; Zang, Y.; Cao, Y.; He, C.; Wang, J.; Wu, F.; and Lin, D. 2025. Conical Visual Concentration for Efficient Large Vision-Language Models. In Proceedings of the 38th IEEE/CVF Conference on Computer Vision and Pattern Recognition , 14593–14603. Nashville, TN. Xu, H.; Jin, S.; Ma, Y.; and Lu, Z. 2026a. VisionPulse: Dynamic Visual Sparsity for Efficient Multimodal Reason-ing. In Proceedings of the 43rd International Conference on Machine Learning . Seoul, South Korea. Xu, J.; Lu, J.; Li, C.; Sarkar, S.; Kundu, S.; and Beerel, P. A. 2026b. RedVTP: Training-Free Acceleration of Diffu-sion Vision-Language Models Inference via Masked Token-Guided Visual Token Pruning. In Proceedings of the 39th IEEE/CVF Conference on Computer Vision and Pattern Recognition Findings . Denver, CO. Yang, L.; Tian, Y.; Li, B.; Zhang, X.; Shen, K.; Tong, Y.; and Wang, M. 2025. MMaDA: Multimodal Large Diffu-sion Language Models. In Advances in Neural Information Processing Systems 38 , 138867–138907. San Diego, CA. Ye, J.; Gong, S.; Chen, L.; Zheng, L.; Gao, J.; Shi, H.; Wu, C.; Jiang, X.; Li, Z.; Bi, W.; and Kong, L. 2024. Diffu-sion of Thought: Chain-of-Thought Reasoning in Diffusion Language Models. In Advances in Neural Information Pro-cessing Systems 37 , 105345–105374. Vancouver, Canada. Ye, J.; Xie, Z.; Zheng, L.; Gao, J.; Wu, Z.; Jiang, X.; Li, Z.; and Kong, L. 2025. Dream 7B: Diffusion Large Language Models. CoRR , abs/2508.15487. You, Z.; Nie, S.; Zhang, X.; Zhou, J.; Lu, Z.; Wen, J.; and Li, C. 2026. LLaDA-V: Large Language Diffusion Mod-els with Visual Instruction Tuning. In Proceedings of the 39th IEEE/CVF Conference on Computer Vision and Pat-tern Recognition , 10093–10105. Denver, CO. Yu, R.; Ma, X.; and Wang, X. 2025. Dimple: Discrete Dif-fusion Multimodal Large Language Model with Parallel De-coding. CoRR , abs/2505.16990. Yuan, Y.; Zhao, H.; and Meng, X. 2026. Visual-Redundancy-Controlled Parallel Decoding for Diffusion-Based Multi-modal Large Language Models. CoRR , abs/2605.25820. Zhang, Y.; Fan, C.-K.; Ma, J.; Zheng, W.; Huang, T.; Cheng, K.; Gudovskiy, D. A.; Okuno, T.; Nakata, Y.; Keutzer, K.; and Zhang, S. 2025. SparseVLM: Visual Token Sparsification for Efficient Vision-Language Model Inference. In Proceedings of the 42nd International Conference on Machine Learning ,volume 267, 74840–74857. Vancouver, Canada. This appendix provides additional methodological details and supporting analyses for DAVET. Appendix A documents the operation parser and demand prior, together with the uniform-demand control. Appendix B decomposes inference latency, Appendix C evaluates phase orientation, and Ap-pendix D reports the detailed hyper-parameter analysis. 
+
+## A Operation Parser and Demand Prior 
+
+Operation demand provides DAVET with a query-level prior on the amount of fine-grained visual evidence that may be required. It is not a step-wise allocation signal: the parser only determines the capacity of the operation-conditioned reserve, while trajectory risk decides how much of that reserve is used at each denoising step. This appendix documents the parser interface, taxonomy, cue families, precedence, and demand prior used by DAVET. 
+
+A.1 Parser Definition and Scope 
+
+Given a query q, the deterministic parser g returns one dom-inant operation category o = g(q). It uses only the query text, without accessing the image, dataset identity, model predictions, or ground-truth answer. Before cue matching, we lowercase and normalize the query and remove generic conversation wrappers. The same parser, taxonomy, prece-dence, and demand prior are used for both backbones on all benchmarks. The taxonomy is intentionally compact. It distinguishes broad answer operations that may differ in their de-mand for fine-grained visual evidence, without introduc-ing benchmark-specific labels. Importantly, the parser output does not select an evidence view or a denoising step. It only controls the width of the evidence reserve, leaving the phase profile and trajectory-risk modulation unchanged. 
+
+A.2 Operation Taxonomy 
+
+Table A defines five categories and a fixed bounded demand prior, normalized by its largest value, to capture broad dif-ferences in visual evidence demand. The prior assigns larger reserves to lexical readout and nu-merical reasoning, an intermediate reserve to entity ground-ing, and smaller reserves to binary and general questions. These values are fixed across backbones and benchmarks. 
+
+A.3 Cue Rules and Precedence 
+
+The parser applies deterministic rules in order and returns the category of the first match. Table B summarizes the cue families. Rules proceed from explicit answer-form cues to broader operation cues and return the first matching category. This fixed precedence resolves overlapping cues consistently, while unmatched queries fall back to general understanding. 
+
+A.4 Representative Examples 
+
+Table C illustrates representative mappings from query forms to operation categories. 
+
+A.5 Role in DAVET 
+
+The parser does not prescribe an evidence trajectory. Its out-put d(o) only sets the capacity of the operation-conditioned reserve: 
+
+b = N (p1: T ; [1 − ρ + ρd (o)] B) . (10) Because the lower and upper trajectories share the same phase profile, operation demand cannot change the backbone-specific phase ordering. Moreover, the reserve is not au-tomatically spent: trajectory risk selects the step-wise bud-get within the evidence envelope according to the evolving generation state. Operation demand can therefore widen or narrow the admissible reserve, but it cannot directly relocate evidence across denoising steps. This deterministic parser is a lightweight training-free realization of the query-to-demand interface. DAVET con-sumes only the bounded scalar d(o), so a learned parser or another demand estimator can replace g without changing the allocation policy or evidence realizer. 
+
+A.6 Uniform-Demand Control 
+
+To separate query-conditioned demand from uniform ex-posure to the maximum reserve, we construct a uniform-demand control that sets d(o) = 1 for every query. This control retains the phase orientation, average budget B, re-serve fraction ρ, risk strength α, trajectory-risk modula-tion, evidence realizer, budget thresholds, and generation protocol of DAVET. It therefore exposes the maximum operation-conditioned reserve uniformly while leaving its state-dependent use to trajectory risk. Comparison with the default demand prior isolates the role of query-conditioned reserve capacity. As shown in Table D, exposing the maximum reserve to every query increases average high-evidence use by 0.35 –
+
+0.68 denoising steps and latency by 1.38 –3.15% . The cor-responding score changes range from 0.00 to 0.76 points. Across the four settings, Uniform gains 0.27 score points on average while incurring a 1.90% latency overhead. Thus, query-conditioned demand reduces reserve exposure and la-tency while differing from uniform maximum demand by 
+
+0.27 score points on average. 
+
+## B Latency Breakdown 
+
+To identify the source of DAVET’s acceleration, we profile Static High and DAVET on matched subsets of InfoVQA and ChartQA. CUDA-synchronized timing compares total latency and isolates evidence-view construction and diffu-sion denoising. The evidence-view component measures the one-time construction of the coarse and mixed views from the encoded visual sequence. The denoising component covers the repeated diffusion-model updates after these views are available. End-to-end latency retains the remaining shared inference overhead, allowing the decomposition to distin-guish one-time view construction from the recurring visual-conditioning cost targeted by DAVET. Table E shows that total latency decreases by 1.21 –2.29 
+
+s, while evidence-view construction adds only 0.43 –0.80 ms per sample. The corresponding denoising reductions account Operation category Description d(o)          
+
+> Lexical readout Read fine text, labels, names, dates, or document fields. 1.000 Numerical reasoning Count, retrieve, compare, or compute numerical values. 0.941 Entity grounding Identify a person, place, organization, or visually grounded entity. 0.824 Binary decision Resolve a yes/no judgment grounded in the visual input. 0.647 General understanding Handle visual questions not matched by the preceding categories. 0.529
+
+Table A: Shared operation taxonomy and demand prior. The prior d(o) controls the operation-conditioned reserve capacity.       
+
+> Operation category Cue groups Binary decision Yes/no interrogative forms, including auxiliary- and modal-initial queries. Numerical reasoning Counting, percentage, arithmetic, comparison, and numerical-value requests. Lexical readout Direct text-reading requests, dates, labels, names, titles, identifiers, and document-field queries. Entity grounding Person-, place-, organization-, and other entity-seeking interrogatives. General understanding Choice and open-ended visual questions not captured above.
+
+Table B: Operation cues used by the shared parser. Phrases are matched after query normalization.         
+
+> Query Operation cate-gory What is written on the sign? Lexical readout How many bars are shown? Numerical reason-ing Who is shown in the photograph? Entity grounding Is the value increasing? Binary decision What is happening in the image? General under-standing
+
+Table C: Representative parser outputs. for nearly all end-to-end savings, with view construction re-maining below 0.03% of total DAVET latency in every set-ting. The 1.38 –1.76 × profiled speedups therefore arise pri-marily from conditioning the diffusion model on shorter vi-sual token sequences across denoising steps, rather than from changes outside denoising. CUDA synchronization slightly increases absolute latency, so these measurements support component attribution rather than replace the main-table la-tency. 
+
+## C Phase-Orientation Control 
+
+To isolate the role of phase orientation, we reverse each backbone’s canonical orientation while keeping B, ρ, α, op-eration demand, trajectory risk, the evidence realizer, and the generation protocol fixed. This control changes when vi-sual evidence is emphasized without introducing a different allocation rule. As shown in Table F, reversing the phase orientation re-duces quality by 16 .01 and 20 .44 points on LLaDA-V and by 
+
+9.33 and 27 .48 points on LaViDa for InfoVQA and ChartQA, respectively. Relative quality decreases reach 24 .41 –26 .08% 
+
+on LLaDA-V and 26 .29 –41 .54% on LaViDa, while latency changes by at most 2.09% . The similar latency indicates that this degradation is not explained by a materially different average computational cost. Instead, it results from placing the available evidence in the opposite portion of the diffusion                              
+
+> Setting Demand Score ⇑Lat. (s) ⇓High
+> LLaDA-V / InfoVQA Default 65.57 5.551 9.41 Uniform 65.66 5.726 9.85 LLaDA-V / ChartQA Default 78.36 5.277 9.49 Uniform 78.36 5.350 9.84 LaViDa / InfoVQA Default 35.50 1.663 5.87 Uniform 35.73 1.689 6.55 LaViDa / ChartQA Default 66.16 1.735 5.83 Uniform 66.92 1.761 6.35
+
+Table D: Uniform-demand control on InfoVQA and ChartQA. Uniform sets d(o) = 1 for every query, while Default uses the shared operation parser and demand prior. High denotes the average number of denoising steps assigned high evidence. All other DAVET components and settings re-main fixed. process. Together with the controlled phase interventions in the main paper, this result supports aligning phase orientation with backbone-dependent denoising dynamics. 
+
+## D Detailed Hyper-parameter Analysis 
+
+This appendix expands the hyper-parameter analysis in the main paper. We vary each scalar over five values on In-foVQA and ChartQA while holding the other settings at their backbone-specific defaults. The three sweeps isolate the overall evidence scale, the fraction exposed as condi-tional reserve, and the strength of state-dependent reserve use. Tables G–I report the complete results. Default values are highlighted in blue. 
+
+Average budget B. The average budget controls the over-all evidence scale across the diffusion process. As shown in Table G, increasing B raises latency monotonically for both backbones, but its quality effect differs. Across the complete LLaDA-V range, latency increases by about 50% , whereas In-foVQA and ChartQA improve by only 2.22 and 1.12 points. This gradual saturation shows diminishing quality gains as (a) End-to-end latency Setting High (s) DAVET (s) Speedup                            
+
+> LLaDA-V / InfoVQA 7.919 5.634 1.41 ×
+> LLaDA-V / ChartQA 6.249 4.518 1.38 ×
+> LaViDa / InfoVQA 2.864 1.653 1.73 ×
+> LaViDa / ChartQA 2.837 1.610 1.76 ×
+> (b) Denoising and view construction Setting High (s) DAVET (s) Views (ms)
+> LLaDA-V / InfoVQA 7.765 5.479 0.80 LLaDA-V / ChartQA 6.189 4.457 0.76 LaViDa / InfoVQA 2.800 1.587 0.43 LaViDa / ChartQA 2.773 1.546 0.43
+
+Table E: CUDA-synchronized latency breakdown under matched generation settings. Panel (a) compares total Static High and DAVET latency. Panel (b) compares their diffusion denoising time and reports evidence-view construction over-head (Views).                          
+
+> Orientation InfoVQA ChartQA
+> Score ⇑Lat. (s) ⇓Score ⇑Lat. (s) ⇓
+> LLaDA-V
+> Canonical Early 65.57 5.551 78.36 5.277 Reversed Late 49.56 5.653 57.92 5.309
+> LaViDa
+> Canonical Late 35.50 1.663 66.16 1.735 Reversed Early 26.17 1.629 38.68 1.699
+
+Table F: Phase-orientation control on both backbones. For each backbone, Reversed swaps only the canonical phase orientation; all other DAVET settings remain fixed. the evidence budget increases. LaViDa exhibits a sharper transition. Increasing B from 
+
+0.25 to 0.45 recovers 7.56 points on InfoVQA and 22 .96 
+
+points on ChartQA, indicating that the two smaller budgets undersupply evidence. Beyond the default, increasing B from 
+
+0.45 to 0.65 adds 21 .23 –23 .17% latency but only 0.66 –1.24 
+
+quality points. Quality gains therefore diminish substantially once B reaches 0.45 .
+
+Reserve fraction ρ. The reserve fraction determines how much of B is moved from the guaranteed lower trajectory into the operation-conditioned reserve. A larger ρ therefore makes a greater share of evidence conditional on both operation demand and trajectory risk, allowing stable states to use lower budgets. Table H confirms this behavior: latency decreases monotonically as ρ grows on both backbones. LLaDA-V remains stable across the full sweep. Moving from ρ=0 to 0.40 reduces latency by 11 .21 –12 .02% , with quality changes of only 0.20 –0.91 points. LaViDa InfoVQA follows a similar, though less stable, trend. Its ChartQA qual-ity, however, falls from 66 .16 at the default to 63 .48 and 
+
+58 .88 at ρ=0 .30 and 0.40 . At ρ=0 .20 , both backbones re-main close to lower-ρ quality, whereas larger values expose stronger sensitivity on LaViDa ChartQA. 
+
+Risk strength α. The risk strength scales how strongly con-fidence and prediction churn modulate reserve use. Larger α
+
+removes more reserve when the trajectory is confident and stable. Table I accordingly shows monotonic latency reduc-tions as α increases. LLaDA-V is nearly invariant across the sweep: moving from α=0 to 1 changes quality by at most 0.04 points and reduces latency by only 1.80 –2.48% . This limited sensitiv-ity suggests that risk modulation has a small aggregate ef-fect under the tested LLaDA-V configuration. LaViDa re-sponds more strongly. Over the same range, latency falls by 
+
+7.54 –9.24% , while InfoVQA decreases by 0.67 points and ChartQA by 2.92 points. The largest ChartQA reductions appear at α ≥ 0.75 .Taken together, the sweeps show that the three hyper-parameters govern different aspects of DAVET behavior. B
+
+controls the global evidence scale, ρ determines how much evidence becomes conditional, and α controls how aggres-sively the evolving generation state withdraws that condi-tional reserve. Their effects are directionally interpretable, while low B, high ρ, and high α expose clear quality bound-aries, especially for LaViDa. Backbone / B InfoVQA ChartQA 
+
+Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓
+
+LLaDA-V 
+
+0.55 63.87 4.488 77.72 4.195 
+
+0.65 64.71 5.045 78.12 4.745 
+
+0.75 65.57 5.551 78.36 5.277 
+
+0.85 65.78 6.156 78.52 5.788 
+
+0.95 66.09 6.722 78.84 6.298 
+
+LaViDa 
+
+0.25 27.94 1.324 43.20 1.360 
+
+0.35 28.62 1.414 43.72 1.440 
+
+0.45 35.50 1.663 66.16 1.735 
+
+0.55 36.16 1.855 67.32 1.947 
+
+0.65 36.16 2.016 67.40 2.137 
+
+Table G: Sensitivity to the average budget B. The other DAVET hyper-parameters remain at their backbone-specific defaults. Blue cells mark the default value and its corresponding results. 
+
+Backbone / ρ InfoVQA ChartQA 
+
+Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓
+
+LLaDA-V 
+
+0.00 65.87 6.014 78.44 5.639 
+
+0.10 65.70 5.768 78.40 5.399 
+
+0.20 65.57 5.551 78.36 5.277 
+
+0.30 65.40 5.436 78.32 5.127 
+
+0.40 64.96 5.291 78.24 5.007 
+
+LaViDa 
+
+0.00 36.01 1.735 67.08 1.824 
+
+0.10 35.92 1.714 66.96 1.796 
+
+0.20 35.50 1.663 66.16 1.735 
+
+0.30 35.09 1.602 63.48 1.662 
+
+0.40 34.07 1.549 58.88 1.592 
+
+Table H: Sensitivity to the reserve fraction ρ. The average budget and risk strength remain at their backbone-specific defaults. Blue cells mark the default value and its corresponding results. 
+
+Backbone / α InfoVQA ChartQA 
+
+Score ⇑ Latency (s) ⇓ Score ⇑ Latency (s) ⇓
+
+LLaDA-V 
+
+0.00 65.59 5.692 78.32 5.374 
+
+0.25 65.59 5.670 78.28 5.338 
+
+0.50 65.59 5.648 78.36 5.307 
+
+0.75 65.57 5.617 78.32 5.272 
+
+1.00 65.57 5.551 78.36 5.277 
+
+LaViDa 
+
+0.00 35.98 1.710 66.80 1.818 
+
+0.25 35.84 1.673 66.24 1.775 
+
+0.50 35.50 1.663 66.16 1.735 
+
+0.75 35.52 1.613 65.36 1.695 
+
+1.00 35.31 1.581 63.88 1.650 
+
+Table I: Sensitivity to the risk strength α. The average budget and reserve fraction remain at their backbone-specific defaults. Blue cells mark the default value and its corresponding results.
