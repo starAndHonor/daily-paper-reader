@@ -1,0 +1,649 @@
+Title: SPADE: An Input-Adaptive Sparse Attention Engine for Fast Video Diffusion Models Inference
+
+URL Source: https://arxiv.org/pdf/2608.03335v1
+
+Published Time: Wed, 05 Aug 2026 00:45:52 GMT
+
+Number of Pages: 7
+
+Markdown Content:
+# SPADE: An Input-Adaptive Sparse Attention Engine for Fast Video Diffusion Models Inference 
+
+## Shanghao Liu 1, Renze Chen 2, Size Zheng 2, Yuanqiang Liu 2, Yun (Eric) Liang 2, Hailong Yang 1∗
+
+> 1
+
+Beihang University; 2Peking University Email: somehow6@buaa.edu.cn; {crz, zhengsz, yuanqiangliu, ericlyun}@pku.edu.cn; hailong.yang@buaa.edu.cn Beijing, China 
+
+## Abstract 
+
+Video diffusion transformers (vDiTs) generate high quality but pay quadratic self-attention cost, making inference prohibitive at video-token scales. The challenge is input-adaptive sparsity: se-lecting critical Q/K/V tokens with negligible overhead and execut-ing them for end-to-end gains. We present SPADE , a training-free sparse-attention engine of three parts: (i) vDiT-SSR , spec defin-ing 3D blocking candidates and formalizing dynamic masks via 
+
+Summarizer /Estimator expressions; (ii) runtime scheme gener-ation using SICS and a head-wise policy; and (iii) an executor with low-overhead index search, flash block-sparse attention, and kernel grouping. Across Hunyuan-Video, Wan 2.1/2.2 (T2V/I2V), 
+
+SPADE raises sparsity and speed and preserves quality, accelerating attention 2.26 ×–3.40 × and end-to-end 1.49 ×–1.80 ×. Our code is open-sourced at https://github.com/6somehow/DAC-SPADE. 
+
+## CCS Concepts 
+
+• Computer systems organization → Neural networks ; • Com-puting methodologies → Computer vision tasks ; • General and reference → Performance. 
+
+## Keywords 
+
+video diffusion transformers, sparse attention 
+
+ACM Reference Format: 
+
+Shanghao Liu 1, Renze Chen 2, Size Zheng 2, Yuanqiang Liu 2, Yun (Eric) Liang 2, Hailong Yang 1. 2026. SPADE: An Input-Adaptive Sparse Attention Engine for Fast Video Diffusion Models Inference. In 63rd ACM/IEEE Design Automation Conference (DAC ’26), July 26–29, 2026, Long Beach, CA, USA. 
+
+ACM, New York, NY, USA, 7 pages. https://doi.org/10.1145/3770743.3804015 
+
+## 1 Introduction 
+
+Video generation has become a core generative-AI task. Modern sys-tems—Sora [ 18 ], Veo [ 9 ], Wan [ 23 ], Hunyuan-Video [ 13 ]—typically use Video Diffusion Transformers (vDiTs) with self-attention. At-tention scales as O( 𝑛 2) in compute ; naive memory is also O( 𝑛 2),while streaming (FlashAttention) reduces memory to O( 𝑛 ) but leaves compute quadratic and the main latency source [ 5 ]. In video DiTs, the 3D token grid aggravates both compute and traffic. Much of this cost is redundant [ 6, 12 , 27 ], motivating sparse attention for video [2, 7, 21, 25, 28, 29, 33].  
+
+> ∗Hailong Yang is the corresponding author.
+> This work is licensed under a Creative Commons Attribution 4.0 International License.
+> DAC ’26, Long Beach, CA, USA
+> ©2026 Copyright held by the owner/author(s). ACM ISBN 979-8-4007-2254-7/2026/07 https://doi.org/10.1145/3770743.3804015
+
+Table 1: Comparison on Hunyuan-Video text-to-video (720p, 61 frames) among recent dense (FlashAttention-3), semi-static (Sparse-VideoGen), dynamic (Sparge Attention), and our SPADE .
+
+Method SSIM ↑ Sparsity ↑ Latency(ms) ↓
+
+FlashAttention-3 N/A 0% 232 Sparse-VideoGen 0.87 70.38% 264 Sparge Attention 0.80 52.46% 143 SPADE 0.91 85.21% 67 
+
+We group sparse attention for video into: i) Static —fixed 3D blocking/sliding windows (e.g., Fast-VideoGen [ 34 ]); efficient but not adaptive. ii) Semi-static —pick among a few predefined patterns (e.g., Sparse-VideoGen [ 25 ]); mildly adaptive, but search space is tiny. iii) Dynamic —input-conditioned without a preset mask (e.g., Sparge Attention [ 32 ]); flexible but with control/indexing overhead. The aim is higher sparsity and throughput without quality loss, yet most systems optimize one aspect in isolation. Progress toward near-linear scaling remains limited: sparsity gains are modest, and wall-clock speedups lag (Table 1). Combining static , semi-static , and dynamic methods can raise sparsity but adds overhead, creating end-to-end challenges: (i) Blocking scheme selection. Choosing an input-conditioned 3D blocking from many candidates with negligible cost is nontrivial. 
+
+(ii) Efficient dynamic kernels. Dynamic patterns improve adap-tivity and sparsity but add control/indexing overhead, demanding hardware-aware kernels (accelerator instructions, fusion, access-aware design) and user customizability. (iii) Multi-granularity control. Token importance varies by head/layer/timestep [ 1 , 2,16 , 32 ]; exploiting this heterogeneity to increase sparsity while preserving quality remains hard. We present SPADE , a training-free, algorithm–systems co-designed framework for high-performance hybrid-sparse attention. First, the Video DiT Sparsity Scheme Representation (vDiT-SSR) is a uni-fied interface spanning all three families, enabling flexible high-sparsity hybrids. vDiT-SSR expresses: (i) diverse 3D static blocking via blocking-scheme candidates ; (ii) dynamic block-index selection via summarizer /estimator expressions; and (iii) automatic sparsity control via policy-function interfaces. Built on vDiT-SSR, SPADE accelerates inference via two mod-ules: (1) Scheme Generation : fast, input-adaptive, head-wise/per-timestep patterns using the online Sum of Intra-block Cosine Simi-larities (SICS) with a lightweight policy that budgets across timesteps/layers; arXiv:2608.03335v1 [cs.CV] 4 Aug 2026 DAC ’26, July 26–29, 2026, Long Beach, CA, USA Liu et al. 
+
+and (2) Head-wise Sparse Attention : an execution engine (code-gen + library) that groups kernel launches, fuses QKV index-selection, and implements hardware-aware flash block-sparse attention for high-throughput adaptive computation. We validate on T2V/I2V with Hunyuan-Video, Wan 2.1, and Wan 2.2. Compared to strong sparse baselines, SPADE preserves quality (VBench [ 11 ], PSNR/SSIM/LPIPS) while achieving the high-est sparsity and lowest latency. On an NVIDIA H800 at 720p, atten-tion speedups are 2.26 ×–3.40 × and end-to-end gains 1.48 ×–1.70 ×.In summary, our contributions are: 
+
+• vDiT-SSR. A unified, expressive module integrating 3D block-ing candidates with dynamic selection (summarizer/estimator), subsuming prior designs and enabling new hybrids. 
+
+• Scheme Generation. A head-wise, input-adaptive generator using online SICS plus a lightweight policy. Scheme generation is 8% of sparse-attention runtime yet yields higher sparsity than alternatives. 
+
+• Head-wise Sparse Attention Execution. Lowering vDiT-SSR to block-sparse kernels via codegen/library with low-cost index selection, kernel grouping, and hardware-aware optimizations. At equal sparsity, pattern search is 3.48 × faster and computation 
+
+1.80 × faster than state-of-the-art kernels. 
+
+• End-to-end gains. On Hunyuan-Video and Wan 2.1/2.2 for T2V/I2V, 
+
+SPADE speeds attention by 2.26 ×–3.40 × and end-to-end by 1.49 ×–
+
+1.80 ×, while matching or improving generation quality. 
+
+## 2 Background 2.1 Video Representation in vDiT Models v 
+
+> v
+> v
+> v
+> v
+> v
+> v
+> v
+> v
+> VAE
+> v
+> v
+> v
+> v
+> v
+> v
+> v
+> v
+> v
+> Input Latent Space VAE
+> Output
+
+Figure 1: Illustration of the variational autoencoder (VAE) used in vDiT. 
+
+Variational Autoencoders (VAEs) [ 24 ] are integral to vDiTs, com-pressing raw video into compact latents for scalable training and inference. As in Figure 1, Hunyuan-Video [ 13 ] and Wan [ 23 ] map inputs to a 3D latent tensor (𝑇 /4 + 1, 𝐻 /8,𝑊 /8) that preserves spatio-temporal structure. The tensor is flattened to a 1D token sequence for attention. This preserved continuity is key to efficient sparse attention in video generation. 
+
+## 2.2 Block-Sparse Attention 
+
+The self-attention in Equation (1) costs O( 𝑁 2) for sequence length 
+
+𝑁 :Attention (𝑄, 𝐾, 𝑉 ) = softmax 
+
+ 𝑄𝐾 ⊤
+
+√𝑑 𝑘 
+
+
+
+𝑉 (1) Block-sparse attention (BSA) reduces this by partitioning tokens into blocks and masking a subset 𝑀 of block pairs (Equation (2)): Block-Sparse-Attn (𝑄, 𝐾, 𝑉 ) = softmax 
+
+ 𝑄𝐾 ⊤
+
+√𝑑 𝑘 
+
++𝑀 
+
+
+
+𝑉 (2) The complexity becomes O( 𝑁 𝑁 𝑏 ), where 𝑁 𝑏 is the number of tokens in selected blocks. Blockwise computation maps well to modern accelerators (e.g., NVIDIA tensor cores), sustaining high utilization while retaining long-range capacity. 
+
+## 2.3 Taxonomy of Sparse Attention 
+
+To target critical blocks in long-text and video, we group prior sparse attention into three classes. 
+
+Static methods use input-agnostic masks (Attention Sink [ 27 ], DiTFastAttn [ 30 ], Fast-VideoGen [ 34 ]). Fixed windows are simple and efficient but assume local stationarity and cannot adapt to content. 
+
+Semi-static methods choose among predefined masks per head using the input (DuoAttention [ 26 ], DiTFastAttnV2 [ 31 ], Sparse-VideoGen [ 25 ]). They add limited adaptivity; mask selection can be inefficient or hurt accuracy. 
+
+Dynamic methods generate masks from the input (ArkVale [ 3], FlexPrefill [ 14 ], SeerAttention [ 8], Sparge Attention [ 32 ]). These often preserve quality with less compute, but mask construction adds overhead that degrades end-to-end latency. 
+
+## 3 Methodology 
+
+We introduce the SPA rse video DiT Engine (SPADE), a sparse-attention engine for vDiTs (Figure 2). SPADE has three components. Let the head dimension be 𝑑 ℎ𝑒𝑎𝑑 ; Q, K, V the inputs and O the output; BS the block size and NB the number of blocks. 
+
+(a) Video DiT Sparsity Scheme Representation (vDiT-SSR). 
+
+vDiT-SSR is an input spec for fine-grained sparsity. It lists blocking scheme candidates and a policy function for head-wise scheme gen-eration, plus a Summarizer Expression and an Estimator Expression 
+
+that formalize dynamic sparse attention. 
+
+(b) Schemes Generation. Given Q, K, and the inference state, this module performs Aggregation Evaluation using the Sum of Intra-block Cosine Similarities (SICS), then applies the policy to yield each head’s sparsity-ratio scheme and blocking scheme .
+
+(c) Head-wise Sparse Attention. This is the compute core: ahead-of-time compiled operators implementing the vDiT-SSR al-gorithm, including flash block-sparse attention and head-wise Top-K/Top-P selection. At runtime it consumes Q, K, V and the head-wise schemes to produce O. 
+
+## 3.1 Video DiT Sparsity Scheme Representation (vDiT-SSR) 
+
+Guided by Section 2.3, vDiT-SSR unifies sparse attention for DiTs. As in Figure 2, it specifies: (1) blocking scheme candidates that parti-tion Q/K into spatio-temporally continuous blocks; (2) a policy func-tion for static and dynamic sparsity; and (3) Summarizer /Estimator 
+
+Expressions for dynamic methods. Utility parameters include attention-sink length [27] and Top-K/Top-P mode [28]. A Blocking Scheme partitions the latent spaces of Q, K, V into 3D blocks (Figure 3): spatial (continuous in H,W; Figure 3a), SPADE: An Input-Adaptive Sparse Attention Engine for Fast Video Diffusion Models Inference DAC ’26, July 26–29, 2026, Long Beach, CA, USA Per Head Per Head        
+
+> QKV
+> Selected Blocking Scheme
+> Sparsity-Ratio Scheme
+> Transform Layout (Blocking)
+> Q K V 
+> Summarize
+> QS  KS  
+> Attention-Score-Mask
+> Flash Block Sparse Attention
+> O
+> Inter-Estimate Intra-Estimate Intra-Estimate
+> Select (Top-K/Top-P)
+> Transform Layout (Unblocking)
+> O 
+
+(c)  Head-wise Sparse Attention 
+
+Head-wise  Sparsity Scheme 
+
+> Per Head
+> Lower
+> Lower
+
+(a) v ideo DiT S parsity  Scheme  Representation      
+
+> Summarizer Expression
+> Estimator Expression
+> Policy Func Utility params
+> Blocking Scheme Candidates
+> Inference State
+> Candidates  Aggregation Scores
+> Select
+> Selected Blocking Schemes
+> Selected Aggregation Score
+> Apply Policy
+> Sparsity-Ratio Schemes
+> Inter-top Value Intra-top Value Local-window Length
+
+Sparsity Schemes 
+
+(b) Schemes 
+
+Generation 
+
+> Q-block Shape KV-block Shape
+> Aggregation Evaluate (based on SICS) Timestep-idx Layer-idx Prompt-idx
+
+Figure 2: Overview of SPADE (Sparse Video DiT Engine). 0 
+
+> 8
+> 16
+> Frame 0
+> 8
+> 16
+> Width
+> 0
+> 8
+> 16
+> Height
+
+(a) Example 0, Spatial scheme (1,8,8). 0  
+
+> 8
+> 16
+> Frame 0
+> 8
+> 16
+> Width
+> 0
+> 8
+> 16
+> Height
+
+(b) Example 1, Temporal scheme (16,1,4). 0  
+
+> 8
+> 16
+> Frame 0
+> 8
+> 16
+> Width
+> 0
+> 8
+> 16
+> Height
+
+(c) Example 2, Mixed scheme (2,4,8). 
+
+Figure 3: Illustration of blocking schemes (order: T,H,W): (a) spatial (1,8,8); (b) temporal (16,1,4); (c) mixed (2,4,8). Each color denotes one block. 
+
+temporal (continuous in T,W; Figure 3b), or mixed (spanning T,H,W; Figure 3c). This flexible abstraction imposes minimal constraints. Users enumerate blocking scheme candidates for two reasons. Algorithmically, good partitioning benefits both static and dynamic selection by exploiting latent continuity. Abstraction-wise, it unifies static and semi-static patterns: e.g., Fast-VideoGen [ 34 ] equals a chosen scheme plus a local window; DiTFastAttn [ 30 ] and Sparse-VideoGen [ 25 ] are subsets of these schemes. Semi-static patterns arise from head-wise choice among candidates. The Policy Function outputs head-wise sparsity-ratio schemes 
+
+from the Inference State and the head’s Selected Aggregation Score .The state includes timestep-idx , prompt-idx (user/negative), and 
+
+layer-idx . Each scheme has: (1) local-window length (static); (2) intra-top value (Top-P threshold or Top-K keep for dynamic intra); (3) 
+
+inter-top value (Top-P cumulative threshold or Top-K keep for inter). The Summarizer and Estimator Expressions define the dy-namic algorithm. The Summarizer Expression reduces over sequence positions of Q/K (e.g., max /min /mean ). The Estimator Expression in-cludes intra-estimation on blocks (SICS, Eq. (4) ) and a user-defined inter-estimator over Q/K summaries. We denote variants as DSA-SPADE (estimate with (𝑘 max , 𝑘 min , 𝑞 max +𝑞 min 
+
+2 )); 
+
+DSA2-SPADE (with (𝑘 max , 𝑘 min , 𝑞 max , 𝑞 min )); and MEAN-SPADE (with 
+
+(𝑞 mean , 𝑘 mean )). Figure 4 shows SPADE’s expressiveness: Figures 4a,4b are SPADE-inspired; Figure 4c matches Sparge Attention [ 32 ] and FlexPrefill [ 14 ]. Vectors lie in R𝑑 ℎ𝑒𝑎𝑑 ; black dots are per-block q(𝑖 ) , k(𝑖 ) ;gray dots (e.g., qmax , kmin ) are summaries. Gray equations indicate DAC ’26, July 26–29, 2026, Long Beach, CA, USA Liu et al. 
+
+(a) DSA-SPADE. (b) DSA2-SPADE. (c) MEAN-SPADE. 
+
+Figure 4: Illustration of different summarizer and estimator expressions. 
+
+the inter-estimator; the dot product of blue vectors gives inter-block importance. 
+
+## 3.2 Schemes Generation 
+
+The module builds a per-head sparsity scheme. It evaluates all 
+
+blocking scheme candidates by aggregating Q and K under each, then picks the head-wise Selected Blocking Scheme with the highest Aggregation Score (AS). For Q, AS is the sum of per-block SICS (Eq. (3)). 
+
+AS (𝑄 | scheme ) =
+
+> 𝑁 𝐵
+
+∑︁ 
+
+> 𝑖 =1
+
+SICS 
+
+
+
+Q(𝑖 )
+
+> block
+
+
+
+, (3) 
+
+SICS 
+
+
+
+Q(𝑖 )
+
+> block
+
+
+
+= 1⊤
+
+> 𝐵𝑆
+
+
+
+CosSim (Q(𝑖 )
+
+> block
+
+, Q(𝑖 )
+
+> block
+
+)
+
+
+
+1𝐵𝑆 
+
+= 1⊤
+
+> 𝐵𝑆
+
+
+
+𝐷 −1 
+
+> 𝑖
+
+Q(𝑖 )
+
+> block
+
+ Q(𝑖 )
+
+> block
+
+⊤𝐷 −1
+
+> 𝑖
+
+
+
+1𝐵𝑆 . (4) By Eq. (4) , let Q(𝑖 ) 
+
+> block
+
+∈ R𝐵𝑆 ×𝑑 head , with 𝑘 -th row  q(𝑖 )
+
+> 𝑘
+
+⊤. Define 
+
+𝐷 𝑖 = diag  ∥q(𝑖 ) 
+
+> 1
+
+∥2, . . . , ∥q(𝑖 ) 
+
+> 𝐵𝑆
+
+∥2
+
+ and 1𝐵𝑆 ∈ R𝐵𝑆 . The operator SICS 
+
+forms 𝐷 −1 
+
+> 𝑖
+
+Q(𝑖 )
+
+> block
+
+ Q(𝑖 )
+
+> block
+
+⊤𝐷 −1 
+
+> 𝑖
+
+and sums all entries; AS (𝑄 | scheme )
+
+then sums over 𝑁 𝐵 blocks. Intuitively, AS measures how tightly embeddings cluster within a spatio-temporal partition. Strong aggregation yields more repre-sentative summaries (better dynamic selection) and aligns static masks with latent structure. Thus head-wise scheme selection by aggregation benefits both static and dynamic sparsity. 
+
+SICS 
+
+
+
+Q(𝑖 ) 
+
+=
+
+> 𝐵𝑆
+
+∑︁ 
+
+> 𝑎 =1
+> 𝐵𝑆
+
+∑︁ 
+
+> 𝑏 =1
+
+q⊤ 
+
+> 𝑎
+
+q𝑏 
+
+∥q𝑎 ∥2 ∥q𝑏 ∥2
+
+=
+
+> 𝐵𝑆
+
+∑︁ 
+
+> 𝑎 =1
+> 𝐵𝑆
+
+∑︁ 
+
+> 𝑏 =1
+
+ˆq⊤ 
+
+> 𝑎
+
+ˆq𝑏 , ˆq𝑘 := q𝑘 
+
+∥q𝑘 ∥2
+
+=
+
+> 𝐵𝑆
+
+∑︁ 
+
+> 𝑘 =1
+
+ˆq⊤ 
+
+> 𝑘
+
+ˆq𝑘 + 2
+
+> 𝐵𝑆
+
+∑︁  
+
+> 𝑗 =1
+> 𝑗 −1
+
+∑︁ 
+
+> 𝑖 =1
+
+ˆq⊤ 
+
+> 𝑖
+
+ˆq𝑗 
+
+= 𝐵𝑆 + 2
+
+> 𝐵𝑆
+
+∑︁ 
+
+> 𝑗 =1
+
+ 𝑗 −1∑︁ 
+
+> 𝑖 =1
+
+ˆq𝑖 
+
+⊤
+
+ˆq𝑗 . (5) Naively, SICS costs O( 𝐵𝑆 2𝑑 ℎ𝑒𝑎𝑑 ), which is expensive when screen-ing many candidates. The online form in Eq. (5) reduces this to 
+
+O( 𝐵𝑆𝑑 ℎ𝑒𝑎𝑑 ) and lowers shared-memory pressure. SICS (Q(𝑖 ) ) sums all pairwise cosine similarities; diagonal terms equal 𝐵𝑆 since ∥ ˆq𝑘 ∥2 =
+
+1. The final identity rewrites off-diagonals via cumulative partial sums for efficient computation. As in Algorithm 1, our CUDA kernel uses implicit intra-warp sync, assigning each warp to a block and parallelizing across 𝑑 ℎ𝑒𝑎𝑑 .Float4 vectorization and warp shuffles improve throughput. Using registers only, it avoids shared memory and greatly cuts candidate-evaluation latency. 
+
+Algorithm 1 Online computation of SICS (Q).
+
+Require: Block of vectors Q = {q0, . . . , q𝐵𝑆 −1 } ⊂ R𝑑  
+
+> 1:
+
+r ← 0 ∈ R𝑑 ⊲ running partial sum of normalized vectors  
+
+> 2:
+
+𝜎 ← 0 ∈ R ⊲ accumulator for off-diagonal inner products  
+
+> 3:
+
+for 𝑗 ← 0 to 𝐵𝑆 − 1 do  
+
+> 4:
+
+ˆq𝑗 ← q𝑗 /∥ q𝑗 ∥2 ⊲ normalize current vector  
+
+> 5:
+
+𝜎 ← 𝜎 + ⟨ r, ˆq𝑗 ⟩ 
+
+> 6:
+
+r ← r + ˆq𝑗  
+
+> 7:
+
+end for  
+
+> 8:
+
+return 2 𝜎 + 𝐵𝑆 ⊲ equals SICS (Q)
+
+After aggregation, SPADE selects the per-head Selected Blocking Scheme (max AS). The Selected Aggregation Score and the inference state then feed the policy function to produce each head’s sparsity-ratio scheme , enabling fine-grained control over static vs. dynamic sparsity and overall levels. 
+
+## 3.3 Head-wise Sparse Attention 
+
+The performance core of SPADE is a highly optimized Head-wise Sparse Attention pipeline (Figure 2c). Per head, Q, K, V are first re-arranged into a blocked layout by the Selected Blocking Scheme for intra-block contiguity. The Summarizer Expression then produces one vector per Q/K block, yielding summaries 𝑄 ′ and 𝐾 ′ of shape (𝑁 𝑏𝑙𝑜𝑐𝑘𝑠 , 𝑑 ℎ𝑒𝑎𝑑 ). From 𝑄 ′/𝐾 ′, we compute (i) intra-block importance 
+
+(one score per block) via the intra-estimator and (ii) an inter-block importance matrix of size 𝑁 𝑄 𝑏𝑙𝑜𝑐𝑘𝑠 × 𝑁 𝐾 𝑏𝑙𝑜𝑐𝑘𝑠 via the inter-estimator. Scores are filtered by Top-K or Top-P. SPADE supports arbitrary combinations of intra/inter importance; by default, intra scores are broadcast and OR -combined with inter scores. The result is united with local-window and attention-sink masks to form a binary atten-tion mask defining the block-sparse pattern. A high-performance SPADE: An Input-Adaptive Sparse Attention Engine for Fast Video Diffusion Models Inference DAC ’26, July 26–29, 2026, Long Beach, CA, USA 
+
+block-sparse attention kernel computes the main operation, after which output blocks are restored to the original layout to form 𝑂 .We apply three throughput optimizations. (1) Operator fusion. 
+
+We fuse layout transform (blocking), summarization, and intra-estimation into one CUDA kernel, reducing global traffic, improv-ing locality, and reusing on-chip memory. (2) Head grouping. At runtime, SPADE groups heads sharing a blocking scheme to in-crease per-launch work and utilization; this also lets us fuse Q/K gather–scatter with the layout transform, consolidating memory accesses. (3) Flash block-sparse attention. Inspired by FlashAt-tention [ 4, 5 , 19 , 20 ] and sparse variants [ 10 , 22 ], our kernel (i) preprocesses the mask into ranked BSR for sequential access, (ii) uses an online softmax to avoid materializing dense attention, and (iii) exploits Hopper features (Tensor Memory Accelerator, warp-group MMA) to pipeline memory/compute. Heads with identical sparsity patterns are co-scheduled to raise overall utilization. 
+
+## 4 Experiments 4.1 Experimental Setup 
+
+Models: We evaluate five open-source vDiTs: Wan 2.1-I2V/T2V-14B, Wan 2.2-I2V/T2V-14B, and Hunyuan-Video-T2V-13B. Videos are 720p. Wan 2.1/2.2 output 61 frames; Hunyuan-Video-T2V outputs 125. Each frame has 3600 tokens. 
+
+Metrics: We report three dimensions: Sparsity —fraction of pruned attention scores (theoretical speedup upper bound); Effi-ciency —attention TFLOPs, attention-level speedup, and end-to-end speedup vs. full attention; Quality —VBench [ 11 ] plus fidelity to full attention (SSIM/PSNR/LPIPS). 
+
+Datasets: Text-to-Video uses VBench-2.0 prompts [ 35 ] across 18 categories, with versions for Wan 2.1, Wan 2.2, and Hunyuan-Video. Image-to-Video uses VBench-2.0-I2V pairs [ 35 ], cropped to 16:9 for 720p. 
+
+Configurations: All experiments run on an NVIDIA H800 (80GB, CUDA 12.8). Two fixed inference-time policies: Func 0 (Wan 2.1/2.2) budgets 30:1 for dynamic selection vs. static windows; Func 1 
+
+(Hunyuan-Video) budgets ∼80% dynamic, 20% static. Dynamic se-lection follows SPADE (Figure 4a): Summarizer and inter-estimator inputs; intra-block SICS; inter-block Top-K; intra-block threshold-ing. 
+
+Baselines: We compare Full Attention via FlashAttention-3 [ 19 ]; semi-static Sparse-VideoGen [25 ]; and dynamic Sparge Attention [32 ], X-Attention [28 ], Sparse-VideoGen2 [ 29 ]. X-Attention selects anti-diagonal (“slash”) scores; Sparse-VideoGen2 uses k-means to form the mask. Defaults are used. X-Attention is incompatible with Wan 2.1/2.2 and Sparse-VideoGen2 with Wan 2.2, so these are omitted. Following [ 15 , 17 , 25 , 29 ], all methods use full attention for the first 30% (T2V) and 25% (I2V) denoising steps; 
+
+SPADE-Turbo sparsifies after the first step. 
+
+## 4.2 Overall Performance 
+
+Table 2 summarizes results. 
+
+Sparsity. SPADE achieves the highest sparsity on every model (82.32%–85.21% ), exceeding prior baselines (47.10–83.80%). SPADE-Turbo matches SPADE’s sparsity. 
+
+Efficiency. Despite higher sparsity, SPADE’s kernels are most ef-ficient: attention speedups 2.26 ×–3.44 × and end-to-end 1.32 ×–1.49 ×, with the highest attention TFLOPs among dynamic baselines. 
+
+SPADE-Turbo further raises end-to-end speedup to 1.49 ×–1.80 × at the same sparsity. 
+
+Quality (Overall + Fidelity). SPADE matches or surpasses base-lines on perceptual quality: VBench is comparable to full atten-tion (0.76–0.81); SPADE-Turbo reaches 0.79 (Hunyuan-Video-T2V) and 0.75 (Wan 2.2-I2V). For fidelity, SPADE leads on Wan 2.1/2.2 (T2V/I2V) with higher SSIM/PSNR and lower LPIPS, and remains competitive on Hunyuan-Video-T2V (within 0.01 SSIM of the best sparse baseline). 
+
+## 4.3 Ablation Study of vDiT-SSR Designs 
+
+We ablate on Wan 2.1-T2V using SSIM/PSNR/LPIPS, comparing 
+
+Static-Spatial , Static-Temporal , Static-Blocking , Dync-Spatial ,
+
+Dync-Temporal , and SPADE . All maintain ∼82% sparsity. Key findings: (1) Spatial/temporal variants validate the vDiT-SSR block-ing candidates. (2) Static-Blocking vs. SPADE shows the benefit of SICS-based aggregation. (3) Dynamic variants beat static methods. (4) SPADE’s hybrid approach outperforms any single component. 
+
+## 4.4 Attention Performance Breakdown Flash  
+
+> Attn2
+> Flash
+> Attn 3
+> Xattn Sparge
+> Attn
+> Sparse
+> VideoGen2
+> SPADE
+> 0
+> 50
+> 100
+> 150
+> 200
+> Latency (ms)
+> Pattern Search
+> Attention
+
+Figure 5: Attention time breakdown of sparse attention meth-ods. 
+
+We profile a single attention layer under the Wan 2.1 shape across FlashAttention-2/3, X-Attention, Sparge Attention, Sparse-VideoGen2, and SPADE. SPADE yields the lowest latency in Pattern Search and Attention Computation . Versus Sparse-VideoGen2, Pat-tern Search costs 25% and Attention Computation 65%; vs. Sparge Attention, Pattern Search is 26%. These gains reflect SPADE’s algo-rithm–systems co-design. 
+
+## 4.5 Policy Function Analysis 
+
+We study the policy that uses the Selected Aggregation Score to set head-wise Sparsity-Ratio Schemes. Using Complex_plot prompts from VBench-2.0 under high sparsity, we compare w/ aggregation score (budget negatively correlated with the score) vs. w/o , and include Sparse-VideoGen2. In complex scenes with tight budgets, aggregation-guided allocation yields higher fidelity and stability, validating SPADE’s policy design. DAC ’26, July 26–29, 2026, Long Beach, CA, USA Liu et al. 
+
+Table 2: Overall performance of sparse attention methods. 
+
+Method SSIM ↑ PSNR ↑ LPIPS ↓ VBench score ↑
+
+Attention TFLOPs ↑
+
+Attention speedup ↑
+
+E2E speedup ↑ Sparsity ↑
+
+Hunyuan-T2V 0.77 704 1.00 1.00 0.00% SpargeAttn 0.80 24.59 0.16 0.74 246 0.88 0.80 60.20% X-Attention 0.88 27.38 0.09 0.76 240 0.72 0.72 52.46% Sparse-VideoGen 0.87 26.26 0.11 0.76 339 1.63 1.07 70.38% Sparse-VideoGen2 0.92 30.74 0.05 0.76 248 2.17 1.23 83.80% SPADE 0.91 29.04 0.08 0.76 358 3.44 1.49 85.21% SPADE-Turbo 0.57 15.30 0.43 0.79 358 3.44 1.80 85.21% 
+
+Wan 2.1-T2V 0.79 696 1.00 1.00 0.00% SpargeAttn 0.76 22.59 0.23 0.72 238 0.65 0.81 47.10% Sparse-VideoGen 0.73 19.97 0.25 0.79 321 1.30 1.05 64.46% Sparse-VideoGen2 0.78 21.70 0.19 0.78 195 1.57 1.11 82.20% SPADE 0.87 25.87 0.10 0.79 323 2.62 1.36 82.32% SPADE-Turbo 0.53 14.20 0.48 0.78 323 2.62 1.49 82.32% 
+
+Wan 2.2-T2V 0.81 701 1.00 1.00 0.00% SpargeAttn 0.66 18.72 0.35 0.78 239 0.69 0.81 50.60% Sparse-VideoGen 0.47 12.62 0.54 0.81 315 1.46 1.18 69.18% SPADE 0.72 19.50 0.24 0.81 302 2.56 1.32 83.11% SPADE-Turbo 0.48 12.81 0.56 0.81 302 2.56 1.55 83.11% 
+
+Wan 2.1-I2V 0.71 690 1.00 1.00 0.00% SpargeAttn 0.55 19.59 0.30 0.65 229 0.90 1.17 63.03% Sparse-VideoGen 0.59 19.17 0.24 0.69 321 1.31 1.22 64.46% Sparse-VideoGen2 0.64 20.34 0.20 0.70 202 1.63 1.34 82.00% SPADE 0.80 24.49 0.10 0.70 276 2.26 1.41 82.32% SPADE-Turbo 0.53 17.99 0.26 0.69 276 2.26 1.62 82.32% 
+
+Wan 2.2-I2V 0.73 690 1.00 1.00 0.00% SpargeAttn 0.53 18.68 0.37 0.69 232 0.89 0.88 62.18% Sparse-VideoGen 0.50 17.09 0.32 0.73 313 1.28 1.21 64.46% SPADE 0.79 24.66 0.10 0.73 285 2.47 1.36 83.25% SPADE-Turbo 0.50 17.12 0.32 0.75 285 2.47 1.49 83.25% 
+
+Table 3: Ablation study of sparse attention methods of SPADE. 
+
+Method SSIM PSNR LPIPS Static-Spatial 0.56 17.08 0.46 Static-Temporal 0.62 17.26 0.40 Static-Blocking 0.63 18.34 0.35 Dync-Spatial 0.81 23.55 0.15 Dync-Temporal 0.81 23.70 0.16 SPADE 0.87 25.87 0.10 
+
+## 5 Conclusion 
+
+We introduced vDiT-SSR , a unified abstraction for composing static ,
+
+semi-static , and dynamic sparse attention in Diffusion Transformers. Built on it, SPADE pairs runtime Scheme Generation —driven by SICS and a head-wise policy—with ahead-of-time Head-wise Sparse Attention kernels, cleanly separating policy from mechanism and enabling efficient hybrid sparsity. Across Hunyuan-Video and Wan 2.1/2.2 on text-to-video and image-to-video, SPADE attains the highest sparsity and perfor-mance while matching or improving quality: attention accelerates 0.83 0.84 0.85 0.86 0.87 0.88 
+
+> Sparsity
+> 18
+> 20
+> PSNR  Sparse VideoGen2
+> w/o aggregation score
+> w aggregation score
+
+Figure 6: Sensitivity test on Sparse-VideoGen2 and SPADE with policy functions with and without aggregation score. 
+
+2.26 ×–3.44 × and end-to-end 1.32 ×–1.49 ×. SPADE-Turbo further reaches 1.80 × end-to-end with a controlled quality trade-off. 
+
+## Acknowledgments 
+
+This work is supported by National Natural Science Foundation of China (62322201 and U23B2020), the Fundamental Research Funds for the Central Universities (JKF-2025012343648 and JKF-20240598), and State Key Laboratory of Complex & Critical Software Environ-ment (SKLCCSE-2025ZX-04). SPADE: An Input-Adaptive Sparse Attention Engine for Fast Video Diffusion Models Inference DAC ’26, July 26–29, 2026, Long Beach, CA, USA 
+
+## References 
+
+[1] Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu, Tianyu Liu, Keming Lu, Wayne Xiong, Yue Dong, Baobao Chang, Junjie Hu, and Wen Xiao. 2024. PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling. arXiv:2406.02069 [cs] http://arxiv.org/abs/2406.02069 [2] Pengtao Chen, Xianfang Zeng, Maosen Zhao, Peng Ye, Mingzhu Shen, Wei Cheng, Gang Yu, and Tao Chen. 2025. Sparse-vDiT: Unleashing the Power of Sparse Attention to Accelerate Video Diffusion Transformers. doi:10.48550/arXiv.2506. 03065 arXiv:2506.03065 [cs]. [3] Renze Chen, Zhuofeng Wang, Beiquan Cao, Tong Wu, Size Zheng, Xiuhong Li, Xuechao Wei, Shengen Yan, Meng Li, and Yun Liang. 2024. Arkvale: Efficient generative llm inference with recallable key-value eviction. Advances in Neural Information Processing Systems 37 (2024), 113134–113155. [4] Tri Dao. 2024. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. In International Conference on Learning Representations (ICLR) .[5] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. arXiv:2205.14135 [cs] http://arxiv.org/abs/2205.14135 [6] Yichuan Deng, Zhao Song, and Chiwun Yang. 2024. Attention is Naturally Sparse with Gaussian Distributed Input. arXiv:2404.02690 [cs] http://arxiv.org/abs/2404. 02690 [7] Hangliang Ding, Dacheng Li, Runlong Su, Peiyuan Zhang, Zhijie Deng, Ion Stoica, and Hao Zhang. 2025. Efficient-vDiT: Efficient Video Diffusion Transformers With Attention Tile. doi:10.48550/arXiv.2502.06155 arXiv:2502.06155 [cs]. [8] Yizhao Gao, Zhichen Zeng, Dayou Du, Shijie Cao, Peiyuan Zhou, Jiaxing Qi, Junjie Lai, Hayden Kwok-Hay So, Ting Cao, Fan Yang, and Mao Yang. 2025. Seer-Attention: Learning Intrinsic Sparse Attention in Your LLMs. arXiv:2410.13276 [cs] doi:10.48550/arXiv.2410.13276 [9] Google. [n. d.]. https://aistudio.google.com/models/veo-3 [10] Junxian Guo, Haotian Tang, Shang Yang, Zhekai Zhang, Zhijian Liu, and Song Han. 2024. Block Sparse Attention. https://github.com/mit-han-lab/Block-Sparse-Attention. [11] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuan-han Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al . 2024. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition . 21807– 21818. [12] Huiqiang Jiang, Yucheng Li, Chengruidong Zhang, Qianhui Wu, Xufang Luo, Surin Ahn, Zhenhua Han, Amir H. Abdi, Dongsheng Li, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2024. MInference 1.0: Accelerating Pre-filling for Long-Context LLMs via Dynamic Sparse Attention. arXiv:2407.02490 [cs] http://arxiv.org/abs/ 2407.02490 [13] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, Kathrina Wu, Qin Lin, Junkun Yuan, Yanxin Long, Aladdin Wang, Andong Wang, Changlin Li, Duojun Huang, Fang Yang, Hao Tan, Hongmei Wang, Jacob Song, Jiawang Bai, Jianbing Wu, Jinbao Xue, Joey Wang, Kai Wang, Mengyang Liu, Pengyu Li, Shuai Li, Weiyan Wang, Wenqing Yu, Xinchi Deng, Yang Li, Yi Chen, Yutao Cui, Yuanbo Peng, Zhentao Yu, Zhiyu He, Zhiyong Xu, Zixiang Zhou, Zunnan Xu, Yangyu Tao, Qinglin Lu, Songtao Liu, Dax Zhou, Hongfa Wang, Yong Yang, Di Wang, Yuhong Liu, Jie Jiang, and Caesar Zhong. 2025. HunyuanVideo: A Systematic Framework For Large Video Generative Models. arXiv:2412.03603 [cs] doi:10.48550/arXiv.2412.03603 [14] Xunhao Lai, Jianqiao Lu, Yao Luo, Yiyuan Ma, and Xun Zhou. 2025. FlexPre-fill: A Context-Aware Sparse Attention Mechanism for Efficient Long-Sequence Inference. arXiv:2502.20766 [cs] doi:10.48550/arXiv.2502.20766 [15] Muyang Li, Tianle Cai, Jiaxin Cao, Qinsheng Zhang, Han Cai, Junjie Bai, Yangqing Jia, Kai Li, and Song Han. 2024. Distrifusion: Distributed parallel inference for high-resolution diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition . 7183–7193. [16] Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. 2024. SnapKV: LLM Knows What You are Looking for Before Generation. arXiv:2404.14469 [cs] http://arxiv.org/abs/2404.14469 [17] Zhengyao Lv, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K Wong. 2024. Fastercache: Training-free video diffusion model acceleration with high quality. arXiv preprint arXiv:2410.19355 (2024). [18] OpenAI. [n. d.]. https://openai.com/index/sora-2/ [19] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and Tri Dao. 2025. FlashAttention-3: fast and accurate attention with asynchrony and low-precision. In Proceedings of the 38th International Conference on Neural Information Processing Systems (Vancouver, BC, Canada) (NIPS ’24) . Curran Associates Inc., Red Hook, NY, USA, Article 2193, 28 pages. [20] Benjamin F Spector, Simran Arora, Aaryan Singhal, Daniel Y Fu, and Christopher Ré. 2024. Thunderkittens: Simple, fast, and adorable ai kernels. arXiv preprint arXiv:2410.20399 (2024). [21] Xin Tan, Yuetao Chen, Yimin Jiang, Xing Chen, Kun Yan, Nan Duan, Yibo Zhu, Daxin Jiang, and Hong Xu. 2025. DSV: Exploiting Dynamic Sparsity to Accelerate Large-Scale Video DiT Training. doi:10.48550/arXiv.2502.07590 arXiv:2502.07590 [cs]. [22] Guoxia Wang, Jinle Zeng, Xiyuan Xiao, Siming Wu, Jiabin Yang, Lujing Zheng, Zeyu Chen, Jiang Bian, Dianhai Yu, and Haifeng Wang. 2024. FlashMask: Efficient and Rich Mask Extension of FlashAttention. arXiv preprint arXiv:2410.01359 
+
+(2024). [23] WanTeam, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, Jianyuan Zeng, Jiayu Wang, Jingfeng Zhang, Jingren Zhou, Jinkai Wang, Jixuan Chen, Kai Zhu, Kang Zhao, Keyu Yan, Lianghua Huang, Mengyang Feng, Ningyi Zhang, Pandeng Li, Pingyu Wu, Ruihang Chu, Ruili Feng, Shiwei Zhang, Siyang Sun, Tao Fang, Tianxing Wang, Tianyi Gui, Tingyu Weng, Tong Shen, Wei Lin, Wei Wang, Wei Wang, Wenmeng Zhou, Wente Wang, Wenting Shen, Wenyuan Yu, Xianzhong Shi, Xiaoming Huang, Xin Xu, Yan Kou, Yangyu Lv, Yifei Li, Yijing Liu, Yiming Wang, Yingya Zhang, Yitong Huang, Yong Li, You Wu, Yu Liu, Yulin Pan, Yun Zheng, Yuntao Hong, Yupeng Shi, Yutong Feng, Zeyinzi Jiang, Zhen Han, Zhi-Fan Wu, and Ziyu Liu. 2025. Wan: Open and Advanced Large-Scale Video Generative Models. arXiv:2503.20314 [cs] doi:10.48550/arXiv.2503.20314 [24] Yuxin Wu and Kaiming He. 2018. Group normalization. In Proceedings of the European conference on computer vision (ECCV) . 3–19. [25] Haocheng Xi, Shuo Yang, Yilong Zhao, Chenfeng Xu, Muyang Li, Xiuyu Li, Yujun Lin, Han Cai, Jintao Zhang, Dacheng Li, Jianfei Chen, Ion Stoica, Kurt Keutzer, and Song Han. 2025. Sparse VideoGen: Accelerating Video Diffusion Transformers with Spatial-Temporal Sparsity. arXiv:2502.01776 [cs] doi:10.48550/arXiv.2502. 01776 [26] Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian Guo, Shang Yang, Haotian Tang, Yao Fu, and Song Han. 2024. DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads. arXiv:2410.10819 [cs] http: //arxiv.org/abs/2410.10819 [27] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2024. Efficient Streaming Language Models with Attention Sinks. arXiv:2309.17453 [cs] http://arxiv.org/abs/2309.17453 [28] Ruyi Xu, Guangxuan Xiao, Haofeng Huang, Junxian Guo, and Song Han. 2025. XAttention: Block Sparse Attention with Antidiagonal Scoring. doi:10.48550/ arXiv.2503.16428 arXiv:2503.16428 [cs]. [29] Shuo Yang, Haocheng Xi, Yilong Zhao, Muyang Li, Jintao Zhang, Han Cai, Yujun Lin, Xiuyu Li, Chenfeng Xu, Kelly Peng, Jianfei Chen, Song Han, Kurt Keutzer, and Ion Stoica. 2025. Sparse VideoGen2: Accelerate Video Generation with Sparse Attention via Semantic-Aware Permutation. doi:10.48550/arXiv.2505. 18875 arXiv:2505.18875 [cs]. [30] Zhihang Yuan, Hanling Zhang, Lu Pu, Xuefei Ning, Linfeng Zhang, Tianchen Zhao, Shengen Yan, Guohao Dai, and Yu Wang. 2024. Ditfastattn: Attention compression for diffusion transformer models. Advances in Neural Information Processing Systems 37 (2024), 1196–1219. [31] Hanling Zhang, Rundong Su, Zhihang Yuan, Pengtao Chen, Mingzhu Shen Yibo Fan, Shengen Yan, Guohao Dai, and Yu Wang. 2025. DiTFastAttnV2: Head-wise Attention Compression for Multi-Modality Diffusion Transformers. arXiv preprint arXiv:2503.22796 (2025). [32] Jintao Zhang, Chendong Xiang, Haofeng Huang, Jia Wei, Haocheng Xi, Jun Zhu, and Jianfei Chen. 2025. SpargeAttn: Accurate Sparse Attention Accelerating Any Model Inference. arXiv:2502.18137 [cs] doi:10.48550/arXiv.2502.18137 [33] Peiyuan Zhang, Yongqi Chen, Haofeng Huang, Will Lin, Zhengzhong Liu, Ion Stoica, Eric Xing, and Hao Zhang. 2025. VSA: Faster Video Diffusion with Trainable Sparse Attention. doi:10.48550/arXiv.2505.13389 arXiv:2505.13389 [cs]. [34] Peiyuan Zhang, Yongqi Chen, Runlong Su, Hangliang Ding, Ion Stoica, Zhenghong Liu, and Hao Zhang. 2025. Fast Video Generation with Sliding Tile Attention. arXiv:2502.04507 [cs] doi:10.48550/arXiv.2502.04507 [35] Dian Zheng, Ziqi Huang, Hongbo Liu, Kai Zou, Yinan He, Fan Zhang, Lulu Gu, Yuanhan Zhang, Jingwen He, Wei-Shi Zheng, et al . 2025. Vbench-2.0: Advanc-ing video generation benchmark suite for intrinsic faithfulness. arXiv preprint arXiv:2503.21755 (2025).

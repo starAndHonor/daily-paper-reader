@@ -1,0 +1,775 @@
+Title: CoSA: Accelerating Long-Context Inference via Proxy-Kernel Co-Designed Sparse Attention
+
+URL Source: https://arxiv.org/pdf/2607.25291v1
+
+Published Time: Wed, 29 Jul 2026 00:30:32 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# CoSA: Accelerating Long-Context Inference via Proxy-Kernel Co-Designed Sparse Attention 
+
+Yufei Xue 1, 2 ∗† , Lin Niu 1∗, Hong Liu 1, Siran Liu 1, Hanyong Shao 1, Wei Liu 1,Guanghua Yu 1‡, Jianchen Zhu 1, Jun Zhang 2‡
+
+> 1
+
+Tencent 2The Hong Kong University of Science and Technology yufei.xue@connect.ust.hk; lucayu@tencent.com; eejzhang@ust.hk 
+
+Abstract 
+
+The quadratic cost of self-attention makes long-context infer-ence prohibitively expensive, and proxy-based block-sparse attention has become a practical remedy. Existing methods typically rely on a proxy to predict a binary sparse mask and a kernel to consume this mask and perform sparse attention computation. Such an approach is effective under moderate budgets. However, as the budget tightens, the estimated proxy inevitably drops some salient blocks, while the kernel can only apply the sparse mask mechanically, leading to an evi-dent drop in model accuracy. We propose CoSA, a two-stage training-free Sparse Attention under proxy-kernel CO-design, which couples a Kernel-Aware Proxy (KAP) with an Ordered-Skipping Kernel (OSK). In the first stage, the KAP selects blocks under a moderate budget and produces an ordered mask that prescribes the order in which KV pages are visited in the kernel inner loop. In the second stage, the OSK applies this mask and skips more blocks under a tightened budget given online-softmax statistics. Across mainstream LLM backbones and long-context benchmarks, CoSA attains higher accuracy at lower budgets. Impressively, CoSA achieves a 4.93 × atten-tion speedup and reduces end-to-end Time-to-First-Token by 2.53 × under a context length of 128K with negligible perfor-mance degradation. 
+
+1 Introduction 
+
+Long context capabilities become the foundation for mod-ern Large Language Models (LLMs), which are increasingly demanded by advanced use cases like Retrieval-Augmented Generation (RAG) (Zheng et al. 2025; Du et al. 2026) and autonomous agentic systems (Team et al. 2025; Zeng et al. 2026). However, the standard self-attention inherently incurs a computation cost that increases quadratically with respect to the sequence length, leading to unbearable inference la-tency for long inputs. Sparse attention exploits the inherent sparsity of attention maps by selectively computing only the important query-key block interactions. Existing methods generally fall into training-free and trainable approaches. Trainable sparse at-tention learns which blocks to attend to via distillation (Gao et al. 2024; Zhao et al. 2026; Tang et al. 2026) or directly introduces sparse computation to pretraining. However, the training burden becomes problematic given the diverse array of model backbones, making training-based sparsification costly to deploy. 
+
+> ∗
+
+These authors contributed equally. 
+
+> †
+
+Work done during an internship at Tencent. 
+
+> ‡
+
+Corresponding author. 10 15 20 25 30 
+
+Budget B (%)      
+
+> 31
+> 32
+> 33
+> LongBench V2 Avg  w/o CoT
+> 10 15 20 25 30
+
+Budget B (%)      
+
+> 34
+> 36
+> 38
+> 40 w/ CoT
+> MInf Flex XAttn Ours
+
+Figure 1: Performance and budget of mainstream sparse at-tention methods on LongBench-v2 with Qwen3-8B. Training-free approaches instead decide block importance at inference time. The prevailing strategy uses a cheap proxy to estimate attention importance online, and it produces a bi-nary sparse mask according to the sparsity budget. The sparse attention kernel then follows this mask to perform the sparse attention computation (Jiang et al. 2024; Lai et al. 2025; Fan et al. 2026; Xu et al. 2025; Wang et al. 2025). Such proxies are reliable under moderate budgets. However, as the bud-get tightens, they increasingly miss the truly salient blocks. There also exists a sparse strategy that skips blocks inside the kernel using the exact Softmax statistics (Yuan et al. 2025b; Zhang et al. 2025a). Though the skipping strategy is oracle-aligned, it still needs to compute the full query-key interactions. Moreover, it applies a conservative skip rule, which leaves much of the potential speedup on the table. To reconcile this efficiency-fidelity trade-off, we propose CoSA, a two-stage training-free block-sparse attention for long-context inference built on the principle of proxy-kernel co-design . Our design starts from inherent properties of block-sparse attention and limitations of in-kernel skipping (Sec. 3), which together argue for designing the proxy and kernel jointly rather than in isolation. The bridge between them is a single computation-order mask that replaces the conventional binary block mask. Specifically, CoSA couples 
+
+Kernel-Aware Proxy (KAP) and Ordered-Skipping Kernel (OSK) . The KAP prunes redundant dense query-key (QK) interactions under a moderate budget, which we call the first-stage sparsity. Besides marking which blocks to com-arXiv:2607.25291v1 [cs.CL] 28 Jul 2026 pute, it also prescribes the order in which the selected blocks are visited in the block-sparse kernel loop. The OSK then uses this computation-order mask via lightweight page-table remapping. On top of the computation-order mask, the OSK uses the exact in-kernel logits to skip even more blocks. This applies a second-stage sparsity that pushes the sparse budget lower. Overall, the proxy shapes the kernel by dic-tating its execution order, while the kernel shapes the proxy by consuming its mask to drive sparsity. This mutual shap-ing illustrates the principle of proxy-kernel co-design. Our contributions are as follows: 
+
+• We revisit inherent properties of block-sparse attention and limitations of in-kernel skipping, revealing that the disconnection between the proxy and backend is the fun-damental bottleneck to increasing sparsity while main-taining high accuracy. 
+
+• We design KAP, a proxy that emits a computation-order mask. It selects sparse blocks under a moderate budget, which realizes the first-stage sparse selection, and pre-scribes their visiting orders in the kernel. 
+
+• We design OSK, an optimized kernel that echoes KAP by physically jumping over any-order pages based on the computation-order mask. It performs an in-kernel skip on softmax statistics, which carries out the second-stage sparse computation. 
+
+• We conduct extensive experiments on mainstream LLM backbones and benchmarks, demonstrating superior ac-curacy at lower budgets. For example, CoSA delivers a 4.93 × attention speedup and 2.53 × end-to-end prefilling speedup at a 128K context length with negligible perfor-mance degradation. 
+
+2 Related Works 
+
+2.1 Sparse Attention 
+
+Sparse attention skips unimportant query-key block interac-tions, and existing methods differ mainly in how the retained blocks are identified. MInference (Jiang et al. 2024) estimates the optimal block indices at inference time from three pre-defined patterns, and FlexPrefill (Lai et al. 2025) extends it to a query-aware variant. XAttention (Xu et al. 2025) refines the pooling-based proxy with finer-grained antidiagonal scoring. Other works instead explore dynamic budget allocation (Niu et al. 2026), token-level sparsity (Liu et al. 2026a), or head heterogeneity (Wang et al. 2025; Liu, Cao, and He 2025; Liu et al. 2026b). Effective as they are, all of these methods are inserted before a standard sparse-attention kernel and leave the kernel design itself untouched. 
+
+2.2 High-Performance Attention Backend 
+
+Beyond algorithm-level optimization, a parallel line of works optimizes the attention kernel itself. The FlashAttention se-ries (Dao et al. 2022; Dao 2024; Shah et al. 2024; Zadouri et al. 2026) tile the computation and fuse the online-softmax (OSM) to cut traffic to GPU global memory, delivering large speedups without altering the result. Building on this, Block-Sparse-Attention kernel (Guo et al. 2024) supports streaming 1 16 32 64 128 256 384 512 640 
+
+> Top-K
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Block Mask IoU
+> XAttention
+> MInference
+> FlexPrefill
+> MaxPool
+
+Figure 2: IoU of proxy masks against the oracle for Qwen3-8B under a context length of 128K. and arbitrary block masks for efficient prefilling, and Flash-Infer (Ye et al. 2025) provides a customizable engine with block-sparse and paged KV-cache formats. BLASST (Yuan et al. 2025b) instead exploits the Softmax statistics to skip negligible blocks inside the kernel with near-zero decision overhead on modern GPUs. PagedAttention (Kwon et al. 2023) stores the KV cache in non-contiguous pages to elimi-nate fragmentation during serving. Efficient as they are, these backends realize block sparsity by merely consuming a bi-nary mask or depending on a conservative online-condition branch, which in turn constrains the algorithm design. 
+
+3 Motivation 
+
+3.1 Dense Attention 
+
+FlashAttention (Dao 2024) couples the tiling strategy with the OSM technique (Milakov and Gimelshein 2018) to com-pute standard attention. For the block-wise logits Sij =
+
+QiK⊤ 
+
+> j
+
+, the kernel maintains, per query row, a local and a running row-wise maximum (rowmax), 
+
+mloc  
+
+> ij
+
+= rowmax( Sij ) ∈ Rb, (1) 
+
+mij = max  mi,j −1, mloc 
+
+> ij
+
+ ∈ Rb, (2) where b is the logical block size. The blocks in the ker-nel inner-loop are visited sequentially so that mij [r] = max j′≤j mloc  
+
+> ij ′
+
+[r]. Per block, the inner loop runs four steps: KV loading, logits computation, running rowmax update, and output rescaling. Building on this, we review two repre-sentative sparse-attention implementations. 
+
+3.2 Mask-Driven Block Sparse Attention 
+
+Mask-driven block-sparse attention uses a binary block mask 
+
+M to decide whether to compute or skip each QK block inside the block-sparse attention (BSA) kernel. The mask is derived from proxy attention scores Sproxy ∈ R⌈ Nb ⌉×⌈ Nb ⌉, defined as 
+
+M[i, j ] = 1(i, j ) ∈ TopK B(Sproxy ) ∈ { 0, 1}, (3) where N is the sequence length. A block with M[i, j ] = 0 
+
+is dropped before the kernel, so all four steps above are skipped for it. This saves the most per block but commits to an approximate mask. We point out the following two properties of mask-driven block sparse attention. Property 1 (Budget-dependent proxy fidelity). Pre-kernel proxy masks (Eq. (3) ) track the truly important blocks well at a moderate budget, but lose the truly salient blocks under aggressive budgets. 
+
+A proxy is trustworthy only insofar as its mask recovers the blocks that genuinely matter. To quantify this, we treat the or-acle mask from full attention as the ground truth and measure fidelity by the Intersection-over-Union (IoU) between each proxy mask (Eq. (3)) and the oracle at a matched budget. Figure 2 reports this IoU against the budget for mainstream proxies under the needle-in-a-haystack (NIAH)-style con-texts. All variants track the oracle at moderate budgets but degrade as the budget tightens toward aggressive sparsity. 
+
+Property 2 (Order-invariance of OSM). FlashAttention ac-cumulates each query block’s output as a tiled OSM over its 
+
+J key/value blocks, and this result is independent of the order in which the blocks are visited. For any permutation ρi,
+
+Oi = Ai(1 , 2, . . . , J ) = Ai
+
+ ρi(1) , . . . , ρ i(J), (4) 
+
+where Ai(·) denotes the OSM computation of i-th query-block over the candidate key-blocks. 
+
+This order invariance allows candidate blocks to be visited in any order. Moreover, because modern serving frameworks store the KV cache in non-contiguous pages (Kwon et al. 2023), such arbitrary-order traversal can be implemented through lightweight KV-page remapping. 
+
+3.3 In-Kernel Skip-Softmax 
+
+Unlike the mask-driven BSA in the previous subsection, BLASST (Yuan et al. 2025b) pioneers skipping Softmax logits within FlashAttention-4 (Zadouri et al. 2026) to per-form sparse computation. While computing each QK block’s 
+
+Sij one by one, BLASST decides on the fly whether to skip a block, rather than relying on a proxy-based sparse mask, under the condition 
+
+skip( i, j ) ⇐⇒ 
+
+> bq
+
+^
+
+> r=1
+
+h
+
+mloc  
+
+> ij
+
+[r] − mij [r] < ln ∆
+
+N
+
+i
+
+⇐⇒ max 
+
+> r
+
+ mloc  
+
+> ij
+
+[r] − mij [r] < ln ∆
+
+N , (5) where the skip scale ∆ adapts the threshold to the context length N . A row is negligible once its local max lies far below the running max. Under this condition, a block is skipped only when all rows agree under the threshold ∆/N .Unlike proxy estimation, which may lose information, this dense score Sij is oracle-aligned and therefore accurate, at the price of a full QK multiplication per block. Despite the fidelity of the in-kernel skip of Eq. (5), it suffers from the following two limitations. 
+
+Limitation 1 (Dense QiK⊤ 
+
+> j
+
+as proxy). Because in-kernel skipping decides on the real logits, it must form Sij = QiK⊤
+
+> j
+
+for every block. The QK multiplication is therefore unavoid-able, and skipping trims only the value-side steps. 
+
+The savings of in-kernel skipping are thus inherently bounded. Because the decision is made on the real logits, the score must be materialized for every block before it can Bucket effect 
+
+> Top-1 token appears at the first or last block
+> Top-1 token does NOT appear at the first or last block
+
+Figure 3: Position of rowmax (red dots) over the attention map of two representative Qwen3-8B heads. be judged. In-kernel skipping therefore trims the value-side work, while the quadratic query-key cost that dominates at long context is left untouched. 
+
+Limitation 2 (Skip conservatism). The skip condition of Eq. (5) is conservative for two reasons: 1. (Running max ̸ = global max) It tests each block against a running maximum that need not yet equal the global maximum; 2. (Bucket effect) Its per-row AND ( V) lets a single outlier row veto the skip of an otherwise negligible block. 
+
+L2.1 Running max ̸ = global max. The rule of Eq. (5) tests against the running max mij , which updated by only the 
+
+already-visited blocks j′ ≤ j and is a lower bound of the true global rowmax m⋆i [r] = max j′ mloc  
+
+> ij ′
+
+[r]. Since mij ≤ m⋆i ,
+
+mloc  
+
+> ij
+
+[r] − mij [r] ≥ mloc  
+
+> ij
+
+[r] − m⋆i [r], (6) so the criterion is strictly harder to satisfy than under the true global rowmax. As Figure 3 (bottom) shows, a rowmax can lie anywhere, not necessarily in the first (sink) or last (most-recent) block. Yet most high-performance backends still traverse KV blocks in a fixed ascending (NVIDIA 2023; Zhang et al. 2024, 2025b) or descending (Zadouri et al. 2026; Ye et al. 2025; Guo et al. 2024) order. This pre-defined or-der hinders redundant-block identification and thus yields suboptimal sparsity. 
+
+L2.2 Bucket effect. Recall from the skip gate of Eq. (5) that the AND ( V) over the bq rows lets the single worst row 
+
+r⋆ = arg max 
+
+> r
+
+ mloc  
+
+> ij
+
+[r] − mij [r] (7) dictate the decision. Ideally, a single block (m, n ) contains the global rowmax for every query row. Visiting this block first would update the running maximum mmn to the global maximum m⋆m. It allows every subsequent block to be eval-uated against the exact global-max reference and skipped whenever it is truly negligible. However, these rowmax are scattered across blocks in practice, as shown in Figure 3 (top). Achieving the same oracle-aligned state therefore re-quires visiting all blocks that contain at least one row-wise maximum first. Until then, updating only b − 1 rows is insuf-ficient: the remaining row retains an underestimated running Stride-sample 
+
+Stride-sample 
+
+> Max-Norm; QK-Pool
+
+HRM 
+
+Flags 
+
+Approx. 
+
+Scores 
+
+Stride-wise scores Block-wise scores 
+
+> Block-wise ordered-masks
+
+Queries/Keys 
+
+Post-Softmax 
+
+Scores 
+
+> Queries
+
+Keys 
+
+> Grid Loop
+> Inner Loop
+
+Inner Loop 
+
+Query 
+
+Paged 
+
+Value 
+
+①
+
+②
+
+③
+
+Attn Output 
+
+Grid Loop 
+
+Flag-Grouped Sorting 
+
+Top-p Block Selection 
+
+-1 
+
+1
+
+2
+
+0 -1 -1 
+
+0 -1 -1 
+
+0 -1 -1 
+
+3 0 1 -1  
+
+> <latexit sha1_base64="I/xBx+tUmP1oSQOPYKKiQ8ZUYO8=">AAAC2nicjVHLSsNAFD2Nr1pfUXHlJlgEVyUVqS6rbgQRKtgHtKUk6bQNzYtkIpbQjTtx6w+41Q8S/0D/wjtjCmoRnZDkzLn3nJl7rxk4dsR1/TWjzMzOzS9kF3NLyyura+r6Ri3y49BiVct3/LBhGhFzbI9Vuc0d1ghCZrimw+rm8FTE69csjGzfu+KjgLVdo+/ZPdsyOFEddavlGnxg9pKLcafF2Q1Pzo8r446a1wu6XNo0KKYgj3RVfPUFLXThw0IMFwweOGEHBiJ6mihCR0BcGwlxISFbxhnGyJE2pixGGQaxQ/r2addMWY/2wjOSaotOcegNSalhlzQ+5YWExWmajMfSWbC/eSfSU9xtRH8z9XKJ5RgQ+5dukvlfnaiFo4cjWYNNNQWSEdVZqUssuyJurn2pipNDQJzAXYqHhC2pnPRZk5pI1i56a8j4m8wUrNhbaW6Md3FLGnDx5zinQW2/UCwVSpcH+fJJOuostrGDPZrnIco4QwVV8k7wiCc8Ky3lVrlT7j9TlUyq2cS3pTx8ACQXmHA=</latexit>
+
+MKAP 
+
+Kernel-Aware Proxy Ordered-Skipping Kernel 
+
+Paged Key Figure 4: Overview of CoSA. MKAP : the KAP mask serves as a bridge between the co-designed proxy and kernel. Left: KAP estimates a per-block score together with the HRM flag. They are merged into the computation-order mask MKAP , which places HRM blocks first. Right: OSK consumes MKAP through KV page remapping, yielding three per-block patterns: ➀
+
+mask-skipped, ➁ in-kernel skipped, and ➂ computed. max and can veto the skip of an otherwise negligible block through the AND gate. This single-row restriction gives rise to the bucket effect .Overall, these properties and limitations directly motivate our design. At a moderate budget, the proxy is trustworthy (P1 ) and already filters part of the costly QK multiplication (L1 ). To reach an aggressive budget, we pair it with an exact in-kernel skip. Meanwhile, order-invariance ( P2 ) frees us to reorder blocks and relieve the conservative skip ( L2 ). We instantiate this as CoSA, described next. 
+
+4 CoSA 
+
+4.1 Overview 
+
+Guided by the properties and limitations of Sec. 3, we pro-pose CoSA, a two-stage sparse attention built on proxy-kernel co-design. On the proxy side , to counteract L2 , KAP lever-ages order-invariance ( P2 ) to outputs an ordered mask MKAP 
+
+placing “have rowmax” (HRM) blocks first. Blocks filtered by MKAP with moderate stage-1 budget BStage-1 are directly skipped. On the kernel side , OSK applies this mask and further skips value-side computation following Eq. (5), de-noted as stage-2 sparse computation. As shown in Figure 4, this yields three block types in OSK: ➀ mask-skipping, ➁
+
+in-kernel skipping, and ➂ fully-computed. Algorithm A in Appendix C summarizes the workflow. 
+
+4.2 Kernel-Aware Proxy Design 
+
+The KAP cheaply decides which blocks to retain and in what order ahead of the kernel. We design it directly around aggressive-sparsity failure ( P1 ) and skip conservatism ( L2 ). KAP emits a computation-order mask that prioritizes the vis-iting of HRM blocks under a moderate budget. Appendix C provides an illustrative example in Figure A. 
+
+Block ranking. We first stride-downsample the queries and keys to DS( Q) ∈ R Ns ×D and DS( K) ∈ R Ns ×D , where s
+
+and D are the stride size and hidden dimension, respectively. Then we form their approximate scores, 
+
+ˆS = Softmax eQ eK⊤
+
+√d
+
+!
+
+. (8) Then we MaxPool over the keys of every block, and then max-normalize each sampled query row MaxPool: P[r, j ] = max 
+
+c∈K j
+
+ˆS[r, c ], (9) MaxNorm: ¯P[r, j ] = P[r, j ]max j′ P[r, j ′] , (10) where Kj indexes the sampled keys of block j and ¯P ∈
+
+R Ns × Nb denotes the estimated scores aggregated in key-dimension. MaxPool preserves the rowmax within blocks, and MaxNorm turns exact estimated scores into relative rank-ing contribution, which are the direct counteractive design of L2 . Over the queries , we take the sum over sampled query rows Qi, letting every row of block i contribute to the block score, which yields the estimated importance SKAP 
+
+ij and the HRM flag Hij simultaneously, 
+
+SKAP 
+
+ij = P
+
+r∈Q i
+
+¯P[r, j ], (11) 
+
+Hij = 1 max r∈Q i
+
+¯P[r, j ] = 1  ∈ { 0, 1}, (12) where H ∈ R Nb × Nb is the HRM flags and Hij marks that the query-block i attains its rowmax inside key-block j.
+
+Flag-grouped sorting. Fix a query-block i with its 
+
+J = N/b candidate key-blocks, estimated scores SKAP 
+
+i =(sij )Jj=1 and HRM flags Hi = ( hij )Jj=1 from Eq. (11). We turn these scores into a computation order ρi by a flag-grouped sort that always prioritizes the HRM blocks: 
+
+ρi = ↓
+
+argsort 
+
+> j∈H i
+
+sij , ⊕ ↓
+
+argsort 
+
+> j∈R i
+
+sij , (13) where argsort ↓X indicates sorting elements in X in a descend-ing order. Hi = {j : hij = 1 } and Ri = {j : hij = 0 }
+
+denote the candidate blocks in the HRM group and the re-mainder. ⊕ concatenates two lists with the HRM group pri-oritized. We determine the moderate Stage-1 budget BStage-1 
+
+via Top-p selection following (Xu et al. 2025; Lai et al. 2025) and record each block’s rank that yields the KAP mask 
+
+MKAP [i, k ] = 
+
+ρi[k], 1 ≤ k ≤ Ki (k-th visited block), 
+
+−1, Ki < k ≤ J (padding), (14) where Ki = BStage-1 × J is the number of selected blocks for the i-th query-block. In contrast to conventional proxies that yield a binary mask (Jiang et al. 2024; Lai et al. 2025; Xu et al. 2025), MKAP encodes both which blocks survive and 
+
+in what order they are visited. 
+
+4.3 Ordered-Skipping Kernel 
+
+The OSK is the kernel-side half of our co-design, shaped by 
+
+MKAP so that the proxy’s decisions become physical execu-tion. It features three computation patterns: ➀ mask-skipped, 
+
+➁ in-kernel skipped, and ➂ computed, as shown in Figure 4. We implement the OSK with the following designs. 
+
+Physical jumping over pages. Given MKAP under a mod-erate budget ( P1 ), the OSK partly skips the costly QK multiplication that in-kernel skipping alone can never save (L1 ). Recall that the Block-Sparse-Attention kernel (Guo et al. 2024) traverses every block and drops the unselected ones through a logical mask, so its inner loop keeps paying the control-flow and synchronization cost even on skipped blocks. The OSK instead jumps directly to the next retained page and thereby removes these redundant synchronizations. Our jump is a page remap over the paged KV cache, and its visiting order is dictated by MKAP .
+
+In-kernel logic skip. On top of the MKAP -driven skip-ping, the OSK further supports in-kernel skipping of Eq. (5) to the blocks kept by stage-1 filtering. It realizes the stage-2 sparsification from the real online-softmax statistics rather than a proxy estimate. We implement this threshold-based skip following (Yuan et al. 2025b; Zhang et al. 2025a), and further tailor its granularity to each 128-row query tile. Two consumer warp groups evaluate 64 query rows each and com-bine their partial predicates into a single tile-wide vote with negligible decision overhead. 
+
+Any-order page visiting. To counteract the conservative skipping rule ( L2 ), the OSK visits pages in the order pre-scribed by KAP, which places the HRM blocks first so that the running maximum rises early and the subsequent in-kernel skip becomes both safer and more aggressive. Reordering the value accumulation leaves the output unchanged, as guaran-teed by the order-invariance of the OSM ( P2 ), so this re-ordering is correctness-preserving. It is realized by a cheap                                                      
+
+> Method Context Length (Acc, ↑)Avg. (↑)B(↓)
+> 4K 8K 16K 32K 64K 128K
+> Qwen3-8B
+> Dense 95.46 94.20 93.95 92.57 83.72 75.30 89.20 100% MInf 93.86 89.33 91.83 92.04 83.49 70.09 86.77 49% Flex 94.62 93.63 91.54 92.41 82.46 71.68 87.72 28% XAttn 93.65 91.67 91.69 90.99 77.45 70.12 85.93 24% CoSA 95.25 94.25 93.34 92.34 82.88 73.84 88.65 22%
+> Llama-3.1-8B-Instruct
+> Dense 96.10 93.85 93.29 90.62 86.13 73.84 88.97 100% MInf 94.02 93.47 93.00 90.20 86.01 71.60 88.05 47% Flex 94.90 94.01 93.07 90.43 83.89 71.58 87.98 29% XAttn 96.23 94.12 93.35 90.75 82.56 70.40 87.90 33% CoSA 95.73 93.59 93.02 90.82 85.49 71.82 88.41 22%
+
+Table 1: Main results (%) on RULER. The best and second best results are bolded and underlined, respectively. B is the weighted budget on sequence lengths. KV page remap: we feed the OSK directly with the activated block IDs list (i.e. , MKAP ) emitted by KAP, which is already ordered. Because the remap operates at page granularity, the OSK can be seamlessly integrated into mainstream serving frameworks built on PagedAttention (Kwon et al. 2023). 
+
+5 Experiments 
+
+5.1 Setup 
+
+Baselines and models. We compare CoSA against strong block-sparse attention baselines, MInference (Jiang et al. 2024), FlexPrefill (Lai et al. 2025), and XAttention (Xu et al. 2025), with FlashAttention-2 (Dao 2024) as the full-attention baseline. We apply all methods to two representative back-bones, Llama-3.1-8B-Instruct (Grattafiori et al. 2024) and Qwen3-8B (Yang et al. 2025). For Qwen, we adopt the recom-mended sampling parameters and enable the thinking mode as each task requires, extending the context to 128K tokens with YaRN (Peng et al. 2023) where necessary. 
+
+Benchmarks. We evaluate CoSA on widely recog-nized synthetic and real-world long-context benchmarks. RULER (Hsieh et al. 2024) provides synthetic tasks with token lengths ranging from 4K to 128K, while LongBench-v2 targets real-world deep understanding and reasoning. On LongBench-v2, we report both the direct ( w/o Chain-of-Thought, CoT) and the thinking ( w/ CoT) modes, probing the reasoning robustness of sparse prefilling. 
+
+Implementation details. Because the quadratic attention cost is concentrated in prefilling, our evaluation scope, in line with prior sparse-prefill studies (Jiang et al. 2024; Lai et al. 2025; Xu et al. 2025), sparsifies only the prefilling stage and leaves decoding dense. We implement the KAP scoring and pooling operations as a fused kernel to minimize proxy overhead. The OSK operates directly on the paged KV cache and supports page visits in the order prescribed by KAP. All accuracy and speed measurements are taken on an NVIDIA H20 node. Method w/o CoT w/ CoT Avg. (↑) B (↓)                                                               
+
+> Easy Hard Easy Hard
+> Qwen3-8B
+> Dense 39.19 32.72 44.53 36.82 37.48 100% MInf 36.98 29.26 43.23 32.80 34.49 28% Flex 35.42 28.30 44.27 32.15 33.90 20% XAttn 31.25 31.83 40.10 31.51 33.20 18% CoSA 37.24 31.11 45.83 35.69 36.51 15%
+> Llama-3.1-8B-Instruct
+> Dense 31.64 29.58 32.29 26.93 29.67 100% MInf 30.21 30.87 30.21 31.19 30.72 41% Flex 33.33 27.97 31.25 28.30 29.72 22% XAttn 29.17 27.01 32.29 29.26 29.13 35% CoSA 33.98 28.94 30.99 31.11 30.96 17%
+
+Table 2: Main results (%) on LongBench-v2 under both non-thinking ( w/o CoT) and thinking ( w/ CoT) modes. 
+
+Hyperparameters. For the stage-1 Top-p selection, we fix 
+
+p = 0 .95 for Qwen and use the offline-calibrated p-table for Llama. The scale factor ∆ in the length-adaptive threshold 
+
+∆/N trades budget against accuracy. For example, we set 
+
+∆Qwen = 2000 for CoSA. Full settings details are provided in Appendix D. 
+
+5.2 Accuracy Results 
+
+Ruler. Table 1 reports RULER accuracy from 4K to 128K on Qwen3-8B and Llama-3.1-8B. CoSA achieves the strongest average among the compared sparse baselines while using the lowest budget. More revealing than the averages is how this gap evolves with context length. At short contexts, every method sits close to full attention, so sparsity comes al-most for free. However, as the sequence length increases, the baselines discard increasingly more salient blocks, resulting in substantial accuracy degradation. By 128K on Qwen3-8B, the strongest baselines have already slipped several points be-hind, while CoSA remains the strongest sparse method. The complete per-length results and additional operating points are provided in Appendix D. 
+
+LongBench-v2. Table 2 evaluates CoSA on the real-world deep-understanding and reasoning tasks of LongBench-v2, a more challenging setting than the synthetic retrieval of RULER. CoSA attains the best average among all sparse methods on both backbones while operating at the lowest budget, showing that aggressive sparsification need not come at the cost of reasoning quality. The advantage of CoSA holds under both evaluation modes. Whether the model answers directly ( w/o CoT) or reasons step by step ( w/ CoT), CoSA remains the strongest sparse method, so its sparse prefill-ing does not disrupt the long CoT that the reasoning model depends on. 
+
+5.3 Efficiency Analysis 
+
+Attention speedup. We first evaluate the attention speedup of CoSA against competing methods. We report speedups av-eraged over multiple runs across layers in Figure 5 (left). Two                                         
+
+> Variant Proxy Kernel Avg. (↑)B(↓)
+> M01 MKAP MS IKS RMP
+> Qwen3-8B
+> Base ✓✓32.71 22%
+> + KAP ✓✓33.27 (+0.56) 20% (-2%)
+> + IKS ✓✓✓32.27 (-0.44) 16% (-6%)
+> + RMP (Ours) ✓✓✓✓33.45
+> (+0.74)
+> 15%
+> (-7%)
+> Llama-3.1-8B-Instruct
+> Base ✓✓27.83 35%
+> + KAP ✓✓29.67 (+1.84) 39% (+4%)
+> + IKS ✓✓✓28.88 (+1.05) 24% (-11%)
+> + RMP (Ours) ✓✓✓✓30.86
+> (+3.03)
+> 17%
+> (-18%)
+
+Table 3: Cumulative step-by-step ablation studies on LongBench-v2 (w/o CoT). The “Base” is naive mask-skipping (MS) via binary mask M01 . Variants are KAP, in-kernel skipping (IKS), and KV page remapping (RMP). trends stand out. First, CoSA has already shown speedup at 
+
+1.11 × and is the only method to accelerate 4K-length con-text. Second, the advantage widens steadily as the sequence lengthens and the quadratic attention cost comes to domi-nate. Notably, CoSA climbs to 4.93 × at 128K and remains the leading method at every evaluated length. By compar-ison, the weakest baseline stays below full attention until 64K, underscoring how sensitive proxy-only methods are to selection overhead at short and moderate lengths. 
+
+End-to-end speedup. Figure 5 (right) shows that these at-tention gains carry through to the full prefilling stage. We evaluate this end-to-end efficiency using time-to-first-token (TTFT) latency. At 4K, CoSA introduces no regression. By 128K, it delivers a 2.53 × TTFT speedup while again lead-ing all baselines. These results confirm that the computation saved by CoSA-enabled attention translates into a substantial reduction in real prefilling latency. 
+
+5.4 Analysis 
+
+Step-by-step ablation. To isolate the contribution of our co-design, Table 3 reports a cumulative ablation on LongBench-v2 ( w/o CoT), starting from “Base” that uses an XAttention-style proxy. By replacing this proxy with our KAP, accuracy rises on both backbones at a comparable bud-get. It indicates that the ordered mask recovers salient blocks that a plain binary proxy tends to discard. By further turning on in-kernel skipping, it increases sparsity while incurring a small accuracy degradation on Qwen. The final step adds KV page remapping, leading to trend reversals. Accuracy is not merely restored but pushed clearly above the Base even under the tightest budget. Therefore, visiting the HRM blocks first makes the same in-kernel skip both safer and more aggres-sive. Overall, each component advances either accuracy or 4K 8K 16K 32K 64K 128K 012345     
+
+> Attention Speedup
+> 0.11 ×
+> 0.24 ×
+> 0.44 ×
+> 0.76 ×
+> 1.15 ×
+> 1.69 ×
+> 0.46 ×
+> 0.72 ×
+> 1.34 ×
+> 2.02 ×
+> 2.82 ×
+> 3.51 ×
+> 0.92 ×
+> 1.49 ×
+> 2.08 ×
+> 2.60 ×
+> 3.33 ×
+> 4.07 ×
+> 1.11 ×
+> 2.00 ×
+> 2.88 ×
+> 3.61 ×
+> 4.42 ×
+> 4.93 ×
+> Full Attention (1 ×)MInference FlexPrefill XAttention
+> Ours
+> 4K 8K 16K 32K 64K 128K 0.00.51.01.52.02.5
+> TTFT Speedup
+> 0.55 ×
+> 0.64 ×
+> 0.74 ×
+> 0.88 ×
+> 1.09 ×
+> 1.45 ×
+> 0.90 ×
+> 0.94 ×
+> 1.09 ×
+> 1.29 ×
+> 1.66 ×
+> 2.19 ×
+> 1.00 ×
+> 1.07 ×
+> 1.18 ×
+> 1.38 ×
+> 1.75 ×
+> 2.34 ×
+> 1.01 ×
+> 1.10 ×
+> 1.24 ×
+> 1.47 ×
+> 1.90 ×
+> 2.53 ×
+
+Figure 5: Attention (left) and time-to-first-token (TTFT) (right) speedups over the Full Attention baseline across context lengths ranging from 4K to 128K. budget. Notably, remapping tightens budget without an accu-racy degradation. This is exactly the interplay our co-design is built for, where the proxy-side ordering and the kernel-side skip only pay off when they act together. 
+
+Effect of remapping. Figure 6 analyzes the skip scale ∆
+
+and the benefit of KV page remapping. Using 128 random LongBench-v2 samples, we measure perplexity (PPL) and the in-kernel skip ratio across the Stage-1 budget BStage-1 , the skip scale ∆, and the two remapping modes 1. The top-left panel first establishes that the skip scale is a well-behaved knob. As ∆ shrinks, PPL decreases smoothly and monoton-ically toward the no-skip point. It implies ∆ trades quality for sparsity in a predictable way and is safe to tune. The top-right panel then isolates what remapping does to the sparsity side. Evidently, we achieve a similar PPL level with more ag-gressive budgets. It echoes our co-designs: by front-loading the HRM blocks, more of the remaining blocks fall below the skip threshold without harming the output. Overall, w/ 
+
+remap consistently attains lower PPL than w/o at a matched skip ratio. Equivalently, a higher skip ratio at comparable PPL over the useful range of ∆. Full results across BStage-1 
+
+are given in Figure C. 
+
+Frontier search. The bottom panel jointly plots PPL and the overall budget across several BStage-1 settings. Each color fixes one Stage-1 budget, while the points along each curve sweep ∆. For every Stage-1 budget from 54% to 28% , remap-ping shifts the trajectory toward the lower-left region. There-fore, CoSA w/ remapping forms the PPL-budget Pareto fron-tier: at any target quality it reaches a lower budget, and at any target budget it reaches a lower PPL. The consistent shift across all four budgets confirms that the gain is not tied to a single Stage-1 operating point. 
+
+6 Conclusion 
+
+We presented CoSA, a two-stage training-free block-sparse attention for efficient long-context inference built on proxy-kernel co-design. Instead of treating the importance proxy and the sparse kernel as isolated designs, CoSA bridges them 
+
+> 1
+
+The overall budget B is the Stage-1 budget BStage-1 minus the in-kernel skip ratio. ∆ = −1 denotes no in-kernel skipping. PPL Gain Same Ratio 
+
+Pareto Frontier 
+
+Figure 6: Effect of KV page remapping on PPL and spar-sity over 128 LongBench-v2 samples. Top-left: PPL varies smoothly with the skip scale ∆. Top-right: remapping achieves a higher in-kernel skip ratio at comparable PPL. 
+
+Bottom: across Stage-1 budgets, remapping forms the PPL-budget Pareto frontier. through a single computation-order mask. CoSA features KAP and OSK. The KAP selects blocks under a moderate budget and further prescribes the order in which they are vis-ited. The OSK consumes this order through lightweight page remapping and skips additional blocks in-kernel from exact online-softmax statistics. The joint design lowers the budget while still retaining the truly salient blocks that an isolated proxy tends to discard. Across mainstream backbones and long-context benchmarks, CoSA attains higher accuracy at lower budgets than existing sparse methods. For example, it reduces TTFT by 2.53 × at 128K context with negligible accuracy loss. As future work, we will extend CoSA beyond prefilling to decoding, which requires dedicated proxy and kernel designs due to its distinct query shapes and computa-tional patterns. References 
+
+Dao, T. 2024. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. In International Confer-ence on Learning Representations (ICLR) .Dao, T.; Fu, D. Y.; Ermon, S.; Rudra, A.; and Ré, C. 2022. FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. In Advances in Neural Information Pro-cessing Systems (NeurIPS) .Du, M.; Xu, B.; Zhu, C.; Wang, S.; Wang, P.; Wang, X.; and Mao, Z. 2026. A-RAG: Scaling Agentic Retrieval-Augmented Generation via Hierarchical Retrieval Interfaces. 
+
+arXiv preprint arXiv:2602.03442 .Fan, Q.; Huang, H.; Wu, Z.; Wang, J.; Wang, B.; and He, R. 2026. Flashprefill: Instantaneous pattern discovery and thresholding for ultra-fast long-context prefilling. arXiv preprint arXiv:2603.06199 .Gao, Y.; Wei, J.; Zhang, Q.; Cheng, Y.; Chen, S.; Tang, Z.; Jiang, Z.; Song, Y.; Zhang, H.; Zhao, L.; et al. 2026. HyS-parse: A Hybrid Sparse Attention Architecture with Oracle Token Selection and KV Cache Sharing. arXiv preprint arXiv:2602.03560 .Gao, Y.; Zeng, Z.; Du, D.; Cao, S.; Zhou, P.; Qi, J.; Lai, J.; So, H. K.-H.; Cao, T.; Yang, F.; et al. 2024. Seeratten-tion: Learning intrinsic sparse attention in your llms. arXiv preprint arXiv:2410.13276 .Grattafiori, A.; Dubey, A.; Jauhri, A.; Pandey, A.; Kadian, A.; Al-Dahle, A.; Letman, A.; Mathur, A.; Schelten, A.; Vaughan, A.; et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 .Guo, J.; Tang, H.; Yang, S.; Zhang, Z.; Liu, Z.; and Han, S. 2024. Block Sparse Attention. https://github.com/mit-han-lab/Block-Sparse-Attention. Hsieh, C.-P.; Sun, S.; Kriman, S.; Acharya, S.; Rekesh, D.; Jia, F.; Zhang, Y.; and Ginsburg, B. 2024. RULER: What’s the Real Context Size of Your Long-Context Language Mod-els? arXiv preprint arXiv:2404.06654 .Jiang, H.; Li, Y.; Zhang, C.; Wu, Q.; Luo, X.; Ahn, S.; Han, Z.; Abdi, A. H.; Li, D.; Lin, C.-Y.; et al. 2024. Minference 1.0: Accelerating pre-filling for long-context llms via dynamic sparse attention. Advances in Neural Information Processing Systems , 37: 52481–52515. Kwon, W.; Li, Z.; Zhuang, S.; Sheng, Y.; Zheng, L.; Yu, C. H.; Gonzalez, J.; Zhang, H.; and Stoica, I. 2023. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th symposium on operating systems principles , 611–626. Lai, X.; Lu, J.; Luo, Y.; Ma, Y.; and Zhou, X. 2025. Flexpre-fill: A context-aware sparse attention mechanism for efficient long-sequence inference. arXiv preprint arXiv:2502.20766 .Liu, A.; Yang, R.; Jiang, H.; Lin, B.; Sun, M.; Li, Y.; Zhang, C.; and Xie, T. 2026a. VecAttention: Vector-wise Sparse Attention for Accelerating Long Context Inference. In Pro-ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 41299–41310. Liu, H.; Zaharia, M.; and Abbeel, P. 2023. Ring Atten-tion with Blockwise Transformers for Near-Infinite Context. CoRR abs/2310.01889 (2023). Liu, S.; Cao, Z.; and He, Y. 2025. A Unified Sparse At-tention via Multi-Granularity Compression. arXiv preprint arXiv:2512.14082 .Liu, S.; Wang, G.; Wang, S.; Zeng, J.; Xie, H.; Lou, S.; Yang, J.; Yu, D.; Wang, H.; and Yang, C. 2026b. RRAtten-tion: Dynamic Block Sparse Attention via Per-Head Round-Robin Shifts for Long-Context Inference. arXiv preprint arXiv:2602.05853 .Lu, E.; Jiang, Z.; Liu, J.; Du, Y.; Jiang, T.; Hong, C.; Liu, S.; He, W.; Yuan, E.; Wang, Y.; et al. 2026. Moba: Mixture of block attention for long-context llms. Advances in Neural Information Processing Systems , 38: 17790–17815. Luo, S.; Guan, Y.; Li, P.; Wang, H.; and Chen, T. 2025. AsyncSpade: Efficient Test-Time Scaling with Asynchronous Sparse Decoding. arXiv preprint arXiv:2510.07486 .Milakov, M.; and Gimelshein, N. 2018. Online normalizer calculation for softmax. arXiv preprint arXiv:1805.02867 .Niu, L.; Luo, X.; Xie, L.; Sun, Y.; Yu, G.; Zhu, J.; and Zhou, S. K. 2026. Stem: Rethinking Causal Information Flow in Sparse Attention. arXiv preprint arXiv:2603.06274 .NVIDIA. 2023. TensorRT-LLM. https://github.com/ NVIDIA/TensorRT-LLM. Peng, B.; Quesnelle, J.; Fan, H.; and Shippole, E. 2023. Yarn: Efficient context window extension of large language models. arXiv. arXiv preprint arXiv:2309.00071 .Shah, J.; Bikshandi, G.; Zhang, Y.; Thakkar, V.; Ramani, P.; and Dao, T. 2024. Flashattention-3: Fast and accurate attention with asynchrony and low-precision. Advances in Neural Information Processing Systems , 37: 68658–68685. Shen, Z.; Lu, J.; Gui, L.; Li, J.; He, Y.; Yin, D.; and Sun, X. 2025. SSA: Sparse Sparse Attention by Aligning Full and Sparse Attention Outputs in Feature Space. arXiv preprint arXiv:2511.20102 .Tang, J.; Zhao, Y.; Zhu, K.; Xiao, G.; Kasikci, B.; and Han, S. 2024. Quest: Query-aware sparsity for efficient long-context llm inference. arXiv preprint arXiv:2406.10774 .Tang, Z.; Qiu, Q.; Yang, Y.; Hong, Z.; Xiang, H.; Liu, K.; Dang, Q.; Li, J.; and Zhang, M. 2026. Elastic Attention: Test-time Adaptive Sparsity Ratios for Efficient Transformers. 
+
+arXiv preprint arXiv:2601.17367 .Team, K.; Bai, Y.; Bao, Y.; Charles, Y.; Chen, C.; Chen, G.; Chen, H.; Chen, H.; Chen, J.; Chen, N.; et al. 2025. Kimi k2: Open agentic intelligence. arXiv preprint arXiv:2507.20534 .Wang, Y.; He, H.; Bao, S.; Wu, H.; Wang, H.; Zhu, Q.; and Che, W. 2025. ProxyAttn: Guided Sparse Attention via Representative Heads. arXiv preprint arXiv:2509.24745 .Wu, W.; Pan, Z.; Fu, K.; Wang, C.; Chen, L.; Bai, Y.; Wang, T.; Wang, Z.; and Xiong, H. 2025. Tokenselect: Efficient long-context inference and length extrapolation for llms via dynamic token-level kv cache selection. In Proceedings of the 2025 Conference on Empirical Methods in Natural Lan-guage Processing , 21275–21292. Xiao, G.; Tang, J.; Zuo, J.; Guo, J.; Yang, S.; Tang, H.; Fu, Y.; and Han, S. 2024. Duoattention: Efficient long-context llm inference with retrieval and streaming heads. arXiv preprint arXiv:2410.10819 .Xu, R.; Xiao, G.; Huang, H.; Guo, J.; and Han, S. 2025. Xattention: Block sparse attention with antidiagonal scoring. 
+
+arXiv preprint arXiv:2503.16428 .Yang, A.; Li, A.; Yang, B.; Zhang, B.; Hui, B.; Zheng, B.; Yu, B.; Gao, C.; Huang, C.; Lv, C.; et al. 2025. Qwen3 technical report. arXiv preprint arXiv:2505.09388 .Ye, Z.; Chen, L.; Lai, R.; Lin, W.; Zhang, Y.; Wang, S.; Chen, T.; Kasikci, B.; Grover, V.; Krishnamurthy, A.; and Ceze, L. 2025. FlashInfer: Efficient and Customizable At-tention Engine for LLM Inference Serving. arXiv preprint arXiv:2501.01005 .Yuan, J.; Gao, H.; Dai, D.; Luo, J.; Zhao, L.; Zhang, Z.; Xie, Z.; Wei, Y.; Wang, L.; Xiao, Z.; et al. 2025a. Native sparse attention: Hardware-aligned and natively trainable sparse at-tention. arXiv preprint arXiv:2502.11089 .Yuan, J.; Shinn, C.; Xu, K.; Cui, J.; Klimiashvili, G.; Xiao, G.; Zheng, P.; Li, B.; Zhou, Y.; Ye, Z.; et al. 2025b. BLASST: Dynamic BLocked Attention Sparsity via Softmax Thresh-olding. arXiv preprint arXiv:2512.12087 .Zadouri, T.; Hoehnerbach, M.; Shah, J.; Liu, T.; Thakkar, V.; and Dao, T. 2026. Flashattention-4: Algorithm and kernel pipelining co-design for asymmetric hardware scaling. arXiv preprint arXiv:2603.05451 .Zeng, A.; Lv, X.; Hou, Z.; Du, Z.; Zheng, Q.; Chen, B.; Yin, D.; Ge, C.; Huang, C.; Xie, C.; et al. 2026. Glm-5: from vibe coding to agentic engineering. arXiv preprint arXiv:2602.15763 .Zhang, J.; Huang, H.; Zhang, P.; Wei, J.; Zhu, J.; and Chen, J. 2024. Sageattention2: Efficient attention with thorough outlier smoothing and per-thread int4 quantization. arXiv preprint arXiv:2411.10958 .Zhang, J.; Xiang, C.; Huang, H.; Wei, J.; Xi, H.; Zhu, J.; and Chen, J. 2025a. Spargeattention: Accurate and training-free sparse attention accelerating any model inference. arXiv preprint arXiv:2502.18137 .Zhang, J.; Xu, X.; Wei, J.; Huang, H.; Zhang, P.; Xiang, C.; Zhu, J.; and Chen, J. 2025b. Sageattention2++: A more efficient implementation of sageattention2. arXiv preprint arXiv:2505.21136 .Zhao, Y.; Li, H.; Wu, B.; Yin, Y.; Shang, L.; Yuan, J.; Zhang, M.; and Zhang, M. 2026. Switch Attention: Towards Dy-namic and Fine-grained Hybrid Transformers. arXiv preprint arXiv:2603.26380 .Zheng, X.; Weng, Z.; Lyu, Y.; Jiang, L.; Xue, H.; Ren, B.; Paudel, D.; Sebe, N.; Van Gool, L.; and Hu, X. 2025. Re-trieval augmented generation and understanding in vision: A survey and new outlook. arXiv preprint arXiv:2503.18016 .Zhou, Y.; Li, Y.; Tang, H.; Li, M.; Liu, K.; Tao, L.; Qu, L.; Yao, Y.; and Ma, X. 2026. Full Attention Strikes Back: Trans-ferring Full Attention into Sparse within Hundred Training Steps. arXiv preprint arXiv:2605.16928 .A CoSA Appendix Overview 
+
+This appendix is organized into three sections. Appendix Re-lated Works extends the coverage of sparse-attention algo-rithms and high-performance backends. Additional Method Details provides a concrete KAP ordering example and the complete proxy-kernel workflow. Experimental Details and Additional Results document supplementary settings, oper-ating points, and full accuracy-efficiency results. 
+
+B Related Works 
+
+B.1 Training-Free Sparse Attention 
+
+Training-free sparse prefilling relies on a lightweight proxy that predicts block importance before the attention kernel runs. MInference (Jiang et al. 2024) and FlexPrefill (Lai et al. 2025) locate salient regions through vertical-slash (VS) and block-sparse pattern identification, while XAtten-tion (Xu et al. 2025) captures both patterns by scoring each block along its antidiagonal. Several works instead refine the proxy itself: Stem (Niu et al. 2026) augments it with value-aware selection and position-aware budget allocation, ProxyAttn (Wang et al. 2025) reduces its cost along the head dimension, and FlashPrefill (Fan et al. 2026) thresholds block scores to accommodate the long-tailed distribution of post-softmax logits. Beyond block-wise sparsity, VecAtten-tion (Liu et al. 2026a) explores token-level sparsity to accel-erate multimodal prefilling. A complementary line further extends sparsity to the decoding stage under long reasoning contexts (Tang et al. 2024; Wu et al. 2025; Luo et al. 2025). 
+
+B.2 Distillation-based Sparse Attention 
+
+Distillation-based sparsification keeps the backbone frozen and trains auxiliary modules that allocate sparsity dynam-ically. DuoAttention (Xiao et al. 2024) and SwiAttn (Zhao et al. 2026) learn layer-wise routers that switch between dense attention and sliding-window attention (SWA), whereas Elas-tic Attention (Tang et al. 2026) trains a task-aware router that grants a larger budget to harder tasks. RTTurbo (Zhou et al. 2026) exploits head-wise heterogeneity in sparsity to acceler-ate both prefilling and decoding, and SSA (Shen et al. 2025) aligns intermediate hidden features rather than performing end-to-end distillation for more efficient adaptation. 
+
+B.3 Trainable Sparse Attention 
+
+Beyond post-training adaptation, another line builds sparsity directly into the model during pretraining. NSA (Yuan et al. 2025a) and MoBA (Lu et al. 2026) treat KV blocks as ex-perts and activate only the salient ones at both the training and inference stages. DeepSeek-V3.2 refines NSA into finer-grained token-level selection, termed DeepSeek Sparse At-tention (DSA), and DeepSeek-V4 further compresses atten-tion through a hybrid of Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA). HySparse (Gao et al. 2026) interleaves dense and sparse layers and reuses the KV states of the dense layers, while MiniMax Sparse Attention (MSA) realizes trainable block-sparse attention on top of grouped-query attention (GQA).          
+
+> Backend Mask-Skip IKS P-RMP Logic. Phy.
+> MIT-BSA (Guo et al. 2024) ✓
+> FlashPrefill (Fan et al. 2026) ✓
+> BLASST (Yuan et al. 2025b) ✓
+> SpargeAttn (Zhang et al. 2025a) ✓✓
+> OSK (Ours) ✓✓✓
+
+Table A: Comparison of sparse-attention backends. 
+
+B.4 High-Performance Attention Backend 
+
+Beyond algorithm-level optimization, a parallel line of work optimizes the attention kernel itself. The FlashAttention se-ries (Dao et al. 2022; Dao 2024; Shah et al. 2024; Zadouri et al. 2026) tiles the computation and fuses the online soft-max to cut traffic to GPU global memory, delivering large speedups without altering the result. SageAttention-2 (Zhang et al. 2024) accelerates attention through nearly lossless INT4 quantization with outlier smoothing, while RingAt-tention (Liu, Zaharia, and Abbeel 2023) distributes long sequences across multiple devices and overlaps the com-munication. MIT Block-Sparse-Attention (Guo et al. 2024) supports streaming and arbitrary block masks for efficient prefilling. FlashInfer (Ye et al. 2025) offers a customizable engine with block-sparse and paged KV-cache formats, and PagedAttention (Kwon et al. 2023) stores the KV cache in non-contiguous pages to remove fragmentation during serv-ing. BLASST (Yuan et al. 2025b) reuses the online-softmax statistics to skip negligible blocks inside the kernel with near-zero decision overhead on modern GPUs. Table A summarizes how representative backends realize sparse attention. MIT Block-Sparse-Attention performs logi-cal mask skipping, whereas FlashPrefill and SpargeAttention physically jump to retained blocks. BLASST and SpargeAt-tention additionally support in-kernel skipping. Among the compared backends, OSK is the only one that combines phys-ical page jumping, in-kernel skipping (IKS) based on exact logits, and any-order page visiting (P-RMP). This combina-tion allows OSK to consume KAP’s computation-order mask rather than a conventional binary mask. 
+
+C Additional Method Details 
+
+C.1 Illustrative KAP Ordering 
+
+Figure A instantiates the flag-grouped ordering of Sec. 4.2 for one query block. KAP first assigns every candidate key block an importance score and an HRM flag. It then sorts the HRM and non-HRM groups independently by score, places the HRM group first, and retains the leading entries under the Stage-1 budget. The resulting sequence is written directly into MKAP , making both block selection and visiting order explicit. 
+
+C.2 Complete Proxy-Kernel Workflow 
+
+Algorithm A consolidates the two stages of CoSA. The first stage constructs MKAP from the proxy scores and HRM flags. The second stage traverses only the retained KV pages in the 0. Sampled QK Mul :               
+
+> Block
+> Stride
+> 1. K-MaxPooling & Q-MeanPooling
+> 0.4| 00.2| 10.1| 00.3| 1
+> Block properties:
+> Score (float)| have_rm (binary)
+> III III IV
+> 2. Divide and Conquer Sorting ( hava_rm or not)
+> Score-decending sort
+> II IV
+> IIII IIII
+> II IV
+> 3. hava_rm -first concate block IDs
+> IIII II IV IV—II—I—III
+
+Figure A: HRM-first grouped ordering in KAP. Stride-downsampled scores are max-normalized and pooled into a per-block importance sij and an HRM flag hij . Blocks are split by hij and sorted by score within each group. Concate-nating with the HRM group first gives the computation order in MKAP .prescribed order, updates the online-softmax statistics from exact logits, and skips the value-side computation whenever the in-kernel criterion is satisfied. 
+
+D Experimental Details and Additional Results 
+
+D.1 Experimental Configurations 
+
+CoSA settings. We use logical query, key, and value blocks of b = 128 tokens. The physical KV-cache page size bp is configured independently by the paged-KV layout; a logical key/value block is resolved through one or more physical pages when bp differs from b. Our SM90 kernel adopts a warp-specialized organization. Two consumer warp groups jointly process one 128-row query tile, with each consumer warp group responsible for 64 query rows. Each consumer warp group first reduces its local row-wise skip predicates, after which OSK combines the two partial results into a sin-gle tile-wide skip decision. This realizes the per-128 skip semantics of Eq. (5). The reduction directly reuses the on-chip row-wise maxima maintained by online softmax and in-troduces no additional score computation or global-memory traffic. For Qwen3-8B, Stage-1 selection uses Top-p with p =0.95 , and the main operating point uses ∆ = 2000 in the length-adaptive threshold ∆/N . For Llama-3.1-8B, the Stage-1 p values are calibrated offline by context length fol-lowing (Xu et al. 2025), and we set ∆ = 200 . Setting ∆ = −1
+
+disables in-kernel skipping and serves as the Stage-1-only endpoint in the remapping analysis. 
+
+D.2 Accuracy-Prioritized Operating Point 
+
+The scale factor ∆ controls the accuracy-budget trade-off of the in-kernel skip. In addition to the main CoSA setting 32K 64K 128K 32K 64K 128K 32K 64K 128K         
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Kernel Speedup
+> 1.25 ×
+> 1.27 ×
+> 1.26 ×
+> 1.87 ×
+> 1.89 ×
+> 1.89 ×
+> 3.68 ×
+> 3.72 ×
+> 3.76 ×
+> 1.87 ×
+> 1.86 ×
+> 1.76 ×
+> 2.80 ×
+> 2.79 ×
+> 2.65 ×
+> 5.59 ×
+> 5.57 ×
+> 5.30 ×
+> B=75% B=50% B=25%
+> FlashAttention ( 1×)MIT BSA
+> Ours
+
+Figure B: Kernel-level speedup over FlashAttention (Dao 2024) at budgets B ∈ { 25% , 50% , 75% } and context lengths 
+
+{32 K, 64 K, 128 K}. Our ordered-skipping kernel (index-driven physical jumping) is compared against the logical-skipping MIT BSA (Guo et al. 2024). reported in the body, we evaluate the accuracy-prioritized variant CoSA ◦ using a smaller ∆ = 1000 for the Qwen model and ∆ = 200 for the Llama model. As shown in Table B, CoSA ◦ improves average RULER accuracy at a moderately higher budget, complementing the lower-budget operating point of CoSA. The table reports the complete per-length accuracy and realized budget for both backbones. 
+
+D.3 Kernel Microbenchmark 
+
+Figure B isolates the execution benefit of OSK from the proxy by comparing its physical page jumping with the log-ical skipping of Block-Sparse-Attention (Guo et al. 2024) at matched budgets. The advantage grows as the context length increases and the retained budget decreases, because OSK re-moves the loop-control and synchronization work associated with masked iterations. 
+
+D.4 Full Remapping Sweep Across Stage-1 Budgets 
+
+Figure C expands the remapping analysis across BStage-1 ∈{100% , 54% , 42% , 32% , 28% }. Each column fixes one Stage-1 budget: the top panel plots PPL against the skip scale ∆, and the bottom panel reports the corresponding in-kernel skip ratio. Across all budgets, increasing ∆ raises the skip ratio but also increases PPL, showing a smooth quality-sparsity trade-off. At a fixed ∆, remapping consistently skips more blocks than the non-remapped execution. More impor-tantly, remapping reaches a matched skip ratio with a smaller 
+
+∆ and therefore a lower PPL, as indicated by the red anno-tations. For example, at BStage-1 = 100% , remapping reaches an approximately 52% skip ratio at ∆ = 500 , whereas the non-remapped execution requires roughly ∆ = 3000 for a similar ratio and incurs a higher PPL. Although the absolute in-kernel skip ratio decreases as the Stage-1 budget tight-ens, the matched-ratio PPL advantage persists across all five settings. Algorithm A: Complete Proxy-Kernel Workflow of CoSA 
+
+Input : Q ∈ RN ×d, Paged K, V ∈ RN ×d
+
+Parameter : Block sizes b × b; stride s; Stage-1 Top-p threshold; skip scale ∆
+
+Output : Output O
+
+1: // Pre-kernel proxy (KAP), see Eqs. (11) and (14) 
+
+2: eQ, eK ← Stride( Q), Stride( K); ˆS ← Softmax  CausalMask( eQ eK⊤/√d) ▷ Downsampling and cheap scores 
+
+3: P[r, j ] ← max c∈K j
+
+ˆS[r, c ]; ¯P[r, j ] ← P[r, j ]/ max j′ P[r, j ′] ▷ Key-dim MaxPooling then max-norm 
+
+4: sij ← P
+
+> r∈Q i
+
+¯P[r, j ]; hij ← 1[max r∈Q i
+
+¯P[r, j ]=1] ▷ Block score and HRM flag 
+
+5: ρi ← HRM-first grouped sort over causal candidates j ≤ i; apply Stage-1 Top-p selection ▷ Ordered retained block IDs 
+
+6: // Attention loop 
+
+7: for i = 1 to ⌈N/b ⌉ do 
+
+8: mi ← −∞ , li ← 0, Oi ← 0
+
+9: // Traverse only the selected KV pages in MKAP 
+
+10: for k = 1 to |ρi| do 
+
+11: j ← ρi[k]; load pages Kj , Vj via remap ▷ Block IDs remapping 
+
+12: Sij ← QiK⊤ 
+
+> j
+
+/√d; mloc ← rowmax( Sij )
+
+13: m′ 
+
+> i
+
+← mi; mi ← max( mi, mloc )
+
+14: if ∆ > 0 and max r
+
+ mloc [r] − mi[r] < ln ∆ 
+
+> N
+
+then 
+
+15: continue ▷ In-kernel skip thresholding 
+
+16: end if 
+
+17: ePij ← exp (Sij − mi)
+
+18: li ← exp (m′ 
+
+> i
+
+− mi)li + rowsum( ePij )
+
+19: Oi ← diag( em′ 
+
+> i−mi
+
+)Oi + ePij Vj
+
+20: end for 
+
+21: Oi ← diag( li)−1Oi; write Oi
+
+22: end for 
+
+23: return O
+
+Method 4K 8K 16K 32K 64K 128K Avg. Acc (↑) B (↓) Acc (↑) B (↓) Acc (↑) B (↓) Acc (↑) B (↓) Acc (↑) B (↓) Acc (↑) B (↓) Acc (↑) B (↓)
+
+Qwen3-8B 
+
+Dense 95.46 100% 94.20 100% 93.95 100% 92.57 100% 83.72 100% 75.30 100% 89.20 100% MInf 93.86 71% 89.33 55% 91.83 49% 92.04 49% 83.49 60% 70.09 43% 86.77 49% Flex 94.62 49% 93.63 45% 91.54 41% 92.41 35% 82.46 29% 71.68 22% 87.72 28% XAttn 93.65 53% 91.67 42% 91.69 34% 90.99 26% 77.45 24% 70.12 21% 85.93 24% CoSA 95.25 36% 94.25 35% 93.34 30% 92.34 23% 82.88 21% 73.84 20% 88.65 22% 
+
+CoSA ◦ 95.46 65% 94.41 38% 93.08 35% 92.68 26% 83.41 24% 73.96 26% 88.83 27% 
+
+Llama-3.1-8B-Instruct 
+
+Dense 96.10 100% 93.85 100% 93.29 100% 90.62 100% 86.13 100% 73.84 100% 88.97 100% MInf 94.02 75% 93.47 84% 93.00 84% 90.20 77% 86.01 55% 71.60 28% 88.05 47% Flex 94.90 48% 94.01 43% 93.07 38% 90.43 32% 83.89 28% 71.58 26% 87.98 29% XAttn 96.23 70% 94.12 60% 93.35 50% 90.75 40% 82.56 32% 70.40 27% 87.90 33% CoSA 95.73 40% 93.59 31% 93.02 30% 90.82 21% 85.49 21% 71.82 21% 88.41 22% 
+
+CoSA ◦ 95.93 48% 93.77 41% 93.34 42% 90.81 42% 85.62 36% 72.92 25% 88.73 32% 
+
+Table B: Complete RULER results across context lengths. Each context length reports accuracy and realized computation budget for Qwen3-8B and Llama-3.1-8B-Instruct. PPL Gain    
+
+> PPL Gain
+> PPL Gain
+> Same Ratio Same Ratio Same Ratio Same Ratio
+> PPL Gain
+> Same Ratio
+> PPL Gain
+
+Figure C: Full remapping sweeps across Stage-1 budgets and skip scales. Each column fixes BStage-1 . The Top row reports PPL and the Bottom row reports the in-kernel skip ratio as ∆ varies. Remapping achieves a higher skip ratio at a fixed ∆ and a lower PPL at a matched skip ratio. Red annotations highlight the matched-ratio PPL gain.
