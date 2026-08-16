@@ -1,0 +1,579 @@
+Title: SparSTAR: Sparse Attention for SpaceTime AutoRegressive Video Synthesis
+
+URL Source: https://arxiv.org/pdf/2608.10519v1
+
+Published Time: Wed, 12 Aug 2026 00:47:12 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# SparSTAR: Sparse Attention for SpaceTime AutoRegressive Video Synthesis 
+
+# Jongbeom Lee 1* , Hyunwoo Yu 1* , Jincheol Yang 1* , Jaemin Choi 1* , Suk-Ju Kang 1†
+
+> 1
+
+Sogang University Seoul, Republic of Korea Equal contribution †Corresponding author 
+
+Abstract 
+
+InfinityStar extends visual autoregressive generation to video through a sequence of image and clip pyramids. Its changing scale and cross-clip context, however, leave late-scale atten-tion costly and make sparse patterns reused from diffusion or image VAR models unreliable. We introduce SparSTAR, a training-free block-sparse attention method tailored to this setting. At each expensive scale and attention head, SparSTAR scores contiguous key blocks from the current query and key activations, retains required conditioning context, and exe-cutes the selected blocks through a forward-only sparse path. We analyze cross-scale consistency within a clip, pattern per-sistence across clip boundaries, and quality degradation as reuse spans increasingly distant scales. Across these analyses, important key blocks shift, showing that recomputing block selection at each target scale is more reliable than reusing a transferred mask. On 720p text-to-video and image-to-video generation, SparSTAR preserves every token and refinement scale while providing about a 1.6 × end-to-end speedup and maintaining VBench and paired-output reconstruction fidelity close to dense InfinityStar. 
+
+# Introduction 
+
+Diffusion models achieve strong image and video genera-tion quality but require repeated denoising-network evalua-tions (Peebles and Xie 2023; Kong et al. 2024; Wan et al. 2025). Visual Autoregressive (VAR) modeling instead uses next-scale prediction to refine visual tokens from coarse to fine resolution (Tian et al. 2024). InfinityStar (Liu et al. 2025) extends this paradigm to video through Spacetime Autore-gressive (STAR) modeling, generating an image pyramid followed by a sequence of clip pyramids. Despite this promise, attention remains a major bottleneck in VAR models. Conventional image VAR models (Tian et al. 2024; Han et al. 2025) accumulate key–value (KV) pairs from preceding scales, increasing the amount of KV data processed at high resolutions. For long-video generation, In-finityStar introduces Spacetime Sparse Attention (SSA) to avoid attending to the complete visual history. As illustrated in Figure 1(a), SSA generates clips sequentially and retains only the final scale of the immediately preceding clip as vi-sual context. Nevertheless, every scale of the current clip must still attend densely to this preceding-clip context, text conditioning, and the current-scale tokens. In our evaluated 720p setting, the final scale alone contains 72,000 tokens, 
+
+Figure 1: Reused sparse support can miss newly active blocks across scales and clips (a), SparSTAR instead builds a fresh dynamic mask at each sparsified scale with low overhead (b). leaving substantial attention cost even after SSA restricts the historical context. This limitation motivates sparse attention tailored specifically to STAR-based video generation. Training-free sparse attention (Chen et al. 2026; Hu et al. 2026; Samuel et al. 2026; Zhang et al. 2025c,b; Xia et al. 2025) has been studied extensively for video diffusion trans-formers. Radial Attention (Li et al. 2025d) constructs a static sparse mask from spatiotemporal energy decay, whereas Sparse VideoGen (Xi et al. 2025) dynamically profiles each attention head and selects spatial or temporal sparse pat-terns. Sparse VideoGen2 (Yang et al. 2025) further identifies critical tokens through semantic-aware permutation and dy-namic budget control. These methods are designed around attention over a fixed-resolution three-dimensional latent grid and repeated denoising trajectories. Applying them directly to InfinityStar is difficult for two reasons. First, spatial and temporal priors derived from a fixed diffusion grid do not directly match the mixed KV context of SSA. Second, each autoregressive scale is evaluated only once, while its token resolution, token count, and KV composition change across scales. Consequently, a sparse pattern profiled at one scale cannot be assumed to remain valid at later scales. In image VAR(Han et al. 2025; Tang et al. 2025), Spar-VAR (Li et al. 2026) introduces cross-scale sparse attention that exploits attention sinks, cross-scale activation similarity, arXiv:2608.10519v1 [cs.CV] 11 Aug 2026 and spatial locality. SparVAR computes dense attention at a sparse decision scale and transfers the resulting sparse pat-tern to later high-resolution scales through cross-scale index mapping. Although effective for image VAR, this assumption becomes unreliable in STAR-based video generation, where the KV context contains the final scale of the preceding clip and changes at every clip and scale. To achieve optimal sparse attention in Video VAR, we for-mulate three core research objectives. First, we analyze the extent to which cross-scale attention patterns remain consis-tent within Video VAR. Second, we quantify the persistence of the final scale’s attention pattern from a prior clip to the next during multi-clip generation. Third, we evaluate the impact of scale distance on performance degradation when cross-scale attention patterns are exploited. To address these three core research objectives, we present a detailed analysis in Section Analysis. Consequently, we uncover that transferring attention patterns across scales and clips in the Video VAR framework induces a significant loss in terms of attention mass. In addition, through extensive experiments varying the range of cross-scale transfer, we find that the performance degradation caused by cross-scale reuse is considerably more severe than the latency overhead introduced by dynamic approaches. Based on these analysis, we introduce SparSTAR, a training-free block-sparse attention framework for STAR-based video generation. Rather than transferring a mask across scales, SparSTAR dynamically constructs a per-head sparse mask from the current query and key activations at each high-cost scale. It ranks contiguous key blocks and applies a clip-aware policy that keeps designated context dense while jointly ranking the remaining preceding-clip and current-scale blocks. Our cross-scale pattern reuse analysis separates the gap to the token-wise upper bound into block-ization, aggregated-QK scoring, and reuse-induced pattern mismatch terms. This mismatch is the largest correctable component across most of the evaluated density range, while fresh aggregated-QK selection consistently approaches the exact block oracle more closely than cross-scale transfer. A forward-only sparse execution path keeps dynamic selection practical for an inference pipeline that is sensitive to addi-tional runtime work. Our main contributions are as follows. 
+
+• Through systematic analysis, we show that attention pat-terns in InfinityStar do not transfer reliably across scales or clip boundaries, and that reusing them causes substan-tial attention-mass loss. 
+
+• We propose a training-free, clip-aware block selector that constructs fresh per-scale and per-head pattern while pre-serving every token and refinement scale. 
+
+• We develop a forward-only FlexAttention execution path and evaluate the resulting fidelity–efficiency trade-off on 720p text-to-video and image-to-video generation. 
+
+# Related Work 
+
+Visual Generative Models 
+
+Latent diffusion performs iterative denoising in a compressed space, and Diffusion Transformers replace the U-Net with a transformer backbone (Rombach et al. 2022; Peebles and Xie 2023). This fixed-grid, repeated-update paradigm under-pins video models such as HunyuanVideo and Wan (Kong et al. 2024; Wan et al. 2025). Visual Autoregressive (VAR) models instead predict increasingly fine token scales (Tian et al. 2024). Infinity extends this process to high-resolution images, while InfinityStar represents video as an image pyra-mid followed by a sequence of clip pyramids (Han et al. 2025; Liu et al. 2025). The changing token resolution and cross-clip context in InfinityStar create a different acceleration problem from repeated denoising on a fixed latent grid. 
+
+Acceleration on Fixed Denoising Grids 
+
+Video-diffusion acceleration (Zhang et al. 2026a,b, 2025a) exploits repetition across denoising steps and structure within a fixed spatiotemporal grid. Pyramid Attention Broadcast reuses attention outputs when consecutive denoising steps change little (Zhao et al. 2025). Radial Attention encodes a static decay prior, whereas Sparse VideoGen profiles heads online to choose spatial or temporal patterns (Li et al. 2025d; Xi et al. 2025). Sparse VideoGen2 further combines semantic-aware permutation with a dynamic top-p budget (Yang et al. 2025). These methods differ in whether their patterns are static, profiled, or reused, but all benefit from a stable grid or repeated updates. InfinityStar evaluates each autoregressive scale once, while its query length and visible KV composition change across scales and clips; a pattern valid at one scale therefore need not transfer to the next. 
+
+Acceleration across Autoregressive Scales 
+
+Image-VAR acceleration (Li et al. 2025c; Chen et al. 2025b) reduces work by pruning processed tokens, skipping scale steps, or compressing stored state. FastVAR forwards only pivotal tokens at large scales, SkipVAR skips selected steps and replaces an unconditional branch, ScaleKV applies scale-aware KV compression, and SparseVAR excludes low-frequency tokens while retaining sampled anchors (Guo et al. 2025; Li et al. 2025a,b; Chen et al. 2025a). These approaches change the token set, refinement schedule, or KV cache rather than the attention connections evaluated for every token. SparVAR directly sparsifies image-VAR attention by trans-ferring a block-selection pattern from a sparse decision scale to later scales through cross-scale alignment (Li et al. 2026). This transfer relies on access to historical-scale tokens and on similarity between block-selection patterns across image scales. Spacetime Sparse Attention masks those historical scales and exposes only the preceding clip’s final scale, mak-ing cross-scale pattern reuse less reliable in STAR-based video generation. 
+
+Acceleration for STAR-Based Video Generation 
+
+For efficient video VAR (Ye et al. 2025; Li, Shah, and Shang 2026; Lin and Yang 2024), FastSTAR identifies non-converged tokens from spatial and temporal similarity and restricts transformer updates to those tokens (Yune, Jeong, and Kim 2026). SparSTAR targets a complementary axis: it preserves every token and refinement scale but reduces the key blocks visited by each query. This distinction mo-tivates evaluating fidelity to the dense output in addition to (a) (b) Figure 2: Dense-attention patterns across clips and scales in a representative 480p two-clip T2V trace. raw speed, because token pruning and attention-edge spar-sification perturb the generation process in different ways. 
+
+# Preliminaries 
+
+Spacetime Sparse Attention 
+
+InfinityStar (Liu et al. 2025) generates a video through Space-time Pyramid Modeling and next-scale prediction, beginning with an image pyramid and then proceeding through a se-quence of clip pyramids. Retaining every previously gener-ated visual token would cause the historical context to accu-mulate across scales and clips. InfinityStar therefore employs 
+
+Spacetime Sparse Attention (SSA), which masks the earlier visual history and retains only its final-scale representation. Specifically, Clip 1 conditions on the final image-pyramid scale, whereas each later clip conditions on the final scale of the immediately preceding clip. Text conditioning and current-scale tokens remain visible in both cases. SSA thus differs from conventional image VAR, which attends to to-kens from all preceding scales. This SSA context layout defines the dense attention region that SparSTAR aims to sparsify. For clip c at scale s, let 
+
+Q(c,s ) have shape L(c,s ) 
+
+> q
+
+× D and let K(c,s ), V(c,s ) have shape L(c,s ) 
+
+> k
+
+×D. We consider these head-wise states after the backbone positional transformations and immediately before the scaled attention dot product. Let K(c)ref denote the final-scale visual context retained by SSA for clip c. The visible key sequence is 
+
+K(c,s ) = Concat 
+
+
+
+K(c)ref , Ktext , K(c,s )cur 
+
+
+
+,L(c,s ) 
+
+> k
+
+= L(c)ref + Ltext + L(c,s ) 
+
+> q
+
+.
+
+(1) The final term is L(c,s ) 
+
+> q
+
+because the current-scale visual tokens serve as keys as well as queries; the value sequence follows the same layout. Although SSA prevents visual his-tory from accumulating across all earlier scales and clips, ev-ery query still attends densely to the visible keys. SparSTAR therefore targets the remaining L(c,s ) 
+
+> q
+
+×L(c,s ) 
+
+> k
+
+dense attention region. 
+
+# Analysis 
+
+We first inspect attention maps collected while generating a 480p, 10-second T2V sample. Figure 2 focuses on the 
+
+Figure 3: Scale-wise retained attention mass across Clip 1 and Clip 2 (480p T2V, 32 prompts, 36 layers, and 32 heads). transition from Clip 1 to Clip 2, where the final scale of Clip 1 is retained as reference context for Clip 2. Figure 2(a) shows that the attention pattern formed over this reference context is not consistent when it is used by Clip 2. Figure 2(b) further shows that attention patterns also change across scales within the same clip. Motivated by these observations, we conduct three analy-ses to determine how sparse attention can be applied effec-tively to Video VAR. First, we analyze the extent to which cross-scale attention patterns remain consistent. Second, we quantify the persistence of the final scale’s attention pattern from a prior clip to the next during multi-clip generation. Third, we evaluate the impact of scale distance on perfor-mance degradation when cross-scale attention patterns are exploited. 
+
+Cross-Scale Pattern Consistency within a Clip 
+
+Figure 3 compares attention-pattern selection at 30% and 50% density in the 480p, 10-second T2V setting. The com-parison includes token-wise Top-K as an upper bound, Block-wise selection that recomputes Top-K at every scale, cross-scale pattern reuse, and a fixed Sliding Window. For cross-scale reuse, s24 in Clip 1 and s38 in Clip 2 are used as decision scales, and the attention patterns selected at these scales are reused at the subsequent scales of each clip. Experimental results show that utilizing attention patterns across scales causes a severe attention mass drop of approxi-mately 35.6% on average, preserving even less attention mass than a naive Sliding Window approach. In contrast, recom-puting Block-wise Top-K at every scale consistently retains attention mass closest to the token-wise upper bound, with an average gap of only 4.64%. This result demonstrates that recomputing the pattern at each scale is far more effective than reusing a pattern selected at an earlier scale or applying a fixed local pattern. Figure 4: Retained attention mass over the preceding-clip ref-erence context. Fresh selection in Clip 2 consistently retains more mass than reusing the pattern selected in Clip 1. 
+
+Pattern Persistence across Clip Boundaries 
+
+We next test whether the block-selection pattern from the final scale of Clip 1 remains valid after its visual tokens become reference context for Clip 2. For the same reference context, we compare reusing the block pattern selected while generating Clip 1 with recom-puting Block-wise Top-K from the queries of Clip 2. The reused pattern retains substantially more attention mass than random block selection, showing that some at-tention structure persists across the clip boundary. However, fresh selection in Clip 2 consistently retains more mass, and the gap becomes larger as the budget decreases. At a 15% reference-context budget, fresh selection retains 85% of the attention mass, whereas reuse retains only 56%, a loss of 29 percentage points. Thus, the pattern selected in Clip 1 re-mains only partially valid in Clip 2. To use a small reference-context budget effectively, the block selection should be re-computed for each clip rather than reused across clips. 
+
+Effect of Scale Distance on Pattern Reuse 
+
+Finally, we analyze how performance changes as an atten-tion pattern selected at an earlier scale is reused over in-creasingly distant target scales. We compare single-transfer, every-2, and every-scale pattern updates on 720p T2V using 96 prompts and five seeds. All variants share target densi-ties (0 .625 , 0.1875 , 0.1875 , 0.09375) at the four sparsified refinement scales (native indices s26 –s29 ). Single-transfer selects a pattern at the first scale and reuses it thereafter. Every-2 updates the pattern at the first and third scales, whereas every-scale updates it at all four scales. Figure 5 shows that every-scale pattern updates improve PSNR by 1.73 dB over single-transfer for only 0.30 s of addi-tional latency. Every-2 recovers 0.79 dB for 0.20 s. Moreover, the every-scale result lies close to the upper bound, indicat-ing that recomputing the pattern at each scale recovers most of the quality lost through cross-scale reuse. These results 
+
+Figure 5: PSNR–latency trade-off for recalibration frequency on 720p T2V. Error bars denote 95% confidence intervals for PSNR across five seeds. indicate that the performance loss from reusing an earlier-scale pattern increases as the pattern is carried across more scales, motivating pattern recomputation at every scale. 
+
+# Method 
+
+Based on the InfinitySTAR, SparSTAR sparsifies expensive late video scales without updating model weights or skip-ping refinement scales. SparSTAR first partitions the query and remaining KV sequence in the order used by the atten-tion kernel. It then ranks candidate blocks independently for every head from the current query and key activations. The selected indices are executed through a forward-only Flex-Attention (Dong et al. 2025) path that we implement and call FastFlex. 
+
+Aggregated Query–Key Block Selector 
+
+Original-order block partition. For a fixed clip, scale, layer, and head, queries and keys are partitioned into con-tiguous blocks of b = 128 tokens with nq = ⌈Lq /b ⌉ and 
+
+nk = ⌈Lk/b ⌉. We suppress these context indices on scores, supports, and masks below, restoring clip or scale indices only where the selection policy depends on them. The par-tition follows the attention-kernel order without aligning blocks to segment boundaries, thereby preserving the spa-tiotemporal raster order and matching the tiled execution granularity. A final partial block is zero-padded and aver-aged over the nominal block length b.Let Bqi and Bkj denote the token-index sets of query block 
+
+i and key block j. Let Itext and I(c)ref denote the text range and the final-scale visual range left unmasked by SSA. Their block sets are Jtext = {j | B kj ∩ I text ̸ = ∅} and J (c)ref =
+
+{j | B kj ∩ I (c)ref ̸ = ∅} . The intersection definitions also cover segments that cross or share a block boundary. 
+
+Per-head aggregated query–key score. Let eqi,r and ekj,r ,
+
+r ∈ { 1, . . . , b }, denote the query and key vectors in a block after zero padding. We compute ¯qi = b−1 P 
+
+> r
+
+eqi,r and ¯kj =
+
+b−1 P 
+
+> r
+
+ekj,r . With τ = D−1/2, their compatibility is 
+
+Sij = τ ¯q⊤ 
+
+> i
+
+¯kj . (2) By bilinearity, this dot product equals the average pairwise pre-softmax compatibility between tokens in two full blocks. For partial blocks, zero padding scales the aggregated vector magnitude with block occupancy. Since softmax is nonlinear, 
+
+Sij serves only as a ranking score rather than an estimate of post-softmax attention mass. Scores are computed independently for every head from the current Q and K without sharing patterns across heads or scales. The parameter-free block score reduces token-level query–key work by a factor of approximately b2 = 16 ,384 ,excluding aggregation and selection overhead. Across the sparsified late scales, selector arithmetic is 0.016% of the corresponding dense query–key arithmetic. 
+
+Clip-Dependent Retained and Selectable Blocks 
+
+SparSTAR defines retained and selectable block sets sepa-rately for Clip 1 and later clips. For Clip 1, text and final image-pyramid blocks remain dense, and only current-scale blocks are selected. For Clip c ≥ 2, only text blocks re-main dense, while preceding-clip final-scale and current-scale blocks are jointly ranked under the same budget. Formally, the always-retained set is 
+
+J (c)keep =
+
+ Jtext ∪ J (1) ref , c = 1 ,
+
+Jtext , c ≥ 2, (3) and the selectable set is 
+
+J (c)sel = {1, . . . , n k} \ J (c)keep , n(c)sel = |J (c)sel |. (4) Only blocks in J (c)sel require ranking, while J (c)keep remains dense without a score. 
+
+Scale-wise density schedule. We use separate density lookup functions for Clip 1 and later clips, indexed by query length as ρc,s = ρc(L(c,s ) 
+
+> q
+
+). Scales with the same token count share a fixed density within each clip group. The non-uniform schedule assigns higher density to cheaper late scales and the most aggressive budget to the 72,000-token final scale. This final scale accounts for 74.6% of attention cost among the sparsified scales and exhibits the most concentrated pattern. The selected block count is 
+
+kc,s = min 
+
+
+
+n(c)sel , max 
+
+
+
+1,
+
+l
+
+ρc,s n(c)sel 
+
+m 
+
+. (5) The reported 720p setting sparsifies the four final refinement scales, ordered by increasing token count. In the backbone’s native indexing these are s26 through s29 , with target densi-ties (ρ26 , ρ 27 , ρ 28 , ρ 29 ) = (0 .625 , 0.1875 , 0.1875 , 0.09375) .For a fixed layer and head at clip c and scale s, the retained key-block set of query block i is 
+
+Ai = J (c)keep ∪ TopKIdx j∈J (c)sel 
+
+(Sij , k c,s ) . (6) Later clips impose no minimum quota on preceding-clip final-scale blocks, so a head may select none when current-scale blocks receive higher scores. The fixed schedule is applied to every prompt. 
+
+Figure 6: Overview of SparSTAR, a training-free block-sparse attention framework for video autoregressive genera-tion that reduces attention latency while maintaining video quality. 
+
+Forward-Only Sparse Execution 
+
+Let πq (t) and πk(u) map query and key tokens to their block indices. The selected token-level mask is 
+
+Mtu = 1πk(u) ∈ A πq (t)
+
+ . (7) SSA has already masked tokens outside the allowed context, so SparSTAR only removes additional attention connections. The executed mask combines the SparSTAR mask with the backbone padding and boundary masks. FlexAttention represents the BlockMask and skips masked tiles. Its mask stores, for each query block, the num-ber and indices of visible key blocks; backward execution additionally requires the reverse mapping from key blocks to query blocks. Because generation is inference-only, Fast-Flex writes only the forward fields kv_num_blocks and 
+
+kv_indices from {A i}nq 
+
+> i=1
+
+and omits the backward-only 
+
+q_num_blocks and q_indices . This avoids construct-ing reverse indexing structures that inference never con-sumes, with the measured selection and mask-construction overhead reported in Section Analysis. 
+
+Complexity and Scope 
+
+Dense attention costs O(Lq LkD) per layer and head. SparSTAR executes attention only over the always-retained and selected KV blocks. Its attention cost therefore scales ap-proximately as O(ρeff Lq LkD), where ρeff is the fraction of KV blocks retained. Selection operates on aggregated 128-token blocks, so its cost grows with the number of query–key block pairs rather than token pairs. SparSTAR reads fewer KV blocks without evicting or compressing the KV cache. Image-pyramid generation, early video scales, and non-attention modules remain unchanged. SparSTAR therefore preserves all tokens and refinement scales while targeting late-scale attention. 
+
+# Experiments 
+
+Experimental Setup 
+
+Models and evaluation tasks. We evaluate SparSTAR on the 8B InfinityStar (Liu et al. 2025) for text-to-video (T2V) and image-to-video (I2V) generation. We reports 720p re-sults, while 480p results and fine-grained VBench scores are Category Method PSNR (↑) SSIM (↑) LPIPS (↓) VBench (↑) Speedup (↑)                                                                
+
+> 720p Text-to-Video (T2V)
+> Baseline InfinityStar –––83.79 1.00 ×
+> Token Reduction SparseVAR 26.59 0.789 0.228 82.13 1.44 ×
+> FastVAR 25.00 0.757 0.266 81.19 1.61 ×
+> ToMe 26.47 0.790 0.227 81.60 1.76 ×
+> FastSTAR 28.30 0.828 0.184 82.96 1.92 ×
+> Sparse Attention SparSTAR 31.22 0.898 0.065 83.83 1.60 ×
+> 720p Image-to-Video (I2V)
+> Baseline InfinityStar –––81.04 1.00 ×
+> Token Reduction SparseVAR 23.86 0.754 0.249 78.30 1.56 ×
+> FastVAR 22.20 0.711 0.292 74.83 1.82 ×
+> ToMe 23.93 0.757 0.248 78.25 1.57 ×
+> FastSTAR 25.65 0.809 0.195 80.01 2.01 ×
+> Sparse Attention SparSTAR 27.96 0.870 0.080 80.96 1.62 ×
+
+Table 1: Quality and efficiency for 5-second, 81-frame 720p T2V and I2V generation. All T2V evaluations use the 
+
+refined_prompt strings distributed with InfinityStar. Dashes indicate non-applicable metrics.                                 
+
+> Method 720p 5s Text-to-Video (T2V) 720p 5s Image-to-Video (I2V) PSNR
+> (↑)
+> SSIM
+> (↑)
+> LPIPS
+> (↓)
+> VBench
+> (↑)
+> Speedup
+> (↑)
+> PSNR
+> (↑)
+> SSIM
+> (↑)
+> LPIPS
+> (↓)
+> VBench
+> (↑)
+> Speedup
+> (↑)SparSTAR 31.22 0.898 0.065 83.83 1.60 ×27.96 0.870 0.080 80.96 1.62 ×
+> SparSTAR + Scale-skip 30.13 0.881 0.086 83.15 2.27 ×27.28 0.845 0.104 78.78 2.20 ×
+> SparSTAR + Guidance-off 29.97 0.883 0.077 83.55 2.50 ×27.32 0.859 0.090 79.56 2.50 ×
+
+Table 2: Compatibility of SparSTAR with complementary acceleration on 720p T2V and I2V. All T2V evaluations use the 
+
+refined_prompt strings distributed with InfinityStar. Guidance-off skips the unconditional CFG branch at all four sparsified refinement scales, while Scale-skip omits the final scale. provided in the supplementary material. The 720p evalua-tion uses 5-second, 81-frame videos following the evaluation protocol of InfinityStar adopted by FastSTAR (Yune, Jeong, and Kim 2026). We use InfinityStar as the reference for re-construction metrics and normalize its end-to-end latency to 
+
+1.00 ×. We measure the InfinityStar and SparSTAR VBench scores directly using matched prompts and seeds. 
+
+Baselines and source of results. We compare SparSTAR against SparseVAR (Chen et al. 2025a), FastVAR (Guo et al. 2025), ToMe (Bolya et al. 2023), and FastSTAR (Yune, Jeong, and Kim 2026). The accelerated-baseline results in Table 1 are quoted directly from the FastSTAR pa-per rather than obtained from our own re-evaluation; their speedups are therefore not hardware-matched to ours and are treated as contextual published results. FastSTAR ex-tends the image-oriented token-pruning and token-merging methods across the spatiotemporal pyramid while retaining the default InfinityStar generation hyperparameters. Because cross-scale transfer by SparVAR requires historical tokens masked by Spacetime Sparse Attention, we assess reused block-selection pattern separately in the cross-scale pattern reuse analysis above. 
+
+Quality and efficiency metrics. Following Fast-STAR (Yune, Jeong, and Kim 2026), PSNR, SSIM, and LPIPS quantify reconstruction fidelity and percep-tual similarity against paired dense InfinityStar outputs. These reconstruction metrics measure agreement with the dense reference rather than absolute perceptual quality. VBench (Huang et al. 2024) evaluates 5-second, 81-frame videos over all 16 dimensions. The headline results in Tables 1, 2, and 3 use the complete official VBench suite: each dimension is evaluated on its designated prompt subset with the five default seeds per prompt. Dimension-balanced subsets, including the 96-prompt set with six prompts per dimension, are reserved for the analyses and ablations whose prompt scopes are reported separately in the supplementary material. Dashes denote metrics that are not applicable to the dense reference. 
+
+Implementation and hardware. Experiments use BF16 on two NVIDIA H100 NVL GPUs with 94 GB of memory each, PyTorch 2.5.1+cu124, and Triton 3.1.0. SparSTAR uses 128-token blocks and sparsifies only high-resolution refine-ment scales. SparSTAR and dense InfinityStar use matched tasks, resolutions, prompts, and seeds. 480p, 10s Text-to-Video (T2V) Method PSNR                     
+
+> (↑)
+> SSIM
+> (↑)
+> LPIPS
+> (↓)
+> VBench
+> (↑)
+> Speedup
+> (↑)InfinityStar –––83.64 1.00 ×
+> SparSTAR 24.39 0.7759 0.145 82.77 1.31 ×
+> 480p, 10s Image-to-Video (I2V)
+> InfinityStar –––77.83 1.00 ×
+> SparSTAR 27.00 0.8425 0.096 77.37 1.36 ×
+
+Table 3: Quality and efficiency for 480p, 10-second T2V and I2V generation. 
+
+Main Results 
+
+Quality preservation. Table 1 shows that SparSTAR pre-serves the generation behavior of dense InfinityStar while improving paired-output reconstruction fidelity over the pub-lished accelerated baselines. Unlike token-reduction meth-ods, SparSTAR does not discard latent tokens or omit their transformer updates: every token proceeds through every re-finement scale, but each query reads fewer key blocks. This preserves the dense refinement trajectory more directly. Rel-ative to the reported FastSTAR results, SparSTAR improves PSNR by 2.92 dB on T2V and 2.31 dB on I2V, while its VBench scores remain within 0.04 and 0.08 points of the dense reference. SSIM and LPIPS show the same paired-output fidelity trend. 
+
+End-to-end efficiency. In Table 1, SparSTAR provides 1.60 × T2V and 1.62 × I2V speedups while preserving all tokens and refinement scales. Within our matched final-scale benchmark, the sparse operator is 7.08 × faster than FlashAttention-2 (Dao 2024), while selection and mask construction add less than 1.7% end-to-end latency. Un-changed early scales and non-attention modules account for the smaller pipeline-level gain. 
+
+Compatibility with complementary acceleration. 
+
+Guidance-off means skipping the unconditional branch of classifier-free guidance (CFG) (Ho and Salimans 2022) at all four sparsified refinement scales, while Scale-skip means omitting the final refinement scale. Table 2 shows that Guidance-off provides the stronger trade-off, reaching 2.50 ×
+
+speedup on both tasks while preserving higher VBench and reconstruction fidelity than Scale-skip. Guidance-off re-moves an unconditional branch while leaving the conditional refinement hierarchy intact; Scale-skip instead removes the final high-resolution update itself. Branch-level reduction therefore complements SparSTAR with less disruption to the generated representation. 
+
+Long-Video Evaluation 
+
+In multi-clip generation, every scale of Clip 2 attends to the final-scale reference retained from Clip 1. This increases the key sequence and attention cost. We generate Clip 1 with dense attention. We then compare dense attention and SparSTAR only on Clip 2. Table 3 reports 1.31 × and 1.36 ×
+
+speedups for T2V and I2V. The corresponding VBench re-ductions are only 0.87 and 0.46 points. These results show 
+
+Figure 7: Comparison of increasing, constant, and decreasing density schedules across the sparsified refinement scales. that SparSTAR reduces reference-context overhead while largely preserving multi-clip generation quality. 
+
+Ablation Study 
+
+Density Ratios 
+
+To study how the per-scale density ratio affects computa-tion time and generation quality, we compare three schedules in Figure 7. The decreasing schedule used by SparSTAR lowers density as the scale grows. The increasing sched-ule reverses this order. The constant schedule uses one den-sity throughout. At similar latency, the decreasing sched-ule achieves the highest PSNR. Early scales establish global structure. Removing their connections causes errors that later refinement cannot recover. Late scales contain more tokens, so stronger sparsity at these scales yields larger savings. The increasing schedule reverses this priority. The constant schedule ignores it. These results support SparSTAR’s de-creasing density schedule. 
+
+# Conclusion 
+
+We presented SparSTAR, a training-free dynamic block-sparse attention method that further sparsifies the context vis-ible under InfinityStar’s Spacetime Sparse Attention. Trace analysis shows that recomputing aggregated-QK block selec-tion at each sparsified scale avoids substantial attention-mass loss from reused cross-scale masks. Across 720p T2V and I2V evaluation, SparSTAR improves reconstruction fidelity over the published accelerated baselines while providing sub-stantial operator and end-to-end speedups. The method leaves early scales and non-attention modules unchanged and does not compress the KV cache. Future work should evaluate longer multi-clip generation, broader model families, sensi-tivity to block size and density schedules, the contribution of the clip-aware policy, and the interaction between sparse pattern and temporal consistency. References 
+
+Bolya, D.; Fu, C.-Y.; Dai, X.; Zhang, P.; Feichtenhofer, C.; and Hoffman, J. 2023. Token Merging: Your ViT but Faster. In International Conference on Learning Representations (ICLR) .Chen, P.; Zeng, X.; Zhao, M.; Shen, M.; Cheng, W.; Yu, G.; and Chen, T. 2026. Sparse-vdit: Unleashing the power of sparse attention to accelerate video diffusion transform-ers. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, 2957–2965. Chen, Z.; Fan, J.; Yu, Z.; Zhuang, B.; and Tan, M. 2025a. Frequency-Aware Autoregressive Modeling for Efficient High-Resolution Image Synthesis. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) .Chen, Z.; Ma, X.; Fang, G.; and Wang, X. 2025b. Col-laborative decoding makes visual auto-regressive modeling efficient. In Proceedings of the Computer Vision and Pattern Recognition Conference , 23334–23344. Dao, T. 2024. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. In International Confer-ence on Learning Representations (ICLR) .Dong, J.; Feng, B.; Guessous, D.; Liang, Y.; and He, H. 2025. Flex Attention: A Programming Model for Generating Optimized Attention Kernels. In Proceedings of Machine Learning and Systems (MLSys) .Guo, H.; Li, Y.; Zhang, T.; Wang, J.; Dai, T.; Xia, S.-T.; and Benini, L. 2025. FastVAR: Linear Visual Autoregressive Modeling via Cached Token Pruning. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) .Han, J.; Liu, J.; Jiang, Y.; Yan, B.; Zhang, Y.; Yuan, Z.; Peng, B.; and Liu, X. 2025. Infinity: Scaling Bitwise AutoRegres-sive Modeling for High-Resolution Image Synthesis. In Pro-ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .Ho, J.; and Salimans, T. 2022. Classifier-Free Diffusion Guidance. arXiv preprint arXiv:2207.12598 .Hu, J.; Gao, Z.; He, Y.; and Yuan, K. 2026. DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation. In Forty-third International Conference on Ma-chine Learning .Huang, Z.; He, Y.; Yu, J.; Zhang, F.; Si, C.; Jiang, Y.; Zhang, Y.; Wu, T.; Jin, Q.; Chanpaisit, N.; Wang, Y.; Chen, X.; Wang, L.; Lin, D.; Qiao, Y.; and Liu, Z. 2024. VBench: Compre-hensive Benchmark Suite for Video Generative Models. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vi-sion and Pattern Recognition (CVPR) .Kong, W.; Tian, Q.; Zhang, Z.; Min, R.; Dai, Z.; Zhou, J.; Xiong, J.; Li, X.; Wu, B.; Zhang, J.; Wu, K.; Lin, Q.; Yuan, J.; Long, Y.; Wang, A.; Wang, A.; et al. 2024. HunyuanVideo: A Systematic Framework For Large Video Generative Models. 
+
+arXiv preprint arXiv:2412.03603 .Li, J.; Ma, Y.; Zhang, X.; Wei, Q.; Liu, S.; and Zhang, L. 2025a. SkipVAR: Accelerating Visual Autoregressive Modeling via Adaptive Frequency-Aware Skipping. arXiv preprint arXiv:2506.08908 .Li, K.; Chen, Z.; Yang, C.-Y.; and Hwang, J.-N. 2025b. Memory-Efficient Visual Autoregressive Modeling with Scale-Aware KV Cache Compression. In Advances in Neural Information Processing Systems (NeurIPS) .Li, K.; Shah, M.; and Shang, Y. 2026. PackCache: A Training-Free Acceleration Method for Unified Autoregres-sive Video Generation via Compact KV-Cache. arXiv preprint arXiv:2601.04359 .Li, S.; Wang, K.; Khan, S.; Khan, F. S.; Yang, J.; and Wang, Y. 2025c. StageVAR: Stage-Aware Acceleration for Visual Autoregressive Models. arXiv preprint arXiv:2512.16483 .Li, X.; Li, M.; Cai, T.; Xi, H.; Yang, S.; Lin, Y.; Zhang, L.; Yang, S.; Hu, J.; Peng, K.; Agrawala, M.; Stoica, I.; Keutzer, K.; and Han, S. 2025d. Radial Attention: O(n log n)
+
+Sparse Attention with Energy Decay for Long Video Genera-tion. In Advances in Neural Information Processing Systems (NeurIPS) .Li, Z.; Wang, N.; Bai, T.; Mei, C.; Wang, P.; Qiu, S.; and Cheng, J. 2026. SparVAR: Exploring Sparsity in Visual AutoRegressive Modeling for Training-Free Acceleration. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .Lin, S.; and Yang, X. 2024. Animatediff-lightning: Cross-model diffusion distillation. arXiv preprint arXiv:2403.12706 .Liu, J.; Han, J.; Yan, B.; Wu, H.; Zhu, F.; Wang, X.; Jiang, Y.; Peng, B.; and Yuan, Z. 2025. InfinityStar: Unified Space-time AutoRegressive Modeling for Visual Generation. In Ad-vances in Neural Information Processing Systems (NeurIPS) .Peebles, W.; and Xie, S. 2023. Scalable Diffusion Models with Transformers. In Proceedings of the IEEE/CVF Inter-national Conference on Computer Vision (ICCV) .Rombach, R.; Blattmann, A.; Lorenz, D.; Esser, P.; and Om-mer, B. 2022. High-Resolution Image Synthesis with Latent Diffusion Models. In Proceedings of the IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition (CVPR) .Samuel, D.; Tzachor, I.; Levy, M.; Green, M.; Chechik, G.; and Ben-Ari, R. 2026. Fast autoregressive video diffusion and world models with temporal cache compression and sparse attention. arXiv preprint arXiv:2602.01801 .Tang, H.; Wu, Y.; Yang, S.; Xie, E.; Chen, J.; Chen, J.; Zhang, Z.; Cai, H.; Lu, Y.; and Han, S. 2025. Hart: Efficient visual generation with hybrid autoregressive transformer. In Inter-national Conference on Learning Representations , volume 2025, 68413–68432. Tian, K.; Jiang, Y.; Yuan, Z.; Peng, B.; and Wang, L. 2024. Visual Autoregressive Modeling: Scalable Image Generation via Next-Scale Prediction. In Advances in Neural Informa-tion Processing Systems (NeurIPS) .Wan, T.; Wang, A.; Ai, B.; Wen, B.; Mao, C.; Xie, C.-W.; Chen, D.; Yu, F.; Zhao, H.; Yang, J.; Zhou, J.; et al. 2025. Wan: Open and Advanced Large-Scale Video Generative Models. arXiv preprint arXiv:2503.20314 .Xi, H.; Yang, S.; Zhao, Y.; Xu, C.; Li, M.; Li, X.; Lin, Y.; Cai, H.; Zhang, J.; Li, D.; Chen, J.; Stoica, I.; Keutzer, K.; and Han, S. 2025. Sparse VideoGen: Accelerating Video Diffusion Transformers with Spatial-Temporal Sparsity. In 
+
+International Conference on Machine Learning (ICML) .Xia, Y.; Ling, S.; Fu, F.; Wang, Y.; Li, H.; Xiao, X.; and Cui, B. 2025. Training-free and adaptive sparse attention for efficient long video generation. In Proceedings of the IEEE/CVF International Conference on Computer Vision ,15982–15993. Yang, S.; Xi, H.; Zhao, Y.; Li, M.; Zhang, J.; Cai, H.; Lin, Y.; Li, X.; Xu, C.; Chen, J.; Han, S.; Keutzer, K.; and Stoica, I. 2025. Sparse VideoGen2: Accelerate Video Generation with Sparse Attention via Semantic-Aware Permutation. In Ad-vances in Neural Information Processing Systems (NeurIPS) .Ye, Y.; Guo, J.; Wu, H.; He, T.; Pearce, T.; Rashid, T.; Hofmann, K.; and Bian, J. 2025. Fast autoregressive video generation with diagonal decoding. arXiv preprint arXiv:2503.14070 .Yune, S.; Jeong, S.; and Kim, J.-Y. 2026. FastSTAR: Spatiotemporal Token Pruning for Efficient Autoregressive Video Synthesis. arXiv preprint arXiv:2603.07192 .Zhang, J.; Wang, H.; Jiang, K.; Yang, S.; Zheng, K.; Xi, H.; Wang, Z.; Zhu, H.; Zhao, M.; Stoica, I.; et al. 2025a. Sla: Beyond sparsity in diffusion transformers via fine-tunable sparse-linear attention. arXiv preprint arXiv:2509.24006 .Zhang, J.; Wang, H.; Jiang, K.; Zheng, K.; Jiang, Y.; Stoica, I.; Chen, J.; Zhu, J.; and Gonzalez, J. E. 2026a. Sla2: Sparse-linear attention with learnable routing and qat. arXiv preprint arXiv:2602.12675 .Zhang, J.; Xiang, C.; Huang, H.; Wei, J.; Xi, H.; Zhu, J.; and Chen, J. 2025b. Spargeattention: Accurate and training-free sparse attention accelerating any model inference. arXiv preprint arXiv:2502.18137 .Zhang, P.; Chen, Y.; Huang, H.; Lin, W.; Liu, Z.; Stoica, I.; Xing, E.; and Zhang, H. 2026b. Faster video diffusion with trainable sparse attention. Advances in Neural Information Processing Systems , 38: 152509–152534. Zhang, P.; Chen, Y.; Su, R.; Ding, H.; Stoica, I.; Liu, Z.; and Zhang, H. 2025c. Fast video generation with sliding tile attention. arXiv preprint arXiv:2502.04507 .Zhao, X.; Jin, X.; Wang, K.; and You, Y. 2025. Real-Time Video Generation with Pyramid Attention Broadcast. In In-ternational Conference on Learning Representations (ICLR) .Supplementary Material 
+
+Contents 
+
+A Dataset and Evaluation Details 2
+
+A.1 VBench Configuration and Aggregation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2A.2 Prompt Set, Seeds, and InfinityStar Refined T2V Prompts . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2A.3 I2V Conditioning Images . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2A.4 Reconstruction Metrics and Dense Pairing . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 2A.5 Analysis Prompt Set and Backbone Structure . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3A.6 Video, Clip, Frame, and Scale Configurations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3A.7 Sparsity Schedule and Later-Clip Policy . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3A.8 Published Baseline Protocols . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4A.9 Evaluation Scope: Full Suite vs. Analysis Subset . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+
+B Implementation and Release Details 4
+
+B.1 Hardware and Software . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4B.2 Code Availability . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+
+C Additional Quantitative Results 5
+
+C.1 480p Five-Second Quality and Efficiency . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5C.2 Fine-Grained VBench Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5C.3 Per-Dimension Differences with Confidence Intervals. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+
+D Additional Ablation Study 5
+
+D.1 Selection Strategy Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5D.2 Block-Size Ablation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+
+E Additional Qualitative Results 7
+
+E.1 Qualitative Comparisons . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7A Dataset and Evaluation Details 
+
+A.1 VBench Configuration and Aggregation 
+
+We use the original 16-dimension VBench protocol rather than VBench++ or VBench-2.0. The evaluated T2V dimen-sions are subject consistency, background consistency, tem-poral flickering, motion smoothness, dynamic degree, aes-thetic quality, imaging quality, object class, multiple objects, human action, color, spatial relationship, scene, appearance style, temporal style, and overall consistency. The seven qual-ity dimensions form the Quality Score, and the nine semantic dimensions form the Semantic Score. Following the official aggregate script, the normalized total score is computed as 
+
+VBench total = 100 4 Quality + Semantic 5 . (8) The I2V evaluation reports nine dimensions: I2V subject, I2V background, subject consistency, background consis-tency, temporal flickering, motion smoothness, aesthetic quality, imaging quality, and dynamic degree. 
+
+Version record. All VBench numbers use the vbench 
+
+package version 0.1.5 (the original 16-dimension bench-mark, not VBench++ or VBench-2.0), with the prompt and metadata file VBench_full_info.json shipped inside that package (946 prompts). Per-dimension prompt-pool sizes in this file are 72 for subject consistency, mo-tion smoothness, and dynamic degree; 75 for temporal flick-ering; 79 for object class; 82 for multiple objects; 84 for spatial relationship; 85 for color; 86 for background con-sistency and scene; 90 for appearance style; 93 for aes-thetic quality, imaging quality, and overall consistency; and 100 for human action and temporal style. Evalua-tion is invoked through vbench.VBench.evaluate 
+
+with mode='vbench_standard' , one dimension per call, so each dimension reads exactly its own prompt subset. Aggregate scores use the normalization ranges and dimension weights from the VBench repository’s 
+
+scripts/constant.py (dynamic degree weighted 0.5,all other dimensions 1.0), combined as in Equation (8). The I2V evaluation uses the vbench2_beta_i2v module from the same package. 
+
+A.2 Prompt Set, Seeds, and InfinityStar Refined T2V Prompts 
+
+For the dimension-balanced T2V analyses, we use six prompts per dimension, giving 96 prompt assignments across the 16 dimensions. This subset is distinct from the complete official VBench suite used for the headline results, as de-tailed in Section A.9. The analysis prompt set is fixed before comparing dense InfinityStar and SparSTAR. 
+
+Seeds and subset construction. Seeds are determinis-tic and require no seed manifest: sample j of a prompt uses seed 41 + j, so the five default seeds are 41 , . . . , 45 
+
+(SEED_BASE = 41 , seed = SEED_BASE +sample index). The dimension-balanced subsets are built by a recorded pro-cedure rather than by hand. Each dimension takes six prompts chosen evenly spaced over that dimension’s pool. Adjacent VBench indices are often near-duplicates (for example, “a bicycle” and “a bicycle and a car” ), so taking the first n
+
+would collapse the diversity of the subset. The resulting 96 dimension-specific prompt assignments are evaluated inde-pendently, which at five seeds gives 480 videos per method. 
+
+InfinityStar refined T2V prompts. We do not run a prompt rewriter. All T2V evaluations consume 
+
+evaluation/VBench_rewrited_prompt.json 
+
+exactly as distributed with the public InfinityStar release, so there is no rewriter model, system instruction, user template, decoding configuration, or post-processing step of ours to disclose. Reproducing our setup requires only that file, which is already public. It holds 946 entries, one per VBench prompt, each carrying prompt_en , its 
+
+dimension list, and a refined_prompt . The generator is fed the refined_prompt string, while filenames, manifests, and all VBench bookkeeping keep the official 
+
+prompt_en , which makes the outputs discoverable by the standard evaluator. For example, prompt_en “In a still frame, a stop sign” maps to the refined_prompt “In a still frame, a stop sign stands prominently against a clear blue sky backdrop. The octagonal red sign with bold white letters is positioned slightly off-center, drawing attention with its vivid color.. . . ” All T2V methods use this same refined-prompt set. 
+
+A.3 I2V Conditioning Images 
+
+Conditioning images come from the official VBench-I2V im-age suite, downloaded as the benchmark’s own crop.zip 
+
+release (2.46 GB) and used unmodified; we redistribute no images. The suite ships pre-cropped variants at three as-pect ratios (1:1, 16:9, and 3:2) with 355 images each, and we use the 16:9 set for all I2V experiments, matching the generated video’s aspect ratio. Because the crops are sup-plied by the benchmark, no resize rule, crop coordinates, or interpolation kernel of ours enters the pipeline. Each im-age is identified by its file_name in the accompanying 
+
+i2v-bench-info.json , which also records the source 
+
+url , content type , original resolution, the two crop rect-angles, and the caption used as the text condition. The release will list those 355 identifiers together with the suite revision rather than the image files themselves. Pixels are read as 8-bit RGB in [0 , 255] with no additional normaliza-tion beyond the backbone’s own preprocessing. 
+
+A.4 Reconstruction Metrics and Dense Pairing 
+
+PSNR is reported in decibels, whereas SSIM and LPIPS are unitless. They measure agreement with paired dense In-finityStar outputs rather than absolute video quality. Dense InfinityStar and SparSTAR use matched tasks, resolutions, prompts, I2V conditioning images, frame counts, and gen-eration seeds. Frames are compared at matching temporal indices and spatial resolution without motion compensation or temporal realignment. 
+
+Reconstruction-metric definitions. All three metrics are computed on decoded RGB frames, not on luminance, in the range [0 , 255] with 8-bit quantization, at matched tem-poral indices and native spatial resolution. PSNR is com-puted per frame and then averaged over frames, rather Setting Duration Frames Clip Composition Native Scale Information SparSTAR Configuration                        
+
+> 720p T2V/I2V 5 s 81 One appearance frame followed by one 80-frame clip pyramid at 16 fps. Four final refinement scales are
+> s26 –s29 ; the final scale contains 72,000 query tokens. Retained densities 0.625 ,
+> 0.1875 ,0.1875 , and 0.09375 at
+> s26 –s29 ; all earlier scales remain dense. 480p T2V/I2V 5 s 81 One appearance frame followed by one 80-frame clip pyramid at 16 fps. The backbone has 28 native scales and 14 video-tower scales. The final four scales are
+> s24 –s27 with 5,040, 11,520, 20,640, and 31,800 query tokens. Retained densities 0.625 ,
+> 0.1875 ,0.1875 , and 0.09375 at
+> s24 –s27 ; all earlier scales remain dense. 480p T2V/I2V 10 s 161 One appearance frame followed by two 80-frame clip pyramids; Clip 2 conditions on the final scale of Clip 1. Clip 1 ends at s27 . The final four scales of Clip 2 are
+> s38 –s41 , with 5,040, 11,520, 20,640, and 31,800 query tokens, respectively. Clip 1 remains dense, and its final scale is retained as reference context for Clip 2. SparSTAR is applied only at
+> s38 –s41 with densities 0.625 ,
+> 0.1875 ,0.1875 , and 0.09375 ,respectively.
+
+Table 4: Video, clip, frame, scale, and SparSTAR configurations used in the reported experiments. than pooled over all pixels of the clip. By Jensen’s in-equality, this reports slightly higher values than the pooled variant (for the 480p 10 s setting, 24.39 dB per frame against 24.07 dB pooled). SSIM uses scikit-image ’s 
+
+structural_similarity at its defaults: a 7 × 7 uni-form (not Gaussian) window, per-channel evaluation aver-aged over channels, ddof = 1 covariance normalization, 
+
+data_range = 255 , and the 3-pixel border discarded. LPIPS uses the lpips package with the AlexNet backbone on frames scaled to [−1, 1] , averaged over frames. Recon-struction metrics are computed on every clip of the corre-sponding run, not on a separately sampled subset; for the 720p full-suite T2V comparison, this is all 4,730 clips per method. As an implementation check, a GPU reimplementa-tion of these estimators agrees with the reference implemen-tation to 3.7×10 −6 dB for PSNR and to the printed precision for SSIM and LPIPS. SSIM must be accumulated in double precision: E[ X2] − E[ X]2 cancels two quantities of order 
+
+255 2, and evaluating it in single precision shifts SSIM by up to 9 × 10 −3 per clip. 
+
+A.5 Analysis Prompt Set and Backbone Structure 
+
+The 480p attention analyses use 32 prompts and the 8B In-finityStar backbone with 36 transformer layers and 32 atten-tion heads. Thus, each evaluated prompt and scale contains 1,152 layer–head attention instances before aggregation. The analysis records both Clip 1 and Clip 2 behavior; for the cross-scale reuse experiment, s24 in Clip 1 and s38 in Clip 2 are the decision scales. 
+
+Analysis aggregation. The 32 prompts are drawn by the same dimension-balanced procedure described in Sec-tion A.2. The analysis covers all 36 transformer layers and all 32 attention heads on the 10-second configuration (Clip 1 own finest scales s24 –s27 and Clip 2 own finest scales s38 –
+
+s41 ). Statistics are macro-averaged: first, an unweighted mean is taken over causal source-to-later-target scale pairs, layers, and heads within each prompt; then the bootstrap resamples the 32 prompt-level means. Confidence intervals are 95% percentile-bootstrap intervals with 20,000 resamples. 
+
+A.6 Video, Clip, Frame, and Scale Configurations 
+
+Table 4 summarizes the video, clip, frame, scale, and sparsity configurations used in the reported experiments. All three settings start from a single appearance frame and then gen-erate 80-frame clip pyramids at 16 fps, so the only structural difference between them is how many clips follow that frame: the five-second settings generate one, and the ten-second setting generates two, with Clip 2 conditioning on the fi-nal scale of Clip 1. In the five-second settings, SparSTAR sparsifies the final four refinement scales: s26 –s29 at 720p and s24 –s27 at 480p. In the ten-second setting, Clip 1 re-mains dense, its final scale is retained as reference con-text for Clip 2, and SparSTAR is applied only to Clip 2 scales s38 –s41 . All sparsified scales use retained densities 
+
+(0 .625 , 0.1875 , 0.1875 , 0.09375) in ascending scale order. 
+
+A.7 Sparsity Schedule and Later-Clip Policy 
+
+For the reported 720p setting, SparSTAR sparsi-fies native scales s26 –s29 with retained densities 
+
+(0 .625 , 0.1875 , 0.1875 , 0.09375) , respectively. Earlier scales remain dense, and the 72,000-token final scale uses the smallest retained density because it accounts for 74.6% of the attention cost among the sparsified scales while concentrating most of its attention mass on a small subset of keys. The same fixed schedule is applied to every prompt. 
+
+Later-clip schedule. For the reported ten-second eval-uation, Clip 1 is generated with dense attention. Its final scale is retained as reference context for every scale of Clip 2. SparSTAR is applied only to the four finest scales of Clip 2, s38 –s41 , with retained densities 
+
+(0 .625 , 0.1875 , 0.1875 , 0.09375) , respectively. Text blocks remain dense, while the preceding-clip reference blocks and current-scale blocks are jointly ranked under the correspond-ing density budget. Method Source of Reported Numbers Hardware and Protocol Comparability     
+
+> Dense InfinityStar / SparSTAR Re-evaluated in our environment with matched tasks, resolutions, prompts, conditioning inputs, and seeds. Ubuntu 22.04.5, BF16, PyTorch 2.5.1+cu124, and Triton 3.1.0 on H100 NVL GPUs (94 GB each). Each video occupies one GPU at batch size one. End-to-end timing includes the complete generation pipeline between CUDA synchronizations, after one discarded warm-up video. Direct paired comparison. Latency is the mean over the timed evaluation videos. FastSTAR Values are transcribed from the FastSTAR paper rather than re-evaluated by us. The setting uses a single NVIDIA H100 (80 GB) for 720p, 5-second, 81-frame videos. End-to-end latency includes the text encoder and VAE decoder. The paper uses InfinityStar’s distributed
+> refined_prompt strings for T2V and 10 videos per VBench dimension for reconstruction metrics. This is a contextual result. It is neither hardware- nor sample-matched to ours. SparseVAR / FastVAR / ToMe Values are transcribed from the FastSTAR implementations of these methods on InfinityStar. FastSTAR extends the original image-oriented methods across the spatiotemporal pyramid while retaining default InfinityStar generation hyperparameters and evaluates them on a single H100 (80 GB). Contextual published results. They should not be interpreted as reproductions on our hardware or as the original papers’ native image-generation protocols.
+
+Table 5: Provenance and comparability of the reported baseline results. 
+
+A.8 Published Baseline Protocols 
+
+Table 5 distinguishes results measured in our environment from published values. Our dense InfinityStar and SparSTAR runs use the same H100 NVL hardware, prompts, condition-ing inputs, and seeds, so their quality and latency form a paired comparison. The FastSTAR, SparseVAR, FastVAR, and ToMe results are reported by FastSTAR and use a differ-ent H100 variant. FastSTAR reports reconstruction metrics on 10 videos per VBench dimension, but its exact evaluation code and prompt subset were not available to us; we in-stead evaluate all official prompts with five seeds for broader coverage. Published baseline values are therefore contextual rather than hardware- or sample-matched comparisons with our results. 
+
+A.9 Evaluation Scope: Full Suite vs. Analysis Subset 
+
+Two different prompt scopes are used in this paper, and every table states which one it follows. 
+
+Headline results use the full VBench suite. For clar-ity, references to the 96-prompt configuration denote a dimension-balanced subset used only for analyses and ab-lations, not the evaluation scope of the headline results. Tables 1–3 of the main paper and the fine-grained per-dimension results of Section C.2 are computed with the official vbench_standard protocol over the complete benchmark: each of the 16 dimensions is scored on its own official prompt subset, with the five default seeds per prompt. At 720p, T2V uses all 946 official prompts with five seeds per prompt, while I2V uses all 355 official conditioning images with five seeds each. Each dimension consumes its desig-nated subset. Both the dense reference and SparSTAR are evaluated under this identical protocol, so the per-dimension means are directly comparable. The aggregate VBench col-umn follows the official normalization constants and dimen-sion weights, combining the seven quality dimensions and nine semantic dimensions as (4 Quality + Semantic) /5.
+
+Analyses and ablations use dimension-balanced subsets. 
+
+The attention-level analyses and the ablation studies do not re-run the full suite. They use dimension-balanced prompt subsets — primarily 96 prompt assignments (six prompts per dimension across the 16 dimensions) — so that many arms can be generated and compared under identical conditions within the compute budget. Because these tables compare arms that are all evaluated on the same subset with the same seeds, the comparisons remain internally valid; only their absolute values are not directly comparable with the full-suite numbers in Tables 1–3. Table 6 states which scope each table follows. 
+
+# B Implementation and Release Details 
+
+B.1 Hardware and Software 
+
+All measurements run on Ubuntu 22.04.5 LTS (kernel 5.15.0) with two NVIDIA H100 NVL GPUs (94 GB each, driver 565.57.01), an Intel Xeon Silver 4514Y host (64 logical cores, 125 GiB RAM), Python 3.11, PyTorch 2.5.1+cu124 Results Evaluation set T2V videos/arm I2V videos/arm                  
+
+> Main Tables 1–3; Tables 7–9 Full VBench / VBench-I2V suite 946 ×5355 ×5Table 10 Separate 720p T2V batch Varies by dimension –Tables 11, 12 Dimension-balanced T2V subset 96 ×5=480 –
+
+Table 6: Evaluation scope and number of generated videos per method arm. Our dense InfinityStar–SparSTAR comparisons use matched evaluation sets and seeds; published baseline results follow their original evaluation protocols. (cuDNN 9.1.0), and Triton 3.1.0, in BF16. SparSTAR uses 128-token blocks and a forward-only FlexAttention path at the selected high-resolution scales. Each gener-ation occupies one GPU; batch size is one video, and reported latency is per video. End-to-end timing brack-ets the complete generation pipeline—the text encoder, all refinement scales, and the VAE decoder—between 
+
+torch.cuda.synchronize() calls. Sparse runs gen-erate one warm-up video before timing begins because the first call pays FlexAttention’s torch.compile cost; the warm-up video is discarded and never enters any statistic. The reported statistic is the mean over timed videos. 
+
+B.2 Code Availability 
+
+All code required to reproduce generation, sparse selection, FlexAttention execution, preprocessing, metric computation, and table aggregation will be made publicly available upon publication. The release will include prompt and seed mani-fests, I2V image identifiers, environment files, model config-uration, per-scale density schedules, timing scripts, and raw per-video evaluation outputs. 
+
+# C Additional Quantitative Results 
+
+C.1 480p Five-Second Quality and Efficiency 
+
+Table 7 summarizes reconstruction quality, overall VBench performance, and end-to-end speedup for 480p, five-second T2V and I2V generation. PSNR, SSIM, and LPIPS measure agreement with paired dense InfinityStar outputs, whereas VBench evaluates the perceptual and semantic quality of the generated videos. Speedup is measured relative to dense In-finityStar inference. The picture is the same shape as at 720p. SparSTAR stays closer to the dense output than FastSTAR by 2.60 dB on T2V and 2.28 dB on I2V, and roughly halves LPIPS on both tasks, while its VBench score lands within 0.41 points of dense InfinityStar on T2V and 1.12 points on I2V. It buys that fidelity at a smaller speedup than FastSTAR, 1.30 × against 1.47 ×, since 480p offers less attention work to remove than 720p does. 
+
+C.2 Fine-Grained VBench Results 
+
+Tables 8 and 9 organize the 16 VBench dimensions for T2V and the nine VBench-I2V dimensions for I2V generation at 720p and 480p. The tables include rows for InfinityStar and SparSTAR under the corresponding generation settings. At 720p the two methods are hard to tell apart dimension by dimension. Subject consistency is identical to four decimals (0.9513), motion smoothness is identical as well, temporal flickering differs only in the fourth decimal, and imaging quality moves by 0.006 points out of roughly 68. The largest                                
+
+> Method PSNR
+> (↑)
+> SSIM
+> (↑)
+> LPIPS
+> (↓)
+> VBench
+> (↑)
+> Speedup
+> (↑)
+> 480p Text-to-Video (T2V)
+> InfinityStar –––83.89 1.00 ×
+> FastSTAR 22.96 0.697 0.262 –1.47 ×
+> SparSTAR 25.56 0.793 0.123 83.48 1.30 ×
+> 480p Image-to-Video (I2V)
+> InfinityStar –––80.15 1.00 ×
+> FastSTAR 23.86 0.750 0.234 –1.47 ×
+> SparSTAR 26.14 0.813 0.111 79.03 1.30 ×
+
+Table 7: Quality and efficiency for 5-second, 81-frame 480p T2V and I2V generation. All T2V evaluations use the refined_prompt strings distributed with InfinityStar. Dashes indicate non-applicable or unreported metrics. single change is dynamic degree, which rises slightly from 0.6833 to 0.6861, so sparsification does not flatten motion at this resolution. The I2V half of the table behaves the same way: the two input-condition alignment dimensions match to within 0.0001. At 480p the same dimensions separate a little further. Imaging quality falls from 66.011 to 64.298 and multiple objects from 0.8986 to 0.8803, while dynamic degree again moves upward, from 0.7361 to 0.7500. The clearest gap in either table is on the 480p I2V side, where dynamic degree drops from 0.4085 to 0.3577. Apart from that dimension and imaging quality, which falls by 1.56 on its 0–100 scale, ev-ery remaining I2V dimension stays within 0.011 of dense InfinityStar. 
+
+C.3 Per-Dimension Differences with Confidence Intervals 
+
+Table 10 is a matched-clip robustness check from a separate 720p T2V batch with prompt scopes different from the full-suite protocol used for Main Table 1. It is not a confidence-interval analysis of the headline means. Among clips scored by both methods, five small differences have intervals ex-cluding zero, whereas the dynamic-degree interval straddles zero. 
+
+# D Additional Ablation Study 
+
+D.1 Selection Strategy Analysis 
+
+Table 11 provides a quantitative comparison of the methods analyzed in Figure 3 of the main paper. Beyond measuring 720p T2V: 16 VBench Dimensions ( ↑)Method Subject Consistency Background Consistency Temporal Flickering Motion Smoothness Dynamic Degree Aesthetic Quality Imaging Quality Object Class InfinityStar 0.9513 0.9560 0.9845 0.9873 0.6833 0.6429 67.690 0.9741 SparSTAR 0.9513 0.9567 0.9846 0.9873 0.6861 0.6422 67.684 0.9731 
+
+Method Multiple Objects Human Action Color Spatial Relationship Scene Appearance Style Temporal Style Overall Consistency InfinityStar 0.8750 0.9780 0.8850 0.8380 0.5515 0.2082 0.2579 0.2766 SparSTAR 0.8745 0.9780 0.8854 0.8437 0.5526 0.2082 0.2580 0.2767 
+
+720p I2V: 9 VBench-I2V Dimensions ( ↑)Method I2V Subject I2V Background Subject Consistency Background Consistency Temporal Flickering Motion Smoothness Aesthetic Quality Imaging Quality Dynamic Degree InfinityStar 0.9800 0.9842 0.9461 0.9580 0.9810 0.9902 0.5973 70.554 0.4507 SparSTAR 0.9799 0.9841 0.9460 0.9577 0.9811 0.9902 0.5969 70.456 0.4451 
+
+Table 8: Fine-grained VBench results for 720p generation. T2V uses the 16 standard VBench dimensions. I2V uses two input-condition alignment dimensions and seven video-quality dimensions. 
+
+480p T2V: 16 VBench Dimensions ( ↑)Method Subject Consistency Background Consistency Temporal Flickering Motion Smoothness Dynamic Degree Aesthetic Quality Imaging Quality Object Class InfinityStar 0.9416 0.9577 0.9812 0.9831 0.7361 0.6609 66.011 0.9786 SparSTAR 0.9381 0.9545 0.9820 0.9823 0.7500 0.6543 64.298 0.9826 
+
+Method Multiple Objects Human Action Color Spatial Relationship Scene Appearance Style Temporal Style Overall Consistency InfinityStar 0.8986 0.9800 0.8810 0.8255 0.5240 0.2231 0.2574 0.2786 SparSTAR 0.8803 0.9800 0.8875 0.8280 0.5298 0.2219 0.2575 0.2780 
+
+480p I2V: 9 VBench-I2V Dimensions ( ↑)Method I2V Subject I2V Background Subject Consistency Background Consistency Temporal Flickering Motion Smoothness Aesthetic Quality Imaging Quality Dynamic Degree InfinityStar 0.9751 0.9812 0.9517 0.9592 0.9825 0.9909 0.5996 68.948 0.4085 SparSTAR 0.9724 0.9792 0.9473 0.9561 0.9830 0.9904 0.5887 67.392 0.3577 
+
+Table 9: Fine-grained VBench results for 480p generation. T2V uses the 16 standard VBench dimensions. I2V uses two input-condition alignment dimensions and seven video-quality dimensions. 
+
+Dimension Clips (n) InfinityStar SparSTAR Difference 95% CI 
+
+Subject consistency 4730 0.9553 0.9517 −0.0036 [−0.0038 , −0.0035 ]Background consistency 430 0.9369 0.9353 −0.0016 [−0.0025 , −0.0008 ]Temporal flickering 375 0.9832 0.9838 +0 .0007 [+0 .0006 , +0 .0007 ]Motion smoothness 360 0.9852 0.9863 +0 .0011 [+0 .0010 , +0 .0012 ]Aesthetic quality 465 0.6196 0.6182 −0.0014 [−0.0026 , −0.0003 ]Dynamic degree 360 0.7361 0.7389 +0 .0028 [−0.0083 , +0 .0139 ]
+
+Table 10: Matched-clip VBench differences with 95% bootstrap intervals (10,000 resamples) from a separate 720p T2V batch. The retained score pools use prompt scopes different from the full-suite protocol; this is therefore a robustness check, not a CI analysis of the headline means. Imaging quality lacks per-video records in this batch. retained attention mass, we run full video-generation infer-ence and evaluate the resulting videos. At a matched 2.43 ×
+
+speedup, Fresh aggregated-QK (Ours) achieves the highest PSNR, SSIM, and VBench and the lowest LPIPS among the evaluated sparse methods. The ordering is wide enough to read without statistics: fresh selection is 1.66 dB above a slid-ing window, 6.07 dB above cross-scale reuse, and 9.72 dB above random blocks, and all four arms run at essentially Selection Strategy PSNR (↑) SSIM (↑) LPIPS (↓) VBench (↑) Speedup (↑)Dense InfinityStar (reference) – – – 83.45 1.00 ×                    
+
+> Fresh aggregated-QK (ours) 29.09 0.889 0.075 83.13 2.43 ×
+> Sliding window 27.43 0.847 0.112 82.86 2.43 ×
+> Cross-scale reuse (SparVAR-style) 23.02 0.743 0.252 78.53 2.48 ×
+> Random blocks 19.37 0.616 0.423 69.79 2.43 ×
+
+Table 11: Quantitative comparison of selection strategies for the 720p T2V analysis associated with Figure 3 in the main paper. Reconstruction metrics are measured against paired dense InfinityStar outputs.                       
+
+> Block Size Kernel PSNR
+> (↑)
+> SSIM
+> (↑)
+> LPIPS
+> (↓)
+> Latency
+> (s) 32 Pure tensor †29.97 0.914 0.055 180.9 64 Pure tensor †29.62 0.910 0.057 117.6
+> 128 (ours) FlexAttention 29.09 0.889 0.075 27.9
+> 256 FlexAttention 28.69 0.879 0.085 43.7
+
+Table 12: Block-size ablation in the InfinityStar environment with PyTorch 2.5.1. † For block sizes below 128, no valid FlexAttention kernel configuration was available in our tested setup; we therefore used a forced pure-tensor fallback. the same speed. This shows that fresh aggregated-QK trans-lates the attention-mass advantage observed in Figure 3 into better generation fidelity. Evaluation definitions and prompt protocols are provided in Section A. 
+
+D.2 Block-Size Ablation 
+
+Table 12 studies why we fix the deployed block size to 128. We compare block sizes of 32, 64, 128, and 256 using the same InfinityStar inference setting. In our PyTorch 2.5.1 en-vironment, FlexAttention does not provide a valid kernel configuration for block sizes below 128. The 32 and 64 set-tings therefore require a forced pure-tensor fallback and incur substantial execution overhead, with end-to-end latencies of 180.9 s and 117.6 s, respectively. Block size 128 reduces latency to 27.9 s while maintain-ing a PSNR of 29.09, an SSIM of 0.889, and an LPIPS of 0.075. Increasing the block size to 256 degrades all three reconstruction metrics and raises latency to 43.7 s, approxi-mately 1.57 × that of block size 128. Reading the table as a whole, quality improves monotonically as blocks get smaller, but only by 1.28 dB from 256 down to 32, whereas latency swings by a factor of six over the same range. Block size 128 sits at the point where the kernel is still available and the remaining quality on offer no longer pays for its cost, which is why we adopt it as the default deployment setting. 
+
+# E Additional Qualitative Results 
+
+E.1 Qualitative Comparisons 
+
+Figures 8–13 compare dense InfinityStar with SparSTAR for T2V and I2V generation at 480p and 720p. Across resolu-tions, durations, and tasks, SparSTAR preserves pixel-level fidelity and matches the visual quality of the dense reference. 
+
+Comparison protocol. Each dense–sparse pair uses the same prompt, seed, resolution, duration, and, for I2V, con-ditioning image. Frames are shown at matched temporal in-dices. The five-second examples assess within-clip subject, background, and texture consistency, while the ten-second examples additionally reveal behavior across the Clip 1– Clip 2 boundary. The I2V comparisons also show how closely each method preserves the subject and appearance of the con-ditioning image. Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Figure 8: Qualitative comparison between dense InfinityStar (top) and SparSTAR (bottom) for 480p five-second T2V generation. SparSTAR preserves high pixel-level fidelity and achieves visual quality comparable to dense InfinityStar. Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Figure 9: Qualitative comparison between dense InfinityStar (top) and SparSTAR (bottom) for 480p five-second I2V generation. SparSTAR preserves high pixel-level fidelity and achieves visual quality comparable to dense InfinityStar. Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Figure 10: Qualitative comparison between dense InfinityStar (top) and SparSTAR (bottom) for 480p ten-second T2V generation. SparSTAR preserves high pixel-level fidelity and achieves visual quality comparable to dense InfinityStar. Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Figure 11: Qualitative comparison between dense InfinityStar (top) and SparSTAR (bottom) for 480p ten-second I2V generation. SparSTAR preserves high pixel-level fidelity and achieves visual quality comparable to dense InfinityStar. Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Figure 12: Qualitative comparison between dense InfinityStar (top) and SparSTAR (bottom) for 720p five-second T2V generation. SparSTAR preserves high pixel-level fidelity and achieves visual quality comparable to dense InfinityStar. Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Dense Attention Ours Figure 13: Qualitative comparison between dense InfinityStar (top) and SparSTAR (bottom) for 720p five-second I2V generation. SparSTAR preserves high pixel-level fidelity and achieves visual quality comparable to dense InfinityStar.

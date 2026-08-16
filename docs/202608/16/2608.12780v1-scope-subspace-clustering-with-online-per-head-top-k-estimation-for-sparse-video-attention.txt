@@ -1,0 +1,905 @@
+Title: SCOPE: Subspace Clustering with Online Per-Head Top-K Estimation for Sparse Video Attention
+
+URL Source: https://arxiv.org/pdf/2608.12780v1
+
+Published Time: Fri, 14 Aug 2026 00:29:17 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# SCOPE: Subspace Clustering with Online Per-Head Top-K Estimation for Sparse Video Attention 
+
+Qi Zhao 1,∗,‡, Qirui Li 1,∗,‡, Hanlin Tang 2,†, Yiduo Li 2, Zhen Guo 2, Cuifeng Shen 2, Chao Xu 2, Zhaosheng Chi 2, Xiaojin Lu 2, Kan Liu 2, Tao Lan 2, Lin Qu 2, Xi Li 1,§
+
+1Zhejiang University , 2Alibaba Group 
+
+## Abstract 
+
+Diffusion Transformers (DiTs) incur quadratic self-attention cost over spatiotemporal tokens. Existing training-free sparse attention methods often construct sparse masks from block-level or cluster-level proxy scores, which can obscure fine-grained differences among keys and miss high contribution keys under aggressive sparsity. Moreover, such proxy scores may yield overly concentrated softmax distributions, causing Top-p to retain too few keys for some query clusters. Although a fixed Top-k minimum alleviates this failure mode, a shared value cannot adapt to variations across heads and inputs. To address both limitations, we propose SCOPE, a training-free sparse attention framework that combines 3D-RoPE-aligned key subspace clustering with online per-head Top-k estimation for efficient video-DiT inference. SCOPE partitions post-RoPE keys into temporal, height, and width subspaces, clusters them independently, and aggregates the corresponding centroid scores through lookup tables to obtain per key proxy scores for each query cluster. Building on existing hybrid Top-p/fixed Top-k selection, SCOPE derives a head-specific Top-k value online by averaging the initial retained key counts within each head, weighted by query cluster size, and selects additional keys only for query clusters whose initial retained key counts fall below this value. Sparse attention is then computed over the selected original keys and values. Across six model–task configurations, SCOPE consistently outperforms existing training-free baselines in both fidelity and latency, achieving up to a 1.99 × end-to-end speedup on 720p HunyuanVideo with 28 .46 dB PSNR relative to dense attention. 
+
+E-mail: qizhao@zju.edu.cn,qirui.l@zju.edu.cn,wanghaisheng.whs@alibaba-inc.com Dense Attention SpargeAttn SVG2 SVOO SCOPE (Ours) 
+
+Wan2.2-A14B Text-to-Video HunyuanVideo-13B Text-to-Video 
+
+PSNR = 23.41 Latency = 1607s Latency = 1133s (1.42x) PSNR=24.37 Latency=1034s (1.55x) PSNR=24.68 Latency=968s (1.66x) 
+
+PSNR = 26.13 Latency = 931s (1.73x) 
+
+PSNR = 25.12 Latency = 1803s Latency = 1193s (1.51x) PSNR = 27.72 Latency = 906s (1.99x) PSNR = 28.37 Latency = 987s (1.83x) 
+
+PSNR = 29.15 Latency = 901s (2.00x) 
+
+> Prompt: Three elegant solar airships cruise between the terraces of a floating botanical city. Their white hulls and blue solar wings cross in front of waterfalls, gardens and glass towers while the camera overtakes them and reveals moving shadows on the clouds below. Bright believable science-fiction design, cinematic photorealism. Prompt: A spotted Dalmatian walks slowly around a bright-red fire hydrant on a clean gray sidewalk, then turns its head toward the camera. Its black spots, facial markings, collar, legs and tail remain stable through the turn, with a crisp moving shadow on the pavement. Locked-off medium shot, even daylight, deep focus, photorealistic.
+
+Figure 1 Representative 720p T2V runs on Wan2.2-A14B and HunyuanVideo-13B. SCOPE achieves significant speedup while maintaining fidelity to dense attention. The displayed metrics are per-run.  
+
+> *
+
+Equal contribution † Project lead § Corresponding author ‡ Work done during internship at Alibaba Group arXiv:2608.12780v1 [cs.CV] 13 Aug 2026 1 Introduction 
+
+Modern video Diffusion Transformers (DiTs) flatten spatiotemporal latents into tens of thousands of tokens [13, 24, 25, 34, 43], making the O(N 2d) cost of self-attention a major bottleneck at high resolutions and long video durations. Training-free sparse attention reduces this cost by evaluating only selected query–key interactions without modifying the pretrained model. An effective sparse selector must therefore answer two coupled questions: which keys matter to each query group and how many to retain so that sparse attention remains faithful to the dense-attention reference. Existing training-free methods avoid constructing the dense score matrix through predefined sparsity patterns [3, 6, 17, 44, 48], block-level proxies [8, 28, 39, 40, 46], or clustering-based proxies [14, 23, 33, 41]. The latter two reduce online selection cost by representing multiple keys with a pooled block or cluster centroid. However, keys sharing the same representative receive the same estimated importance, obscuring key-level differences and potentially omitting influential keys whose importance is not reflected by the shared proxy. A natural way to recover this lost granularity is to exploit the 3D rotary position embeddings (RoPE) used by video DiTs [31, 36]. Temporal, height and width coordinates act on disjoint channel ranges, whose post-RoPE key subspaces exhibit distinct clustering patterns, as shown in Figure 4. Representing each key with one full-dimensional assignment couples these heterogeneous groupings, modeling the three ranges separately preserves their distinct structures, yielding finer-grained key discrimination. Reliable masks also require calibrated retained key counts. Top-p adapts to the estimated distribution but may under-select when approximation over-concentrates it. A fixed Top-k floor helps [47], but one global value cannot capture variations across heads and inputs. Offline head-wise schedules require dense calibration [23] and remain static, motivating an online, input-adaptive estimation. Based on these observations, we propose SCOPE (Subspace Clustering with Online Per-Head Top-k Estimation), a training-free sparse attention framework for accelerating video-DiT inference. SCOPE keeps query clustering full-dimensional, while partitioning each post-RoPE key into temporal, height and width ranges of 3D RoPE and clustering them independently, following the compositional principle of product quantization [11]. Query-centroid slices score the corresponding subspace centroids to form compact lookup tables, each key retrieves and sums one entry per table to obtain its proxy score. These compositional scores improve key discrimination without expensive query–key scoring and are used only for selection, sparse attention is computed with the original tokens. For count estimation, SCOPE applies hybrid Top-p/fixed-Top-k selection to each query cluster, sets the online per-head Top-k to the query-size-weighted average of the initial selected counts and extends only those query clusters below this value. Larger selections remain unchanged, so no offline dense profiling or stored head-wise schedules are required. Experiments across six 720p model–task settings spanning text-to-video and image-to-video generation on Wan2.1, Wan2.2 and HunyuanVideo demonstrate consistent improvements in fidelity and latency over training-free sparse attention baselines. In particular, SCOPE achieves up to a 1.99 × end-to-end speedup on HunyuanVideo-T2V, with 28 .46 dB PSNR relative to the corresponding dense-attention output. Representative T2V comparisons in Figure 1 further illustrate this fidelity–efficiency trade-off. At matched attention density, Figure 2 further shows that SCOPE consistently achieves the highest attention recall and PSNR across the evaluated densities, with especially clear gains in PSNR. These results indicate that SCOPE uses the same sparse attention budget more effectively. Our main contributions are: • We propose 3D-RoPE-aligned key subspace clustering, which independently clusters the temporal, height and width channel ranges and composes their centroid scores into fine-grained key-level proxy logits with additive scoring cost. • We introduce online per-head Top-k estimation, which derives an adaptive retention floor from base counts weighted by query cluster size and extends only clusters below this floor, without offline dense calibration. • We evaluate SCOPE on six 720p T2V and I2V settings across three video DiT families. SCOPE achieves 2Density PSNR Attention Recall Density                 
+
+> 12 20 28 36 44 52 12 20 28 36 44 52 1.00 0.95 0.90 0.85 0.80 0.75 0.70 0.65 20 22 24 26 28 30
+> SCOPE SVOO SVG2 Sparge Figure 2 Attention recall and PSNR under matched attention density. SCOPE consistently achieves higher attention recall and PSNR than competing sparse attention methods at the same retained density.
+
+the best dense-reference fidelity and lowest measured latency among the evaluated training-free baselines, delivering 1.67 ×–1.99 × end-to-end speedups. 
+
+## 2 Related Work 
+
+Predefined and Offline-Calibrated Sparse Masks 
+
+Predefined methods restrict attention using local windows, sliding tiles, or distance-aware layouts, while offline-calibrated methods exploit cross-input regularities to derive sparse configurations [3, 6, 7, 16, 17, 44, 48, 54]. These approaches incur little online mask-construction overhead and often admit regular, hardware-friendly execution. However, masks determined before observing the current activations may miss prompt-dependent long-range interactions, nonlocal motion, or abrupt scene changes. 
+
+Dynamic Sparse Attention for Video Generation 
+
+Dynamic methods infer sparse attention patterns from current activations, adapting selection to the input and denoising state [1, 8, 20, 22, 29, 32, 37, 39]. Some use lightweight approximations of current attention [28, 38, 40, 46, 49], while others group or reorder tokens by semantic similarity or query–key affinity [2, 23, 27, 33, 41, 52], complementary work improves sparse execution, reduces approximation error, or adapts retained-key counts [4, 5, 15, 18, 19, 26, 51, 53, 55]. SpargeAttention2 [47] studies hybrid Top-p/Top-k
+
+selection in a trainable setting. Yet many practical methods represent multiple keys with one pooled block or full-dimensional centroid, forcing heterogeneous keys to share a proxy score. SCOPE instead combines 3D-RoPE-aligned subspace codewords into per-key proxy scores and estimates a head-specific Top-k online from current query-cluster statistics, without retraining or offline dense calibration. 
+
+Subspace Decomposition for Efficient Attention 
+
+Product quantization [11] decomposes vectors into low-dimensional subspaces with independent codebooks. In LLM inference, it supports KV-cache compression [45] and codebook-based query–key score approximation through indexed accumulation [12, 30, 42, 50]. FASA [35] and RTPurbo [56] also estimate key relevance in reduced feature spaces, using informative RoPE frequency chunks and a learned low-dimensional indexer with query-dependent Top-p selection, respectively. These approaches mainly target autoregressive LLMs. For diffusion transformers, RoPeSLR [21] combines 3D-RoPE-aware sparse attention with low-rank approximation. SCOPE instead keeps query clustering full-dimensional, independently clusters post-RoPE keys along the temporal, height and width channel ranges of 3D RoPE, and sums the resulting subspace scores for fine-grained per-key ranking in bidirectional video DiTs. Sparse attention then uses the selected original keys and values. 3Step 1. Q Clustering & K Subspace Clustering Step 2. Compositional Key Scoring Step 4. Sparse Attention Execution 
+
+𝑑   
+
+> 𝑑 = 𝑑 !+ 𝑑 "+ 𝑑 #
+
+𝑁 𝑑  
+
+> 𝑞 !
+> 𝑞 "
+> 𝑞 #
+> 𝑞 $
+> 𝑞 %
+> 𝑞 &
+> K-means Clustering Q Centroids
+
+𝑄 ∈ 𝑅 !×# 
+
+> Full Dim
+> Split into Subspaces
+
+𝑁 𝐾 ∈ 𝑅 !×# 
+
+> 𝑘 !
+> 𝑘 "
+> 𝑘 #
+> 𝑘 $
+> 𝑘 %
+> 𝑘 &
+> K-means Clustering K-means Clustering K-means Clustering
+
+𝑑 $
+
+𝑑 %
+
+𝑑 &               
+
+> 𝑘 (
+> 𝑘 )
+> 𝑘 *
+> 𝑢 !(
+> 𝑢 "(
+> 𝑢 #(
+> 𝑢 !)
+> 𝑢 ")
+> 𝑢 #)
+> 𝑢 !*
+> 𝑢 "*
+> 𝑢 #*
+> 𝑢 !(𝑢 "(𝑢 #(𝑢 !)𝑢 ")𝑢 #)𝑢 !*𝑢 "*𝑢 #*
+> K Centroids
+> 1.2 0.7 0.1 0.3 1.6 0.5 0.9 0.2 0.8
+> 𝑃 (𝑃 )𝑃 *
+
+Example: 
+
+> 𝑘 %
+
+→        
+
+> ++=0.1 0.3 0.9 1.3
+> 𝑃 !,# (+ 𝑃 !,! )+ 𝑃 !,! *=
+> Top-p Selection Top-k Selection Final Budget
+> Per-query Count
+
+Step 3. Online Top-K   
+
+> Top-p union Top-k Mean Per-head Mean Union Cluster-based Permutation
+> 𝑞 !
+> 𝑞 "
+> 𝑞 #
+> 𝑞 $
+> 𝑞 %
+> 𝑞 &
+> Token-level Sparse Mask under Adaptive Budget
+> 𝑘 $𝑘 &𝑘 #𝑘 %𝑘 "𝑘 !
+> 𝑞 !
+> 𝑞 "
+> 𝑞 #
+> 𝑞 $
+> 𝑞 %
+> 𝑞 &
+> Skip Select
+> Q Centroids K Centroids
+> /𝑞 !
+> /𝑞 "
+> /𝑞 #
+> /𝑞 !
+> /𝑞 "
+> /𝑞 #
+> /𝑞 !
+
+̃𝑠 ',) Figure 3 Overview of SCOPE. Queries are clustered in the full feature space, while each post-RoPE key is represented by temporal, height and width subspace assignments. Query-centroid slices score the corresponding subspace centroids to form lookup tables, and indexed summation reconstructs a proxy logit for every key. Hybrid Top-p/fixed-Top-k
+
+selection produces the initial key counts, from which SCOPE estimates an online per-head Top-k value. Sparse attention is computed using the selected original K and V .
+
+## 3 Method 
+
+Figure 3 presents an overview of SCOPE. Given post-RoPE queries and keys, SCOPE first clusters the queries in the full feature space, allowing all queries in a cluster to share one proxy ranking of the keys. It then splits each key along the temporal, height and width channel ranges of 3D RoPE and clusters the three subspaces independently. The corresponding slices of each query centroid score the subspace codebooks and indexed summation reconstructs a proxy logit for every key. Finally, SCOPE combines hybrid Top-p/fixed-Top-k
+
+selection with an online per-head Top-k estimate and computes sparse attention using the selected original keys and values. 
+
+Problem Formulation 
+
+Consider one self-attention head at a fixed layer and denoising step. Let Q, K ∈ RN ×d denote the query and key matrices after 3D RoPE, with rows qi and kj , and let V ∈ RN ×d denote the value matrix. Dense attention computes 
+
+O = softmax 
+
+ QK ⊤
+
+√d
+
+
+
+V, (1) which evaluates all N 2 query–key interactions. Our goal is to construct a retained key set for each query cluster without materializing the dense score matrix. SCOPE amortizes key selection through full-dimensional query clustering and approximates query-centroid–key logits with 3D-RoPE-aligned key codebooks. The original queries and selected original keys and values are then used for sparse attention. 
+
+Full-Dimensional Query Clustering 
+
+Following clustering-based sparse attention methods [23, 33, 41], we partition the post-RoPE queries into 
+
+Cq ≪ N clusters using K-means. Let gi ∈ { 1, . . . , C q } denote the cluster assignment of qi. For cluster c, define 
+
+Qc = {i : gi = c}, nc = |Q c|, ¯qc = 1
+
+nc
+
+X
+
+i∈Q c
+
+qi. (2) 4Temporal Height Width Figure 4 Cluster assignments in 3D-RoPE key subspaces. Post-RoPE keys on a 21 × 45 × 80 grid are clustered independently over the temporal, height and width channel ranges with Cvis = 10 , columns show temporal positions      
+
+> τ∈ { 0,5,10 ,15 ,20 }. Height and width assignments exhibit predominantly horizontal and vertical structures, while temporal assignments vary more across frames. Variations near foreground regions further indicate content-dependent structure. Results are shown for Wan2.2-T2V-A14B at layer 30, head 10 and denoising step 35. Colors are comparable across columns only within each row.
+
+All queries in Qc share the same proxy ranking and selected key set Sc, reducing the number of independently constructed rankings from N to Cq . The centroid ¯qc is used only for key selection, the final sparse attention uses the original query vectors. Queries are not clustered independently in the RoPE subspaces. Instead, each full-dimensional centroid ¯qc is sliced only when scoring the corresponding key codebooks. This preserves one query grouping while allowing the key subspaces to form different cluster assignments. 
+
+3D-RoPE-Aligned Key Subspace Scoring 
+
+In 3D RoPE, the rotary transformations for temporal, height, and width coordinates act on three disjoint channel ranges. SCOPE follows these native ranges to split each post-RoPE key kj into kT 
+
+> j
+
+, kH 
+
+> j
+
+, and kW 
+
+> j
+
+.Each full-dimensional query centroid ¯qc is sliced in the same way only when scoring the corresponding key subspaces. As illustrated in Figure 4, the three post-RoPE key subspaces exhibit distinct clustering patterns, motivating them to be modeled independently. For each subspace m ∈ { T, H, W}, SCOPE applies K-means to {kmj }Nj=1 and obtains Cm subspace centroids, denoted by um 
+
+> 1
+
+, . . . , u mCm . The assignment of key j in subspace m is 
+
+zmj = arg min 
+
+> 1≤r≤Cm
+
+kmj − umr 
+
+> 22
+
+. (3) The three assignments jointly form the composite code of key j:
+
+zj =  zT 
+
+> j
+
+, z H 
+
+> j
+
+, z W
+
+> j
+
+ . (4) Unlike a single full-dimensional cluster assignment, zj allows the three RoPE subspaces to organize keys independently. Keys assigned to the same centroid in one subspace can still be distinguished by their assignments in the other subspaces. To score the keys for a query cluster, SCOPE compares each query-centroid slice only with the centroids in the corresponding key subspace. For each subspace m, these partial dot products form a compact score table 
+
+Pm ∈ RCq ×Cm , whose entry is 
+
+Pm[c, r ] = ⟨¯qmc , u mr ⟩ . (5) The columns of Pm correspond to subspace centroids rather than individual key tokens. The assignment zmj
+
+maps key j to one column of each table. Retrieving and summing the three corresponding entries gives its 5proxy logit: 
+
+˜sc,j = 1
+
+√d
+
+X
+
+> m∈{ T,H,W}
+
+Pm[c, z mj ]. (6) Applying Eq. (6) to all query clusters and keys produces ˜S = [˜ sc,j ] ∈ RCq ×N , the query-cluster–key proxy-score matrix used for subsequent key selection. This compositional scoring provides a favorable trade-off between computation and key discrimination. For each query cluster, constructing the three compact tables requires only CT + CH + CW centroid dot products, while the independent codebooks admit up to CTCHCW composite key representations. Once the tables are constructed, each key score requires only three indexed reads and two additions. Thus, the number of expensive dot products grows additively with the codebook sizes, whereas the number of possible composite representations grows multiplicatively. Because dot products are additive across disjoint channel ranges, summing the three partial scores introduces no additional approximation. The key-side approximation comes from replacing each key slice with its assigned subspace centroid. The resulting proxy scores are used only for key selection, while the subsequent sparse attention is computed using the selected original keys and values. 
+
+Online Per-Head Top-k Estimation 
+
+Given the proxy-logit matrix ˜S obtained in Eq. (6), SCOPE first determines a base retained key count for each query cluster and then derives an online minimum for the current attention head. 
+
+Hybrid Top-p/fixed-Top-k selection. Let ˜sc denote the c-th row of ˜S, and let ˜ac = softmax(˜ sc) be the corresponding normalized proxy distribution. We use ˜ac,j to denote the probability assigned to key j. Let πc
+
+be a permutation of the key indices that orders them by decreasing proxy logit. Given a Top-p threshold 
+
+ρ ∈ (0 , 1] , the retained key count is 
+
+t(p) 
+
+> c
+
+= min 
+
+(
+
+t :
+
+> t
+
+X
+
+> ℓ=1
+
+˜ac,π c(ℓ) ≥ ρ
+
+)
+
+. (7) Approximation errors may make the normalized proxy distribution overly concentrated, causing Top-p to retain too few keys. We therefore combine it with a fixed Top-k ratio α ∈ (0 , 1] :
+
+kfix = ⌈αN ⌉, bc = max 
+
+n
+
+t(p) 
+
+> c
+
+, k fix 
+
+o
+
+. (8) Because both selections are prefixes of the same ranking πc, their union contains exactly bc keys. 
+
+Online per-head estimation. The fixed minimum prevents severe under-selection but cannot account for variations across attention heads and inputs. SCOPE instead derives a head-specific minimum from the base counts observed in the current head: 
+
+khead =
+
+& PCq 
+
+> c=1
+
+ncbc
+
+PCq 
+
+> c=1
+
+nc
+
+'
+
+. (9) Before rounding, Eq. (9) is the average base retained key count over all queries in the current head. Weighting by nc makes each query, rather than each query cluster, contribute equally to the estimate. The final retained key count and selected key set are 
+
+rc = max {bc, k head } , Sc = {πc(1) , . . . , π c(rc)}. (10) Clusters with bc ≥ khead remain unchanged, while those below the head-specific minimum are extended along the same proxy-logit ranking. The estimate is derived entirely from the current head and input, requiring no offline dense-attention profiling or stored head-wise schedules. 6Model Baseline PSNR ↑ SSIM ↑ LPIPS ↓ ImageQual ↑ AesQual ↑ SubConsist ↑ BackConsist ↑ Latency Speedup Wan 2.1-14B-T2V-720P Full – – – 70.03% 59.06% 96.01% 96.31% 1913s 1.00x SpargeAttn 23.86 0.791 0.1461 69.78% 59.09% 95.94% 96.21% 1293s 1.48x SVG2 24.63 0.804 0.1268 70.12% 58.76% 95.58% 95.84% 1211s 1.58x SVOO 25.71 0.831 0.1083 69.93% 59.06% 95.22% 95.57% 1117s 1.71x                                                                                                    
+
+> Ours 26.11 0.844 0.1004 69.96% 59.07% 95.93% 96.14% 1085s 1.76x
+> Wan 2.2-A14B-T2V-720P Full –––71.18% 61.56% 95.16% 95.77% 1599s 1.00x SpargeAttn 24.37 0.813 0.1231 70.98% 61.48% 95.12% 95.75% 1138s 1.41x SVG2 24.85 0.829 0.1128 71.06% 61.53% 94.92% 95.64% 1036s 1.54x SVOO 25.42 0.837 0.1018 71.02% 61.48% 94.98% 95.62% 966s 1.66x
+> Ours 26.01 0.859 0.0953 71.08% 61.57% 95.09% 95.76% 930s 1.72x
+> HunyuanVideo-T2V Full –––66.46% 57.80% 95.74% 96.20% 1801s 1.00x SpargeAttn 24.54 0.809 0.1631 66.50% 58.06% 95.61% 96.04% 1197s 1.50x SVG2 27.41 0.845 0.1067 65.06% 56.96% 95.48% 95.88% 907s 1.99x SVOO 28.08 0.871 0.0971 65.99% 57.58% 95.66% 96.09% 991s 1.82x
+> Ours 28.46 0.878 0.0927 66.55% 57.82% 95.68% 96.11% 904s 1.99x
+
+Table 1 720p text-to-video results. PSNR, SSIM and LPIPS are measured against dense attention, latency and speedup are end to end. Best sparse method results are bold. 
+
+Sparse attention execution. After Sc has been constructed, all queries in Qc reuse the same selected key set. Although the key set is shared, each query computes its own attention weights using its original representation. Let QQc denote the corresponding query rows, and let KSc and VSc denote the selected rows of the original key and value matrices. SCOPE computes 
+
+OQc = softmax QQc K⊤Sc
+
+√d
+
+!
+
+VSc . (11) Once Sc is determined, the query centroids, subspace centroids, assignments and proxy logits are no longer used in the attention computation. The approximation is therefore confined to selecting the retained interactions, their attention logits and value aggregation are computed from the original tokens. SCOPE requires neither retraining nor modification of the pretrained model parameters. 
+
+## 4 Experiment 
+
+Experimental Setup 
+
+Models and datasets. We evaluate T2V and I2V generation on Wan2.1-14B, Wan2.2-A14B and HunyuanVideo-13B, yielding six model–task settings. T2V uses Penguin Benchmark prompts released with HunyuanVideo, and I2V uses VBench++ [10]. All videos are generated at 1280 × 720 , I2V inputs are cropped to 16:9 .
+
+Baselines and metrics. We compare SCOPE with three training-free sparse attention methods: SpargeAttn [46], SVG2 [41] and SVOO [23], using dense attention as the reference. We adopt their official implementations and default configurations, adjusting only exposed sparsity controls for the reported operating points. All methods share model weights, conditioning inputs, random seeds and sampling configurations. PSNR, SSIM and LPIPS measure fidelity to dense outputs. ImageQual, AesQual, SubConsist and BackConsist from VBench [9] assess generation quality. Efficiency is reported as end-to-end latency and speedup over dense attention. 
+
+Implementation details. All experiments are conducted on NVIDIA H200 GPUs. All K-means operations use the same implementation as SVG2 [41]. SCOPE uses Cq = 300 query clusters and CT = CH = CW = 333 
+
+centroids for the temporal, height and width key subspaces. The global fixed Top-k ratio is set to α = 0 .1 for all models, heads and inputs, corresponding to kfix = ⌈0.1N ⌉. The first attention layer remains dense at every denoising step. Wan2.1 and Wan2.2 generate 81 frames, for all remaining layers, dense attention is retained during the first 20% of denoising steps and SCOPE is applied thereafter. HunyuanVideo generates 129 frames and uses the same strategy with a 10% dense prefix. 7Model Baseline PSNR ↑ SSIM ↑ LPIPS ↓ ImageQual ↑ AesQual ↑ SubConsist ↑ BackConsist ↑ Latency Speedup Wan 2.1-14B-I2V-720P Full – – – 72.09% 60.95% 95.16% 95.63% 1672s 1.00x SpargeAttn 23.14 0.722 0.1484 72.11% 60.68% 95.02% 95.59% 1121s 1.49x SVG2 23.87 0.757 0.1341 72.27% 60.37% 94.32% 95.11% 1063s 1.57x SVOO 24.82 0.787 0.1153 72.11% 60.72% 94.22% 95.24% 997s 1.68x 
+
+Ours 26.77 0.838 0.0854 72.15% 60.78% 94.96% 95.61% 966s 1.73x 
+
+Wan 2.2-A14B-I2V-720P Full – – – 72.20% 62.21% 96.56% 96.42% 1628s 1.00x SpargeAttn 24.79 0.788 0.1022 72.12% 62.08% 96.42% 96.31% 1143s 1.42x SVG2 25.31 0.805 0.0984 72.29% 61.62% 96.17% 96.10% 1085s 1.50x SVOO 27.38 0.849 0.0706 72.21% 62.15% 96.32% 96.37% 1021s 1.59x 
+
+Ours 27.76 0.865 0.0665 72.16% 62.18% 96.43% 96.32% 974s 1.67x 
+
+HunyuanVideo-I2V Full – – – 72.53% 60.76% 96.99% 96.51% 1783s 1.00x SpargeAttn 22.68 0.778 0.1243 72.56% 60.68% 97.03% 96.56% 1154s 1.55x SVG2 23.06 0.796 0.1183 72.11% 60.14% 96.91% 96.25% 1029s 1.73x SVOO 23.34 0.813 0.1168 72.06% 60.50% 96.94% 96.43% 1091s 1.63x 
+
+Ours 24.11 0.837 0.0962 72.56% 60.57% 97.04% 96.45% 1022s 1.74x Table 2 720p image-to-video results. PSNR, SSIM and LPIPS are measured against dense attention, latency and speedup are end to end. Best sparse method results are bold. Dense Attention SpargeAttn SVG2 SVOO SCOPE 
+
+Figure 5 Qualitative comparison. Representative frames generated using identical prompt and seed. SCOPE preserves the appearance and structure of the dense-attention reference more faithfully than the competing sparse attention methods. 
+
+Main Results Dense SCOPE Dense SCOPE Dense SCOPE          
+
+> 0250 500 750 1000 1250 1500 1750 2000
+> End-to-end latency (s)
+> 1913s 1085s
+> 1172s 301s
+> 1599s 930s
+> 914s 190s
+> 1801s 904s
+> 1300s 290s
+> Wan2.1 Wan2.2 HunyuanVideo
+> 1.76x 828s saved 1.72x 669s saved 1.99x 897s saved
+> Overhead 44s Overhead 55s Overhead 113s
+> Pipeline / non-attention Dense prefix (retained) Dense tail (replaced) SCOPE overhead Sparse attention
+
+Figure 6 Runtime composition across three text-to-video models. SCOPE retains the dense prefix and replaces the dense-attention tail with sparse attention. The additional overhead remains small, resulting in 1.72 ×–1.99 × end-to-end speedups. 
+
+Quality and efficiency. Tables 1 and 2 compare SCOPE with training-free sparse attention baselines across six 720p T2V and I2V settings. SCOPE is the only method that records the lowest measured latency while ranking first on all three dense-reference fidelity metrics (PSNR, SSIM and LPIPS) in every setting. It achieves 1.67 ×–
+
+1.99 × end-to-end speedups, while its VBench scores re-main close to the dense-attention reference and compara-ble to those of the competing methods. Figure 5 further shows that SCOPE preserves the appearance and struc-ture of the dense-attention output more faithfully than the competing sparse attention methods. 
+
+Runtime breakdown. As shown in Figure 6, the addi-tional cost of subspace clustering, proxy scoring and online key selection is consistently outweighed by 8the reduction in attention time. SCOPE therefore converts sparse attention into substantial end-to-end acceleration across all three T2V models. 
+
+Ablation Studies Wan2.2 Wan2.1 HunyuanVideo     
+
+> 10 12 14 16 18 20 22 24 26
+> PSNR (dB)
+> 17.72 14.91 21.58 24.37 (+6.65) 23.34 (+8.43) 25.07 (+3.49)
+> 25.02 (+7.30) 23.83 (+8.92) 25.41 (+3.83)
+> Top-p Top-p + Top-k Top-p + Top-k + Online
+
+Figure 7 Ablation of online per-head Top-k estimation. We set p seperately for each variant to match realized attention density( α = 0 .1 when Top-k is used). The fixed floor miti-gates Top-p under-selection, while online estimation further improves PSNR on all three models. 
+
+Partition PSNR ↑ Latency ↓
+
+1 (Full-dim) 24.17 878s 2 25.53 897s 3 (Random) 25.61 931s 
+
+3 (3D RoPE) 25.90 927s 4 25.72 948s 8 26.07 1011s 
+
+Table 3 Ablation of key subspace partitioning. Each subspace uses 333 centroids. “1 (Full-dim)” denotes full-dimensional clustering without decomposition, “3 (Random)” randomly partitions the channels into three subspaces and “3 (3D RoPE)” follows the temporal, height, and width channel ranges defined by 3D RoPE. 
+
+Online per-head Top-k estimation. Figure 7 compares Top-p, hybrid Top-p/fixed-Top-k and the complete online strategy under matched realized attention density. The fixed floor strongly improves over pure Top-p, confirm-ing under-selection from approximate proxy distributions. With realized density matched, the further PSNR gains from online estimation indicate better allocation across query clusters rather than a larger budget. 
+
+Key subspace partitioning. Using 333 centroids per sub-space, Table 3 compares different key-space partitions. Full-dimensional clustering reaches only 24.17 dB, while all decomposed variants improve PSNR. The proposed 3D-RoPE-aligned partition achieves 25.90 dB, outperforming the random three-way split by 0.29 dB at slightly lower latency and the four-way split by 0.18 dB while saving 21 s. Increasing to eight subspaces yields only another 0.17 dB but adds 84 s. The temporal–height–width parti-tion therefore offers the most favorable fidelity–efficiency trade-off. 
+
+## 5 Conclusion 
+
+We presented SCOPE, a training-free sparse attention framework for efficient video DiT inference. SCOPE partitions post-RoPE keys according to the temporal, height and width channel ranges of 3D RoPE and clusters the three subspaces independently. Compositional centroid lookups then recover proxy logits for individual keys without scoring every key against every query centroid. SCOPE also estimates a Top-k value online for each head by averaging the initial retained counts with weights given by query cluster size and extends only clusters whose counts fall below this estimate. These proxy quantities are used solely for key selection, while attention is computed with the original tokens. Across six 720p T2V and I2V settings on Wan2.1, Wan2.2 and HunyuanVideo, SCOPE achieves higher fidelity to dense attention and lower measured latency than competing training-free methods, delivering 1.67 ×–1.99 × end-to-end speedups while maintaining generation quality. Together, these results validate subspace clustering and online Top-k estimation as complementary mechanisms for accurate and efficient sparse video attention. 
+
+## References 
+
+[1] Aiyue Chen, Bin Dong, Jingru Li, Jing Lin, Kun Tian, Yiwu Yao, and Gongyi Wang. Rainfusion: Adaptive video generation acceleration via multi-dimensional visual redundancy. arXiv preprint arXiv:2505.21036 , 2025. [2] Aiyue Chen, Yaofu Liu, Junjian Huang, Guang Lian, Yiwu Yao, Wangli Lan, Jing Lin, Zhixin Ma, and Tingting Zhou. Rainfusion2.0: Temporal-spatial awareness and hardware-efficient block-wise sparse attention. arXiv preprint arXiv:2512.24086 , 2025. [3] Pengtao Chen, Xianfang Zeng, Maosen Zhao, Mingzhu Shen, Wei Cheng, Gang Yu, and Tao Chen. Sparse-vdit: Unleashing the power of sparse attention to accelerate video diffusion transformers. In Proc. AAAI , volume 40, pages 2957–2965, 2026. 
+
+9[4] Ruichen Chen, Keith Mills, Liyao Jiang, Chao Gao, and Di Niu. Re-ttention: Ultra sparse visual generation via attention statistical reshape. Proc. NeurIPS , 38:58029–58055, 2026. [5] Weilun Feng, Chuanguang Yang, Haotong Qin, Mingqiang Wu, Yuqi Li, Xiangqi Li, Zhulin An, Libo Huang, Yulun Zhang, Michele Magno, et al. Quantsparse: Comprehensively compressing video diffusion transformer with model quantization and attention sparsification. arXiv preprint arXiv:2509.23681 , 2025. [6] Gael Glorian, Ioannis Lamprou, Zhen Zhang, Yujie Yuan, and Hongsheng Liu. Lvsa: Training-free sparse attention for long video diffusion. arXiv preprint arXiv:2605.31057 , 2026. [7] Ali Hassani, Fengzhe Zhou, Aditya Kane, Jiannan Huang, Chieh-Yun Chen, Min Shi, Steven Walton, Markus Hoehnerbach, Vijay Thakkar, Mikhail Isaev, et al. Generalized neighborhood attention: Multi-dimensional sparse attention at the speed of light. In Proc. CVPR , pages 3009–3018, 2026. [8] Jie Hu, Zixiang Gao, Yutong He, and Kun Yuan. Dfsattn: Dynamic fine-grained sparse attention for efficient video generation. arXiv preprint arXiv:2605.23445 , 2026. [9] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In Proc. CVPR , pages 21807–21818, 2024. [10] Ziqi Huang, Fan Zhang, Xiaojie Xu, Yinan He, Jiashuo Yu, Ziyue Dong, Qianli Ma, Nattapol Chanpaisit, Chenyang Si, Yuming Jiang, et al. Vbench++: Comprehensive and versatile benchmark suite for video generative models. 
+
+arXiv preprint arXiv:2411.13503 , 2024. [11] Herve Jegou, Matthijs Douze, and Cordelia Schmid. Product quantization for nearest neighbor search. IEEE transactions on pattern analysis and machine intelligence , 33(1):117–128, 2010. [12] Aryan Karmore. Lookat: Lookup-optimized key-attention for memory-efficient transformers. arXiv preprint arXiv:2601.10155 , 2026. [13] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. [14] Dongyeun Lee, Amir Zandieh, Vahab Mirrokni, Junmo Kim, and Insu Han. Hypervattention: Efficient sparse attention with spatio-temporal clustering for video diffusion. arXiv preprint arXiv:2607.03012 , 2026. [15] Haopeng Li, Shitong Shao, Wenliang Zhong, Zikai Zhou, Lichen Bai, Hui Xiong, and Zeke Xie. Pisa: Piecewise sparse attention is wiser for efficient diffusion transformers. arXiv preprint arXiv:2602.01077 , 2026. [16] Qirui Li, Guangcong Zheng, Qi Zhao, Jie Li, Bin Dong, Yiwu Yao, and Xi Li. Compact attention: Exploiting structured spatio-temporal sparsity for fast video generation. arXiv preprint arXiv:2508.12969 , 2025. [17] Xingyang Li, Muyang Li, Tianle Cai, Haocheng Xi, Shuo Yang, Yujun Lin, Lvmin Zhang, Songlin Yang, Jinbo Hu, Kelly Peng, et al. Radial attention: O(n log n) sparse attention with energy decay for long video generation. 
+
+Proc. NeurIPS , 38:16822–16852, 2026. [18] Haosong Liu, Yuge Cheng, Wenxuan Miao, Zihan Liu, Aiyue Chen, Jing Lin, Yiwu Yao, Chen Chen, Jingwen Leng, Yu Feng, et al. Astraea: A token-wise acceleration framework for video diffusion transformers. arXiv preprint arXiv:2506.05096 , 2025. [19] Xuewen Liu, Zhikai Li, Jing Zhang, Mengjuan Chen, and Qingyi Gu. Rectified spaattn: Revisiting attention sparsity for efficient video generation. arXiv preprint arXiv:2511.19835 , 2025. [20] Yuxi Liu, Yipeng Hu, Zekun Zhang, Kunze Jiang, and Kun Yuan. Mixture of distributions matters: Dynamic sparse attention for efficient video diffusion transformers. arXiv preprint arXiv:2601.11641 , 2026. [21] Yuxi Liu, Zekun Zhang, Yixiang Cai, Renjia Deng, Yutong He, and Kun Yuan. Ropeslr: 3d rope-driven sparse-lowrank attention for efficient diffusion transformers. arXiv preprint arXiv:2605.20659 , 2026. [22] Yongji Long, Shijun Liang, Jintao Li, and Yun Li. Dynamicrad: Content-adaptive sparse attention for long video diffusion. arXiv preprint arXiv:2604.20470 , 2026. [23] Jiayi Luo, Jiayu Chen, Jiankun Wang, Cong Wang, Hanxin Zhu, Qingyun Sun, Chen Gao, Zhibo Chen, and Jianxin Li. Attention sparsity is input-stable: Training-free sparse attention for video generation via offline sparsity profiling and online qk co-clustering. arXiv preprint arXiv:2603.18636 , 2026. 
+
+10 [24] Xin Ma, Yaohui Wang, Xinyuan Chen, Gengyun Jia, Ziwei Liu, Yuan-Fang Li, Cunjian Chen, and Yu Qiao. Latte: Latent diffusion transformer for video generation. arXiv preprint arXiv:2401.03048 , 2024. [25] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proc. ICCV , pages 4195–4205, 2023. [26] Liang Qiao, Yue Dai, Yeqi Huang, Hongyu Kan, Jun Shi, and Hong An. Flashomni: A unified sparse attention engine for diffusion transformers. arXiv preprint arXiv:2509.25401 , 2025. [27] Sucheng Ren, Qihang Yu, Ju He, Alan Yuille, and Liang-Chieh Chen. Grouping first, attending smartly: Training-free acceleration for diffusion transformers. arXiv preprint arXiv:2505.14687 , 2025. [28] Xuan Shen, Chenxia Han, Yufa Zhou, Yanyue Xie, Yifan Gong, Quanyi Wang, Yiwei Wang, Yanzhi Wang, Pu Zhao, and Jiuxiang Gu. Draftattention: Fast video diffusion via low-resolution attention guidance. arXiv preprint arXiv:2505.14708 , 2025. [29] Dor Shmilovich, Tony Wu, Aviad Dahan, and Yuval Domb. Liteattention: A temporal sparse attention for diffusion transformers. arXiv preprint arXiv:2511.11062 , 2025. [30] Chuxu Song, Zhencan Peng, Jiuqi Wei, and Chuanhui Yang. Csattention: Centroid-scoring attention for accelerating llm inference. arXiv preprint arXiv:2604.08584 , 2026. [31] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. [32] Wenhao Sun, Rong-Cheng Tu, Yifu Ding, Jingyi Liao, Zhao Jin, Shunyu Liu, and Dacheng Tao. Vorta: Efficient video diffusion via routing sparse attention. Proc. NeurIPS , 38:7837–7863, 2026. [33] Haoyue Tan, Shengnan Wang, Yulin Qiao, Juncheng Zhang, Youhui Bai, Ping Gong, Zewen Jin, and Cheng Li. Adacluster: Adaptive query-key clustering for sparse attention in video generation. In Proc. CVPR , pages 43249–43259, 2026. [34] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianx-iao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 ,2025. [35] Yifei Wang, Yueqi Wang, Zhenrui Yue, Huimin Zeng, Yong Wang, Ismini Lourentzou, Zhengzhong Tu, Xiangxiang Chu, and Julian McAuley. Fasa: Frequency-aware sparse attention. arXiv preprint arXiv:2602.03152 , 2026. [36] Xilin Wei, Xiaoran Liu, Yuhang Zang, Xiaoyi Dong, Pan Zhang, Yuhang Cao, Jian Tong, Haodong Duan, Qipeng Guo, Jiaqi Wang, et al. Videorope: What makes for good video rotary position embedding? arXiv preprint arXiv:2502.05173 , 2025. [37] Jianzong Wu, Liang Hou, Haotian Yang, Xin Tao, Ye Tian, Pengfei Wan, Di Zhang, and Yunhai Tong. Vmoba: Mixture-of-block attention for video diffusion models. arXiv preprint arXiv:2506.23858 , 2025. [38] Haocheng Xi, Shuo Yang, Yilong Zhao, Chenfeng Xu, Muyang Li, Xiuyu Li, Yujun Lin, Han Cai, Jintao Zhang, Dacheng Li, et al. Sparse video-gen: Accelerating video diffusion transformers with spatial-temporal sparsity. In 
+
+Proc. ICML , pages 68208–68224, 2025. [39] Yifei Xia, Suhan Ling, Fangcheng Fu, Yujie Wang, Huixia Li, Xuefeng Xiao, and Bin Cui. Training-free and adaptive sparse attention for efficient long video generation. In Proc. ICCV , pages 15982–15993, 2025. [40] Ruyi Xu, Guangxuan Xiao, Haofeng Huang, Junxian Guo, and Song Han. Xattention: Block sparse attention with antidiagonal scoring. In Proc. ICML , pages 69819–69831, 2025. [41] Shuo Yang, Haocheng Xi, Yilong Zhao, Muyang Li, Jintao Zhang, Han Cai, Yujun Lin, Xiuyu Li, Chenfeng Xu, Kelly Peng, et al. Sparse videogen2: Accelerate video generation with sparse attention via semantic-aware permutation. Proc. NeurIPS , 38:96965–96991, 2026. [42] Xu Yang, Jiapeng Zhang, Dongyang Zhao, Guo Chen, and Zhuo Tang. Self-indexing kvcache: Predicting sparse attention from compressed keys. In Proc. AAAI , volume 40, pages 27675–27683, 2026. [43] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. Cogvideox: Text-to-video diffusion models with an expert transformer. In 
+
+Proc. ICLR , volume 2025, pages 83048–83077, 2025. 
+
+11 [44] Shai Yehezkel, Shahar Yadin, Noam Elata, Yaron Ostrovsky-Berman, and Bahjat Kawar. Accelerating text-to-video generation with calibrated sparse attention. arXiv preprint arXiv:2603.05503 , 2026. [45] Hailin Zhang, Xiaodong Ji, Yilin Chen, Fangcheng Fu, Xupeng Miao, Xiaonan Nie, Weipeng Chen, and Bin Cui. Pqcache: Product quantization-based kvcache for long context llm inference. Proceedings of the ACM on Management of Data , 3(3):1–30, 2025. [46] Jintao Zhang, Chendong Xiang, Haofeng Huang, Jia Wei, Haocheng Xi, Jun Zhu, and Jianfei Chen. Spargeattention: Accurate and training-free sparse attention accelerating any model inference. In Proc. ICML , pages 76397–76413, 2025. [47] Jintao Zhang, Kai Jiang, Chendong Xiang, Weiqi Feng, Yuezhou Hu, Haocheng Xi, Jianfei Chen, and Jun Zhu. Spargeattention2: Trainable sparse attention via hybrid top-k+ top-p masking and distillation fine-tuning. arXiv preprint arXiv:2602.13515 , 2026. [48] Peiyuan Zhang, Yongqi Chen, Runlong Su, Hangliang Ding, Ion Stoica, Zhengzhong Liu, and Hao Zhang. Fast video generation with sliding tile attention. In Proc. ICML , pages 74714–74731, 2025. [49] Peiyuan Zhang, Yongqi Chen, Haofeng Huang, Will Lin, Zhengzhong Liu, Ion Stoica, Eric Xing, and Hao Zhang. Faster video diffusion with trainable sparse attention. Proc. NeurIPS , 38:152509–152534, 2026. [50] Tianyi Zhang, Jonah Yi, Bowen Yao, Zhaozhuo Xu, and Anshumali Shrivastava. Nomad-attention: Efficient llm inference on cpus through multiply-add-free attention. Proc. NeurIPS , 37:112706–112730, 2024. [51] Wentai Zhang, Ronghui Xi, Shiyao Peng, Jiayu Huang, Haoran Luo, Zichen Tang, et al. Ride the wave: Precision-allocated sparse attention for smooth video generation. arXiv preprint arXiv:2604.12219 , 2026. [52] Tianchen Zhao, Ke Hong, Xinhao Yang, Xuefeng Xiao, Huixia Li, Feng Ling, Ruiqi Xie, Siqi Chen, Hongyu Zhu, Zhang Yichong, et al. Paroattention: Pattern-aware reordering for efficient sparse and quantized attention in visual generation models. Proc. NeurIPS , 38:126484–126511, 2026. [53] Xuzhe Zheng, Yuexiao Ma, Jing Xu, Xiawu Zheng, Rongrong Ji, and Fei Chao. Haste: Training-free video diffusion acceleration via head-wise adaptive sparse attention. arXiv preprint arXiv:2605.14513 , 2026. [54] Ruiliang Zhou, Xuecheng Wu, Kang He, Guangyun Han, Bin Liu, Qinqin Chen, Wende Xu, Qingjie Zhao, and Chengru Song. Scalingattention: Discovering intrinsic sparse attention topology for video diffusion transformers. 
+
+arXiv preprint arXiv:2606.23019 , 2026. [55] Xuanyi Zhou, Qiuyang Mang, Shuo Yang, Haocheng Xi, Jintao Zhang, Huanzhi Mao, Joseph E Gonzalez, Kurt Keutzer, Ion Stoica, and Alvin Cheung. Svg-ear: Parameter-free linear compensation for sparse video generation via error-aware routing. arXiv preprint arXiv:2603.08982 , 2026. [56] Yanke Zhou, Yiduo Li, Hanlin Tang, Maohua Li, Kan Liu, Tao Lan, Lin Qu, Yuan Yao, and Xiaoxing Ma. Full attention strikes back: Transferring full attention into sparse within hundred training steps. arXiv preprint arXiv:2605.16928 , 2026. 
+
+12 Appendix 
+
+## A Algorithmic Details 
+
+We provide pseudocode for SCOPE. All quantities in this section refer to one attention head at a fixed layer and denoising step. Let Q, K ∈ RN ×d denote the post-3D-RoPE query and key matrices, and let V ∈ RN ×d
+
+denote the value matrix. We write M = {T, H, W } for the temporal, height and width RoPE subspaces. Their channel-index sets {I m}m∈M are disjoint, cover all d channels and have dimensions dm = |I m|, so that P 
+
+> m∈M
+
+dm = d.For X ∈ Rn×dx , KMeans( X, C ) returns C centroids and an assignment vector a ∈ { 1, . . . , C }n, where ai is the index of the centroid assigned to row X[i, :] . Full-dimensional query clustering therefore produces ¯Q ∈ RCq ×d
+
+and g ∈ { 1, . . . , C q }N , where row c of ¯Q is ¯qc. We define Qc = {i : gi = c} and nc = |Q c|. Algorithm 1 summarizes the complete per-head SCOPE pipeline. 
+
+Algorithm 1 SCOPE for one attention head  
+
+> Require:
+
+Post-RoPE queries Q ∈ RN ×d; post-RoPE keys K ∈ RN ×d; values V ∈ RN ×d; channel ranges 
+
+{I m}m∈M ; query-cluster count Cq ; key-codebook sizes {Cm}m∈M ; Top-p threshold ρ; fixed Top-k ratio α 
+
+> Ensure:
+
+Output O ∈ RN ×d and selected key sets {S c}Cq 
+
+> c=1
+> 1:
+
+( ¯Q, g ) ← KMeans( Q, C q )  
+
+> 2: for
+
+c = 1 , . . . , C q do  
+
+> 3:
+
+Qc ← { i : gi = c}; nc ← |Q c|   
+
+> 4: end for
+> 5: for
+
+m ∈ M do  
+
+> 6:
+
+¯Qm ← ¯Q[: , Im]; Km ← K[: , Im]  
+
+> 7: end for
+> 8:
+
+eS ← KeySubspaceScoring  { ¯Qm, K m, C m}m∈M 
+
+ 
+
+> 9:
+
+{S c}Cq 
+
+> c=1
+
+← OnlinePerHeadTopK( eS, {nc}Cq
+
+> c=1
+
+, ρ, α )  
+
+> 10: for
+
+c = 1 , . . . , C q do  
+
+> 11:
+
+O[Qc, :] ← softmax 
+
+ Q[Qc, :] K[Sc, :] ⊤
+
+√d
+
+
+
+V [Sc, :]    
+
+> 12: end for
+> 13: return
+
+O and {S c}Cq
+
+> c=1
+
+3D-RoPE-Aligned Key Subspace Scoring 
+
+Algorithm 2 details the key-side operations in Steps 1–2 of the method overview in the main paper. It independently clusters the temporal, height and width key subspaces and then constructs the corresponding query-centroid–key-centroid score tables. For subspace m, the centroid matrix is U m ∈ RCm×dm , and 
+
+zmj ∈ { 1, . . . , C m} is the centroid assignment of key j. The three assignments form the composite code 
+
+zj = ( zTj , z Hj , z Wj ) defined in the main paper. The input to Algorithm 2 consists of the sliced matrices ¯Qm and Km. K-means is applied to Km to obtain 
+
+U m and zm, whereas proxy-score dot products are computed between ¯Qm and the key-subspace centroids U m:
+
+Pm = ¯Qm(U m)⊤. Thus, the proxy-scoring stage does not directly multiply ¯Q by the original key matrix K.For zm = ( zm 
+
+> 1
+
+, . . . , z mN ), the notation Pm[: , z m] ∈ RCq ×N denotes the matrix whose j-th column is Pm[: , z mj ].Adding Pm[: , z m] therefore applies the indexed proxy-score lookup to all keys simultaneously. 
+
+Online Per-Head Top-k Selection 
+
+Algorithm 3 implements Step 3 of the method overview in the main paper. It first computes the base retained count bc from hybrid Top-p/fixed-Top-k selection. Because both selections are prefixes of the same 13 descending ranking πc, their union contains exactly bc = max {t(p) 
+
+> c
+
+, k fix } keys. The online stage then computes a query-size-weighted head-level minimum and extends only the clusters below that minimum, without constructing another token-level ranking. The weighting by nc makes the estimator a per-query average rather than an unweighted per-cluster average. In particular, 
+
+khead =
+
+&
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+bgi
+
+'
+
+=
+
+& PCq 
+
+> c=1
+
+ncbc
+
+PCq 
+
+> c=1
+
+nc
+
+'
+
+. (12) The cluster-based query permutation shown in the main-paper overview only groups queries with the same assignment gi. Algorithm 1 writes the same computation directly using the index sets Qc, so no separate permutation variable is required. 
+
+Algorithm 2 3D-RoPE-aligned key subspace clus-tering and scoring 
+
+Require: Query-centroid slices { ¯Qm ∈ RCq ×dm }m∈M ;post-RoPE key subspaces {Km ∈ RN ×dm }m∈M ;codebook sizes {Cm}m∈M 
+
+Ensure: Proxy-logit matrix eS ∈ RCq ×N 
+
+> 1:
+
+eS ← 0 ∈ RCq ×N 
+
+> 2:
+
+for m ∈ M do  
+
+> 3:
+
+(U m, z m) ← KMeans( Km, C m) 
+
+> 4:
+
+Pm ← ¯Qm(U m)⊤ ▷ P m ∈ RCq ×Cm 
+
+> 5:
+
+eS ← eS + Pm[: , z m] 
+
+> 6:
+
+end for  
+
+> 7:
+
+eS ← eS/ √d 
+
+> 8:
+
+return eS
+
+For query cluster c and key j, Algorithm 2 computes 
+
+esc,j = 1
+
+√d
+
+X
+
+> m∈M
+
+Pm[c, z mj ], (13) which is the proxy-logit definition in the main method. The score tables, subspace assignments and proxy logits are used only to construct the selected key sets, sparse attention subsequently uses the original Q, K
+
+and V .
+
+Algorithm 3 Online per-head Top-k selection 
+
+Require: Proxy logits eS ∈ RCq ×N ; query-cluster sizes 
+
+{nc}Cq
+
+> c=1
+
+; Top-p threshold ρ ∈ (0 , 1] ; fixed Top-k
+
+ratio α ∈ (0 , 1] 
+
+Ensure: Selected key sets {S c}Cq 
+
+> c=1
+> 1:
+
+N ← ncols( eS); kfix ← ⌈ αN ⌉ 
+
+> 2:
+
+for c = 1 , . . . , C q do  
+
+> 3:
+
+πc ← argsort ↓( eS[c, :])  
+
+> 4:
+
+eac ← softmax( eS[c, :])  
+
+> 5:
+
+t(p) 
+
+> c
+
+← min 
+
+n
+
+t : Ptℓ=1 eac,π c(ℓ) ≥ ρ
+
+o 
+
+> 6:
+
+bc ← max {t(p) 
+
+> c
+
+, k fix } 
+
+> 7:
+
+end for  
+
+> 8:
+
+khead ←
+
+& PCq 
+
+> c=1
+
+ncbc
+
+PCq 
+
+> c=1
+
+nc
+
+' 
+
+> 9:
+
+for c = 1 , . . . , C q do  
+
+> 10:
+
+rc ← max {bc, k head } 
+
+> 11:
+
+Sc ← { πc(1) , . . . , π c(rc)} 
+
+> 12:
+
+end for  
+
+> 13:
+
+return {S c}Cq
+
+> c=1
+
+## B Complexity Analysis 
+
+We analyze the compositional key-scoring module for one attention head, treating the query centroids, key-subspace codebooks and key assignments as its inputs. This isolates SCOPE’s central computation– representation trade-off: the high-dimensional scoring cost is determined by an additive sum over subspaces, whereas the available compositional code space grows multiplicatively. Let ¯Q ∈ RCq ×d contain the Cq query centroids. The key channels are partitioned into M disjoint subspaces with dimensions d1, . . . , d M , where PMm=1 dm = d. Subspace m contains Cm centroids U m ∈ RCm×dm and an assignment vector zm for the N
+
+keys. SCOPE uses M = 3 for the temporal, height and width ranges of 3D RoPE. 14 Compositional Scoring Cost 
+
+Directly scoring every key against every query centroid evaluates 
+
+S⋆ = ¯QK ⊤
+
+√d , S⋆ ∈ RCq ×N , (14) and requires 
+
+T MAC direct = Cq N d (15) high-dimensional multiply–accumulate operations (MACs). SCOPE instead constructs one compact score table per key subspace, 
+
+Pm = ¯Qm(U m)⊤, Pm ∈ RCq ×Cm . (16) The total table-construction cost is 
+
+T MAC table = CqMX
+
+> m=1
+
+Cmdm. (17) The proxy logits are then expanded through indexed accumulation, 
+
+eS = 1
+
+√d
+
+> M
+
+X
+
+> m=1
+
+Pm[: , z m], (18) which requires M table lookups and M −1 scalar additions per query-cluster–key pair. Hence, the d-dimensional dot products are confined to the compact centroid tables, while all per-key proxy scores are recovered using scalar operations. When all subspaces use the same codebook size Cm = C,
+
+T MAC table = Cq C
+
+> M
+
+X
+
+> m=1
+
+dm = Cq Cd. (19) Relative to direct query-centroid–key scoring, the high-dimensional scoring cost is reduced by 
+
+T MAC direct 
+
+T MAC table 
+
+= NC . (20) 
+
+Additive Scoring Cost and Multiplicative Code Space 
+
+Each key is represented by the composite assignment 
+
+zj = ( z1 
+
+> j
+
+, . . . , z Mj ). (21) The number of centroid scores required for each query cluster grows additively with the subspace codebook sizes, 
+
+Cscore =
+
+> M
+
+X
+
+> m=1
+
+Cm, (22) whereas the number of available composite key codes grows multiplicatively, 
+
+Ccode =
+
+> M
+
+Y
+
+> m=1
+
+Cm. (23) For equal codebook sizes, 
+
+Cscore = M C, Ccode = CM ,
+
+> M
+
+X
+
+> m=1
+
+Cmdm = Cd. (24) 15 Oracle scores Block-wise scores Cluster-wise scores SCOPE scores            
+
+> Oracle top 10% important tokens
+> Block-wise mask retain 76.3% |recall 95.77%
+> Cluster-wise mask retain 55.0% |recall 95.74%
+> SCOPE mask retain 28.8% |recall 95.82%
+> 050 100
+> Important retained Extra retained Important missed Unimportant dropped
+
+Figure 8 Fine-grained key selection at matched oracle recall. For a representative query token marked by the cyan circle, the top row compares exact and proxy query–key score maps, while the bottom row compares the oracle top-10% 
+
+key set with the selected masks. At approximately 95 .8% oracle recall, SCOPE retains only 28 .8% of all keys, compared with 55 .0% for full-dimensional cluster-wise scoring and 76 .3% for block-wise scoring. 
+
+Thus, a single full-dimensional codebook with C centroids and the SCOPE product code require the same centroid storage, Cd , and the same high-dimensional score-table MAC count, Cq Cd . However, the full-dimensional codebook provides only C assignment labels, whereas the product construction provides up to 
+
+CM structured assignment tuples. At matched centroid storage and high-dimensional scoring cost, SCOPE enlarges the available code space by 
+
+CM
+
+C = CM −1. (25) By comparison, a monolithic full-dimensional codebook with CM centroids would require CM d centroid scalars and Cq CM d MACs to construct its score table, whereas the product construction requires only Cd 
+
+centroid scalars and Cq Cd score-table MACs. Here, CM denotes the cardinality of the available structured code space, at most min {N, C M } distinct codes can be instantiated by the observed keys, and distinct codes need not yield distinct scalar proxy logits for a given query centroid. Finally, define the product-code representative of key j as 
+
+bkj = concat 
+
+
+
+u1
+
+> z1
+> j
+
+, . . . , u MzMj
+
+
+
+. (26) Because the subspaces occupy disjoint channel ranges, 
+
+esc,j = 1
+
+√d
+
+> M
+
+X
+
+> m=1
+
+D
+
+¯qmc , u mzmj
+
+E
+
+= ⟨¯qc, bkj ⟩√d . (27) Thus, the lookup-and-sum operation exactly evaluates the inner product with the product-code representative, it introduces no approximation beyond replacing each key with that representative. 
+
+## C Additional Quantitative Results 
+
+Fine-Grained Key Selection at Matched Oracle Recall 
+
+Figure 8 compares the key-selection granularity of different proxy scoring schemes for a representative query token. The exact query–key scores define the oracle top-10% key set. For each proxy, keys are ranked by their estimated scores and retained until approximately the same oracle recall is reached. Retention denotes the fraction of all key tokens selected, whereas oracle recall denotes the fraction of oracle-important keys recovered. 16 Block-wise scoring assigns one proxy score to all keys in the same block, so retaining an important key may also retain many unimportant keys from that block. Full-dimensional cluster-wise scoring provides a finer grouping, but all keys assigned to the same centroid still share one score and tend to be retained together. SCOPE instead combines temporal, height and width subspace assignments to construct more fine-grained proxy scores. Keys that share a representative in one subspace can therefore still be distinguished by their assignments in the other subspaces. All three methods recover approximately 95 .8% of the oracle-important keys. SCOPE achieves this recall while retaining only 28 .8% of all key tokens, compared with 55 .0% for full-dimensional cluster-wise scoring and 76 .3% for block-wise scoring. The substantially lower retention ratio shows that SCOPE reduces the over-selection of unimportant keys at comparable oracle recall. 
+
+## D Additional Qualitative Results 
+
+We provide additional dense-reference visual comparisons across all six 720p model–task configurations. All subsequent figures use the same layout. Each pair of rows corresponds to one generation example, with Dense Attention in the upper row and SCOPE in the lower row, the three columns show generated frames sampled at matched temporal positions. The paired outputs use identical prompts, conditioning images when applicable, random seeds and sampling configurations. 17 Figure 9 Additional 720p text-to-video comparisons on Wan2.2-A14B.  
+
+> Figure 10
+
+Additional 720p text-to-video comparisons on Wan2.1-14B. 
+
+18 Figure 11 Additional 720p text-to-video comparisons on HunyuanVideo-13B.  
+
+> Figure 12
+
+Additional 720p image-to-video comparisons on Wan2.2-A14B. 
+
+19 Figure 13 Additional 720p image-to-video comparisons on Wan2.1-14B.  
+
+> Figure 14
+
+Additional 720p image-to-video comparisons on HunyuanVideo-13B. 
+
+20

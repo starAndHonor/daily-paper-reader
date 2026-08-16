@@ -1,0 +1,499 @@
+Title: Spatially-Grounded Text-to-Video Generation via Inference-Time Gradient-Free Optimization
+
+URL Source: https://arxiv.org/pdf/2608.13037v1
+
+Published Time: Fri, 14 Aug 2026 00:47:27 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Spatially-Grounded Text-to-Video Generation via Inference-Time Gradient-Free Optimization 
+
+Guillaume Jeanneret 1 , Mathis Koroglu 1,2 , Hugo Caselles-Dupré 2 , Arnaud Dapogny 1, and Matthieu Cord 1,3 
+
+> 1
+
+ISIR - Sorbonne Université, France  
+
+> 2
+
+Obvious Research, France  
+
+> 3
+
+Valeo.ai, France 
+
+Abstract. Diffusion Transformer Text-to-Video models have achieved remarkable synthesis quality, yet fine-grained spatial controllability re-mains a significant challenge. While existing training-free methods pro-duce solid overall results in spatially grounded generation, i.e ., placing a specific object in a designated location, they rely on gradient-based op-timization techniques that incur prohibitive computational overhead, a bottleneck amplified in modern large-scale architectures. To address this limitation, we present Gradient-free Analytical Trajectory Optimization Video Generation (GATO-Vid), a novel training-free and gradient-free approach for precise spatial guidance. Rather than relying on costly back-ward passes, we introduce an alternative cross-attention score and solve it analytically to obtain an exact, closed-form solution. To use our an-alytical solution, we propose an on-the-fly injection mechanism tailored to the topological manifold of the transformer’s latent space. Our exper-iments demonstrate that GATO-Vid significantly outperforms existing baselines in localization accuracy while introducing minimal computa-tional overhead. 
+
+Keywords: Gradient- and training-free controllable text-to-video · Spa-tially grounded video generation · Analytical Trajectory Optimization 
+
+## 1 Introduction 
+
+Text-to-Video (T2V) diffusion models have made significant progress, produc-ing high-quality videos that are coherent, realistic, and well-aligned with textual prompts. These improvements have been driven by advances in Diffusion Trans-former (DiT) architectures [30], large-scale video-text training data, and the scaling of generative models to billions of parameters [39, 51]. However, text re-mains a limited interface for controlling video generation. A prompt can describe the presence of objects, their appearance, and their general motion, but cannot reliably specify spatio-temporal localization. To go beyond this controllability limitation, we address the task of spatially localized text-to-video generation. Given a text prompt and spatial constraints, such as bounding boxes, the goal of this a task is to generate a video that arXiv:2608.13037v1 [cs.CV] 13 Aug 2026 2 G. Jeanneret et al .
+
+both faithfully follows the prompt and respects the prescribed object locations. In the literature, existing approaches can be divided into training-based and training-free methods. Training-based approaches learn spatial control from an-notated data [15], either by training dedicated modules or by fine-tuning existing generative models. However, this comes at a significant cost, requiring substan-tial computational resources and large-scale annotated data given the scale of recent text-to-video models. For this reason, training-free methods are attrac-tive alternatives as they only control pretrained generators at inference time, without modifying their weights or collecting new data. Despite that, current training-free methods also face limitations. The most effective approaches often rely on gradient-based guidance [52], which requires backpropagating through the generator during sampling. This is particularly costly when applied to mod-ern DiT-based T2V models. To add objects in specific locations in videos, most methods [2, 8, 11, 23, 25, 31, 46], across both image and video generation domains, leverage the obser-vation that these cross-attention layers are responsible for the objects’ local-ization [34]. Thus, these strategies optimize for this similarity with gradients. However, we noted two primary drawbacks in computing gradients: (i) comput-ing the mean cross-attention map explicitly is memory-intensive. In fact, mod-ern neural network engines often use FlashAttention [12] to avoid this explicit calculation; (ii) computing the gradient with respect to the input requires back-propagation through the entire network (billions of parameters) with very large spatio-temporal feature maps, necessitating VRAM-reducing techniques such as gradient checkpointing, multi-GPU sharding [54], or other engineering complex-ities, thereby significantly increasing inference time. For instance, in enormous architectures like Wan2.2 [39], computing the backward pass requires more than a single 80GB GPU. In contrast, users with consumer-grade GPUs, which have less than 32GB available VRAM, would not be able to utilize these methods. This motivates our setup, where we constrain T2V grounded generation to operate only in a training- and gradient-free environment. While existing gradient-free alternatives [21, 38, 48] avoid this overhead, they usually offer weaker or less reliable spatial control, especially in DiT architectures. In this paper, we connect gradient-based methods with cross-attention ma-nipulation techniques, proposing a training-free and gradient-free strategy that simulates the guiding behavior of their gradient-based counterparts. Our method, dubbed Gradient-free Analytical Trajectory Optimization Video Generation, in short GATO-Vid, aims to optimize the global cross-attention maps between the target words and the spatio-temporal masks. To perform this guidance on-the-fly, we first analyze the standard cross-attention control loss and propose an efficient surrogate score. We then derive the analytical optimum of this objective, which provides explicit directions for increasing the alignment between target words and target regions. Finally, we introduce an injection mechanism that applies these directions directly within the transformer blocks, while respecting the ge-ometry induced by query normalization. Our contributions are as follows: GATO-Vid 3
+
+– We introduce GATO-Vid, a training-free and gradient-free framework for spatially grounded text-to-video generation that avoids backpropagation dur-ing inference in modern DiT-based video generators. 
+
+– We reformulate cross-attention localization as an analytically solvable sur-rogate objective, deriving a closed-form solution that provides optimal di-rections without explicitly computing attention maps or gradients. 
+
+– We propose a geometry-aware query injection mechanism that applies these analytical steering directions within transformer cross-attention modules while respecting the RMS normalization manifold, enabling stable and effi-cient inference-time control. We demonstrate that GATO-Vid significantly improves quantitative local-ization metrics, whereas the tested baselines barely outperform the base model, highlighting the challenging nature of this task. To foster reproducibility of gradient-free and training-free approaches for grounded video generation, our code is available at https://gato-vid.github.io/ .
+
+## 2 Related Work 
+
+2.1 Text-to-Video Generation 
+
+Early Text-to-Video (T2V) generators [3, 7, 17] typically inflate existing text-to-image UNet models [33], such as Stable Diffusion 1.5 [32], and incorporate tem-poral layers to transfer feature information across the time dimension. While ef-fective, these early models remained constrained along the temporal axis, which made them capable of generating videos of a few frames. More recently, with the introduction of DiTs [30], large-scale datasets [26, 43], and massive train-ing schemes [14], DiT-based architectures have become the dominant paradigm. State-of-the-art models, including CogVideoX [51], LTX-Video [18], Hunyuan-Video 1.5 [37], and Wan2.2 [39], leverage these architectures to generate high-quality, realistic videos from textual prompts. Nevertheless, their controllability remains restricted, as users are limited to guiding the generation using pure text. Beyond text-only prompting, controllable video generation has also been studied through additional conditioning signals. A first line of work extends structural control to video, using frame-wise signals such as edge and depth maps or combining text, sketches, reference videos, and motion vectors to guide both spatial layout and temporal dynamics [10, 42]. A second line focuses on motion-centric control, where users specify camera poses, camera movements, or object trajectories instead of relying solely on textual descriptions [16,19,44,50]. Rather than introducing new trainable layers, we achieve spatially grounded video generation by directly manipulating the T2V generator in a gradient-free manner. 
+
+2.2 Spatially-Grounded Text-to-Image Control 
+
+Instead of controlling the generation with mere text, users might want to gener-ate content with objects in specific locations within a scene. In the text-to-image 4 G. Jeanneret et al .
+
+(T2I) domain, trainable approaches append modules on top of a frozen generator; for instance, GLIGEN [22], IFAdapters [45], SpaText [1], and BlobGEN [27] train new cross-attention layers to inject object descriptions into target locations. Con-versely, training-free methods eliminate the need for parameter updates. Most methods rely on gradient-based optimization [2, 8, 9, 11, 25, 31, 46, 47, 49], maxi-mizing the similarity between cross-attention maps and target object locations via backpropagation. This arises from the observation that these cross-attention layers are responsible for object localization [34]. While these methods do not re-quire as much compute as video generators, backpropagating gradients through the network layers still incurs a notable computational overhead. Finally, the gradient-free literature is less extensive and typically can be categorized into two strategies: some methods [6, 28, 41] directly modify cross-attention layers to inject object segments or descriptions into their corresponding regions, while oth-ers [4, 35] utilize multi-inference pipelines to generate separate object estimates and subsequently merge them. 
+
+2.3 Spatially-Grounded Text-to-Video Control 
+
+Compared to the T2I domain, spatially grounded video generation remains less thoroughly explored. Mirroring text-to-image trends, existing approaches can be classified into the same three categories: training-based methods, gradient-based training-free strategies, and training- and gradient-free pipelines. Training-based strategies add new trainable modules on top of existing T2V models [13, 15]. Among gradient-based training-free methods, Lian et al . [23] optimize cross-attention maps between target words and input bounding boxes via backprop-agation within the ModelScope [40] framework. Within the gradient-free liter-ature, attention manipulation is the dominant approach. For instance, Peeka-boo [21] applies hard masking in both self- and cross-attention layers: in cross-attention, object text tokens attend strictly to their designated regions while the background attends elsewhere, whereas in self-attention, background and object video tokens are mutually isolated. Direct-a-Video [50] follows a similar trend by constraining cross-attention maps within the ModelScope [40] architecture. VideoTetris [38] operates akin to Regional Prompting [6] by inserting distinct object descriptions solely into their respective spatial regions. These previous methods have only been applied to 3D-UNet T2V models and have not been translated to modern DiT architectures. Closest to our work, SwitchCraft [48] tackles multi-event generation in Wan2.1 [39] by projecting source queries into a target subspace to enhance similarity before reintegrating them. Unlike these methods, our approach is built on a theoretical foundation that optimizes a sur-rogate score on the fly in a completely gradient-free manner, while explicitly preserving the T2V model’s geometric properties. 
+
+## 3 Methodology 
+
+In this section, we first define the problem and review standard gradient-based approaches. Next, we introduce our proposed surrogate objective and derive GATO-Vid 5
+
+its analytical closed-form solution. Lastly, we explain how to incorporate this solution into each block of the DiT while maintaining its geometric properties. 
+
+3.1 Preliminaries 
+
+We begin by formally defining the main framework. Let fθ be the T2V latent flow matching generator [24, 32], and τ = {e1, . . . , e |τ |, e j ∈ Rd}, be the input prompt tokenized and processed by the text encoder, consisting of |τ | vectors of dimension d, where d is the hidden channel dimension of fθ . Let xt ∈ RC×T×H×W
+
+be the input spatio-temporal video latent at time t, where C, T, H, and W are the channel, time, height, and width dimensions, respectively. To synthesize a video using fθ , we iteratively refine xt according to the following equations 
+
+vt = fθ (xt, τ, t )
+
+xt+∆t = FlowSch (xt, v t, t ). (1) Here, we initialize with Gaussian noise x0 ∼ N (0 , 1) , ∆t is the step size of the iterative process, and FlowSch is the flow matching scheduler. At the final timestep, i.e ., t = 1 , the latent x1 is decoded into pixel space using a pretrained variational autoencoder. The training-free, gradient-free, spatially grounded T2V generation task aims to generate a video in which the object described in the prompt follows a given trajectory. Crucially, this control must be exerted during inference without al-tering the parameters of fθ or computing gradients. To spatially ground the generative model, let M denote the spatio-temporal indices tracking the target object’s trajectory within the video volume. Finally, let T be the set of textual indices pointing to the object in the tokenized prompt, τ .Diffusion transformers leverages native spatio-temporal transformer blocks [30] to process the video data [39, 51]. Particularly, these architectures first concate-nate text and video tokens and then process them through a sequence of blocks consisting of self-attention layers, followed by a feed-forward network. As noted by Shen et al . [34], a sub-operation within self-attention is the cross-attention function, where text data is injected into video tokens. Thus, regardless of the architecture, whether it is a UNet [17] or a DiT [30], the fundamental compo-nent for grounding visual features with textual information is the cross-attention mechanism: 
+
+A(Qi, K i) = softmax 
+
+ QiK⊤
+
+> i
+
+√d
+
+
+
+cross-attn (Qi, K i, V i) = A(Qi, K i)Vi,
+
+(2) where Qi ∈ RTHW ×d, Ki ∈ R|τ |× d, and Vi ∈ R|τ |× d represent the query (video), key (text), and value (text) sequences, respectively, for the i-th block of the net-work. In modern DiT architectures, to generate the queries Qi, the sequence fea-tures are mapped via a linear projection layer. Then, the RMS Normalization [53] 6 G. Jeanneret et al .
+
+(Eq. (3)) projects all individual vectors q ∈ Qi, q ∈ Rd, onto a hyper-ellipsoid surface: 
+
+q ← √d q ⊙ γ
+
+∥q∥ , (3) where ⊙ denotes the element-wise multiplication and γ ∈ Rd is a learnable vector. Gradient-based algorithms generate an object in a location M by first passing 
+
+xt and τ through fθ to extract the vision queries and text keys: 
+
+(vt, {Qi, K i}Bi=1 ) = fθ (xt, τ, t ), (4) where vt is the model output, and B is the total number of blocks in fθ . Second, they compute the mean attention map over the B blocks: 
+
+¯A = 1
+
+B
+
+> B
+
+X
+
+> i=1
+
+A(Qi, K i). (5) Third, they compute the gradients of a loss function, ℓ, between the mean atten-tion ¯A, the target words, T , and the target location M with respect to the input 
+
+xt. This function ℓ is typically a Dice or ℓ2 loss between ¯A, which is averaged over each target text token, and M . Then, the latent xt is updated with: 
+
+x′ 
+
+> t
+
+= xt − μ∇xt ℓ( ¯A, M, T ), (6) where μ is the learning rate. Finally, the subsequent denoising step is computed using x′ 
+
+> t
+
+instead of xt, or it is refined iteratively with more gradient steps. In this paper, our goal is to derive an efficient surrogate score that analytically captures an optimal direction for decreasing ℓ instead of optimizing this loss directly with gradients. 
+
+3.2 Building a Simpler Score 
+
+Our first contribution is an analytically solvable alternative score function to approximate the behavior of the loss function. Essential to the cross-attention mechanism is the softmax operation, a highly non-linear function that normal-izes the cross-attention scores. To derive an exact analytical solution for the alternative loss function, we need a proxy for the softmax to circumvent the non-linearity. Formally, if qj ∈ Qi and kl ∈ Ki are a specific query token and a key token, respectively, then, the cross-attention between qj and kl is: 
+
+A(qj , K i) = 
+
+"
+
+. . . , exp (qj ·kl/√d)
+
+P 
+
+> k∈Ki
+
+exp (qj ·k/√d) , . . . 
+
+#
+
+. (7) To maximize the attention between the l-th text token ( kl) and the j-th query (qj ), we can either maximize qj · kl or minimize P  
+
+> k∈K,k ̸=kl
+
+exp (qj ·k/√d). For-tunately, to minimize this second term, we can directly work with each qj · klGATO-Vid 7
+
+individually as exp (qj ·k/√d) is strictly increasing with respect to qj · kl. Thus, we can directly utilize the pre-softmax operation ( i.e ., the logits), 
+
+A′(Q, K ) = QK ⊤, (8) and use it as a proxy for optimizing the attention. Consequently, we build our score function directly on top of Eq. (8). To increase attention in M , we maximize 
+
+the following score: 
+
+s =
+
+P
+
+> j∈M
+
+P 
+
+> l∈T
+
+qj · kl
+
+|M || T |
+
+| {z }
+
+> (i)
+
+−
+
+P
+
+> j∈M
+
+P  
+
+> l∈Tc
+
+qj · kl
+
+|M || T c|
+
+| {z }
+
+> (ii )
+
+−
+
+P 
+
+> j∈Mc
+
+P 
+
+> l∈T
+
+qj · kl
+
+|M c|| T |
+
+| {z }
+
+> (iii )
+
+, (9) where M c and T c are the complement sets of indices of M and T , respectively. This score consists of three terms (from left to right): (i) a factor to increase the inner product, and thus the attention, between target regions and target words, (ii) a component reducing the influence of negative keys in target regions, and (iii) an element reducing the influence of positive keys outside target regions. In Fig. 1a we visually represent all regions (i), (ii), and (iii). Analogous to the original loss function ℓ, maximizing s implicitly minimizes terms (ii) and (iii) while maximizing term (i), but operates completely in the logit space. Since the double sum is separable, we can factorize Eq. (9) into: 
+
+s = Q(M ) · (K(T ) − K (T c)) − Q (M c) · K (T ), (10) where Q(M ) ∈ Rd and K(T ) ∈ Rd are defined as: 
+
+Q(M ) = 
+
+P 
+
+> j∈M
+
+qj
+
+|M | , K(T ) = 
+
+P 
+
+> l∈T
+
+kl
+
+|T | . (11) This factorization avoids the explicit attention map calculation, reducing the complexity from O(|Q| · | K|) to three vector dot products. In Fig. 1b, we provide a toy example illustrating how maximizing s acts as a proxy for minimizing a standard ℓ2 localization loss - see Sec. 3.3 for more details. 
+
+3.3 On-the-fly Score Optimization 
+
+To avoid any gradient-based optimization, we first analytically maximize our pro-posed score in Eq. (10) by finding the vectors Q(M ) and Q(M c) that maximize 
+
+s. Suppose b+ and b− are unit vectors replacing Q(M ) and Q(M c), respectively. The score s, which is now a function of (b+, b −), becomes: 
+
+s(b+, b −) = b+ · (K(T ) − K (T c)) − b− · K (T ). (12) Consequently, s is maximized when b+ is collinear with (K(T ) − K (T c)) and 
+
+b− is parallel to (−K (T )) . Thus, we can maximize the attention map by simply 8 G. Jeanneret et al .Zone (i)            
+
+> ↓
+> Maximize Zone (iii)
+> ↓
+> Minimize Zone (iii)
+> ↓
+> Minimize Zone (ii)
+> ↓
+> Minimize Keys (Text Tokens) Pre-Softmax Logits (Eq. 7) Selected Keys Other Keys Queries (Video Tokens) Selected Queries Other Queries Other Queries Zone (ii)
+> ↓
+> Minimize Other Keys
+> (a) 0.0 0.5 1.0 1.5 2.0 2.5 3.0 Scale ±
+> 0.025 0.030 0.035 0.040
+> 2 Loss  Loss Loss (Q25 - Q75) Score Score (Q25 - Q75) 02468
+> s Score
+> Minimizing 2with s(b)
+
+Fig. 1: (a) Target Regions: Cross-attention scores targeted with our score on Eq. (9). 
+
+s searches to: (i) increase the logits of the target spatio-temporal regions and selected text tokens, (ii) decrease the logits of the target region and complementary text to-kens, and (iii) reduce the logits of the regions outside the mask and the chosen text tokens. (b) Loss Minimization: Toy example exemplifying that our on-the-fly score optimization minimizes an ℓ2 loss. The plot illustrates how increasing the λ± param-eter gradually decreases the ℓ2 error over different runs. The “Q25–Q75” shaded area represents the 25th–75th quantile range. 
+
+replacing these vectors (now referred to as biases) with the query sequence. Accordingly, we set b+ and b− as 
+
+b+ = K(T ) − K (T c)
+
+∥K (T ) − K (T c)∥ and b− = − K(T )
+
+∥K (T )∥ . (13) Now, for each cross-attention block, we have an optimal direction vector. Yet, directly replacing the queries qj with the optimal biases ( qj ← b±) or naively adding the biases ( qj ← b± + qj ) disrupts the network’s internal representations due to magnitude mismatches. Here, b± is either b+ or b−. As the query vectors lie on the RMSNorm ellipsoid (Eq. (3)), we need to take into account this geometric property to remain closer to the distribution. Thus, we modify the queries as follows: 
+
+qj ←
+
+( √d   
+
+> ∥(λ+b+∥qj∥+qj)⊘γ∥
+
+(λ+b+∥qj ∥ + qj ) if j ∈ M   
+
+> √d
+> ∥(λ−b−∥qj∥+qj)⊘γ∥
+
+(λ−b−∥qj ∥ + qj ) if j ∈ M c , (14) where ⊘ is the element-wise division. This renormalization consists of three main components: (i) We multiply b± by ∥qj ∥ to make the impact relative to qj . (ii) We scale the bias with a hyperparameter λ± to control the impact of the bias b±.Here, λ± plays a similar role to the learning rate μ in gradient-based approaches (Eq. (6)). (iii) The constant √d   
+
+> ∥(λ±b±∥qj∥+qj)⊘γ∥
+
+projects the vector back to the ellipsoid surface of the RMS Normalization in Eq. (3). For the background tokens ( j ∈ M c), adding the negative bias b− can distort the existing background features if the bias aligns too closely with the original GATO-Vid 9
+
+query qj . To prevent this distortion, we isolate the component of the bias that is strictly orthogonal to the query, ensuring the injection acts purely as a directional adjustment without overwriting the original feature content. Formally, we define the orthogonal projection of a vector a onto the orthog-onal complement of b as: 
+
+P (a, b ) = a −
+
+
+
+a · b
+
+∥b∥
+
+ b
+
+∥b∥ . (15) Using this projection, our final formulation for the query modification becomes: 
+
+qj ←
+
+( √d   
+
+> ∥(λ+b+∥qj∥+qj)⊘γ∥
+
+(λ+b+∥qj ∥ + qj ) if j ∈ M,      
+
+> √d
+> ∥(λ−P(b−∥qj∥, q j)+ qj)⊘γ∥
+
+(λ−P (b−∥qj ∥, q j ) + qj ) if j ∈ M c . (16) As a final adjustment, we note that the cross-attention activations typically peak at the semantic center of an object and attenuate toward its boundaries. While we correctly insert the positive bias into each query, uniformly applying it yields an unnaturally homogeneous attention distribution across the target region. To circumvent this problem, we modulate the guidance scale spatially by fitting a normalized 2D Gaussian distribution to the bounding box of each frame. Subsequently, we multiply it by λ+. Hence, λ+ varies spatially now than remaining fixed for every query inside the mask. To validate empirically that maximizing our gradient-free surrogate score s
+
+with our injection mechanism in Eq. (14) effectively acts as a proxy for mini-mizing a standard ℓ2 localization loss, we conduct a controlled toy experiment. Specifically, we instantiate a three-layer cross-attention model with randomly initialized weights and apply our directional query steering mechanism across a range of guidance intensities λ±. We conduct this process 100 times, storing the 
+
+(λ±, ℓ 2, s ) values and plotting both (λ±, s ) and (λ±, ℓ 2) sequences. As illustrated in Fig. 1b, increasing λ± monotonically reduces the ℓ2 loss between the resulting attention maps and the given target spatial layout M . Our analytical approxi-mation yields highly localized attention maps, offering an efficient trade-off by bypassing the heavy backpropagation during inference. In a nutshell, to generate a spatially grounded video with GATO-Vid, we first sample the noisy latent variables with Gaussian noise x0. Next, for the first few iterations and the first blocks of the generative model, we extract the target biases (b+, b −) and inject them to the queries following Eq. (14), summarized in Alg. 1. For the remaining iterations, we adhere to the original iterative process in Eq. (1). 
+
+## 4 Experimentation 
+
+4.1 Implementation Details 
+
+We implemented GATO-Vid on Wan2.2 [39], the best open-sourced T2V gen-erative model. We used our injection mechanism in the first 20 blocks of the 10 G. Jeanneret et al .
+
+Algorithm 1 Bias Injection: First, the positive and negative directions are computed using the selected text tokens. Then, the biases are injected back into the queries, which are then reprojected onto the RMSNorm ellipsoid. Finally, the newly modified tokens through the cross-attention. 
+
+Require: Generator fθ , x video features, t current step, prompt features τ ∈ R|τ |× n,target map M , selected words T , SB set of blocks where we inject the bias. 
+
+x ← f .tokenize (x) ∈ RTHW ×n
+
+for b in fθ .blocks do 
+
+x ← x + b. Self-Attention (x)
+
+q, k, v ← b.norm_q (b.to_q (x)) , b .norm_k (b.to_k (τ )) , b .to_v (τ )
+
+if b ∈ SB then 
+
+b+ = Normalize  mean (k[T ]) − mean (k[T c]) 
+
+q′ ← q[M ] ▷ Get queries inside the mask 
+
+q′ ← q′ + λ+∥q′∥b+ ▷ Add positive bias 
+
+q′ ← √n 
+
+> ∥q′⊘b.norm_q .γ ∥
+
+q′ ▷ Normalization to hyper-ellipsoid 
+
+q[M ] ← q′
+
+b− = Normalize (mean (k[T c])) 
+
+q′ ← q[M c] ▷ Get queries outside the mask 
+
+q′ ← q′ − λ+∥q′∥b− ▷ Add negative bias 
+
+q′ ← √n 
+
+> ∥q′⊘b.norm_q .γ ∥
+
+q′ ▷ Normalization to hyper-ellipsoid 
+
+q[M c] ← q′
+
+x ← x + b. cross-attention (q, k, v )
+
+x ← x + b. FFN (x)
+
+return f. detokenize (x)
+
+transformer architecture during the first 15% of the iterations. Furthermore, we set λ± = 1 .5 with a linear decay. As our baseline choices, we selected the most representative methods available in the literature for gradient-free and training-free grounded T2V generation. These are Peekaboo [21], VideoTetris [38], and SwitchCraft [48]. To mitigate the effect of using other architectures, we adapted them all to Wan2.2 for a fair comparison. Moreover, we performed a hyperpa-rameter search in all baselines to adjust for the different backbone. Additionally, we evaluated Wan2.2 without grounding to establish a quality reference. All gen-erated videos have 81 frames with a spatial resolution of 480 ×832 pixels using 30 steps flow matching steps. Finally, all experiments were performed on a single NVIDIA H100 (80GB) GPU. 
+
+4.2 Evaluation Setup 
+
+Dataset To benchmark GATO-Vid against concurrent approaches, we constructed two dedicated evaluation datasets. On the one hand, we leveraged Gemini [36] to generate 25 diverse prompts covering a variety of objects. For each prompt, we generated four ground-truth videos using Wan2.2 across different random seeds and visually verified the results. We then applied SAM 3 [5] to extract the corresponding reference bounding boxes for the target objects. During eval-GATO-Vid 11 
+
+uation, we executed each prompt and bounding box configuration using four independent random seeds. In total, our benchmark comprises 400 generated videos. We name this set Set 1 . On the other hand, we leveraged ChatGPT [29] to generate 100 distinct prompts, creating synthetic bounding boxes of various sizes, shapes, and movement patterns (linear, spiral, circular, Z/N-shaped move-ments) for each prompt. This set is inherently more challenging yet closer to our application, as the target locations conflict with the model’s typical movement patterns. Consistent with Set 1 , we ran each prompt across four different seeds, yielding a total of 400 videos. We refer to this collection as Set 2 .
+
+Evaluation Metrics We evaluate our approach along two dimensions: spatial alignment and overall video quality. Spatial alignment metrics assess whether the target object was accurately generated within the specified bounding box while respecting its dimensions. To achieve this, we follow an evaluation protocol similar to that in [21]. Given a set of trajectory boxes, the textual description of the object, and the generated video, we extract object masks using SAM 3 [5] prompted with the target object’s prompt. Then, we compute two metrics to measure the similarity with the input bounding boxes: (i) the Intersection over Union (IoU) between the bounding box of the generated object and the target box (higher is better) and (ii) the Euclidean distance between the center of mass of the generated object and the center of the target bounding box, divided by the maximum possible distance, named Center Distance (CD); lower is better. Both CD and IoU are computed exclusively for videos with successful SAM 3 object detections. To complement this, we introduce a Success Rate (SR) metric to track the proportion of generated videos that contain the target object according to SAM 3. This metric is especially useful for identifying methods that fail to generate the target object altogether. To evaluate overall video generation quality ( e.g ., temporal consistency, vi-sual quality), we adopt VBench [20] metric suite. Specifically, we evaluate five core dimensions: Subject Consistency (SC), Background Consistency (BC), Dy-namic Degree (DD), Aesthetic Quality (AQ), and Imaging Quality (IQ). SC and BC measure the temporal stability of objects and backgrounds across video frames, ensuring they do not drastically shift or warp. DD quantifies the amount of motion and dynamic variation within the video. Finally, AQ assesses the stylis-tic and compositional appeal of each frame, while IQ penalizes visual artifacts such as noise, blur, or distortions. For all metrics, higher values indicate better performance. Ideally, each method yields scores comparable to the vanilla model; a substantial change signals a noticeable shift from the base behavior. 
+
+Quantitative Result We report the quantitative comparison between GATO-Vid and various baselines in Tab. 1. Importantly, no baseline demonstrates robust localization capabilities. Peekaboo leads with a modest IoU on both datasets, while all other configurations perform comparably to the standard T2V model. In contrast, GATO-Vid outperforms all existing baselines by a large margin across all spatial alignment metrics, while being on par in the SR metric. Sev-eral key findings from these results merit closer inspection. First, we observe 12 G. Jeanneret et al .                                                                                         
+
+> Method Localization VBench
+> CD ( ↓)IoU ( ↑)SR ( ↑)SC ( ↑)BC ( ↑)DD ( ↑)AQ ( ↑)IQ ( ↑)
+> Set 1
+> Wan2.2 T2V 0.138 0.154 89.3% 0.974 0.971 0.248 0.631 0.666 VideoTetris ∗0.132 0.160 85.7% 0.973 0.972 0.260 0.630 0.673 SwitchCraft 0.138 0.152 88.7% 0.973 0.972 0.248 0.629 0.664 Peekaboo ∗0.103 0.249 85.5% 0.970 0.966 0.310 0.597 0.677
+> GATO-Vid (Ours) 0.059 0.363 89.7% 0.975 0.964 0.113 0.551 0.670
+> Set 2
+> Wan2.2 T2V 0.198 0.124 74.2% 0.957 0.960 0.395 0.613 0.682 VideoTetris ∗0.195 0.136 69.7% 0.960 0.962 0.402 0.612 0.698
+> SwitchCraft 0.196 0.128 75.5% 0.956 0.960 0.393 0.611 0.678 Peekaboo ∗0.193 0.171 49.2% 0.929 0.937 0.750 0.510 0.679 GATO-Vid (Ours) 0.121 0.324 74.7% 0.952 0.951 0.360 0.557 0.690
+
+Table 1: Quantitative Localization and Quality Metrics: GATO-Vid outper-forms every baseline on the localization metrics with a trade-off. Its superior alignment comes at the cost of generation quality, as shown by the VBench metrics. All methods marked with ∗ were re-implemented on Wan2.2. 
+
+that directly adapting training-free, gradient-free strategies [21, 38] originally designed for 3D-UNet architectures to modern DiT models yields poor results. Specifically, VideoTetris [38] performs comparably to the vanilla T2V model, completely failing to ground the target objects in their specified locations. Con-versely, Peekaboo [21] achieves the highest alignment scores among the baselines; however, it introduces visual artifacts, which we analyze qualitatively in Sec. 4.3. Second, SwitchCraft [48] - originally built for Wan2.1 - exhibits a similar lim-itation to VideoTetris, matching its performance to the unconstrained Wan2.2 baseline. We attribute this to SwitchCraft’s inability to suppress the influence of target text tokens outside the spatial mask; our ablation study (Sec. 4.4) shows that a negative component is necessary to improve alignment metrics. Third, the VBench evaluation indicates that all methods perform similarly across most dimensions. However, a decline in GATO-Vid’s DD and AQ scores suggests that our spatial constraints can lead to more static compositions. This stems from the background degradation and reduced scene dynamics of certain videos. Peekaboo exhibits a similar trade-off, albeit less severely. The difference in the DD metric to the T2V vanilla model suggests that Peekaboo creates excessive movement, and the decreased AQ indicates lower-quality videos. This final discussion pin-points that better localization comes at the cost of quality. Finally, we underscore the inherent difficulty of precise training-free gradient-free spatial control. Next, we measure the computational efficiency of GATO-Vid by recording the average inference time across 50 runs. GATO-Vid introduces minimal runtime overhead of 0.4% compared to Vanilla Wan2.2. By comparison, VideoTetris adds 6.20%, SwitchCraft adds 32.80%, and Peekaboo adds 92.13%. However, since these methods (including ours) are only applied during the initial sampling steps, their impact on the total generation time is modest to negligible. In contrast, performing a single backpropagation step on one of Wan2.2’s two transformers increases inference time by 300.31% and requires an additional 26 GB of VRAM (totaling 59 GB) with only one transformer loaded in memory and without GATO-Vid 13 Frame 41 Frame 1 Frame 81 Frame 41 Frame 1 Frame 81 Frame 41 Frame 1 Frame 81 Frame 41 Frame 1 Frame 81 
+
+GATO-Vid (Ours) Peekaboo VideoTetris SwitchCraft Wan2.2 T2V 
+
+Peekaboo VideoTetris SwitchCraft Wan2.2 T2V GATO-Vid (Ours)     
+
+> A cat jumps across a narrow alleyway between two weathered brick.
+> A dolphin arcs above a calm turquoise bay.
+> A rabbit hops over a dewy green hillside.
+> A crab scurries along a damp shoreline during a dramatic low tide.
+
+Fig. 2: Qualitative Comparison: From top to bottom, rows display results for GATO-Vid, Peekaboo, VideoTetris, SwitchCraft, and the vanilla T2V model, all shar-ing identical random seeds. Prompts are provided on top of each video, with the target object and bounding boxes highlighted in green. 
+
+computing an attention map loss. When computing the explicit attention maps and the attention loss on an 80GB GPU, we received out-of-memory errors. Thus, these methods require CPU offloading strategies, multiple GPUs, and gradient checkpointing. This makes gradient-based approaches unattractive for users with limited compute budgets. 
+
+4.3 Qualitative Results 
+
+To complement our study, we provide visual examples in Fig. 2. First, Vanilla Wan2.2, VideoTetris, and SwitchCraft produce similar results. They preserve the original quality because these algorithms are not strong enough to steer the generation toward the goal. Next, Peekaboo results are of good quality; however, the hard masking introduces visual artifacts in certain regions of the outputs. In contrast, our method succeeds where the baselines fail by successfully generating and localizing the target object within the specified region at the expense of background quality. For more visualization, we refer to our webpage. 14 G. Jeanneret et al .                                                         
+
+> Ablation Localization VBench
+> CD ( ↓)IoU ( ↑)SR ( ↑)SC ( ↑)BC ( ↑)DD ( ↑)AQ ( ↑)IQ ( ↑)Wan2.2 T2V 0.138 0.154 89.3% 0.974 0.971 0.248 0.631 0.666 (i) No Projection 0.059 0.355 87.5% 0.965 0.957 0.090 0.541 0.646 (ii) No Gaussian Fitting 0.059 0.375 72.0% 0.969 0.960 0.093 0.535 0.662 (iii) No Foreground 0.104 0.252 89.7% 0.977 0.968 0.158 0.558 0.660 (iv) No Background 0.105 0.241 89.7% 0.972 0.970 0.258 0.628 0.679
+> GATO-Vid (Ours) 0.059 0.363 89.7% 0.975 0.964 0.113 0.551 0.670
+
+Table 2: Ablation Study: Effect of systematically removing each proposed compo-nent to validate its advantages. Eliminating any part of GATO-Vid degrades localiza-tion accuracy, which empirically validates all of our proposed components. GATO-Vid (i) Projection (ii) Gaussian (iii) Foreground (iv) Background 
+
+Fig. 3: Ablation Visualization: Representative frames from three videos illustrating the visual degradation under different ablation settings. Removing either the reprojec-tion mechanism (i) or the Gaussian filtering (ii) introduces noticeable visual artifacts. Conversely, omitting the positive (iii) or negative biases (iv) leads to localization errors. 
+
+4.4 Ablation Studies 
+
+We conducted an ablation study to demonstrate the advantages of each proposed component. To do so, we performed the following four ablations: (i) We removed the projection to the ellipsoid, found in Eq. (14). Thus, we replaced the injection with a naive sum ( qj ← qj + λ±∥qj ∥b±). (ii) We removed the Gaussian filtering, used to mimic the smooth surfaces of the cross-attention maps. Therefore, we set λ+ equal for all queries inside the mask. Finally, (iii & iv) we removed the positive and negative biases ( b+ and b−; refer to Eq. (13)). This is equivalent to removing the positive or negative influences of Eq. (10). We present the ablation results in Tab. 2 along with some visualization in Fig. 3 (see our webpage for full videos). The performance differences indicate that each component contributes positively to the localization metrics. Despite this, we observe some qualitative trade-offs. Ablating the projection (i) and Gaussian (ii) mechanisms has the least effect on the localization metrics, but has a higher impact on the SR and VBench metrics. The reduction in DD, AQ, and IQ suggests that excluding these components negatively affects dynamics and visuals. Next, the positive and negative components of Eq. (10) have the most significant impact. These two ablations demonstrate the most pronounced GATO-Vid 15 0.15 0.20 0.25 0.30 0.35 0.40 IoU        
+
+> 0.52
+> 0.54
+> 0.56
+> 0.58
+> 0.60
+> 0.62 AQ
+> 0.0 (T2V) 0.10 0.12 0.15 0.20 0.30 Iteration e ff ect
+> (a) Iteration ablation T2V 0-20 (Ours) 0-40 20-40
+> 0.15 0.20 0.25 0.30 0.35 IoU
+> 0.154 0.328 0.357 0.159
+> Block Ablation
+> 0.54 0.56 0.58 0.60 0.62 0.64 AQ
+> 0.631 0.558 0.549 0.628 (b) Block ablation 140 Transformer Block 01Timestep
+> Attention Scores Distribution (c) Attention analysis
+
+Fig. 4: (a): More iterations induce higher IoU but reduce AQ. (b): Using the first 20 blocks is as effective as using all blocks, whereas using the last 20 blocks yields no improvement. (c): The early blocks produce higher attention scores than later blocks or steps, suggesting that initial layers specialize in the video’s general layout. 
+
+impact: a significant improvement in alignment comes at the expense of lower quality. In addition, and counterintuitively, removing the negative bias yielded the most severe degradation in localization performance. Finally, we analyze the effect of varying the injection scope across denois-ing steps and transformer blocks (Fig. 4). As shown in Fig. 4a, applying our mechanism across a larger fraction of sampling iterations increases the IoU but gradually degrades AQ. Applying bias injection during the first 15% of iterations strikes an optimal trade-off between spatial control and visual quality. Regard-ing layer depth, injecting bias into the first 20 blocks achieves an IoU and AQ performance similar to applying it across all 40 blocks, whereas targeting only the last 20 blocks yields results close to the Wan2.2 (Fig. 4b). This behavior is explained by the cross-attention score distribution in Fig. 4c, where early blocks show strong attention values, while later layers exhibit homogeneous scores, sug-gesting that late layers are less critical for structural layout. 
+
+## 5 Conclusions 
+
+We present GATO-Vid, a training- and gradient-free approach for spatially grounded text-to-video generation. By reformulating attention localization as an analytically solvable surrogate objective, our method replaces backpropagation-based approaches with a closed-form query steering mechanism. While our ex-periments suggest that while stronger spatial control can reduce scene dynamics and aesthetic appeal in some cases, they highlight the potential of analytical attention manipulation as an efficient alternative for controlling DiT-based ar-chitectures. We hope this work motivates future research into more accurate and scalable controllable video generation methods that better balance precise spatial control with visual fidelity. 
+
+Acknowledgements This work has been supported by chair VISA DEEP (ANR-20-CHIA-0022), Cluster PostGenAI@Paris (ANR-23-IACL-0007, FRANCE 2030), and funded by the French National Research Agency (ANR) under the Re-naissance project (grant ANR-23-CE23-0023; France 2030). This work was per-formed using HPC resources from GENCI-IDRIS (Grant 2025-AD011017053). 16 G. Jeanneret et al .
+
+## References 
+
+1. Avrahami, O., Hayes, T., Gafni, O., Gupta, S., Taigman, Y., Parikh, D., Lischinski, D., Fried, O., Yin, X.: Spatext: Spatio-textual representation for controllable image generation. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 18370–18380 (June 2023) 2. Bansal, A., Chu, H.M., Schwarzschild, A., Sengupta, S., Goldblum, M., Geiping, J., Goldstein, T.: Universal guidance for diffusion models. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops. pp. 843–852 (June 2023) 3. Bar-Tal, O., Chefer, H., Tov, O., Herrmann, C., Paiss, R., Zada, S., Ephrat, A., Hur, J., Liu, G., Raj, A., Li, Y., Rubinstein, M., Michaeli, T., Wang, O., Sun, D., Dekel, T., Mosseri, I.: Lumiere: A space-time diffusion model for video generation. In: SIGGRAPH Asia 2024 Conference Papers. SA ’24, Association for Computing Machinery, New York, NY, USA (2024). https://doi.org/10.1145/3680528. 3687614 , https://doi.org/10.1145/3680528.3687614 
+
+4. Bar-Tal, O., Yariv, L., Lipman, Y., Dekel, T.: MultiDiffusion: Fusing diffusion paths for controlled image generation. In: Krause, A., Brunskill, E., Cho, K., Engelhardt, B., Sabato, S., Scarlett, J. (eds.) Proceedings of the 40th International Confer-ence on Machine Learning. Proceedings of Machine Learning Research, vol. 202, pp. 1737–1752. PMLR (23–29 Jul 2023), https://proceedings.mlr.press/v202/ bar-tal23a.html 
+
+5. Carion, N., Gustafson, L., Hu, Y.T., Debnath, S., Hu, R., Coll-Vinent, D.S., Ryali, C., Alwala, K.V., Khedr, H., Huang, A., Lei, J., Ma, T., Guo, B., Kalla, A., Marks, M., Greer, J., Wang, M., Sun, P., Rädle, R., Afouras, T., Mavroudi, E., Xu, K., Wu, T.H., Zhou, Y., Momeni, L., HAZRA, R., Ding, S., Vaze, S., Porcher, F., Li, F., Li, S., Kamath, A., Cheng, H.K., Dollar, P., Ravi, N., Saenko, K., Zhang, P., Feichtenhofer, C.: SAM 3: Segment anything with concepts. In: The Fourteenth International Conference on Learning Representations (2026), 
+
+https://openreview.net/forum?id=r35clVtGzw 
+
+6. Chen, A., Xu, J., Zheng, W., Dai, G., Wang, Y., Zhang, R., Wang, H., Zhang, S.: Training-free regional prompting for diffusion transformers. arXiv preprint arXiv:2411.02395 (2024) 7. Chen, H., Zhang, Y., Cun, X., Xia, M., Wang, X., Weng, C., Shan, Y.: Videocrafter2: Overcoming data limitations for high-quality video diffusion mod-els. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 7310–7320 (June 2024) 8. Chen, H., Li, J., Zhuang, W., Vikalo, H., Lyu, L.: Training-free layout-to-image generation with marginal attention constraints. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops. pp. 3410–3419 (June 2026) 9. Chen, M., Laina, I., Vedaldi, A.: Training-free layout control with cross-attention guidance. In: Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV). pp. 5343–5353 (January 2024) 10. Chen, W., Ji, Y., Wu, J., Wu, H., Xie, P., Li, J., Xia, X., Xiao, X., Lin, L.: Control-A-Video: Controllable text-to-video diffusion models with motion prior and reward feedback learning (2023), https://arxiv.org/abs/2305.13840 
+
+11. Couairon, G., Careil, M., Cord, M., Lathuilière, S., Verbeek, J.: Zero-shot spa-tial layout conditioning for text-to-image diffusion models. In: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV). pp. 2174–2183 (October 2023) GATO-Vid 17 12. Dao, T., Fu, D.Y., Ermon, S., Rudra, A., Ré, C.: FlashAttention: Fast and memory-efficient exact attention with IO-awareness. In: Advances in Neural Information Processing Systems (NeurIPS) (2022) 13. Dou, H., Li, R., Su, W., Li, X.: Gvdiff: Grounded text-to-video generation with diffusion models (2024), https://arxiv.org/abs/2407.01921 
+
+14. Esser, P., Kulal, S., Blattmann, A., Entezari, R., Müller, J., Saini, H., Levi, Y., Lorenz, D., Sauer, A., Boesel, F., Podell, D., Dockhorn, T., English, Z., Rom-bach, R.: Scaling rectified flow transformers for high-resolution image synthesis. In: Proceedings of the 41st International Conference on Machine Learning. ICML’24, JMLR.org (2024) 15. Feng, W., Liu, C., Liu, S., Wang, W.Y., Vahdat, A., Nie, W.: Blobgen-vid: Compo-sitional text-to-video generation with blob video representations. In: Proceedings of the Computer Vision and Pattern Recognition Conference (CVPR). pp. 12989– 12998 (June 2025) 16. Geng, D., Herrmann, C., Hur, J., Cole, F., Zhang, S., Pfaff, T., Lopez-Guevara, T., Doersch, C., Aytar, Y., Rubinstein, M., Sun, C., Wang, O., Owens, A., Sun, D.: Mo-tion prompting: Controlling video generation with motion trajectories. In: Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 1–12 (2025), https://openaccess.thecvf.com/content/CVPR2025/ html/Geng_Motion_Prompting_Controlling_Video_Generation_with_Motion_ Trajectories_CVPR_2025_paper.html 
+
+17. Guo, Y., Yang, C., Rao, A., Liang, Z., Wang, Y., Qiao, Y., Agrawala, M., Lin, D., Dai, B.: Animatediff: Animate your personalized text-to-image diffusion mod-els without specific tuning. International Conference on Learning Representations (2024) 18. HaCohen, Y., Brazowski, B., Chiprut, N., Bitterman, Y., Kvochko, A., Berkowitz, A., Shalem, D., Lifschitz, D., Moshe, D., Porat, E., Richardson, E., Shiran, G., Chachy, I., Chetboun, J., Finkelson, M., Kupchick, M., Zabari, N., Guetta, N.B., Kotler, N.G., Bibi, O., Gordon, O., Panet, P., Benita, R., Armon, S., Kulikov, V.M., Inger, Y., Shiftan, Y., Melumian, Z., Farbman, Z.: Ltx-2: Efficient joint audio-visual foundation model. ArXiv abs/2601.03233 (2026), https://api. semanticscholar.org/CorpusID:284512618 
+
+19. He, H., Xu, Y., Guo, Y., Wetzstein, G., Dai, B., Li, H., Yang, C.: CameraCtrl: Enabling camera control for text-to-video generation (2024), https://arxiv.org/ abs/2404.02101 
+
+20. Huang, Z., He, Y., Yu, J., Zhang, F., Si, C., Jiang, Y., Zhang, Y., Wu, T., Jin, Q., Chanpaisit, N., Wang, Y., Chen, X., Wang, L., Lin, D., Qiao, Y., Liu, Z.: VBench: Comprehensive benchmark suite for video generative models. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (2024) 21. Jain, Y., Nasery, A., Vineet, V., Behl, H.: Peekaboo: Interactive video generation via masked-diffusion. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 8079–8088 (June 2024) 22. Li, Y., Liu, H., Wu, Q., Mu, F., Yang, J., Gao, J., Li, C., Lee, Y.J.: Gligen: Open-set grounded text-to-image generation. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 22511–22521 (June 2023) 23. Lian, L., Shi, B., Yala, A., darrell, t., Li, B.: Llm-grounded video diffusion mod-els. In: Kim, B., Yue, Y., Chaudhuri, S., Fragkiadaki, K., Khan, M., Sun, Y. (eds.) International Conference on Learning Representations. vol. 2024, pp. 50207– 50227 (2024), https://proceedings.iclr.cc/paper_files/paper/2024/file/ d9f8b5abc8e0926539ecbb492af7b2f1-Paper-Conference.pdf 18 G. Jeanneret et al .24. Lipman, Y., Chen, R.T.Q., Ben-Hamu, H., Nickel, M., Le, M.: Flow matching for generative modeling. In: The Eleventh International Conference on Learning Representations (2023), https://openreview.net/forum?id=PqvMRDCJT9t 
+
+25. Liu, J., Huang, T., Xu, C.: Training-free composite scene generation for layout-to-image synthesis. In: Leonardis, A., Ricci, E., Roth, S., Russakovsky, O., Sattler, T., Varol, G. (eds.) Computer Vision – ECCV 2024. pp. 37–53. Springer Nature Switzerland, Cham (2025) 26. Nan, K., Xie, R., Zhou, P., Fan, T., Yang, Z., Chen, Z., Li, X., Yang, J., Tai, Y.: Openvid-1m: A large-scale high-quality dataset for text-to-video generation. In: The Thirteenth International Conference on Learning Representations (2025), 
+
+https://openreview.net/forum?id=j7kdXSrISM 
+
+27. Nie, W., Liu, S., Mardani, M., Liu, C., Eckart, B., Vahdat, A.: Compositional text-to-image generation with dense blob representations. In: Proceedings of the 41st International Conference on Machine Learning. ICML’24, JMLR.org (2024) 28. Ohanyan, M., Manukyan, H., Wang, Z., Navasardyan, S., Shi, H.: Zero-painter: Training-free layout control for text-to-image synthesis. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 8764–8774 (June 2024) 29. OpenAI: Gpt-4 technical report (2024), https://arxiv.org/abs/2303.08774 
+
+30. Peebles, W., Xie, S.: Scalable diffusion models with transformers. In: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV). pp. 4195– 4205 (October 2023) 31. Phung, Q., Ge, S., Huang, J.B.: Grounded text-to-image synthesis with attention refocusing. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 7932–7942 (June 2024) 32. Rombach, R., Blattmann, A., Lorenz, D., Esser, P., Ommer, B.: High-resolution image synthesis with latent diffusion models. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 10684– 10695 (June 2022) 33. Ronneberger, O., Fischer, P., Brox, T.: U-net: Convolutional networks for biomed-ical image segmentation. In: Navab, N., Hornegger, J., Wells, W.M., Frangi, A.F. (eds.) Medical Image Computing and Computer-Assisted Intervention – MICCAI 2015. pp. 234–241. Springer International Publishing, Cham (2015) 34. Shen, T., Huang, Z., Li, X., Lin, Z., Liu, J., Wang, Y., Feng, J., Yang, M.H., Liew, J.H.: Qk-edit: Revisiting attention-based injection in mm-dit for image and video editing. In: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV). pp. 19043–19053 (October 2025) 35. Shirakawa, T., Uchida, S.: Noisecollage: A layout-aware text-to-image diffusion model based on noise cropping and merging. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (2024) 36. Team, G.: Gemini: A family of highly capable multimodal models (2025), https: //arxiv.org/abs/2312.11805 
+
+37. Team, T.H.F.M.: Hunyuanvideo 1.5 technical report (2025), https://arxiv.org/ abs/2511.18870 
+
+38. Tian, Y., Yang, L., Yang, H., Gao, Y., Deng, Y., Chen, J., Wang, X., Yu, Z., Tao, X., Wan, P., Zhang, D., Cui, B.: Videotetris: Towards compositional text-to-video generation. In: Globerson, A., Mackey, L., Belgrave, D., Fan, A., Paquet, U., Tomczak, J., Zhang, C. (eds.) Advances in Neural Information Processing Sys-tems. vol. 37, pp. 29489–29513. Curran Associates, Inc. (2024). https://doi. org/10.52202/079017-0928 , https://proceedings.neurips.cc/paper_files/ paper/2024/file/345208bdbbb6104616311dfc1d093fe7-Paper-Conference.pdf GATO-Vid 19 39. Wang, A., Ai, B., Wen, B., Mao, C., Xie, C.W., Chen, D., Yu, F., Zhao, H., Yang, J., Zeng, J., Wang, J., Zhang, J., Zhou, J., Wang, J., Chen, J., Zhu, K., Zhao, K., Yan, K., Huang, L., Meng, X., Zhang, N., Li, P., Wu, P., Chu, R., Feng, R., Zhang, S., Sun, S., Fang, T., Wang, T., Gui, T., Weng, T., Shen, T., Lin, W., Wang, W., Wang, W., Zhou, W.C., Wang, W., Shen, W., Yu, W., Shi, X., Huang, X., Xu, X., Kou, Y., Lv, Y.M., Li, Y., Liu, Y., Wang, Y., Zhang, Y., Huang, Y., Li, Y., Wu, Y., Liu, Y., Pan, Y., Zheng, Y., Hong, Y., Shi, Y., Feng, Y., Jiang, Z., Han, Z., Wu, Z., Liu, Z.: Wan: Open and advanced large-scale video generative models. ArXiv abs/2503.20314 (2025), https://api.semanticscholar.org/CorpusID: 277321639 
+
+40. Wang, J., Yuan, H., Chen, D., Zhang, Y., Wang, X., Zhang, S.: Modelscope text-to-video technical report (2023), https://arxiv.org/abs/2308.06571 
+
+41. Wang, R., Chen, Z., Chen, C., Ma, J., Lu, H., Lin, X.: Compositional text-to-image synthesis with attention map control of diffusion models. In: Pro-ceedings of the Thirty-Eighth AAAI Conference on Artificial Intelligence and Thirty-Sixth Conference on Innovative Applications of Artificial Intelligence and Fourteenth Symposium on Educational Advances in Artificial Intelligence. AAAI’24/IAAI’24/EAAI’24, AAAI Press (2024). https://doi.org/10.1609/ aaai.v38i6.28364 , https://doi.org/10.1609/aaai.v38i6.28364 
+
+42. Wang, X., Yuan, H., Zhang, S., Chen, D., Wang, J., Zhang, Y., Shen, Y., Zhao, D., Zhou, J.: VideoComposer: Compositional video synthesis with mo-tion controllability. In: Advances in Neural Information Processing Systems. vol. 36 (2023), https : / / papers . nips . cc / paper _ files / paper / 2023 / hash / 180f6184a3458fa19c28c5483bc61877-Abstract-Conference.html 
+
+43. Wang, Y., He, Y., Li, Y., Li, K., Yu, J., Ma, X., Li, X., Chen, G., Chen, X., Wang, Y., Luo, P., Liu, Z., Wang, Y., Wang, L., Qiao, Y.: Internvid: A large-scale video-text dataset for multimodal understanding and generation. In: The Twelfth International Conference on Learning Representations (2024), https:// openreview.net/forum?id=MLBdiWu4Fw 
+
+44. Wang, Z., Yuan, Z., Wang, X., Li, Y., Chen, T., Xia, M., Luo, P., Shan, Y.: Mo-tionCtrl: A unified and flexible motion controller for video generation. In: ACM SIGGRAPH 2024 Conference Papers. pp. 1–11 (2024). https://doi.org/10.1145/ 3641519.3657518 
+
+45. Wu, Y., Zhou, X., Ma, B., Su, X., Ma, K., Wang, X.: Ifadapter: Instance feature control for grounded text-to-image generation. In: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV). pp. 15949–15959 (October 2025) 46. Xiao, J., Lv, H., Li, L., Wang, S., Huang, Q.: R&amp;b: Region and boundary aware zero-shot grounded text-to-image generation. In: Kim, B., Yue, Y., Chaudhuri, S., Fragkiadaki, K., Khan, M., Sun, Y. (eds.) In-ternational Conference on Learning Representations. vol. 2024, pp. 26088– 26116 (2024), https://proceedings.iclr.cc/paper_files/paper/2024/file/ 6f61f25abf3197bb58cc7422761186e0-Paper-Conference.pdf 
+
+47. Xie, J., Li, Y., Huang, Y., Liu, H., Zhang, W., Zheng, Y., Shou, M.Z.: Boxdiff: Text-to-image synthesis with training-free box-constrained diffusion. In: Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV). pp. 7452– 7461 (2023) 48. Xu, Q., Song, C., Cai, Y., Zhang, C.: Switchcraft: Training-free multi-event video generation with attention controls. In: Proceedings of the IEEE/CVF Conference 20 G. Jeanneret et al .on Computer Vision and Pattern Recognition (CVPR). pp. 29136–29145 (June 2026) 49. Yang, S.: Mftf: Mask-free training-free object level layout control diffusion model (2024) 50. Yang, S., Hou, L., Huang, H., Ma, C., Wan, P., Zhang, D., Chen, X., Liao, J.: Direct-a-video: Customized video generation with user-directed camera movement and object motion. In: ACM SIGGRAPH 2024 Conference Papers. SIGGRAPH ’24, Association for Computing Machinery, New York, NY, USA (2024). https: //doi.org/10.1145/3641519.3657481 , https://doi.org/10.1145/3641519. 3657481 
+
+51. Yang, Z., Teng, J., Zheng, W., Ding, M., Huang, S., Xu, J., Yang, Y., Hong, W., Zhang, X., Feng, G., Yin, D., Yuxuan.Zhang, Wang, W., Cheng, Y., Xu, B., Gu, X., Dong, Y., Tang, J.: Cogvideox: Text-to-video diffusion models with an expert transformer. In: The Thirteenth International Conference on Learning Represen-tations (2025), https://openreview.net/forum?id=LQzN6TRFg9 
+
+52. Yi, L., Minyi, L., Bozheng, L., Jiawang, C., Wenbo, Z.: Zerotrail: Zero-shot trajec-tory control framework for video diffusion models. In: Advances in Neural Infor-mation Processing Systems Workshops (2025) 53. Zhang, B., Sennrich, R.: Root mean square layer normalization. In: Wallach, H., Larochelle, H., Beygelzimer, A., d'Alché-Buc, F., Fox, E., Garnett, R. (eds.) Ad-vances in Neural Information Processing Systems. vol. 32. Curran Associates, Inc. (2019), https://proceedings.neurips.cc/paper_files/paper/2019/file/ 1e8a19426224ca89e83cef47f1e7f53b-Paper.pdf 
+
+54. Zhao, Y., Gu, A., Varma, R., Luo, L., Huang, C.C., Xu, M., Wright, L., Sho-janazeri, H., Ott, M., Shleifer, S., Desmaison, A., Balioglu, C., Damania, P., Nguyen, B., Chauhan, G., Hao, Y., Mathews, A., Li, S.: Pytorch fsdp: Ex-periences on scaling fully sharded data parallel. Proc. VLDB Endow. 16 (12), 3848–3860 (Aug 2023). https://doi.org/10.14778/3611540.3611569 , https: //doi.org/10.14778/3611540.3611569

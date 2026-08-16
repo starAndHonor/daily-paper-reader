@@ -1,0 +1,551 @@
+Title: MotionCraft: Latent World Modeling with Sparse Attention for Visual Upscaling
+
+URL Source: https://arxiv.org/pdf/2608.08553v1
+
+Published Time: Tue, 11 Aug 2026 01:28:12 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# MOTION CRAFT : L ATENT WORLD MODELING WITH SPARSE 
+
+# ATTENTION FOR VISUAL UPSCALING 
+
+Rong Fu 
+
+Independent Researcher Corresponding author Chunlei Meng Independent Researcher Yangchen Zeng Independent Researcher Xiaowen Ma Independent Researcher Yongtai Liu Independent Researcher Wangyu Wu Independent Researcher Shuo Yin Independent Researcher Zijian Zhang Independent Researcher Sicheng Li Independent Researcher Yingrui Ji Independent Researcher Chenhao Wang Independent Researcher Simon Fong Independent Researcher August 11, 2026 
+
+ABSTRACT 
+
+Video super-resolution (VSR) aims to recover high-fidelity high-resolution videos from low-resolution inputs and is central to applications ranging from mobile capture to streaming and archival restoration. Existing approaches trade off among local-detail fidelity, long-range spatio-temporal modeling, perceptual realism and efficiency: convolutional alignment techniques preserve local structure but suffer when motion is large or degradations are complex; transformer-based methods capture long-range dependencies yet require architectural or algorithmic adaptations to be computationally feasible; and recent latent or diffusion-based generators synthesize rich texture but demand specialized temporal constraints to maintain coherence. In this work, we present MotionCraft , a controllable VSR framework that formulates restoration as motion-aware latent state prediction inspired by world models, and integrates adaptive sparse attention with an explicit, user-accessible control interface. MotionCraft combines robust motion fusion, a Latent World Transformer that balances locality and targeted non-local interactions, and a compact conditional decoder to deliver temporally consistent, high-quality reconstructions under streaming constraints. Empirical evaluations demonstrate that our design attains strong reconstruction and perceptual performance while enabling predictable trade-offs between temporal smoothness and fidelity. 
+
+Keywords video super-resolution; latent diffusion; motion-aware modeling; sparse attention 
+
+1 Introduction 
+
+Video super-resolution aims to recover high-quality, high-resolution video sequences from low-resolution inputs and remains a fundamental challenge in computer vision. This task finds application across diverse fields including mobile photography, media streaming, and the restoration of archived materials. Over the past decade, approaches have advanced from conventional spatio-temporal convolutional designs to architectures that harness extended correlations and robust generative priors. Recent survey articles and benchmarks underscore the growing body of research and the broad range of real-world scenarios where video super-resolution proves valuable [1, 2]. Contemporary methodologies in video super-resolution fall into three primary categories, each offering particular benefits yet also facing distinct constraints. Convolutional techniques equipped with alignment procedures excel at retaining local structures and crisp boundaries whenever displacements remain moderate and degradations stay controlled. Nevertheless, substantial movements or irregular degradation patterns cause misalignment errors to spread across the processing chain, impairing both image quality and temporal stability. In contrast, transformer architectures expand the receptive field considerably and facilitate the modeling of distant spatio-temporal relationships [3, 4]. Although capable of grasping intricate inter-frame linkages beyond what convolutional operators achieve, their standard full-attention implementation incurs high computational overhead for elevated resolutions or prolonged video lengths, arXiv:2608.08553v1 [cs.CV] 9 Aug 2026 MotionCraft MotionCraft: Latent World Modeling with Sparse Attention for Visual Upscaling    
+
+> Input Stream Encoding & Motion Fusion Latent World Transformer Controllability Interface
+> camera Motion vector
+> External Motion Encoder Internal Motion Estimator
+> Photometric Consistency Check Confidence-based Gating Residual Corrector
+> Compensating for biases
+
+LWT 
+
+> Adaptive Sparse Attention
+> ...
+> Key-Value Memory Cache
+> +
+> Key-Value Memory Cache Temporal Smoothness Reconstruction Fidelity
+> Conditional Decoder
+> High-resolution video frame
+
+Figure 1: Overview of the MotionCraft framework for high-fidelity visual upscaling. The system initiates with Robust Motion Encoding and Fusion , where external motion signals and internal image-driven estimates are gated by a 
+
+Photometric Inconsistency confidence map to compensate for systematic biases. The core Latent World Transformer (LWT) processes low-resolution latents using Adaptive Sparse Attention , which employs a differentiable soft top-k
+
+selection to maintain locality while capturing long-range dependencies. Temporal persistence is managed through a 
+
+Key-Value Memory Cache (Mt−1). The Controllability Interface modulates the latent state via global scalars γ
+
+and spatial gating maps gt to balance temporal smoothness and reconstruction fidelity. Finally, a Tiny Conditional Decoder performs distillation-based refinement to produce the high-resolution output ˆXt.thereby calling for sparse or block-based variants to ensure feasibility [5]. Generative methods operating in latent spaces, meanwhile, demonstrate exceptional proficiency in creating lifelike textures and perceptually appealing elements by drawing upon powerful learned priors within condensed representations [6, 7, 8]. These strategies expand opportunities for perceptual enhancement; however, the stochastic character of generation can produce discontinuities between frames unless supported by appropriate sequence conditioning, motion integration, or distillation procedures [2]. Although notable strides have been made, three key obstacles hinder the effective application of high-quality video super-resolution in streaming and everyday contexts. Dense spatio-temporal attention mechanisms expand quadratically as spatial dimensions increase, rendering them unsuitable for high-resolution processing absent the adoption of sparse or block-sparse techniques [5, 9]. Moreover, dependence on external motion indicators such as optical flow or camera orientation data proves problematic in areas of occlusion, uniform texture, or intense activity, where direct incorporation of imprecise signals generates unwanted temporal inconsistencies [10, 11]. Additionally, latent generative frameworks supply compelling perceptual guidance but necessitate dedicated conditioning and distillation steps to safeguard precise adherence to reference information and to restrain random variations from one frame to the next [8, 12]. The proposed MotionCraft framework addresses these barriers by formulating restoration as motion-aware latent state prediction inspired by world models [13]. It tightly couples motion reliability estimation, adaptive sparse attention, and latent-level user control into a single pipeline. Per-location confidence gating assesses external motion quality and actively conditions the sparse attention pattern, while a learned spatial gate modulates the latent state before decoding to enable smoothness and fidelity trade-offs. This yields an efficient, robust, and interactively controllable streaming system. Our contributions are as follows. First, we unify motion-aware latent prediction with reliability-guided sparse attention, coupling confidence gating and block selection so that motion quality directly informs non-local retrieval. This differs from prior work that treats motion correction and attention in isolation; for instance, RealBasicVSR aligns flow without per-location reliability, RealViFormer attends block-wise without residual motion fusion, and FlashVSR caches latents without motion gating. Second, we design an adaptive sparse attention mechanism that preserves locality while retrieving remote blocks, jointly optimized with the motion branch. Third, we introduce a compact controllability interface that modulates the latent state before decoding via a global scalar and spatial gate. We provide a one-step streaming recipe with strong empirical performance. 2MotionCraft 
+
+2 Related Work 
+
+We position MotionCraft within four interrelated strands of prior research, including convolutional alignment methods, transformer-based spatio-temporal modeling and efficient attention, generative latent and diffusion approaches, and motion estimation combined with controllability mechanisms. The following subsections summarize representative work and highlight the gaps that MotionCraft addresses. 
+
+2.1 Convolutional methods and explicit alignment 
+
+Early VSR methods rely on explicit motion estimation and compensation to aggregate multi-frame evidence. Caballero et al.[14] proposed a spatio-temporal sub-pixel convolution pipeline for real-time VSR. Later work introduced implicit motion handling via dynamic filters and refinement to reduce flow sensitivity[15]. RealBasicVSR[16] addressed realistic degradations with pre-cleaning and stochastic strategies. Despite improvements, pixel-level alignment errors still degrade temporal coherence under large motion or severe artifacts[17]. 
+
+2.2 Transformer-based spatio-temporal modeling and attention efficiency 
+
+Transformers offer a natural mechanism for long-range spatio-temporal modeling. Trajectory-aware Transformer (TTVSR) restricts attention to pre-aligned token trajectories, enabling long-range modeling with reduced cost[18]. Collaborative transformer designs combine multi-scale spatial tokens with temporal trajectories to balance throughput and accuracy[3]. To tame full attention costs, recent works adopt adaptive sparse selection, block-wise retrieval, or deformable attention to preserve locality while allowing targeted non-local interactions[19, 5]. The role of alignment in transformer pipelines has been revisited: some studies find that unaligned inputs can be directly exploited by attention mechanisms, and propose patch-level alignment as a computationally attractive compromise[20, 21]. 
+
+2.3 Diffusion and latent-space generative methods 
+
+Latent diffusion and cascaded strategies have recently been adapted for VSR to leverage strong generative priors while limiting compute in pixel space[6, 22]. Text-guided and motion-guided latent diffusion frameworks demonstrate that controlled sampling and temporal modules can improve perceptual quality on real-world videos[7, 23]. Other lines of work argue that a powerful space-time diffusion transformer can implicitly model motion priors and reduce reliance on explicit flow alignment[24, 25]. Despite their advantages for texture synthesis, diffusion-based VSR methods must address randomness and temporal discontinuities, typically through motion-guided losses or sequence-oriented fine-tuning[26]. 
+
+2.4 Motion estimation and controllability 
+
+Progress in dense optical flow and high-resolution flow estimation benefits both alignment-based and hybrid pipelines[11, 10, 27]. For applications requiring user interaction, temporal modulation and controllable interpolation schemes enable adjustable trade-offs between fidelity and smoothness[28]. In MotionCraft we explicitly estimate per-location motion reliability, learn a compact residual to correct biased external motion cues, and expose a combined global scalar and spatial gate for fine-grained, user-level control. This design yields predictable control of motion smoothness versus reconstruction fidelity while maintaining temporal stability. 
+
+3 Methodology 
+
+3.1 Overview 
+
+MotionCraft formulates video super-resolution as controlled state prediction in a compact latent space. At time t, the model processes the current low-resolution frame, a bounded history of observed frames, and motion fields computed only from frame pairs that have already arrived. External and image-driven motion representations are combined through spatial reliability estimation and residual correction. A Latent World Transformer then predicts the high-resolution latent using adaptive sparse attention and a causal key-value cache. A compact control interface regulates the balance between temporal smoothness and reconstruction fidelity, while a Tiny Conditional Decoder reconstructs the output frame. Future frames may provide auxiliary supervision during offline training, but they are never supplied to the inference network that produces the prediction at time t.3MotionCraft 
+
+3.2 Formal Problem Formulation 
+
+Let the low-resolution input sequence and its high-resolution reference be denoted by I = {It}Tt=1 and X = {Xt}Tt=1 ,respectively. For a causal history radius τ , the first retained index and the available frame history are defined as 
+
+st = max(1 , t − τ ), HIt = {Ii}ti=st . (1) where st truncates the temporal window near the beginning of a sequence, τ is the maximum history length, and HIt
+
+contains only frames observed no later than time t.The corresponding causal motion history is 
+
+Hft = {fi→i+1 }t−1 
+
+> i=st
+
+. (2) where fi→i+1 is estimated from the already available pair (Ii, I i+1 ), and Hf 
+
+> 1
+
+is represented by a learned null-motion token. The streaming prediction is expressed as 
+
+ˆXt = FΘ
+
+
+
+HIt , Hft , Mt−1; γ, g t
+
+
+
+. (3) where FΘ is the complete MotionCraft network with parameters Θ, Mt−1 is the key-value memory constructed from previous frames, γ is a global user control, and gt is a learned spatial control map. Strict causality requires 
+
+ˆXt ⊥⊥ { Ij }Tj=t+1 |
+
+
+
+HIt , Hft , Mt−1
+
+
+
+. (4) where the conditional-independence relation states that future observations cannot affect the output emitted for time t.
+
+3.3 Causal Motion Encoding and Reliability-Guided Fusion 
+
+External motion cues are aggregated over the causal history: 
+
+mext  
+
+> t
+
+= Fext 
+
+
+
+{fi→i+1 }t−1
+
+> i=st
+
+
+
+. (5) where mext  
+
+> t
+
+is the external motion embedding, Fext is a lightweight motion encoder, and the latest admissible field is 
+
+ft−1→t.The internal branch extracts motion evidence directly from the observed image history: 
+
+mint  
+
+> t
+
+= Fint (Ist:t) . (6) where mint  
+
+> t
+
+is the internal motion embedding, Fint is a compact reduced-resolution encoder, and Ist:t denotes the ordered frame buffer from Ist to It.For t > 1, the reliability of the external estimate is evaluated by causal bidirectional photometric inconsistency: 
+
+et = PhotErr( It, Warp( It−1, f t−1→t)) + PhotErr( It−1, Warp( It, f t→t−1)) . (7) where et is a per-location inconsistency map, ft−1→t and ft→t−1 are both estimated from (It−1, I t), Warp is dif-ferentiable motion compensation, and PhotErr is a robust photometric discrepancy. For t = 1 , et is initialized to zero. A compact calibration head converts this inconsistency into a spatial confidence map: 
+
+ct = σ(Cω ([Pool( et), feat t])) . (8) where ct ∈ [0 , 1] measures the local reliability of the external branch, Cω is a shallow convolutional head, Pool performs coarse spatial aggregation, feat t contains lightweight auxiliary features, [·, ·] denotes channel concatenation, and σ is the sigmoid function. A causal residual corrector compensates for systematic motion bias: 
+
+rt = Rρ
+
+ Ist:t, m ext 
+
+> t
+
+ . (9) where rt is the predicted correction and Rρ is a compact residual network parameterized by ρ.The fused motion representation is 
+
+at = Mϕ
+
+ ct ⊙ mext  
+
+> t
+
++ (1 − ct) ⊙ mint  
+
+> t
+
++ rt
+
+ . (10) where at is the fused embedding, Mϕ is a projection network with parameters ϕ, and ⊙ denotes element-wise multiplication with spatial broadcasting when necessary. 4MotionCraft 
+
+3.4 Latent World Transformer with Adaptive Sparse Attention 
+
+The current frame is encoded into a compact latent and transformed into a high-resolution latent state: 
+
+zLt = Eη (It),
+
+ˆzHt = Tθ
+
+ zLt , ˜at, Mt−1
+
+ . (11) where Eη is the low-resolution encoder, zLt is the current latent, Tθ is the Latent World Transformer, ˜at is the controlled motion embedding defined below, and Mt−1 contains key-value summaries from earlier frames only. Inspired by world models, this formulation treats video restoration as sequential state prediction in a compact latent space, but it does not instantiate a full action-environment interaction loop. To preserve locality while limiting attention cost, spatial tokens are partitioned into blocks and pooled into query-key summaries: 
+
+¯qb = Pool( {qi : i ∈ b}) , ¯kb = Pool( {kj : j ∈ b}) . (12) where b indexes a spatial block, qi and kj are token-level query and key vectors, and ¯qb and ¯kb are the corresponding block descriptors. The relevance of candidate block b to query block bq is scored by 
+
+sbq ,b = ¯qbq , ¯kb
+
+√d . (13) where sbq ,b is the block relevance score, ⟨· , ·⟩ denotes the inner product, and d is the attention dimensionality. During training, a differentiable soft top-k relaxation assigns continuous weights to candidate blocks. During inference, hard top-k retrieval restricts full token attention to the local neighborhood and the highest-scoring remote blocks. Temporal masking prevents the current state from attending to frames after time t.
+
+3.5 Controllability Interface and Conditional Decoding 
+
+The fused motion state is modulated by a global coefficient and a spatial gate: 
+
+˜at(γ, g t) = ( γ1 + gt) ⊙ at. (14) where ˜at is the controlled motion embedding, γ is a user-specified scalar, 1 is an all-ones tensor compatible with at,and gt is a learned spatial gate regularized toward small magnitude. The Tiny Conditional Decoder reconstructs the high-resolution frame as 
+
+ˆXt = Dψ
+
+ ˆzHt , I t
+
+ . (15) where Dψ is the decoder parameterized by ψ, ˆzHt supplies predicted high-frequency content, and It preserves spatially aligned low-frequency structure. Decoder distillation transfers fine detail from a stronger teacher: 
+
+Ldec _distill = αfeat Φ( ˆXt) − Φ( Xteach  
+
+> t
+
+) 22
+
++ αpix ˆXt − Xteach 
+
+> t
+> 22
+
+. (16) where Xteach  
+
+> t
+
+is the teacher reconstruction, Φ is a fixed perceptual feature extractor, and αfeat and αpix balance feature-space and pixel-space supervision. 
+
+3.6 Training Objectives 
+
+The JEPA-style representation objective is 
+
+LJEPA = E
+
+
+
+ˆℓt − ℓt
+
+> 22
+
+
+
+. (17) where ˆℓt is the student prediction and ℓt is the target representation produced by a momentum encoder. Temporal coherence is supervised by a one-step latent warping loss: 
+
+Lflow = E Warp  ˆzHt , f t→t+1 
+
+ − ˆzHt+1 1
+
+ . (18) 5MotionCraft 
+
+Algorithm 1 MotionCraft training and strictly causal streaming inference 
+
+Require: Image-video training data, optional teacher, history radius τ , external motion estimator, controls (γ, g t),stage flag 
+
+Ensure: Trained parameters and emitted frames { ˆXt}
+
+1: if stage = Full then 
+
+2: Train a dense teacher on image and video data 
+
+3: Introduce sparse attention and causal temporal masks 
+
+4: Distill the teacher into the one-step LWT student using Eq. (20) 
+
+5: else 
+
+6: Train the sparse causal student directly with reconstruction, latent, and temporal supervision 
+
+7: end if 
+
+8: Initialize the causal frame buffer, motion buffer, and key-value cache M0
+
+9: for each arriving frame It do 
+
+10: Set st ← max(1 , t − τ ) and append It to Ist:t
+
+11: Encode It to obtain zLt ← E η (It)
+
+12: if t > 1 then 
+
+13: Estimate ft−1→t and ft→t−1 from (It−1, I t)
+
+14: Update Hft ← { fi→i+1 }t−1 
+
+> i=st
+
+and compute et
+
+15: else 
+
+16: Use the null-motion token and set et ← 0
+
+17: end if 
+
+18: Compute mext  
+
+> t
+
+from Hft and mint  
+
+> t
+
+from Ist:t
+
+19: Compute ct, rt, and at using Eqs. (8)–(10) 
+
+20: Apply the control interface to obtain ˜at(γ, g t)
+
+21: Predict ˆzHt ← T θ (zLt , ˜at, Mt−1)
+
+22: Decode ˆXt ← D ψ (ˆ zHt , I t)
+
+23: Update the causal cache Mt and emit ˆXt before receiving It+1 
+
+24: end for 
+
+where ft→t+1 and ˆzHt+1 are available from the complete training clip and are used only to evaluate the loss. Neither quantity is provided as an input when the student predicts ˆzHt . Teacher and student latents are aligned by paired latent regression: 
+
+Llatent _distill = E
+
+h
+
+zteach  
+
+> t
+
+− zstud 
+
+> t
+> 22
+
+i
+
+. (19) where zteach  
+
+> t
+
+and zstud  
+
+> t
+
+are paired teacher and student latents for the same frame. This objective is termed latent distillation because it performs sample-wise regression rather than explicit distribution matching. The complete training objective is 
+
+Ltotal = λlatent Llatent _distill + λflow Lflow + λℓ2 Lℓ2 + λLPIPS LLPIPS 
+
++ λJEPA LJEPA + λadv Ladv + λconf Lconf + λdec Ldec _distill . (20) where each λ• ≥ 0 controls the contribution of its associated loss, Lℓ2 is the reconstruction loss, LLPIPS is the perceptual loss, Ladv is the adversarial loss, and Lconf calibrates motion reliability. 
+
+3.7 Unified Training and Strictly Causal Streaming Procedure 
+
+During offline training, complete clips may be used to construct teacher targets and the one-step temporal loss. The student input at time t remains restricted to Ist:t, Hft , and Mt−1. At test time, the prediction is emitted before It+1 
+
+arrives. This execution order has zero future-frame look-ahead. End-to-end latency is measured from the arrival of It to the emission of ˆXt and includes bidirectional motion estimation, motion fusion, LWT inference, conditional decoding, and cache update. Consequently, FPS measures processing throughput rather than per-frame response latency. 6MotionCraft 
+
+Figure 2: Control sensitivity. As γ increases, motion smoothness rises monotonically while PSNR decreases gracefully, indicating a predictable trade-off between smoothness and fidelity. 
+
+Figure 3: Adaptive sparse attention visualization (query, top-k remote blocks, overlay). The overlay (bottom) demon-strates non-local connections between the query block and distant regions. 7MotionCraft 
+
+Figure 4: Visualization of motion reliability estimation: input LR frame (top-left), color-coded external optical flow (top-right), external-motion unreliability map ut = 1 − ct (bottom-left), and predicted flow residual (bottom-right). Brighter regions indicate lower flow confidence and generally coincide with failures near occlusions, motion boundaries, and textureless areas. 
+
+Figure 5: t-SNE visualization of the latent-state evolution over time. The smooth temporal trajectory provides auxiliary evidence of latent-state continuity and temporal consistency, rather than direct proof of world-model behavior. 8MotionCraft Table 1: Quantitative comparison with state-of-the-art video super-resolution methods. Our method, MotionCraft, demonstrates significant advantages across all datasets and metrics. Complementary quantitative comparison on UDM10 and MovieLQ under the evaluation protocol of InfVSR [29]. 
+
+Dataset Metric RealBasicVSR[16] RealViFormer[4] Upscale-A-Video[7] MGLD-VSR[23] STAR[30] SeedVR[31] SeedVR2[32] InfVSR[29] MotionCraft (Ours) 
+
+UDM10[33] PSNR ↑ 24.13 24.64 21.72 24.23 23.47 23.39 25.38 24.86 28.15 
+
+SSIM ↑ 0.6801 0.6947 0.5913 0.6957 0.6804 0.6843 0.7764 0.7274 0.8200 
+
+LPIPS ↓ 0.3908 0.3681 0.4116 0.3272 0.4242 0.3583 0.2868 0.2972 0.2450 
+
+DISTS ↓ 0.2067 0.2039 0.2230 0.1677 0.2156 0.1339 0.1512 0.1422 0.1180 
+
+MUSIQ ↑ 59.06 57.90 59.91 60.55 41.98 53.62 49.95 62.88 76.30 
+
+CLIP-IQA ↑ 0.3494 0.4157 0.4697 0.4557 0.2417 0.3145 0.2987 0.5142 0.6550 
+
+DOVER ↑ 0.7564 0.7303 0.7291 0.7264 0.4830 0.6889 0.5568 0.7826 0.8720 
+
+E∗ 
+
+> warp
+
+(×10 −3) ↓ 3.10 2.29 3.97 3.59 2.08 3.24 1.98 1.95 1.62 
+
+MovieLQ[29] MUSIQ ↑ 62.59 63.74 68.49 67.90 56.57 64.42 61.13 68.65 72.80 
+
+CLIP-IQA ↑ 0.4672 0.4227 0.5117 0.5591 0.3411 0.5050 0.4468 0.5888 0.6350 
+
+DOVER ↑ 0.8234 0.8273 0.7750 0.8402 0.7565 0.8145 0.8031 0.8447 0.8800 
+
+E∗ 
+
+> warp
+
+(×10 −3) ↓ 3.39 2.24 5.53 3.67 3.11 4.70 4.26 2.88 1.95 
+
+Table 2: Quantitative comparison of video super-resolution methods across multiple datasets. Best results are in bold .Quantitative comparison under the evaluation protocol of FlashVSR [34]. 
+
+Dataset Metric Upscale-A-Video[7] STAR[30] RealViFormer[4] DOVE[12] SeedVR2-3B[32] FlashVSR-Full[34] FlashVSR-Tiny[34] MotionCraft (Ours) 
+
+YouHQ40[7] PSNR ↑ 23.19 23.19 23.67 24.39 23.05 23.13 23.31 25.42 
+
+SSIM ↑ 0.6075 0.6388 0.6189 0.6651 0.6248 0.6004 0.6110 0.7180 
+
+LPIPS ↓ 0.4585 0.4705 0.4476 0.4011 0.3876 0.3874 0.3866 0.3620 
+
+NIQE ↓ 4.834 7.275 3.360 4.890 3.751 3.382 3.489 3.082 
+
+MUSIQ ↑ 43.07 35.05 62.73 61.60 62.31 69.16 66.63 73.25 
+
+CLIP-IQA ↑ 0.3380 0.2974 0.4451 0.4437 0.4909 0.5873 0.5221 0.6310 
+
+DOVER ↑ 6.889 7.363 9.739 11.29 12.43 12.71 12.66 13.28 
+
+REDS[35] PSNR ↑ 24.84 24.01 25.96 25.60 24.83 23.92 24.11 27.05 
+
+SSIM ↑ 0.6437 0.6765 0.7092 0.7257 0.7042 0.6491 0.6511 0.8050 
+
+LPIPS ↓ 0.4168 0.3710 0.2997 0.3077 0.3124 0.3439 0.3432 0.2750 
+
+NIQE ↓ 3.104 4.776 2.722 3.564 3.066 2.425 2.680 2.125 
+
+MUSIQ ↑ 53.00 46.25 63.23 65.51 61.83 68.97 67.43 73.05 
+
+CLIP-IQA ↑ 0.2998 0.2807 0.3583 0.4160 0.3695 0.4661 0.4215 0.5090 
+
+DOVER ↑ 6.366 6.309 8.338 9.368 8.725 8.734 8.665 9.890 
+
+SPMCS[36] PSNR ↑ 23.95 23.68 25.61 25.46 23.62 23.84 24.02 27.85 
+
+SSIM ↑ 0.6209 0.6700 0.7030 0.7201 0.6632 0.6346 0.6450 0.7601 
+
+LPIPS ↓ 0.4277 0.3910 0.3437 0.3289 0.3417 0.3436 0.3451 0.2600 
+
+NIQE ↓ 3.818 7.049 3.369 4.168 3.425 3.151 3.302 2.951 
+
+MUSIQ ↑ 54.33 45.03 65.32 69.08 66.87 71.05 69.77 78.10 
+
+CLIP-IQA ↑ 0.4060 0.3779 0.4150 0.5125 0.5307 0.5792 0.5238 0.6680 
+
+DOVER ↑ 5.850 4.589 8.083 9.525 8.856 9.456 9.426 9.956 
+
+VideoLQ[16] NIQE ↓ 4.889 5.534 3.428 5.292 5.205 3.803 4.070 3.303 
+
+MUSIQ ↑ 44.19 40.19 57.60 45.05 43.39 55.48 52.27 59.48 
+
+CLIP-IQA ↑ 0.2491 0.2786 0.3183 0.2906 0.2593 0.4184 0.3601 0.5100 
+
+DOVER ↑ 5.912 5.889 6.591 6.786 6.040 8.149 7.481 8.649 
+
+AIGC30[34] NIQE ↓ 5.563 6.212 4.189 4.862 4.271 3.871 4.039 3.571 
+
+MUSIQ ↑ 47.87 38.62 50.74 50.59 50.53 56.89 55.80 60.89 
+
+CLIP-IQA ↑ 0.4317 0.3593 0.4510 0.4665 0.4767 0.5543 0.5087 0.5943 
+
+DOVER ↑ 10.24 11.00 11.24 12.34 12.48 12.65 12.50 13.15 
+
+4 Experiments 
+
+4.1 Experimental Setup 
+
+We evaluate MotionCraft through extensive quantitative and qualitative comparisons against state-of-the-art video super-resolution methods on synthetic and real-world benchmarks, covering reconstruction fidelity, perceptual quality, temporal coherence, and computational efficiency. Training follows either a curriculum that distills a dense full-attention teacher into a sparse-causal Latent World Transformer or a streamlined direct optimization with auxiliary latent and flow supervision, while inference proceeds causally by fusing motion cues with learned reliability, predicting high-resolution latents, and reconstructing outputs with temporal consistency maintained via a compact key-value cache. Table 3: Motion-aware comparison on REDS under the same protocol as Table 2. PSNR values are synchronized. 
+
+Method Flow Agreement ↑ Temporal Artifact Rate ↓ Temporal Consistency ↑ PSNR (dB) ↑
+
+Upscale-A-Video[7] 0.85 0.16 0.84 24.84 STAR[30] 0.87 0.14 0.86 24.01 SeedVR2-3B[32] 0.88 0.13 0.87 24.83 RealViFormer[4] 0.89 0.12 0.88 25.96 FlashVSR-Tiny[34] 0.90 0.11 0.90 24.11 DOVE[12] 0.90 0.10 0.89 25.60 FlashVSR-Full[34] 0.91 0.10 0.91 23.92 MotionCraft (Ours) 0.94 0.05 0.96 27.05 
+
+9MotionCraft Table 4: Computational efficiency on 101-frame videos at 768 × 1408 resolution. Baseline values are taken from FlashVSR [34]. FPS is computed as 101 /runtime. MotionCraft is measured under the same single-GPU evaluation setting. Best results in each column are in bold .                             
+
+> Method Peak Memory (GB) ↓Runtime (s) ↓/ FPS ↑Params (M) ↓
+> Upscale-A-Video[7] 18.39 811.71 / 0.12 1086.75
+> STAR[30] 24.86 682.48 / 0.15 2492.90 DOVE[12] 25.44 72.76 / 1.39 10548.57 SeedVR2-3B[32] 52.88 70.58 / 1.43 3391.48 FlashVSR-Full[34] 18.33 15.50 / 6.52 1780.14 FlashVSR-Tiny[34] 11.13 5.97 / 16.92 1752.18 MotionCraft (Ours) 10.25 5.42 / 18.63 1735.60
+
+Table 5: MotionCraft’s sensitivity to external motion sources on the REDS test set. Using GMFlow (dense flow) or DF-VO (pose-induced field) yields only limited degradation relative to RAFT, indicating weak dependence on the specific motion estimator. 
+
+External Motion Source PSNR (dB) ↑ ∆ vs. RAFT (dB) 
+
+RAFT 27.05 0.00 GMFlow 26.91 −0.14 
+
+DF-VO (pose-derived) 26.88 −0.17 
+
+We conduct experiments on synthetic sequences from YouHQ40 [7], REDS [35], SPMCS [36], UDM10 [33], and AI-generated AIGC30 [34], alongside real-world footage from VideoLQ [16] and MovieLQ [29]. Low-resolution inputs are generated consistently via the RealBasicVSR pipeline under ×4 upscaling. Full-reference metrics (PSNR, SSIM, LPIPS) are reported where ground truth exists; no-reference perceptual scores (MUSIQ, CLIPIQA, DOVER) and flow-warping error E∗ 
+
+> warp
+
+are computed universally. Baselines encompass recent transformer-based methods (Upscale-A-Video [7], STAR [30], RealViFormer [4], DOVE [12], SeedVR variants [31, 32], FlashVSR variants [34], MGLD-VSR [23], InfVSR [29]) and convolutional approaches (RealBasicVSR [16]). Attention efficiency is quantified as the percentage reduction in query-key interactions relative to naive full attention: Attention Efficiency =
+
+
+
+1 − Actual Pairs Full Pairs 
+
+
+
+× 100% , (21) where full pairs scale quadratically with the product of spatial tokens per frame and temporal extent. 
+
+4.2 Quantitative Performance 
+
+MotionCraft exhibits marked superiority across reconstruction fidelity, perceptual quality, and temporal stability on both synthetic and realistic sequences, as demonstrated in Tables 1 and 2. The framework delivers substantial gains in PSNR and SSIM while achieving markedly better perceptual scores (MUSIQ, CLIPIQA, DOVER) and reduced warping error compared with contemporary baselines. These consistent improvements highlight the effectiveness of motion-aware latent forecasting, adaptive sparse attention, and explicit controllability in addressing the trade-offs that limit prior convolutional, transformer, and generative approaches. Efficiency comparisons in Table 4 show that MotionCraft achieves the highest frame rate and the lowest peak memory consumption among the compared methods for 101-frame sequences at 768 × 1408 resolution, while retaining a competitive parameter count. These results indicate that the compact decoder and sparse-attention architecture support efficient high-resolution video inference without compromising the reconstruction quality reported in the quantitative comparisons. 
+
+4.3 Motion Handling and Temporal Stability 
+
+MotionCraft’s explicit reliability estimation, residual correction of external flow, and controllable smoothness-fidelity trade-off yield robust performance under diverse motion conditions. Table 3 shows superior optical flow agreement, minimal motion artifacts, and enhanced temporal consistency relative to baselines. The framework’s insensitivity to the choice of external flow estimator is further validated in Table 5, where substituting RAFT with alternative methods (GMFlow, DF-VO) produces only negligible degradation. Robustness across slow, fast, complex, and camera-dominated motion regimes is summarized in Table 6. MotionCraft consistently ranks highest, underscoring the value of per-location confidence-guided fusion and adaptive long-range modeling in handling challenging real-world dynamics. 10 MotionCraft Table 6: Motion-consistency scores (normalized to [0 , 1] , higher is better) on four REDS motion subsets. All methods use identical partitions and metrics; best results are in bold .                    
+
+> Method Slow Motion Fast Motion Complex Motion Camera-Dominant Motion
+> Upscale-A-Video[7] 0.87 0.82 0.79 0.84 STAR[30] 0.89 0.84 0.81 0.86 FlashVSR-Tiny[34] 0.91 0.87 0.84 0.88 MotionCraft (Ours) 0.96 0.91 0.89 0.92
+
+Table 7: Incremental ablation on REDS. The first four rows use the standard decoder; the final row replaces it with the Tiny Conditional Decoder and enables decoder distillation (Eq. (16)). Efficiency is measured on 101-frame sequences at 768 × 1408 . Control Response is reported only for configurations with the control interface. Best results are in bold .                                        
+
+> Configuration PSNR ↑SSIM ↑Temporal Consistency ↑FPS ↑Control Response ↑
+> Base LWT 24.85 0.705 0.89 16.20 –
+> +Motion-Aware Fusion 25.45 0.740 0.92 15.80 –
+> +Adaptive Sparse Attention 25.90 0.770 0.94 17.50 –
+> +Controllability Interface 26.25 0.785 0.95 17.20 0.92
+> +Tiny Conditional Decoder (w/ distillation) (Full MotionCraft) 27.05 0.805 0.96 18.63 0.95
+
+4.4 Ablation and Component Analysis 
+
+Table 7 quantifies the incremental contribution of each design element on the REDS benchmark. Starting from the base Latent World Transformer, incorporating robust motion awareness, adaptive sparse attention, and the controllability interface progressively improves fidelity, perceptual quality, motion stability, runtime, and user control. The complete architecture achieves the strongest overall balance, validating the synergy among these components. 
+
+4.5 Controllability Evaluation 
+
+The proposed control interface, combining a global scalar γ and spatially adaptive gating gt, offers predictable regulation of temporal smoothness versus reconstruction detail. Figure 2 illustrates the monotonic increase in motion coherence and graceful decrease in PSNR as γ rises, confirming smooth, user-intuitive trade-offs. Table 8 compares configurations in a double-blind perceptual study with 50 participants. Integrated control yields the highest quality preservation, motion smoothness, and user satisfaction with minimal adaptation latency, demonstrating practical effectiveness. 
+
+4.6 Qualitative Insights 
+
+Visualizations reinforce the quantitative findings. Figure 3 depicts adaptive sparse attention patterns, revealing targeted non-local connections that preserve locality while capturing distant context essential for coherent upscaling. Motion reliability maps in Figure 4 align high-confidence regions with accurate flow and highlight occlusions or textureless areas where internal cues dominate, explaining the framework’s robustness to noisy external signals. The smooth latent trajectory in Figure 5 illustrates stable temporal dynamics, further supporting the claim of temporally consistent latent-world modeling. 
+
+4.7 Validation of Internal Motion Estimation 
+
+Figure 6 qualitatively demonstrates the complementary behavior of external and internal motion cues under challenging conditions, where external optical flow fails in occluded or textureless regions while internally predicted motion remains stable, and vice versa in highly textured areas. The learned confidence maps align with external failure regions, indicating that the gating mechanism reliably suppresses unreliable external cues and substitutes them with internal motion estimates, validating that low-resolution motion representations are sufficiently discriminative for robust confidence-weighted fusion. 
+
+5 Conclusion 
+
+We present MotionCraft, a controllable framework for video super resolution that models a motion aware latent world. The observed improvements arise from three deliberate design choices. First, motion aware latent modeling combined with per location reliability estimation and a lightweight residual correction reduces the impact of noisy external motion cues and enhances temporal consistency. Second, an adaptive sparse attention scheme preserves fine local context while selectively retrieving a small set of highly relevant remote blocks, which bounds computation for large frames and retains critical long range interactions. Third, a streaming oriented training protocol and a key value cache architecture 11 MotionCraft Table 8: Normalized perceptual scores (double-blind, n = 50 ) for MotionCraft control configurations. Latency reports mean control overhead per frame (N/A for uncontrolled); best applicable results are in bold .                          
+
+> Control Configuration Quality Preservation ↑Motion Smoothness ↑User Satisfaction ↑Control Latency (ms) ↓
+> Baseline (No Control) 0.88 0.84 0.81 –Global Scalar Only 0.90 0.87 0.86 2.1 Spatial Gate Only 0.92 0.89 0.87 3.5 Integrated Control ( γ+gt)0.95 0.93 0.92 4.2
+
+Figure 6: Validation of internal motion signal reliability. Upper-left: input low-resolution frame with challenging motion and occlusion. Upper-right: external optical flow exhibiting failures in occluded regions. Lower-left: internal motion prediction maintaining accuracy where external estimates degrade. Lower-right: external-motion unreliability map indicating regions of low flow confidence through intensity variation. enable parallel training and low lookahead causal inference, making the system practical for real world streaming scenarios. Empirical evaluation shows that these components work together to balance reconstruction fidelity, perceptual quality and runtime efficiency. Future work will investigate extending the framework to multi view and multi modal restoration tasks. 
+
+Acknowledgements 
+
+This work is supported by Macau FDCT, project codes: 0019/2025/RIB1 and 0024/2025/AIJ, and by UM research grants EF2025-00287-FST, and the ZUMRI-DeepFuture Technology Joint Lab, project codes: CP-104-2025(2). 
+
+References 
+
+[1] Arbind Agrahari Baniya, Tsz-Kwan Lee, Peter W Eklund, and Sunil Aryal. A survey of deep learning video super-resolution. IEEE Transactions on Emerging Topics in Computational Intelligence , 8(4):2655–2676, 2024. [2] Zhen Xing, Qijun Feng, Haoran Chen, Qi Dai, Han Hu, Hang Xu, Zuxuan Wu, and Yu-Gang Jiang. A survey on video diffusion models. ACM Computing Surveys , 57(2):1–42, 2024. [3] Jun Tang, Chenyan Lu, Zhengxue Liu, Jiale Li, Hang Dai, and Yong Ding. Ctvsr: Collaborative spatial–temporal transformer for video super-resolution. IEEE Transactions on Circuits and Systems for Video Technology , 34(6): 5018–5032, 2023. 12 MotionCraft [4] Yuehan Zhang and Angela Yao. Realviformer: Investigating attention for real-world video super-resolution. In 
+
+European conference on computer vision , pages 412–428. Springer, 2024. [5] Dario Fuoli, Martin Danelljan, Radu Timofte, and Luc Van Gool. Fast online video super-resolution with deformable attention pyramid. In Proceedings of the IEEE/CVF winter conference on applications of computer vision , pages 1735–1744, 2023. [6] Andreas Blattmann, Robin Rombach, Huan Ling, Tim Dockhorn, Seung Wook Kim, Sanja Fidler, and Karsten Kreis. Align your latents: High-resolution video synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 22563–22575, 2023. [7] Shangchen Zhou, Peiqing Yang, Jianyi Wang, Yihang Luo, and Chen Change Loy. Upscale-a-video: Temporal-consistent diffusion model for real-world video super-resolution. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 2535–2545, 2024. [8] Yiran Xu, Taesung Park, Richard Zhang, Yang Zhou, Eli Shechtman, Feng Liu, Jia-Bin Huang, and Difan Liu. Videogigagan: Towards detail-rich video super-resolution. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 2139–2149, 2025. [9] Sherwin Bahmani, Ivan Skorokhodov, Guocheng Qian, Aliaksandr Siarohin, Willi Menapace, Andrea Tagliasacchi, David B Lindell, and Sergey Tulyakov. Ac3d: Analyzing and improving 3d camera control in video diffusion transformers. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 22875–22889, 2025. [10] Azin Jahedi, Maximilian Luz, Marc Rivinius, and Andrés Bruhn. Ccmr: High resolution optical flow estimation via coarse-to-fine context-guided motion reasoning. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision , pages 6899–6908, 2024. [11] Mathias Gehrig, Mario Millhäusler, Daniel Gehrig, and Davide Scaramuzza. E-raft: Dense optical flow from event cameras. In 2021 International Conference on 3D Vision (3DV) , pages 197–206. IEEE, 2021. [12] Zheng Chen, Zichen Zou, Kewei Zhang, Xiongfei Su, Xin Yuan, Yong Guo, and Yulun Zhang. Dove: Efficient one-step diffusion model for real-world video super-resolution. arXiv preprint arXiv:2505.16239 , 2025. [13] Jingtao Ding, Yunke Zhang, Yu Shang, Yuheng Zhang, Zefang Zong, Jie Feng, Yuan Yuan, Hongyuan Su, Nian Li, Nicholas Sukiennik, et al. Understanding world or predicting future? a comprehensive survey of world models. 
+
+ACM Computing Surveys , 58(3):1–38, 2025. [14] Jose Caballero, Christian Ledig, Andrew Aitken, Alejandro Acosta, Johannes Totz, Zehan Wang, and Wenzhe Shi. Real-time video super-resolution with spatio-temporal networks and motion compensation. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 4778–4787, 2017. [15] Xiaohong Liu, Lingshi Kong, Yang Zhou, Jiying Zhao, and Jun Chen. End-to-end trainable video super-resolution based on a new mechanism for implicit motion estimation and compensation. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision , pages 2416–2425, 2020. [16] Kelvin CK Chan, Shangchen Zhou, Xiangyu Xu, and Chen Change Loy. Investigating tradeoffs in real-world video super-resolution. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition ,pages 5962–5971, 2022. [17] Takashi Isobe, Songjiang Li, Xu Jia, Shanxin Yuan, Gregory Slabaugh, Chunjing Xu, Ya-Li Li, Shengjin Wang, and Qi Tian. Video super-resolution with temporal group attention. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 8008–8017, 2020. [18] Chengxu Liu, Huan Yang, Jianlong Fu, and Xueming Qian. Learning trajectory-aware transformer for video super-resolution. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 5687–5696, 2022. [19] Zhicheng Geng, Luming Liang, Tianyu Ding, and Ilya Zharkov. Rstt: Real-time spatial temporal transformer for space-time video super-resolution. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 17441–17451, 2022. [20] Shuwei Shi, Jinjin Gu, Liangbin Xie, Xintao Wang, Yujiu Yang, and Chao Dong. Rethinking alignment in video super-resolution transformers. Advances in Neural Information Processing Systems , 35:36081–36093, 2022. 13 MotionCraft [21] Fan Zhang, Gongguan Chen, Hua Wang, Jinjiang Li, and Caiming Zhang. Multi-scale video super-resolution transformer with polynomial approximation. IEEE Transactions on Circuits and Systems for Video Technology ,33(9):4496–4506, 2023. [22] Liangbin Xie, Yu Li, Shian Du, Menghan Xia, Xintao Wang, Fanghua Yu, Ziyan Chen, Pengfei Wan, Jiantao Zhou, and Chao Dong. Simplegvr: A simple baseline for latent-cascaded video super-resolution. arXiv preprint arXiv:2506.19838 , 2025. [23] Xi Yang, Chenhang He, Jianqi Ma, and Lei Zhang. Motion-guided latent diffusion for temporally consistent real-world video super-resolution. In European conference on computer vision , pages 224–242. Springer, 2024. [24] Zhihao Zhan, Wang Pang, Xiang Zhu, and Yechao Bai. Rethinking video super-resolution: Towards diffusion-based methods without motion alignment. arXiv preprint arXiv:2503.03355 , 2025. [25] Xiaohui Li, Yihao Liu, Shuo Cao, Ziyan Chen, Shaobin Zhuang, Xiangyu Chen, Yinan He, Yi Wang, and Yu Qiao. Diffvsr: Enhancing real-world video super-resolution with diffusion models for advanced visual quality and temporal consistency. arXiv e-prints , pages arXiv–2501, 2025. [26] Shilong Zhang, Wenbo Li, Shoufa Chen, Chongjian Ge, Peize Sun, Yida Zhang, Yi Jiang, Zehuan Yuan, Binyue Peng, and Ping Luo. Flashvideo: Flowing fidelity to detail for efficient high-resolution video generation. arXiv preprint arXiv:2502.05179 , 2025. [27] Haofei Xu, Jiaolong Yang, Jianfei Cai, Juyong Zhang, and Xin Tong. High-resolution optical flow from 1d attention and correlation. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 10498–10507, 2021. [28] Gang Xu, Jun Xu, Zhen Li, Liang Wang, Xing Sun, and Ming-Ming Cheng. Temporal modulation network for controllable space-time video super-resolution. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 6388–6397, 2021. [29] Ziqing Zhang, Kai Liu, Zheng Chen, Xi Li, Yucong Chen, Bingnan Duan, Linghe Kong, and Yulun Zhang. Infvsr: Breaking length limits of generic video super-resolution. arXiv preprint arXiv:2510.00948 , 2025. [30] Rui Xie, Yinhong Liu, Penghao Zhou, Chen Zhao, Jun Zhou, Kai Zhang, Zhenyu Zhang, Jian Yang, Zhenheng Yang, and Ying Tai. Star: Spatial-temporal augmentation with text-to-video models for real-world video super-resolution. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 17108–17118, 2025. [31] Jianyi Wang, Zhijie Lin, Meng Wei, Yang Zhao, Ceyuan Yang, Chen Change Loy, and Lu Jiang. Seedvr: Seeding infinity in diffusion transformer towards generic video restoration. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 2161–2172, 2025. [32] Jianyi Wang, Shanchuan Lin, Zhijie Lin, Yuxi Ren, Meng Wei, Zongsheng Yue, Shangchen Zhou, Hao Chen, Yang Zhao, Ceyuan Yang, et al. Seedvr2: One-step video restoration via diffusion adversarial post-training. arXiv preprint arXiv:2506.05301 , 2025. [33] Xin Tao, Hongyun Gao, Renjie Liao, Jue Wang, and Jiaya Jia. Detail-revealing deep video super-resolution. In 
+
+Proceedings of the IEEE international conference on computer vision , pages 4472–4480, 2017. [34] Junhao Zhuang, Shi Guo, Xin Cai, Xiaohui Li, Yihao Liu, Chun Yuan, and Tianfan Xue. Flashvsr: Towards real-time diffusion-based streaming video super-resolution. arXiv preprint arXiv:2510.12747 , 2025. [35] Seungjun Nah, Sungyong Baik, Seokil Hong, Gyeongsik Moon, Sanghyun Son, Radu Timofte, and Kyoung Mu Lee. Ntire 2019 challenge on video deblurring and super-resolution: Dataset and study. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition workshops , pages 0–0, 2019. [36] Peng Yi, Zhongyuan Wang, Kui Jiang, Junjun Jiang, and Jiayi Ma. Progressive fusion video super-resolution network via exploiting non-local spatio-temporal correlations. In Proceedings of the IEEE/CVF international conference on computer vision , pages 3106–3115, 2019. 14
