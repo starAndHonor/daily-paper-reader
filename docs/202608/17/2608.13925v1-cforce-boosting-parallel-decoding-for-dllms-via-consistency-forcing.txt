@@ -1,0 +1,651 @@
+Title: CForce: Boosting Parallel Decoding for dLLMs via Consistency Forcing
+
+URL Source: https://arxiv.org/pdf/2608.13925v1
+
+Published Time: Mon, 17 Aug 2026 00:22:56 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# CForce: Boosting Parallel Decoding for dLLMs via Consistency Forcing 
+
+Yuji Ren 1,2* , Chenkai Xu 1,2* , Zhuocheng Gong 2, Jianguo Li 2† , Zhijie Deng 1† 
+
+> 1
+
+Shanghai Jiao Tong University 2Ant Group 
+
+{renyj26, 132435xck, zhijied}@sjtu.edu.cn , lijg.zero@antgroup.com 
+
+Abstract 
+
+Diffusion large language models (dLLMs) ac-celerate language generation by predicting mul-tiple masks in a single forward pass. How-ever, existing dLLMs can suffer from unreli-able predictions in early denoising stages un-der aggressive parallelism strategies, leading to errors that can propagate to later stages. To tackle this issue, we present Consistency Forc-ing (CForce) for dLLMs, a distillation method to force the mask predictions of early stages to align with those of later stages. CForce trains the model on pre-collected self-rollout trajec-tories, thereby improving training-inference alignment. We introduce Confidence Adap-tive KL Divergence as a distillation objective to conjoin the merits of forward and reverse KL. We further provide a theoretical analy-sis for the consistency objective to explain why CForce can approximately minimize the prediction error of early stages. Critically, the same formulation applies to both mask-to-token decoding and edit-capable decoding; in the edit-capable case, later token-to-token re-finements provide additional supervision for earlier masked-state predictions. Experiments on non-edit and edit-capable LLaDA models show improved speed-quality trade-offs, espe-cially under high-parallelism decoding budgets. Code is available at: https://github.com/ inclusionAI/dFactory .
+
+1 Introduction 
+
+Diffusion large language models (dLLMs) (Austin et al., 2021a; Zheng et al., 2023; Lou et al., 2024; Sahoo et al., 2024; Nie et al., 2026; Ye et al., 2025; Arriola et al., 2025; Gong et al., 2025) generate text by iteratively denoising masked sequences, com-mitting multiple tokens per forward pass to achieve high parallelism (Wu et al., 2025; Bie et al., 2025, 2026; Wang et al., 2025; Cheng et al., 2025). How-ever, existing dLLMs can suffer from unreliable 
+
+> *
+
+Equal contribution. 
+
+> †
+
+Corresponding authors.     ,($+.$-,-2 -#     1%""0- "4    *'+'    *'+'    *'+',-"$0-.    *'+'    *'+',-"$0-.  3 '%&/+'+%!       /&$,-$/'" )* 3         
+
+>        
+> 𝜏 = 0.9
+> 𝜏 = 0.9 5
+> 𝜏 = 0.9 𝜏 = 0.9 𝜏 = 0.95 𝜏 = 0.95
+> SMode
+> QMode SMode
+> QMode
+
+Figure 1: Speed–quality trade-off: accuracy vs. to-kens per forward pass (TPF). Upper-right is bet-ter. Consistency Forcing moves both models toward a higher-parallelism trade-off. 
+
+predictions in early denoising stages under aggres-sive parallelism strategies, and the resulting errors can propagate to later stages. Thus, faster dLLM decoding depend not only on reducing denoising steps, but also on improving the reliability of early-stage predictions under high-parallelism decoding. This issue is especially important for edit-capable dLLMs. Conventional masked diffusion decoding is mainly mask-to-token (M2T), whereas edit-capable models such as LLaDA2.1 (Bie et al., 2026) also perform token-to-token (T2T) refine-ment, allowing later denoising states to revise ear-lier drafts. These later states contain richer con-text and possible T2T corrections, which could provide stronger supervision for early M2T pre-dictions before token commitment. Existing accel-eration and distillation methods do not train this early-to-late consistency along the model’s own threshold-decoding trajectory: some modify decod-ing or caching (Kim et al., 2026; Wu et al., 2025; 1arXiv:2608.13925v1 [cs.LG] 14 Aug 2026 GSM8K MATH500 MBPP HumanEval           
+
+> 0200 400 600 800 1000
+> AUP
+> 266.8 286.7 305.8 367.5 374.0 394.1 400.0 387.8 489.1 509.2 387.8 625.5 666.7 741.4 636.2 705.5 845.0 966.4 1016.1 870.9
+> LLaDA2.0-mini LLaDA2.0-mini-CAP LLaDA2.0-mini-CForce (Ours) LLaDA2.1-mini LLaDA2.1-mini-CForce (Ours)
+
+Figure 2: Per-task Accuracy Under Parallelism (AUP). AUP integrates the score–parallelism curve into a single metric. CForce yields consistent gains across all four benchmarks. 
+
+Liu et al., 2025b), while others use constructed, teacher-generated, or privileged trajectories (Zhang et al., 2026; Kim et al., 2025; Liang et al., 2026) whose information conditions differ from the stu-dent’s inference states. We propose Consistency Forcing (CForce) for dLLMs, a distillation method inspired by consis-tency models (Salimans and Ho, 2022; Song et al., 2023) that forces the mask predictions of early stages to align with those of later stages. Specif-ically, starting from a pretrained dLLM, CForce trains the model on self-rollout trajectories, thereby improving training-inference alignment. Then, CForce partitions each pre-collected trajectory into stages. Each stage boundary is set after a fixed num-ber of newly revealed masked tokens, rather than at every native step, which would incur substantial trajectory-storage overhead. For each adjacent pair, the earlier-stage prediction is trained to match a stop-gradient prediction from the same model at the later stage, without relying on a frozen teacher. Still-masked positions are aligned with Confidence 
+
+Adaptive KL Divergence (CAD), which dynami-cally interpolates between forward and reverse KL based on later-stage prediction confidence. CForce also applies a cross-entropy (CE) anchor to stabi-lize token commitment. A curriculum over reveal difficulty further stabilizes this adjacent-stage ob-jective (Xu et al., 2025b; Liu et al., 2025a). We further provide a theoretical analysis sup-porting this design: early-stage prediction error is upper-bounded by adjacent-stage distributional drift plus reveal-boundary token error (Section 4.4), two terms that correspond directly to the CAD and CE components of our objective. Empirically, the clearest result appears on the edit-capable LLaDA2.1-mini (Bie et al., 2026): Consistency Forcing increases average Tokens Per Forward (TPF) from 6.94 to 9.08 while improving average accuracy from 85.57 to 86.41. On the non-edit LLaDA2.0-mini (Bie et al., 2025), the method shows an explicit speed-quality trade-off, increas-ing average TPF from 3.60 to 6.42 and improving few-step accuracy at fixed TPF budgets under ag-gressive decoding. Figure 1 and Figure 2 visualize this effect. Our contributions are fourfold: (1) we reframe dLLM acceleration around early-stage reliability under aggressive threshold decoding, rather than focusing only on fewer sampling steps; (2) we in-troduce Consistency Forcing, which aligns adja-cent stages on the model’s own decoding trajectory using CAD and a CE anchor; (3) we instantiate this idea in edit-capable dLLMs, where later T2T-refined stages supervise earlier M2T predictions; and (4) we show that the same recipe improves few-step and high TPF behavior on a non-edit dLLM, with an explicit speed-quality trade-off. 
+
+2 Related Work 
+
+Masked Diffusion Language Models. Masked diffusion language models (MDLMs) cast text gen-eration as discrete denoising (Austin et al., 2021a; Zheng et al., 2023; Lou et al., 2024). Building on earlier masked generation methods (Ghazvininejad et al., 2019; Chang et al., 2022), recent dLLMs further scale this paradigm, enabling stronger text and code generation (Nie et al., 2026; Ye et al., 2025; Gong et al., 2025). To improve generation speed, several dLLMs introduce confidence-based parallel decoding (Wu et al., 2025; Wang et al., 2025; Cheng et al., 2025; Bie et al., 2025; Chen 2et al., 2026), while edit-capable models allow later denoising states to revise committed tokens (Bie et al., 2026). These later corrections are especially relevant under aggressive parallel decoding, where early M2T predictions are made with limited con-text and can benefit from supervision induced by later denoising states. 
+
+Acceleration Methods for dLLMs. Existing ac-celeration methods follow several complementary directions. Inference-time approaches improve token selection or verification without changing model parameters (Kim et al., 2026; Xu et al., 2025a; Agrawal et al., 2025; Gao et al., 2025), while system-level approaches reduce computation through caching (Wu et al., 2025; Ma et al., 2026; Liu et al., 2025b). Training-based approaches instead improve few-step generation with con-structed, teacher-generated, or privileged trajecto-ries (Chen et al., 2025b; Zhang et al., 2026; Kim et al., 2025; Liang et al., 2026). These methods accelerate decoding but do not directly train the model on the low-context states produced by its own threshold-decoding path. 
+
+Consistency Distillation in Diffusion Models. 
+
+Diffusion distillation reduces sampling cost by compressing slow multi-step generation into faster samplers or models (Luhman and Luhman, 2021; Salimans and Ho, 2022; Meng et al., 2023). Consis-tency models extend this idea by enforcing agree-ment across trajectory states, enabling one-step or few-step generation (Song et al., 2023; Luo et al., 2023; Kou et al., 2024). Related objec-tives have also been studied for discrete genera-tive models (Hayakawa et al., 2024; Sahoo et al., 2025; Xu et al., 2025b) and, more recently, for dLLMs (Zhang et al., 2026; Kim et al., 2025; Liang et al., 2026). These works demonstrate the use-fulness of cross-state supervision. However, they typically depend on separate teachers, fixed repre-sentations, or teacher-generated targets. In contrast, Consistency Forcing constructs adjacent-stage con-straints from the model’s own threshold-decoding trajectory without a frozen teacher, and adapts them to both masked-token reveal and edit transitions. 
+
+3 Preliminaries 
+
+Masked Diffusion Language Models. Masked diffusion language models formulate text genera-tion as denoising in a discrete token space (Austin et al., 2021a; Lou et al., 2024; Sahoo et al., 2024). consistency  forcing  [MASK]  [MASK]  model         
+
+> consistency forcing language model can accelerate
+> consistency forcing language model accelerate diffusion
+> [MASK] [MASK]
+> [MASK]
+> by
+
+Figure 3: An illustration of edit-capable dLLM decod-ing. At each decoding step, high-confidence masked positions are denoised, while already generated tokens may also be revised to correct earlier mistakes. 
+
+Given a prompt x ∈ X and a clean target sequence 
+
+y = ( y1, . . . , y L) over vocabulary V, the forward process corrupts y by independently replacing to-kens with [MASK] . Let αt ∈ [0 , 1] denote the probability that a token remains unmasked at noise time t, and let st be the corrupted sequence. Under the absorbing-mask process, 
+
+q(sjt | yj ) = 
+
+(
+
+αt, sjt = yj ,
+
+1 − αt, sjt = [MASK] .
+
+The reverse model predicts a categorical distri-bution qθ(· | x, s t, j ) for each masked position j.Let Mt = {j : sjt = [MASK] } be the masked positions. Training can be written as the standard variational bound for masked diffusion, which re-duces to a weighted cross-entropy over these posi-tions: 
+
+LMDLM = E(x,y ),t,s t
+
+w(t) X
+
+> j∈Mt
+
+CE jθ
+
+ ,
+
+CE jθ = − log qθ(yj | x, s t, j ).
+
+(1) Here w(t) = −α′
+
+> t
+
+/(1 − αt) is the positive ELBO weight induced by the absorbing diffusion process. This objective trains the model to recover clean tokens from partially observed contexts, enabling multiple positions to be denoised in parallel at in-ference time. In current large-scale dLLMs, this masked dif-fusion objective is commonly used together with block diffusion (Arriola et al., 2025; Bie et al., 2025), which partitions the target sequence into blocks and denoises each block in parallel while generating blocks sequentially. Recent edit-capable dLLMs further augment this block-diffusion frame-work with token-to-token refinement, allowing committed tokens to be revised in later denoising states (Bie et al., 2026). Hereafter, we follow this block-diffusion setting and discuss decoding and training within a block unless otherwise specified. 33. Train with Adjacent-stage Consistency Forcing                                                                                            
+
+> (a) Sample an adjacent pair of stages 𝑠̅ !, 𝑠̅ !"#
+> 𝑠̅ $
+> 𝑠̅ !"#
+> 𝑠̅ !
+> 𝑠̅ #
+> 𝑠̅ %
+> 𝑠̅ $&#
+> Today is good day [MASK] [MASK] [MASK] Today is agood [MASK] to study dLLM [MASK]
+> (d) Compute CE Loss (b) 𝑠̅ !"# plays as the target, 𝑠̅ !as the student
+> (c) Compute Adaptive KL Loss
+> [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK]
+> 1. Collect Confidence-based Trajectory 𝒯 = 𝑠 !, 𝑠 ", … , 𝑠 #
+> Step 0
+> Today is [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] Step 1
+> Today is good day [MASK] [MASK] [MASK] [MASK] Step 2
+> Today is agood [MASK] [MASK] [MASK] dLLM Step 3
+> Today is agood [MASK] to study dLLM Step 4
+> Today is agood day to study dLLM Step 5
+> 2. Construct Staged Trajectory 𝒯 = 𝑠̅ !, 𝑠̅ ", … , 𝑠̅ $
+> [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] Stage 0
+> Today is good day [MASK] [MASK] [MASK] Stage 1
+> Today is agood [MASK] to study dLLM Stage 2
+> [MASK] Today is agood day to study dLLM Stage 3
+
+Figure 4: Overview of Consistency Forcing. Left: self-rollout threshold-decoding trajectories are downsampled into adjacent stage pairs whenever the cumulative number of M2T reveals reaches the stage size S; right: the earlier low-context state is trained against same-model stop-gradient predictions from the later, more informative state. 
+
+Confidence-based Parallel Decoding. At infer-ence time, block diffusion generates one block by starting from an all-mask block state s0 and iter-atively denoising it into the all-clean state. This process produces a trajectory T = ( s0, s 1, . . . , s T ),where T is the number of decoding steps allocated to the block. At step t, let Mt = {j : sjt =[MASK] } denote the positions that remain masked, and let pjt (v) = qθ(v | x, s t, j ) be the model distri-bution at position j ∈ Mt.Modern dLLMs reveal multiple positions in each forward pass according to model confidence (Bie et al., 2025). The confidence of a masked position is defined as cjt = max v∈V pjt (v). Given a thresh-old τ , all positions whose confidence exceeds the threshold are selected for commitment. To ensure progress, if no position exceeds the threshold, the most confident remaining position is selected: 
+
+∆Mt =
+
+(
+
+{j ∈ Mt : cjt > τ }, if {j ∈ Mt : cjt > τ }̸ = ∅,
+
+{arg max j∈Mt cjt }, otherwise .
+
+(2) 
+
+For each selected position j ∈ ∆Mt, the decoder commits the most probable token, 
+
+sjt+1 = arg max 
+
+v∈V pjt (v), (3) and the remaining positions stay masked. Equiva-lently, 
+
+Mt+1 = Mt \ ∆Mt. (4) 
+
+Edit-capable Diffusion Decoding. Recent edit-capable dLLMs extend the confidence-based de-coding process by allowing T2T refinement after M2T commitment (Bie et al., 2026). Given an edit threshold τedit , positions selected for editing are 
+
+Et =
+
+(
+
+j / ∈ Mt : max  
+
+> v∈V , v ̸=sjt
+
+qθ (v | x, s t, j ) > τ edit 
+
+)
+
+. (5) 
+
+For each j ∈ Et, the decoder replaces the current token with the most probable alternative, 
+
+sjt+1 = arg max 
+
+v∈V , v ̸ =sjt
+
+qθ(v | x, s t, j ). (6) As illustrated in Figure 3, in edit-capable de-coding, later states can correct tokens that were committed earlier. These T2T refinements are es-pecially important for fast decoding when the M2T threshold τ is low. Consistency Forcing uses this later-stage refinement signal to supervise earlier masked-state predictions. 
+
+4 Method 
+
+4.1 Overview 
+
+Consistency Forcing trains a dLLM to make more reliable predictions from early, low-context denois-ing states. The method collects threshold-decoding trajectories from the pretrained initialization qθ0 ,converts them into staged adjacent pairs, and uses the later stage as a same-model stop-gradient tar-get for the earlier stage. The training objective combines adjacent-stage distributional alignment, a reveal-boundary CE anchor, and a curriculum over transition difficulty; building on this, edit-capable models can further feed later T2T signals back into earlier states to improve M2T drafting. Figure 4 illustrates the overall pipeline. 44.2 Staged Trajectory Construction 
+
+We need to construct trajectories used for con-sistency forcing. Specifically, we first collect the original confidence-based decoding trajectory 
+
+T = ( s0, s 1, . . . , s T ) using the cold-start initial-ization qθ0 as described in Section 3. Rather than treating every consecutive native transition in T as a training pair, we use the native rollout only as the source trajectory: dense native-step supervision is inefficient and often provides only a weak training signal, because adjacent native states may differ by very few newly revealed tokens. Next, we maintain a reveal counter along the rollout. Whenever the cumulative number of newly revealed tokens reaches a fixed stage size S, we save the current state as a stage boundary and reset the counter. The initial all-mask state is always saved, and the final decoded state is appended if it has not already been saved. This produces a staged trajectory ¯T = (¯ s0, ¯s1, . . . , ¯sN ), where adjacent stages are separated by cumulative M2T progress rather than by the raw native update index. We then form adjacent pairs from ¯T . Downsam-pling by cumulative M2T reveals forms coarser stages, so each adjacent pair contains a more sub-stantial change in visible context. For each adjacent stage pair (¯ si, ¯si+1 ), let ¯Mi =
+
+{j : ¯ sji = [MASK] } denote the positions masked in the earlier stage. We split these positions into 
+
+Ui = ¯Mi ∩ ¯Mi+1 , ∆i = ¯Mi \ ¯Mi+1 . (7) Here, Ui contains positions that remain masked in both stages, while ∆i contains positions that are revealed between the two stages. These sets define the supports of the CAD and CE terms below. For edit-capable decoding, we also record na-tive edit events during the trajectory rollout and aggregate them between adjacent stage boundaries; the resulting stage-level edit set ¯Ei is introduced in Section 4.3. Since all stages are obtained from the model’s own confidence-based decoding process, the staged trajectories preserve the mask, reveal, and edit patterns that arise during fast inference. 
+
+4.3 Adjacent-stage Consistency Forcing 
+
+For each sampled adjacent stage pair (¯ si, ¯si+1 ), we use the earlier stage as the student input and the later, more informative stage as the target context. The target branch is evaluated under stop-gradient, denoted by sg[ ·], so the model learns to approxi-mate from ¯si the prediction it would make after receiving the additional context in ¯si+1 . We instan-tiate this adjacent-stage constraint with two com-plementary terms: CAD controls soft distributional drift on positions that remain latent across the tran-sition, while a CE anchor stabilizes positions at the M2T reveal boundary. This decomposition follows the error-bound motivation in Section 4.4. 
+
+Confidence Adaptive KL Divergence. On Ui,both stages are still masked, so we align the stu-dent distribution pj 
+
+> stu
+
+= qθ(· | x, ¯si, j ) with the stop-gradient target distribution pj 
+
+> tar
+
+= sg[ qθ(· | 
+
+x, ¯si+1 , j )] . A standard forward KL minimizes drift but can be weak at sharpening predictions. Conversely, reverse KL is a strong mode-seeking objective but risks premature collapse when applied to uncertain targets. To combine their strengths, we design Confidence Adaptive KL Divergence (CAD), which dynamically mixes forward and re-verse KL based on the later stage’s prediction con-fidence cj = max v pj
+
+> tar
+
+(v), defined as     
+
+> LCAD =1
+> |U i|
+> X
+> j∈U i
+> h
+> DKL (pj
+> tar ∥pj
+> stu ) + cjDKL (pj
+> stu ∥pj
+> tar )
+> i
+> ,
+> (8)
+
+where the forward KL term stably controls distri-butional drift connected to the upper bound in Sec-tion 4.4, while the confidence-weighted reverse KL adds mode-seeking pressure only when the later-stage prediction is confident. 
+
+CE Anchor. On the newly revealed positions ∆i,we apply a cross-entropy anchor to stabilize token commitments: 
+
+LCE = − 1
+
+|∆i|
+
+X
+
+> j∈∆i
+
+log qθ(yj | x, ¯si, j ), (9) where yj denotes the clean target token at position 
+
+j. By anchoring the student prediction immedi-ately before reveal, the CE term discourages errors at the boundary where masked positions become committed tokens. 
+
+Edit-capable dLLMs. As described in Section 3, edit-capable dLLMs provide an additional source of later-stage supervision: T2T edits of already visible tokens. We define the stage-level edit set ¯Ei
+
+as the positions whose visible tokens differ between adjacent stages ¯si and ¯si+1 :        
+
+> ¯Ei={j: ¯ sji̸= [MASK] ,¯sji+1 ̸= [MASK] ,¯sji̸= ¯ sji+1 }.
+> (10)
+
+Edit-capable trajectories contain both M2T reveals and later T2T corrections, so we broaden the CAD 5domain from Ui to ¯Mi ∪ ¯Ei. The ¯Mi term aligns student-masked positions with later soft predictions under additional revealed context, while ¯Ei lets vis-ible tokens that change between stages contribute T2T correction signals. Since these later-stage soft distributions provide broader supervision, we also extend the CE anchor from ∆i to all student-masked positions ¯Mi. This uses edit-capable tra-jectories without changing the decoding algorithm. 
+
+Curriculum Transition. At the beginning of op-timization, the full stage gap can be difficult be-cause the student has not yet learned to predict tokens that are revealed many positions ahead. We therefore expose the later-stage context gradually. At optimization step u, only a fraction ρu of the newly revealed positions in ∆i are used to form the later-stage context: 
+
+ρu = min 
+
+
+
+1, ρ 0 + (1 − ρ0) uTtrain 
+
+
+
+, (11) where ρ0 = 0 .1 and Ttrain is the total training steps. Concretely, we select a subset Γi(u) ⊆ ∆i with 
+
+|Γi(u)| = ⌊ρu|∆i|⌋ and form a partially revealed later state by revealing only Γi(u) while keeping the remaining positions in ∆i masked. Initially, the target state is close to the student state, stabiliz-ing local consistency learning; as ρu increases, the model is gradually exposed to larger adjacent-stage transitions and eventually learns the consistency constraint used by fast decoding. 
+
+Overall Objective. The training loss is 
+
+L = LCAD + λCE LCE , (12) where λCE balances distributional forcing and to-ken anchoring. 
+
+4.4 Theoretical Analysis Setup. We keep the main text focused on the intu-ition and key conclusion, and defer the full deriva-tion to Appendix C. The goal is to justify why the Consistency Forcing objective targets early-stage reliability. For two categorical distributions p and q
+
+over vocabulary V, the total variation (TV) distance is defined as 
+
+DTV (p, q ) = 12
+
+X
+
+> v∈V
+
+|p(v) − q(v)|. (13) Consider a position j revealed at stage rj , with clean target token yj = ¯ sjN , and let pji = qθ(· | 
+
+x, ¯si, j ). For any earlier masked stage i < r j , the prediction error at ¯si is measured as DTV (pji , δ yj ),where δyj denotes the one-hot distribution on yj .
+
+Main Bound. The early-stage prediction error can be bounded by adjacent-stage distributional drift and the reveal-boundary token error: 
+
+DTV (pji , δ yj ) ≤ 
+
+> rj−2
+
+X
+
+> r=i
+
+r 12 DKL (pjr+1 ∥pjr)
+
+− log pjrj −1(yj ).
+
+(14) The first term measures how much the model pre-diction drifts as more context is revealed before position j is committed, while the second term measures the token-level error immediately before reveal, which is controlled by the CE loss on the clean token under commitment. 
+
+Connection to CForce. Eq. (14) directly matches our objective: the forward KL compo-nent in CAD reduces adjacent-stage drift, while the CE anchor controls the reveal-boundary error. The confidence-weighted reverse KL in CAD is non-negative and therefore preserves this forward KL alignment while sharpening predictions when the later-stage target is confident. Thus, Consis-tency Forcing optimizes a tractable surrogate for the upper bound on early-stage prediction error. 
+
+5 Experiments 
+
+5.1 Experimental Setup Models. We evaluate CForce on two LLaDA vari-ants: LLaDA2.0-mini for the non-edit setting and LLaDA2.1-mini for the edit-capable setting de-scribed in Section 4.3. Detailed implementation settings are provided in Appendix B. 
+
+Training Data. We use queries from OpenMath-Instruct-2 (Toshniwal et al., 2025) and OpenCode-Instruct (Ahmad et al., 2025) and decode responses using Algorithm 1. For LLaDA2.0, we use a confi-dence threshold τ = 0 .95 ; for LLaDA2.1, we use 
+
+τ = 0 .85 and τedit = 0 .5. Responses exceeding 4096 tokens are discarded. 
+
+Evaluation. We evaluate on four benchmarks that span mathematical reasoning and code generation: GSM8K (Cobbe et al., 2021), MATH500 (Lightman et al., 2024), MBPP (Austin et al., 2021b), and HumanEval (Chen et al., 2021). Inference is performed with SGLang (Zheng et al., 2024) using a block size of 32 and a max gener-ation length of 4096. We report Score, TPF, and AUP (Qian et al., 2026). Score denotes exact-match accuracy on GSM8K and MATH500 and pass@1 6Diffusion type Edit? Model GSM8K MATH500 MBPP HumanEval Score TPF AUP Score TPF AUP Score TPF AUP Score TPF AUP                                                                                                                                      
+
+> Pure diffusion ×
+> dUltra-coding-b32 81.52 *8.40 –35.64 6.72 *–37.04 7.29 *–35.85 7.23 *–d3LLM-LLaDA 73.09 9.11 *637.65 *30.36 5.74 107.64 *40.60 4.21 88.36 39.63 5.95 96.64 d3LLM-Dream 81.36 4.94 391.33 38.21 *3.92 97.50 55.60 *2.96 141.41 *57.10 *3.20 129.48 *
+> D2F-LLaDA 74.39 2.88 213.76 28.94 2.66 49.00 39.00 2.13 52.96 40.64 2.69 61.98 Block diffusion
+> ×
+> LightningRL-8B-b32 90.30 5.58 492.40 63.00 6.28 407.50 58.30 11.10 641.60 72.60 6.30 450.10 LLaDA2.0-mini 93.25 2.85 266.82 81.80 3.46 286.71 78.69 3.80 305.84 83.54 4.28 367.52 LLaDA2.0-mini-CAP 91.74 4.09 374.03 81.00 4.85 394.10 72.13 5.43 400.00 73.18 5.89 387.79 LLaDA2.0-mini-CForce (Ours) 91.74 5.36 489.07 79.20 6.35 509.23 73.30 6.00 387.80 79.27 7.97 625.51
+> ✓
+> DMax 92.10 5.48 557.00 75.40 5.94 507.00 79.20 5.86 482.00 83.50 7.36 637.00 LLaDA2.1-mini 93.56 5.94 666.71 85.00 7.44 741.42 77.75 7.25 636.16 85.98 7.11 705.47 LLaDA2.1-mini-CForce (Ours) 92.27 7.63 845.03 84.80 10.15 966.35 81.97 10.07 1016.14 86.59 8.48 870.90
+
+Table 1: Main Comparison by Diffusion Type and Edit Capability. Each benchmark group reports Score, TPF, and AUP. Bold and underline mark the best and second-best metrics within each comparable block; stars mark the best pure-diffusion results. 
+
+on MBPP and HumanEval; higher TPF and AUP in-dicate greater parallelism and a better speed-quality operating point, respectively. Appendix D provides the exact operating points used to compute AUP for the LLaDA-family rows. Throughput results on GSM8K and HumanEval, together with the hard-ware setup, are reported in Appendix E. 
+
+Baselines. We include LLaDA2.0-mini and LLaDA2.1-mini as the base models for the non-edit and edit-capable settings, respectively (Bie et al., 2025, 2026). For the LLaDA2.0-series com-parison, we also include LLaDA2.0-mini-CAP, a confidence-aware parallel training variant of LLaDA2.0-mini, and refer to it as CAP (Chen et al., 2025b). Beyond these controlled baselines, Ta-ble 1 reports representative recent dLLM accelera-tion methods: dUltra-coding-b32, d3LLM-LLaDA, d3LLM-Dream, D2F-LLaDA, LightningRL-8B-b32, and DMax (Chen et al., 2025a; Qian et al., 2026; Wang et al., 2025; Hu et al., 2026; Chen et al., 2026). For LLaDA2.0-mini, CAP, and our LLaDA2.0-mini-CForce, evaluation uses τ = 0 .9;for LLaDA2.1-mini and LLaDA2.1-mini-CForce, evaluation uses τ = 0 .7 and τedit = 0 .5.
+
+5.2 Main Results Edit-capable dLLMs. Table 1 reports controlled comparisons between each LLaDA baseline and its Consistency Forcing variant under the corre-sponding decoding setting, with the strongest gains appearing in the edit-capable case. On LLaDA2.1-mini, Consistency Forcing increases average TPF from 6.94 to 9.08 while also improving average score from 85.57 to 86.41. The improvement is strongest on the code benchmarks and comes with only minor changes on the math benchmarks. This AVG GSM8K MATH MBPP HumanEval 020 40 60 80 100            
+
+> Accuracy (%)
+> 17.1 35.4 18.8 8.2 6.1 26.4 46.2 29.0 18.3 12.2 38.5 61.3 55.0 22.0 15.8
+> Fixed TPF = 8
+> AVG GSM8K MATH MBPP HumanEval 020 40 60 80 100
+> Accuracy (%)
+> 54.5 82.8 70.8 39.8 24.4 62.2 86.4 74.7 52.9 34.8 67.2 88.7 78.1 53.2 48.8
+> Fixed TPF = 4
+> Vanilla CAP Ours
+
+Figure 5: Few-step Generation Results (Score %) on LLaDA2.0 Series with Fixed TPF Budgets. Vanilla, CAP, and Ours represent LLaDA2.0-mini, LLaDA2.0-mini-CAP, and LLaDA2.0-mini-CForce respectively. 
+
+result is consistent with the method design: edit-capable trajectories allow later corrections on al-ready decoded tokens to feed back into the masked-position drafting ability of earlier states through the stop-gradient target. 
+
+Non-edit dLLMs. Under the non-edit decoding setting, Consistency Forcing on LLaDA2.0-mini moves the model to a higher-parallelism operat-ing point: it reaches 6.42 average TPF, compared with 3.60 for the base model and 5.07 for CAP. Its average score is lower than the base model but higher than CAP, making this setting an explicit speed-quality trade-off. 
+
+Few-step Generation. Figure 5 evaluates fixed TPF decoding on the LLaDA2.0 series. We con-strain the decoding budget so that the model op-erates at a fixed TPF of 8 or 4, which forces sub-7Stage size S AVG Score AVG TPF                     
+
+> 480.62 5.64 880.88 6.42 16 75.05 7.97
+> Table 2: Ablation on Stage Size for LLaDA2.0-mini-CForce. Full benchmark-level results are in Appendix F. The shaded row denotes the default setting; bold marks the best value in each metric.
+> Training AVG Curriculum Frozen Teacher Score TPF
+> ✓80.88 6.42
+> ✓✓79.49 5.91 79.87 5.97
+> Table 3: Ablation on Curriculum Learning and Tar-get Type for LLaDA2.0-mini-CForce. The frozen-teacher variant changes only the target predictor; the no-curriculum variant removes the gradual exposure schedule from the same-model stop-gradient target.
+
+stantially more tokens to be committed per forward pass than in the standard dynamic-threshold setting. Consistency Forcing obtains the best average score at both budgets, with the largest margin under the more aggressive TPF = 8 setting. This supports the main hypothesis that adjacent-stage forcing is most useful when early predictions must directly support large parallel commitments. 
+
+5.3 Ablation Studies 
+
+We conduct ablations on LLaDA2.0-mini-CForce, where the confidence-threshold results expose a clear speed-quality trade-off. We vary the stage size, curriculum schedule, KL divergence form, CE anchor weight, and target type while keeping the rest of the training setup fixed. All rows are evaluated with threshold decoding at τ = 0 .9 and maximum generation length 4096. 
+
+Stage Size. Table 2 studies the number of newly revealed tokens between saved trajectory stages. A small stage size ( S = 4 ) yields nearby state pairs and lower parallelism, reaching 80.62 aver-age score and 5.64 average TPF. Increasing the stage size to 16 raises average TPF to 7.97 but low-ers average score to 75.05, consistent with larger transitions being harder consistency targets. We therefore use S = 8 , which provides the best ob-served balance in this ablation, with 80.88 average score and 6.42 average TPF. 
+
+Curriculum Learning. Table 3 isolates the cur-riculum schedule (Eq. 11), which gradually in-creases the fraction of newly revealed positions exposed by the later trajectory state from 10% to 100% over training. Removing the schedule lowers average score from 80.88 to 79.87 and average TPF from 6.42 to 5.97, confirming that gradual expo-sure to larger context gaps stabilizes learning. This suggests that the model benefits from first learn-ing local adjacent-stage consistency before being exposed to the full transition gap. 
+
+Target Type. Table 3 also compares the same-model stop-gradient target used by Consistency Forcing with a frozen-teacher variant. The same-model target outperforms the frozen-teacher base-line on both score (+1.39) and TPF (+0.51), sug-gesting that an evolving target better tracks the student’s own decoding distribution and provides more aligned supervision for its inference states.                    
+
+> Component Variant AVG Score TPF
+> KL divergence Forward KL 85.75 5.07 Reverse KL 65.57 8.72 CAD 80.88 6.42 CE anchor
+> λCE = 0 79.02 6.52
+> λCE = 0 .180.88 6.42
+> λCE = 2 .080.22 6.52
+> Table 4: Ablations of the KL Divergence Form and CE Anchor Weight on LLaDA2.0-mini-CForce.
+
+KL Divergence Form. Table 4 compares for-ward KL, reverse KL, and our CAD. Forward KL gives the highest average score, but it remains con-servative in parallelism, with 5.07 average TPF. Reverse KL reaches much higher parallelism, 8.72 average TPF, but its average score drops to 65.57, consistent with an overly aggressive mode-seeking objective under threshold decoding. CAD selects an intermediate operating point: compared with forward KL, it increases average TPF from 5.07 to 6.42; compared with reverse KL, it avoids the large score collapse. CAD thus balances conservative drift control with controlled sharpening. 
+
+CE Anchor. The lower block of Table 4 stud-ies the CE anchor weight. Removing the anchor lowers average score from 80.88 to 79.02 while leaving TPF nearly unchanged, suggesting that the CE term improves the score side of the trade-off. A larger weight, λCE = 2 .0, recovers part of the 8score but remains below the moderate setting on average and drops noticeably on HumanEval. We therefore use λCE = 0 .1 as a modest token-level anchor: it improves average score while preserving the adjacent-stage KL-driven parallelism. 
+
+6 Conclusion 
+
+We presented Consistency Forcing, a training method for improving the speed-quality frontier of diffusion language models under aggressive thresh-old decoding. The method constructs staged tra-jectories from the model’s own decoding path and aligns earlier low-context states with later, more in-formative states through same-model stop-gradient supervision. By combining Confidence Adaptive KL Divergence, a CE anchor, and a curriculum over reveal difficulty, Consistency Forcing improves the reliability of early-stage predictions and sup-ports higher parallelism. We further extended the framework to edit-capable dLLMs, where later T2T refinements provide useful supervision for ear-lier M2T predictions. Experiments on both edit-capable and conventional dLLMs show that this trajectory-based forcing improves high-parallelism decoding while preserving the generation quality. 
+
+Limitations 
+
+For training stability, Consistency Forcing cur-rently relies on trajectories collected in advance from a pretrained initialization. Although these trajectories are produced by the model’s own threshold-decoding process, they are still fixed be-fore optimization begins. As training changes the model, the cached trajectories may gradually dif-fer from the actual inference trajectories visited by the updated model. This remaining mismatch can limit how closely the training signal follows the final student distribution. In future work, we plan to explore online trajectory collection and policy-updating strategies so that the forcing objective can adapt to the model’s evolving inference behavior. 
+
+Acknowledgments 
+
+This work was supported by Ant Group Research Fund. 
+
+References 
+
+Sudhanshu Agrawal, Risheek Garrepalli, Raghavv Goel, Mingu Lee, Christopher Lott, and Fatih Porikli. 2025. Spiffy: Multiplying diffusion llm accelera-tion via lossless speculative decoding. arXiv preprint arXiv:2509.18085 .Wasi Uddin Ahmad, Aleksander Ficek, Mehrzad Samadi, Jocelyn Huang, Vahid Noroozi, Somshubra Majumdar, and Boris Ginsburg. 2025. Opencodein-struct: A large-scale instruction tuning dataset for code llms. arXiv preprint arXiv:2504.04030 .Marianne Arriola, Aaron Gokaslan, Justin Chiu, Zhihan Yang, Zhixuan Qi, Jiaqi Han, Subham Sahoo, and Volodymyr Kuleshov. 2025. Block diffusion: Interpo-lating between autoregressive and diffusion language models. In International Conference on Learning Representations , volume 2025, pages 50726–50753. Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg. 2021a. Structured denoising diffusion models in discrete state-spaces. 
+
+Advances in neural information processing systems ,34:17981–17993. Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, and 1 oth-ers. 2021b. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 .Tiwei Bie, Maosong Cao, Xiang Cao, Bingsen Chen, Fuyuan Chen, Kun Chen, Lun Du, Daozhuo Feng, Haibo Feng, Mingliang Gong, and 1 others. 2026. Llada2. 1: Speeding up text diffusion via token edit-ing. arXiv preprint arXiv:2602.08676 .Tiwei Bie, Maosong Cao, Kun Chen, Lun Du, Min-gliang Gong, Zhuochen Gong, Yanmei Gu, Jiaqi Hu, Zenan Huang, Zhenzhong Lan, and 1 others. 2025. Llada2. 0: Scaling up diffusion language models to 100b. arXiv preprint arXiv:2512.15745 .Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T Freeman. 2022. Maskgit: Masked gen-erative image transformer. In Proceedings of the IEEE/CVF conference on computer vision and pat-tern recognition , pages 11315–11325. Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde De Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, and 1 others. 2021. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 .Shirui Chen, Jiantao Jiao, Lillian J Ratliff, and Banghua Zhu. 2025a. dultra: Ultra-fast diffusion language models via reinforcement learning. arXiv preprint arXiv:2512.21446 .Zigeng Chen, Gongfan Fang, Xinyin Ma, Ruonan Yu, and Xinchao Wang. 2025b. dparallel: Learn-able parallel decoding for dllms. arXiv preprint arXiv:2509.26488 .
+
+9Zigeng Chen, Gongfan Fang, Xinyin Ma, Ruonan Yu, and Xinchao Wang. 2026. Dmax: Aggres-sive parallel decoding for dllms. arXiv preprint arXiv:2604.08302 .Shuang Cheng, Yihan Bian, Dawei Liu, Linfeng Zhang, Qian Yao, Zhongbo Tian, Wenhai Wang, Qipeng Guo, Kai Chen, Biqing Qi, and 1 others. 2025. Sdar: A synergistic diffusion-autoregression paradigm for scalable sequence generation. arXiv preprint arXiv:2510.06303 .Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, and 1 others. 2021. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 .Yifeng Gao, Ziang Ji, Yuxuan Wang, Biqing Qi, Han-lin Xu, and Linfeng Zhang. 2025. Self speculative decoding for diffusion large language models. arXiv preprint arXiv:2510.04147 .Marjan Ghazvininejad, Omer Levy, Yinhan Liu, and Luke Zettlemoyer. 2019. Mask-predict: Parallel de-coding of conditional masked language models. In 
+
+Proceedings of the 2019 conference on empirical methods in natural language processing and the 9th international joint conference on natural language processing (EMNLP-IJCNLP) , pages 6112–6121. Shansan Gong, Ruixiang Zhang, Huangjie Zheng, Ji-atao Gu, Navdeep Jaitly, Lingpeng Kong, and Yizhe Zhang. 2025. Diffucoder: Understanding and im-proving masked diffusion models for code generation. 
+
+arXiv preprint arXiv:2506.20639 .Satoshi Hayakawa, Yuhta Takida, Masaaki Imaizumi, Hiromi Wakaki, and Yuki Mitsufuji. 2024. Distilla-tion of discrete diffusion through dimensional corre-lations. arXiv preprint arXiv:2410.08709 .Yanzhe Hu, Yijie Jin, Pengfei Liu, Kai Yu, and Zhijie Deng. 2026. Lightningrl: Breaking the accuracy-parallelism trade-off of block-wise dllms via reinforcement learning. arXiv preprint arXiv:2603.13319 .Minseo Kim, Chenfeng Xu, Coleman Hooper, Harman Singh, Ben Athiwaratkun, Ce Zhang, Kurt Keutzer, and Amir Gholami. 2025. Cdlm: Consistency dif-fusion language models for faster sampling. arXiv preprint arXiv:2511.19269 .Seo Hyun Kim, Sunwoo Hong, Hojung Jung, Youngrok Park, and Se-Young Yun. 2026. Klass: Kl-guided fast inference in masked diffusion models. Advances in Neural Information Processing Systems , 38:92267– 92301. Siqi Kou, Lanxiang Hu, Zhezhi He, Zhijie Deng, and Hao Zhang. 2024. Cllms: Consistency large lan-guage models. In Forty-first International Confer-ence on Machine Learning .Yihao Liang, Ze Wang, Hao Chen, Ximeng Sun, Jialian Wu, Xiaodong Yu, Jiang Liu, Emad Barsoum, Zicheng Liu, and Niraj K Jha. 2026. Cd4lm: Consis-tency distillation and adaptive decoding for diffusion language models. arXiv preprint arXiv:2601.02236 .Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-son Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2024. Let’s verify step by step. In International Conference on Learning Representations , volume 2024, pages 39578–39601. Yunpeng Liu, Boxiao Liu, Yi Zhang, Xingzhong Hou, Guanglu Song, Yu Liu, and Haihang You. 2025a. See further when clear: Curriculum consistency model. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 18103–18112. Zhiyuan Liu, Yicun Yang, Yaojie Zhang, Junjie Chen, Chang Zou, Qingyuan Wei, Shaobo Wang, and Lin-feng Zhang. 2025b. dllm-cache: Accelerating dif-fusion large language models with adaptive caching. 
+
+arXiv preprint arXiv:2506.06295 .Aaron Lou, Chenlin Meng, and Stefano Ermon. 2024. Discrete diffusion modeling by estimating the ratios of the data distribution, 2024. URL https://arxiv. org/abs/2310.16834 .Eric Luhman and Troy Luhman. 2021. Knowledge dis-tillation in iterative generative models for improved sampling speed. arXiv preprint arXiv:2101.02388 .Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. 2023. Latent consistency models: Syn-thesizing high-resolution images with few-step infer-ence. arXiv preprint arXiv:2310.04378 .Xinyin Ma, Runpeng Yu, Gongfan Fang, and Xinchao Wang. 2026. dkv-cache: The cache for diffusion language models. Advances in Neural Information Processing Systems , 38:149009–149033. Chenlin Meng, Robin Rombach, Ruiqi Gao, Diederik Kingma, Stefano Ermon, Jonathan Ho, and Tim Sali-mans. 2023. On distillation of guided diffusion mod-els. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 14297–14306. Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. 2026. Large language dif-fusion models. Advances in Neural Information Pro-cessing Systems , 38:50608–50646. Yu-Yang Qian, Junda Su, Lanxiang Hu, Peiyuan Zhang, Zhijie Deng, Peng Zhao, and Hao Zhang. 2026. d3llm: Ultra-fast diffusion llm using pseudo-trajectory distillation. arXiv preprint arXiv:2601.07568 .Subham S Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin T Chiu, Alexan-der Rush, and Volodymyr Kuleshov. 2024. Simple 
+
+10 and effective masked diffusion language models. Ad-vances in Neural Information Processing Systems ,37:130136–130184. Subham Sekhar Sahoo, Justin Deschenaux, Aaron Gokaslan, Guanghan Wang, Justin Chiu, and Volodymyr Kuleshov. 2025. The diffusion duality. 
+
+arXiv preprint arXiv:2506.10892 .Tim Salimans and Jonathan Ho. 2022. Progressive dis-tillation for fast sampling of diffusion models. arXiv preprint arXiv:2202.00512 .Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. 2023. Consistency models. Shubham Toshniwal, Wei Du, Ivan Moshkov, Branislav Kisacanin, Alexan Ayrapetyan, and Igor Gitman. 2025. Openmathinstruct-2: Accelerating ai for math with massive open-source instruction data. In Inter-national Conference on Learning Representations ,volume 2025, pages 19243–19275. Xu Wang, Chenkai Xu, Yijie Jin, Jiachun Jin, Hao Zhang, and Zhijie Deng. 2025. Diffusion llms can do faster-than-ar inference via discrete diffusion forcing. 
+
+arXiv preprint arXiv:2508.09192 .Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. 2025. Fast-dllm: Training-free accelera-tion of diffusion llm by enabling kv cache and parallel decoding. arXiv preprint arXiv:2505.22618 .Chenkai Xu, Yijie Jin, Jiajun Li, Yi Tu, Guoping Long, Dandan Tu, Mingcong Song, Hongjie Si, Tianqi Hou, Junchi Yan, and 1 others. 2025a. Lopa: Scaling dllm inference via lookahead parallel decoding. arXiv preprint arXiv:2512.16229 .Chenkai Xu, Xu Wang, Zhenyi Liao, Yishun Li, Tianqi Hou, and Zhijie Deng. 2025b. Unicms: A unified consistency model for efficient multi-modal generation and understanding. arXiv preprint arXiv:2502.05415 .Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. 2025. Dream 7b: Diffusion large language models. 
+
+arXiv preprint arXiv:2508.15487 .Tunyu Zhang, Xinxi Zhang, Ligong Han, Haizhou Shi, Xiaoxiao He, Zhuowei Li, Hao Wang, Kai Xu, Akash Srivastava, Vladimir Pavlovic, and 1 others. 2026. T3d: Few-step diffusion language models via trajec-tory self-distillation with direct discriminative opti-mization. arXiv preprint arXiv:2602.12262 .Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody H Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E Gonzalez, and 1 oth-ers. 2024. Sglang: Efficient execution of structured language model programs. Advances in neural infor-mation processing systems , 37:62557–62583. Lin Zheng, Jianbo Yuan, Lei Yu, and Lingpeng Kong. 2023. A reparameterized discrete diffusion model for text generation. arXiv preprint arXiv:2302.05737 .
+
+11 A Staged Trajectory Construction Algorithm 
+
+Algorithm 1 gives the complete procedure for con-structing staged self-rollout trajectories from native threshold-decoding traces. 
+
+Algorithm 1 Staged Trajectory Construction                                                                            
+
+> Require: Pretrained dLLM qθ0, prompt set X, M2T thresh-old τ, optional edit threshold τedit , stage size S
+> Ensure: Trajectory dataset D
+> // Initialize dataset
+> D ← ∅
+> for each prompt x∈ X do
+> // Initialize native trajectory
+> Set s0to the all-mask initial state and save ¯s0←s0
+> Set stage counter n←0and reveal counter R←0
+> for each native decoding step tdo
+> Compute predictions with qθ0(· | x, s t, j )
+> Select newly revealed positions ∆Mtby Eq. (2) For edit-capable decoding, record Etby Eq. (5) Update the native state from stto st+1
+> Set R←R+|∆Mt|
+> if Rreaches the stage size Sthen
+> Save ¯sn+1 ←st+1
+> Set n←n+ 1 and R←0
+> end if end for
+> // Finalize after full decoding if sTis not already saved then
+> Save ¯sN←sT
+> end if
+> Add the complete stage trajectory ¯T= (¯ s0, . . . , ¯sN)
+> to D
+> end for return D
+
+B Implementation Details 
+
+All models use full-parameter fine-tuning with the AdamW optimizer, a learning rate of 1.0 × 10 −5,and a cosine learning rate schedule. We set the stage size to 8, use a global batch size of 64, and train for 5 epochs. The CE anchor loss weight λCE 
+
+is set to 0.1, and the block size is 32. During KL distillation, we retain the top-20 tokens ranked by the target distribution pj 
+
+> tar
+
+and renormalize the re-tained probabilities before computing the KL terms. This top-k truncation both reduces the computation cost of the softmax and KL terms and focuses the student on the semantically meaningful region of the distribution. All training is conducted on 64 NVIDIA H800 GPUs. 
+
+C Full Derivation of the Theoretical Analysis 
+
+This appendix provides the full derivation of the bound used in Section 4.4. Using the TV distance defined in Section 4.4, consider a position j that is revealed at stage rj , i.e., j ∈ ¯Mrj −1 and j / ∈ ¯Mrj ,with final token yj = ¯ sjN . Let pji = qθ(· | x, ¯si, j )
+
+denote the prediction at stage i. For any earlier masked stage i < r j , the triangle inequality gives         
+
+> DTV (pji, δ yj)≤
+> rj−2
+> X
+> r=i
+> DTV (pjr, p jr+1 ) + DTV (pjrj−1, δ yj),
+> (15)
+
+where δyj is the one-hot distribution on yj . The first term accumulates distributional drift across adjacent stages, and the second term is the masked-state error immediately before token reveal. Pinsker’s inequality bounds each adjacent-stage TV term by forward KL: 
+
+DTV (pjr, p jr+1 ) ≤
+
+r 12 DKL (pjr+1 ∥pjr). (16) For the reveal-boundary term, we have 
+
+DTV (pjrj −1, δ yj ) = 1 − pjrj −1(yj )
+
+≤ − log pjrj −1(yj ), (17) using 1 − x ≤ − log x for x ∈ (0 , 1] . Substituting Eqs. (16) and (17) into Eq. (15) yields            
+
+> DTV (pji, δ yj)≤
+> rj−2
+> X
+> r=i
+> r12DKL (pjr+1 ∥pjr)
+> −log pjrj−1(yj).
+> (18)
+
+This bound matches the structure of Consistency Forcing. The forward KL component in Eq. (8) directly targets the adjacent-stage drift terms in Eq. (18). The CE anchor in Eq. (9) includes the reveal-boundary term in Eq. (17) and supplies token-level supervision at commitment boundaries. The confidence-weighted reverse KL further en-courages mode-seeking predictions when the later-stage target is reliable. Since cj ≥ 0,      
+
+> Lj
+> CAD =DKL (pj
+> tar ∥pj
+> stu ) + cjDKL (pj
+> stu ∥pj
+> tar )
+> ≥DKL (pj
+> tar ∥pj
+> stu ),(19)
+
+so optimizing LCAD preserves the forward KL alignment term while sharpening the student distri-bution toward the cleaner state’s dominant mode. Therefore, Consistency Forcing reduces a tractable surrogate of the early-stage prediction error bound by aligning adjacent-stage distributions and anchor-ing masked-token predictions along the trajectory. 12 Model Decode config AVG GSM8K MATH500 MBPP HumanEval Score TPF Score TPF Score TPF Score TPF Score TPF                                                                                                                            
+
+> LLaDA2.0-mini τ= 0 .95 86.52 3.09 93.78 2.42 84.20 2.99 81.50 3.21 86.59 3.74
+> τ= 0 .984.32 3.60 93.25 2.85 81.80 3.46 78.69 3.80 83.54 4.28 LLaDA2.0-mini-CAP τ= 0 .95 82.70 4.26 92.34 3.40 83.00 4.15 76.81 4.57 78.66 4.93
+> τ= 0 .979.51 5.07 91.74 4.09 81.00 4.85 72.13 5.43 73.18 5.89 LLaDA2.0-mini-CForce (Ours) τ= 0 .95 83.90 5.32 92.27 4.33 82.60 5.34 79.63 4.87 81.10 6.73
+> τ= 0 .980.88 6.42 91.74 5.36 79.20 6.35 73.30 6.00 79.27 7.97
+> LLaDA2.1-mini τ= 0 .7,τedit = 0 .585.57 6.94 93.56 5.94 85.00 7.44 77.75 7.25 85.98 7.11
+> τ= 0 .5,τedit = 0 .085.77 8.11 92.95 7.15 86.20 8.74 79.16 8.30 84.76 8.26 LLaDA2.1-mini-CForce (Ours) τ= 0 .7,τedit = 0 .586.41 9.08 92.27 7.63 84.80 10.15 81.97 10.07 86.59 8.48
+> τ= 0 .5,τedit = 0 .085.03 10.86 91.51 9.26 84.40 11.47 78.22 12.61 85.98 10.08
+
+Table 5: Benchmark-level Operating Points Used to Compute AUP for the LLaDA-family Rows in Table 1. 
+
+Each benchmark group reports the Score/TPF pair used by the two-point AUP frontier. Bold and underline mark the best and second-best metrics within each LLaDA-series block. All evaluations use maximum generation length 4096; LLaDA2.0 models are M2T-only and therefore do not use an edit threshold. 
+
+D AUP Evaluation Details 
+
+AUP is computed from a small score–parallelism frontier rather than from only the single Score/TPF pair shown in Table 1. For each benchmark, an operating point is denoted by (ai, y i), where ai is TPF and yi is the task score in percentage points. Following the public AUP implementation, we sort operating points by TPF and compute 
+
+AUP = a1y1+
+
+> m
+
+X
+
+> i=2
+
+ai − ai−1
+
+2 (yiW (yi) + yi−1W (yi−1)) ,
+
+(20) 
+
+where W (y) = min(exp( −3(1 −y/y max )) , 1) and 
+
+ymax is the maximum score for that benchmark among the compared methods. We keep oper-ating points within five score points of the first, lowest-TPF point, matching the default AUP filter-ing threshold. This weighting penalizes operating points that gain parallelism by substantially degrad-ing accuracy. Table 5 lists the exact decoding configurations and benchmark-level Score/TPF pairs used to con-struct the LLaDA-family AUP frontiers in Table 1. For the LLaDA2.0 series, including LLaDA2.0-mini, LLaDA2.0-mini-CAP, and LLaDA2.0-mini-CForce, we evaluate two threshold-decoding points, 
+
+τ = 0.95 and τ = 0.9. For the edit-capable LLaDA2.1 series, including LLaDA2.1-mini and LLaDA2.1-mini-CForce, we use the official quality and speed modes: quality mode sets τ = 0 .7 and 
+
+τedit = 0 .5, while speed mode sets τ = 0 .5 and 
+
+τedit = 0 .0. The Score and TPF columns in Table 1 report the main comparison operating point, while the AUP column is computed from the correspond-ing two-point frontier.                   
+
+> Model GSM8K TPS HumanEval TPS AVG TPS
+> Non-edit dLLMs
+> LLaDA2.0-mini 489.87 711.59 600.73 LLaDA2.0-mini-CAP 710.88 891.94 801.41 LLaDA2.0-mini-CForce (Ours) 783.09 932.82 857.96
+> Edit-capable dLLMs
+> LLaDA2.1-mini 987.78 1116.10 1051.94 LLaDA2.1-mini-CForce (Ours) 1231.52 1352.86 1292.19
+
+Table 6: Wall-clock Throughput on GSM8K and HumanEval. Bold marks the best throughput within each edit-capability group. 
+
+E Wall-clock Throughput 
+
+We report wall-clock throughput on two bench-marks, GSM8K and HumanEval, in Table 6. All measurements use two NVIDIA H20 GPUs with tensor parallelism TP = 2 and batch size 1. TPS denotes generated tokens per second. In the non-edit LLaDA2.0 setting, CForce reaches 857.96 average TPS, improving over the base model by 42.82% and over CAP by 7.06%. In the edit-capable LLaDA2.1 setting, CForce reaches 1292.19 average TPS, improving over the base model by 22.84%. 
+
+F Full Ablation Results 
+
+Tables 7, 8, and 9 provide the benchmark-level results corresponding to the compact ablation ta-bles in Section 5.3. Each benchmark group reports Score and TPF under threshold decoding at τ = 0 .9
+
+and maximum generation length 4096. 
+
+G Case Study 
+
+We present qualitative examples comparing the gen-eration quality of LLaDA2.0-mini-CForce (Ours), 13 Stage size S AVG GSM8K MATH500 MBPP HumanEval Score TPF Score TPF Score TPF Score TPF Score TPF 
+
+4 80.62 5.64 91.51 4.56 79.80 5.64 74.94 5.22 76.22 7.14 8 80.88 6.42 91.74 5.36 79.20 6.35 73.30 6.00 79.27 7.97 16 75.05 7.97 90.30 7.61 75.20 9.86 62.76 6.71 71.95 7.70 
+
+Table 7: Full benchmark-level ablation on stage size for LLaDA2.0-mini-CForce. Each benchmark group reports Score and TPF. 
+
+Curriculum Target type AVG GSM8K MATH500 MBPP HumanEval Score TPF Score TPF Score TPF Score TPF Score TPF 
+
+✓ Same-model target 80.88 6.42 91.74 5.36 79.20 6.35 73.30 6.00 79.27 7.97 
+
+✓ Frozen teacher 79.49 5.91 91.21 4.67 79.20 5.57 70.73 5.63 76.83 7.75 
+
+× Same-model target 79.87 5.97 91.66 4.89 77.40 5.67 72.37 5.30 78.05 8.00 
+
+Table 8: Full benchmark-level ablation on curriculum learning and target type for LLaDA2.0-mini-CForce. 
+
+The frozen-teacher variant changes only the later-state target predictor, while the no-curriculum row keeps the same-model stop-gradient target and removes the gradual exposure schedule. Each benchmark group reports Score and TPF. 
+
+Component Variant AVG GSM8K MATH500 MBPP HumanEval Score TPF Score TPF Score TPF Score TPF Score TPF 
+
+KL divergence Forward KL 85.75 5.07 92.95 4.00 82.80 4.72 81.26 4.74 85.98 6.81 Reverse KL 65.57 8.72 87.64 7.02 70.20 8.15 51.99 8.78 52.44 10.92 CAD 80.88 6.42 91.74 5.36 79.20 6.35 73.30 6.00 79.27 7.97 CE anchor 
+
+λCE = 0 79.02 6.52 91.58 5.34 78.80 6.36 68.85 6.06 76.83 8.32 
+
+λCE = 0 .1 80.88 6.42 91.74 5.36 79.20 6.35 73.30 6.00 79.27 7.97 
+
+λCE = 2 .0 80.22 6.52 92.49 5.34 78.60 6.06 75.41 6.34 74.39 8.35 
+
+Table 9: Full benchmark-level ablations of the KL Divergence Form and CE Anchor Weight on LLaDA2.0-mini-CForce. Each benchmark group reports Score and TPF. 
+
+LLaDA2.0-mini-CAP, and the LLaDA2.0-mini baseline. All outputs are generated with a fixed TPF of 8, i.e., each forward pass produces exactly 8 tokens. These examples illustrate that CForce produces more coherent and accurate outputs un-der few-step generation compared to CAP and the baseline. 
+
+G.1 Example 1 (Reference: 140) Prompt:                         
+
+> Question : Andy plants 90 geraniums and 40 fewer petunias that geraniums . How many flowers does he plant total ? Please reason step by step , and put your final answer within \ boxed {}.
+
+LLaDA2.0-mini-CForce (Ours):                                             
+
+> Let 's solve the problem step by step : 1. ** Number of geraniums **: Andy plants 90 geraniums . 2. ** Number of petunias **: He plants 40 fewer petunias than geraniums . So , number of petunias =90 -40 =50. 3. ** Total number of flowers **: Add ger geranium and ger petunias : Total =geraniums +petunias =90 +
+
+14 50 = 140. Final answer : \ boxed {140} 
+
+LLaDA2.0-mini-CAP: 
+
+Let 's break this down step by step : 1. ** Identify the number of geraniums planted :** Andy plants **90 geraniums **. 2. ** Determine the number of petunias planted :** He plants **40 fewer petunias than geraniums **. So , number of petunias = 90 geraniumaniums )0 = **50**. 3. ** Calculate the total number of flowers :** Total flowers = geraniums +petunias = 900 + 50 =**120 \ boxed { Rightarrow {1}0} 
+
+LLaDA2.0-mini (Baseline): 
+
+Let 's solve this problem step by step . 1. ** Identify the number of geraniums plants **: Andy plants **90 geraniums **. 2. ** Determine the number of petunias he plants **: He plants **40 fewer petununias than geraniums **. So , number of petunias =$$ 90 - 040 = 50 $$ 3. ** Calculate the total number of flowers **: Add flowers number of geraniums and petunias $$ 90 + 50 = 140 $$ Wait -- the total written .: \ $$ \ boxed - 50 = 130 \\ $$ No -- let 's re - check . **90 - 40 = 50** , correct .5 ias total . $$ \ {90 } = \1100 $$ No -- restart . Correct : $$ 90 + 50 = 140 $$ Correcting \ boxed {140} After Final step : \ boxed$$ 140 $$ 
+
+G.2 Example 2 (Reference: 160) Prompt: 
+
+Question : Tara bought 8 packs of 5canvas bags for $4 each . She painted them and sold them at acraft fair for $8 each . How much profit did she earn on her bags ? Please reason step by step , and put your final answer within \ boxed {}. 
+
+LLaDA2.0-mini-CForce (Ours): 
+
+Let 's solve this step by step . ** Step 1: Determine the total number of canvas bags Tara bought .** Tara bought 8 packs , and each pack contains 5 canvas bags : $$ 8 \ text { packs } \ times 5 \ text { bags per pack } = 40 \ text { canvas bags } $$ ** Step 2: Calculate the total cost of the canvas bags .** Each canvas bag costs $4 : $$ 40 \ text { bags } \ times \ $4 = \ $160 $$ ** Step 3: Calculate the total revenue from selling the bags .** She sold each bag for $8 : $$ 40 \ text { bags } \ times \ $8 = \ $320 $$ ** Step 4: Calculate the profit .** Profit = Revenue - Total Cost $$ \ $320 - \ $160 = \ $160 $$ ** Final Answer :** $$ \ boxed {160} $$ 
+
+15 Tara earned a profit of ** $160 **. 
+
+LLaDA2.0-mini-CAP: 
+
+Let 's solve this step step by step : ** Step 1: Calculate the total cost Tara the bags .** bought bought 8 packs of 5 canvas bags , pack . Each pack pack costs $4 . So , total number of bags bags =8 packs x {5 bags per pack } = {4{ text { bags } $$ ** Total cost ** =8 x {44 per pack } = \{32} $$ ---** Step 2: Calculate the much revenue selling the the bags bags $$ She sold each 40 bags for $8 each . Total , from all bags =40 bags x { $8 per bag } \ \{320} $$ ---** Step 3: Calculate the profit $$ProfitProfit = Total Revenue - Total cost \{320 - \ $32 } = \{288} ---Wait -- correction : $$ $$ boxedboxed2 
+
+LLaDA2.0-mini (Baseline): 
+
+Let 's break this down step by step : ** Step 1: Calculate how total canvas bags Tara bought .** T bought bought 8 packs , each of 5canvas bags . So , Total \ text {5} - canvas bags } = 8 xpacks 5 = = text40 bags . ** Step 2: Calculate how Tara cost for bought on canvas bags .** Each pack $44 , and she bought 8.. So , Cost = 8 x $4 = \ text3$2 . ** Step 3 Calculate how much Tara earned from selling the bags .** She sold each bag bag for for for88 , and had 40 bags . .So , totalRevenue = 40 x $8 = \ text320 . ** Step 4: profit earned vs .** Profit = Total revenue - Total Cost . Profit = $320 - 32 = \ text288 .. Wait -- let 's correct and recal values accurately . 
+
+G.3 Example 3 Prompt: 
+
+You are an expert Python programmer , and here is your task : Write afunction to find the median of three numbers . Your code should pass these tests : assert median_numbers (25 ,55 ,65) ==55.0 assert median_numbers (20 ,10 ,30) ==20.0 assert median_numbers (15 ,45 ,75) ==45.0 Please enclose your code within delimiters as follows : 
+
+``` python # YOUR CODE HERE 
+
+``` 
+
+LLaDA2.0-mini-CForce (Ours): 
+
+``` python def median_numbers (a , b , c): """ Find the median of three numbers . Args : a , b , c: three numbers Returns : The : of a float """ # Sort a three numbers list and return the median sorted_numbers = sorted ([a , b , c ]) return float ( sorted_numbers [1]) 
+
+``` 
+
+LLaDA2.0-mini-CAP: 
+
+``` python def median_numbers (a ,,, c): """ Find the median of three numbers . Args : a , b , c: Three numbers Returns : The median value as a numbers or a float place numbers = [a , b , c] numbers . sort () return float ( numbers [1]) 
+
+``` 
+
+16 LLaDA2.0-mini (Baseline): 
+
+``` python # median_numbers (a , b , c): """ Find the median of three numbers . Args : a , b , c: Three numbers Returns : The median as a three - digit float float # Create a three numbers numbers and sort numbers = [] + [b] + cc numbers . sort () # Return the median ( middle value ) return float ( numbers [1]) 
+
+``` 
+
+17
