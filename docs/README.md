@@ -18,35 +18,50 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-08-17
-- 运行时间：2026-08-17 21:00:32 UTC
+- 最新运行日期：2026-08-19
+- 运行时间：2026-08-19 20:50:56 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：4
-- 速读区：1
+- 本次总论文数：10
+- 精读区：7
+- 速读区：3
 
 ### 今日简报（AI）
-今日精读4篇、速读1篇，聚焦dLLM并行解码与混合生成模型量化。最值得看《CForce》与《Post-training Quantization》（均9.0/10），分别突破一致性强制解码和量化效率。建议普通读者优先了解这两项技术在实际推理加速中的应用潜力。
-- 详情：[/202608/17/README](/202608/17/README)
+今日精读聚焦音视频生成，两篇高分论文分别提出同步感知稀疏注意力与幅度-方向解耦加速流匹配视频生成；速读则涉及时空调制超分与贝叶斯成像。最值得关注音视频生成效率提升方向，尤其是跨模态同步与解耦策略可显著加速生成。建议普通读者优先体验相关开源模型，感受轻量化超分与视频生成新方法带来的实际效果提升。
+- 详情：[/202608/19/README](/202608/19/README)
 
 ### 精读区论文标签
-1. [CForce: Boosting Parallel Decoding for dLLMs via Consistency Forcing](/202608/17/2608.13925v1-cforce-boosting-parallel-decoding-for-dllms-via-consistency-forcing)  
+1. [Efficient Audio-Visual Generation via Synchrony-Aware Cross-Modal Sparse Attention](/202608/19/2608.15522v1-efficient-audio-visual-generation-via-synchrony-aware-cross-modal-sparse-attention)  
+   标签：评分：10.0/10、query:sparse-attn
+   evidence：同步感知的跨模态稀疏注意力用于高效视频扩散
+2. [Magnitude-Direction Decoupling for Fast Video Generation with Flow Matching Models](/202608/19/2608.17695v1-magnitude-direction-decoupling-for-fast-video-generation-with-flow-matching-models)  
    标签：评分：9.0/10、query:diff-accel
-   evidence：提出一致性强制以提升并行解码，加速扩散大语言模型生成
-2. [Post-training Quantization for Hybrid Iterative Generative Models](/202608/17/2608.13932v1-post-training-quantization-for-hybrid-iterative-generative-models)  
+   evidence：通过幅度-方向解耦加速流匹配模型的视频生成
+3. [LinCa: Accelerating Diffusion Models via Learnable Decomposed Feature Caching](/202608/19/2608.17973v1-linca-accelerating-diffusion-models-via-learnable-decomposed-feature-caching)  
    标签：评分：9.0/10、query:diff-accel
-   evidence：提出后训练量化以加速扩散及混合迭代生成模型
-3. [When Denoising Hurts: Rethinking the Terminal Step of Diffusion Time Series Forecasters -- Extended Version](/202608/17/2608.14067v1-when-denoising-hurts-rethinking-the-terminal-step-of-diffusion-time-series-forecasters----extended-version)  
+   evidence：直接针对扩散模型加速，利用特征缓存方法
+4. [AViTS: Adaptive Spatiotemporal Token Selection for Efficient Dynamic-Resolution Generation](/202608/19/2608.17995v1-avits-adaptive-spatiotemporal-token-selection-for-efficient-dynamic-resolution-generation)  
+   标签：评分：9.0/10、query:diff-accel
+   evidence：面向动态分辨率扩散Transformer的无训练自适应令牌选择
+5. [Optimize Your Sampling: Tuned Diffusion Sampling with Bayesian Optimization](/202608/19/2608.18040v1-optimize-your-sampling-tuned-diffusion-sampling-with-bayesian-optimization)  
+   标签：评分：9.0/10、query:diff-accel
+   evidence：无训练的时间步调度优化以加速扩散采样
+6. [Forward-Evolution Error Analysis and Adaptive Design for Matrix-Valued Diffusion Models](/202608/19/2608.15103v1-forward-evolution-error-analysis-and-adaptive-design-for-matrix-valued-diffusion-models)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：提出无标签的扩散反向采样早停准则，无需训练即可减少采样步数。
-4. [MagnifiQ: Patch-aware Text Guided Progressive Upscaling for High-Resolution Image Restoration](/202608/17/2608.14543v1-magnifiq-patch-aware-text-guided-progressive-upscaling-for-high-resolution-image-restoration)  
+   evidence：对时间离散化进行误差分析并自适应设计以降低采样成本
+7. [Nexus: Structured Synergy for Efficient Text-to-Image Generation using Rectified Flow Model](/202608/19/2608.16104v1-nexus-structured-synergy-for-efficient-text-to-image-generation-using-rectified-flow-model)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：利用预训练扩散模型，将自注意力替换为卷积以加速高分辨率推理
+   evidence：提出Nexus，通过稀疏架构、线性复杂度与低比特量化加速文生图扩散模型推理，减少计算与内存。
 
 ### 速读区论文标签
-1. [Bridging Event Streams and DiT: Event-Guided Video Frame Interpolation](/202608/17/2608.10479v2-bridging-event-streams-and-dit-event-guided-video-frame-interpolation)  
+1. [Picard Proximal Monte Carlo for Parallel Bayesian Imaging with Score-Based Generative Priors](/202608/19/2608.17666v1-picard-proximal-monte-carlo-for-parallel-bayesian-imaging-with-score-based-generative-priors)  
+   标签：评分：8.0/10、query:diff-accel
+   evidence：通过时间并行近端Langevin加速扩散/评分模型采样
+2. [SFMformer: A Spatial-Frequency Modulation Transformer for Lightweight Image Super-Resolution](/202608/19/2608.17966v1-sfmformer-a-spatial-frequency-modulation-transformer-for-lightweight-image-super-resolution)  
+   标签：评分：8.0/10、query:sparse-attn
+   evidence：稀疏注意力机制用于高效图像超分辨率
+3. [Not All Attention Is Equal: A Quantitative Survey of the EEI Trade-off](/202608/19/2608.15459v1-not-all-attention-is-equal-a-quantitative-survey-of-the-eei-trade-off)  
    标签：评分：6.0/10、query:sparse-attn
-   evidence：在预训练视频扩散模型的适配器中使用了双向稀疏注意力进行事件引导的视频帧插值。
+   evidence：注意力机制综述，涵盖解决二次复杂度瓶颈的效率创新
 
 
 <div class="dpr-home-promo-card dpr-home-panel">

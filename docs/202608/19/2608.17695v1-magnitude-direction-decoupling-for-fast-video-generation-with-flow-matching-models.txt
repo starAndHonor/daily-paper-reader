@@ -1,0 +1,425 @@
+Title: Magnitude-Direction Decoupling for Fast Video Generation with Flow Matching Models
+
+URL Source: https://arxiv.org/pdf/2608.17695v1
+
+Published Time: Wed, 19 Aug 2026 00:54:33 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Magnitude-Direction Decoupling for Fast Video Generation with Flow Matching Models 
+
+Haonan Xu 1,2*,† , Feiyang Chen 2, Songkui Chen 2, Hongpeng Pan 2, Zhefeng Wang 2, Xinyu Duan 2, Baoxing Huai 2, and Yang Yang 1*,‡  
+
+> 1
+
+Nanjing University of Science and Technology, Nanjing, China  
+
+> 2
+
+Huawei, Shanghai & Hangzhou, China 
+
+Abstract. Flow matching models for video generation achieve impres-sive performance but suffer from high computational overhead due to iterative denoising. In fact, the original model is not necessary for all denoising steps, allowing some steps to use lightweight alternatives for faster sampling. However, directly using caching or lightweight models can deviate from the original denoising trajectory, resulting in subopti-mal performance. Through empirical analysis, we find that lightweight models can robustly capture the magnitude components of the origi-nal model’s output, while caching provides reliable directional guidance. Building on this insight, we propose the Magnitude-Direction Decou-pling (MDD) method, which adaptively employs a direction-calibrated lightweight model as a substitute for the original model to accelerate inference and effectively correct deviations in the denoising trajectory. Moreover, MDD further reduces inference costs by reusing magnitude in-formation under classifier-free guidance (CFG). As a result, MDD offers a more reliable and lightweight solution to accelerate sampling. Experi-ments show that MDD outperforms existing acceleration methods, deliv-ering promising speedups (e.g., up to 2.95× on Wan2.1) while preserving high visual fidelity and content richness. 
+
+Keywords: Fast Video Generation · Flow Matching Models · Magnitude-Direction Decoupling 
+
+## 1 Introduction 
+
+Driven by diffusion models [8, 11], visual generation has achieved remarkable success in recent years. A growing body of research [29, 41, 46, 48, 52] continues to explore the frontiers of diffusion models, achieving impressive levels of fidelity and temporal coherence in video generation. Notably, flow matching [20] has emerged as a compelling framework for achieving faster convergence and im-proved controllability in video generation [9, 24], and it is widely being adopted by state-of-the-art (SOTA) methods. However, the prohibitive inference latency of diffusion models remains a crit-ical bottleneck [18]. This core limitation arises from the inherently sequential 
+
+> †
+
+Work done while Haonan Xu was with Huawei. ‡Corresponding author. Email: yyang@njust.edu.cn arXiv:2608.17695v1 [cs.CV] 18 Aug 2026 2 H. Xu et al.   
+
+> Original
+> Latency: 948s
+> TeaCache
+> Latency: 362s (2.62 ×)LPIPS: 0.208
+> SRDiffusion
+> Latency: 344s (2.76 ×)LPIPS: 0.240
+> MDD (Ours)
+> Latency: 321s (2.95 ×)
+> LPIPS: 0.178
+
+Fig. 1: Comparison of visual fidelity and sampling speed with competing methods. Latency is measured on a single A100 GPU. LPIPS denotes learned perceptual image patch similarity. Video synthesis configuration: 81 frames, 5s, 480P on Wan2.1-14B. Our method consistently generates outputs that better preserve the visual fidelity and richness of the original video content while achieving enhanced acceleration perfor-mance. The limitations of competing methods are highlighted in red boxes and are best examined under zoomed-in view. Abbreviated paper title 3
+
+denoising process, which becomes even more pronounced as models scale to higher resolutions and longer video durations [3]. Existing work based on dis-tillation [32, 33] or post-training quantization [4] offers potential acceleration but requires costly model training and additional data resources. In contrast, training-free methods, including cache-based methods [21, 30] and large-small model collaborative inference method [6], recognize that the original model is not required for all denoising steps and instead employ lightweight substitutes for certain steps to accelerate sampling. These methods are easy to use, cost-effective, and generally applicable, making them the main focus of this work. Cache-based methods [5, 30] observe that model outputs are similar across consecutive timesteps during denoising and propose to reduce redundancy using caching mechanisms, such as residual reuse [31]. Although caching captures this redundancy, its static nature can cause rapid error accumulation and degrade performance under high cache reuse rates (example in Figure 1, Teacache [22]). The large-small model collaborative inference method SRDiffusion [6] posits that the original large model plays a critical role during the initial stages of semantic construction. In the subsequent stages, a small model from the same family can be employed to refine visual details, serving as a lightweight alternative that ac-celerates the process. Despite the promising acceleration benefits, directly using the bias output of a limited-capacity small model may lead to denoising tra-jectory deviations, resulting in suboptimal content richness and visual retention (example in Figure 1, SRDiffusion [6]). In this work, we conduct an error source analysis under the flow match-ing framework, comparing cache-based residual reuse outputs and lightweight model outputs with those of the original large model. By decoupling the out-put into magnitude and directional components, our empirical analysis shows that errors in residual-reuse outputs primarily arise from magnitude discrepan-cies, while the directional component is well approximated. In contrast, errors in lightweight model outputs are mainly due to directional misalignment, whereas the magnitude information is estimated reliably. Based on these insights, we propose a novel method called MDD, which ac-celerates sampling by adaptively employing a reliable lightweight alternative to the original large model. Specifically, MDD improves the outputs of lightweight models by calibrating them along directions obtained from residual reuse, en-abling the lightweight alternative output to better approximate the original de-noising trajectory. To prevent the accumulation of directional errors from in-variant residual reuse, MDD adaptively switches to the original large model for directional recalibration when it detects excessive error growth. Moreover, MDD further reduces inference costs by reusing magnitude information under CFG. As a result, MDD can preserve the content of the original video more faithfully while delivering improved acceleration (example in Figure 1, MDD). Qualitative experimental comparisons demonstrate that our MDD outperforms existing ac-celeration strategies in both sampling efficiency and visual fidelity, verifying the effectiveness of our proposal. In summary, our contributions are as follows: 4 H. Xu et al. 
+
+– We empirically find that, under the flow matching framework, the lightweight model can robustly estimate the output magnitude component of the original large model from the same family, while reusing cached residuals can reliably approximate the directional component. 
+
+– We propose MDD, which adaptively employs a direction-calibrated small model as a lightweight alternative to the original large model during infer-ence, while maintaining a faithful approximation of the original denoising trajectory. It also introduces CFG reuse to further accelerate inference. 
+
+– We evaluate MDD on various flow-based video generation models and demon-strate that our approach consistently outperforms existing acceleration strate-gies, achieving greater speedups while simultaneously delivering superior vi-sual fidelity and content richness. 
+
+## 2 Related Work 
+
+Diffusion and Flow-based Models. In generative modeling, diffusion mod-els [11, 36] have become foundational for their ability to produce high-quality, diverse outputs [1, 2]. Early methods, such as DDPM [11], DDIM [37], and EDM [15], are score-based models that learn the stochastic differential equations (SDEs) governing the diffusion process. In contrast, flow matching [20] provides an alternative by using ordinary differential equations (ODEs) to model sample trajectories, offering more stable and efficient generation through a deterministic mapping from the prior to the target distribution. Numerous studies [9, 16, 24] have shown that flow matching models converge faster and offer better con-trollability in video generation, making them a strong alternative to stochastic diffusion models with better interpretability and stability. Thus, our analysis is based on flow matching models, aiming to provide a lightweight alternative that enables more efficient sampling. 
+
+Diffusion Model Acceleration. Due to their high sampling costs, diffusion models have prompted extensive efforts for acceleration. One line of research focuses on methods based on training or fine-tuning, such as post-training quan-tization [4, 10, 17, 35, 42] and step distillation [19, 27, 32–34, 38]. However, they necessitate costly retraining and additional data resources, which can constrain their feasibility for broad implementation. Another line of research focuses on training-free methods. Foundational meth-ods like DDIM [37] enable fewer sampling steps without sacrificing quality. Ad-ditional studies use efficient ODE or SDE solvers [15, 25, 39], employing pseudo-numerical methods for faster sampling. Furthermore, a series of studies [5,30,49] have shown that not every step in the iterative denoising process requires the full original model, motivating various lightweight alternatives to accelerate sam-pling. Cache-based methods [23, 31, 44] exploit redundancies in model outputs across consecutive timesteps, caching outputs according to criteria such as con-tent complexity (AdaCache [14]) or timestep embeddings (Teacache [22]) to re-duce computational overhead. Large-small model collaborative inference strate-gies [47] leverage lightweight models from the same family as substitutes to accel-erate sampling. For example, SRDiffusion [6] uses the original large model during Abbreviated paper title 5
+
+the early stages of denoising to generate coarse semantic structures, which are then refined by a lightweight model responsible for producing fine visual details. However, the limited capacity of the lightweight model can lead to deviations from the original large model’s denoising trajectory, compromising content rich-ness and visual retention. 
+
+## 3 Preliminaries 
+
+Flow Matching [20] is a family of generative models that transport samples from a data distribution  p0(x) into a simple prior distribution  p1(x) (e.g., Gaus-sian). The probability path pt(x) is constructed to interpolate between p0(x)
+
+and p1(x) over the continuous time variable t ∈ [0 , 1] , and is commonly defined using linear interpolation [9]: 
+
+pt(x) = (1 − t) · p0(x) + t · p1(x).
+
+The flow matching model is trained by learning a time-dependent velocity field  
+
+> ddt
+
+xt = vθ (xt, t ), where  vθ (xt, t ) is parameterized by a neural network with pa-rameters  θ. Formally, the model is optimized by minimizing the following loss function: 
+
+LFM (θ) = Et,x 0∼p0(x),x 1∼p1(x) [vθ (xt, t ) − (x1 − x0)] .
+
+At generation time, new samples can be generated using any ODE solver [40]. 
+
+Residual Reuse. A series of studies [14,22] have consistently observed that the denoising process often involves redundant computations, suggesting that reuse strategies could be employed to skip certain steps. Specifically, we define the residual r at timestep t as the difference between the model’s output and the corresponding input: 
+
+r = vθ (xt, t ) − xt. (1) In subsequent steps, this residual can be reused by adding it to the input, thus directly estimating the residual reuse output (e.g., ˆvθ (xt−1, t − 1) = xt−1 + r). Although r effectively captures the update signal, repeatedly reusing an invari-ant residual may result in cumulative errors, which can ultimately degrade the quality of the generated visual output. 
+
+Classifier-Free Guidance (CFG) [12] is a widely adopted strategy for im-proving the quality of conditional generation by steering samples toward the specified input condition. Let  c denote the input condition, such as a class la-bel or a text prompt. In CFG, a single flow model vθ (xt, t | c) is trained to output both conditional and unconditional velocity fields. During sampling, the model performs two forward evaluations: one conditioned on c and the other unconditioned, with c = ∅. The guided velocity field is formed by: 
+
+vcfg  
+
+> θ
+
+(xt, t | c) = vθ (xt, t | c = ∅) + w ·
+
+
+
+vθ (xt, t | c) − vθ (xt, t | c = ∅)
+
+
+
+, (2) where w denotes the guidance scale. In particular, setting w = 1 corresponds to the non-guided case. 6 H. Xu et al. 
+
+Wan2.1 (large model: 14B, small model: 1.3B) 0% 20% 40% 60% 80% 100% 
+
+> Diffusion process
+> 0.99 1.00
+> Cosine similarity
+> Large Model vs. Residual Reuse Large Model vs. Small Model
+
+(a) Directional Similarity 0% 20% 40% 60% 80% 100%  
+
+> Diffusion process
+> 1.00 1.02 1.04 1.06 1.08
+> Magnitude
+> Large Model vs. Residual Reuse Large Model vs. Small Model
+
+(b) Magnitude Similarity 0% 20% 40% 60% 80% 100%  
+
+> Diffusion process
+> 1500.00 1600.00 1700.00 1800.00 1900.00
+> Magnitude
+> Cond Uncond
+
+(c) CFG Similarity EasyAnimateV5.1 (large model: 12B, small model: 7B) 0% 20% 40% 60% 80% 100% 
+
+> Diffusion process
+> 0.98 1.00
+> Cosine similarity
+> Large Model vs. Residual Reuse Large Model vs. Small Model
+
+(d) Directional Similarity 0% 20% 40% 60% 80% 100%  
+
+> Diffusion process
+> 0.98 1.00 1.02 1.04
+> Magnitude
+> Large Model vs. Residual Reuse Large Model vs. Small Model
+
+(e) Magnitude Similarity 0% 20% 40% 60% 80% 100%  
+
+> Diffusion process
+> 800.00 850.00 900.00 950.00 1000.00 1050.00 1100.00 1150.00
+> Magnitude
+> Cond Uncond
+
+(f ) CFG Similarity 
+
+Fig. 2: Visualization of decoupled model output relationships. (a,d) directional sim-ilarities of vθ (xt, t ) with vφ(xt, t ) and ˆvθ (xt, t ); (b,e) magnitude ratios of vθ (xt, t ) to 
+
+vφ(xt, t ) and to ˆvθ (xt, t ); (c,f) magnitudes of vφ(xt, t | c) (Cond) and vφ(xt, t | c = ∅)
+
+(Uncond). Directional similarities are evaluated using cosine similarity, and magnitudes are measured using ℓ2 norms. 
+
+## 4 Proposed Method 
+
+4.1 Empirical Analysis 
+
+Recent flow-based model families [41, 46] offer both large and small model vari-ants. By sharing a unified VAE within these model families, the models enable seamless switching between the high-capacity large model ( θ) and the lightweight small model ( φ) during sampling, thus opening up opportunities for large-small model collaboration to accelerate inference. Let vθ (xt, t ) and vφ(xt, t ) denote the outputs of the large and small models, respectively, and ˆvθ (xt, t ) represents the residual-reused outputs from the orig-inal large model. In this paper, we explore how vφ(xt, t ) and ˆvθ (xt, t ) relate to 
+
+vθ (xt, t ), aiming to identify better lightweight alternatives for replacing the costly inference of the original large model. Specifically, we decouple the model out-puts into direction and magnitude components for separate analysis. As shown in Figures 2a, 2b, 2d, and 2e, based on the empirical analysis of the intermediate diffusion process (i.e., from 20% to 95%), we derive two key observations: 
+
+Observation 1: In terms of directional component, the residual-reuse out-puts ˆvθ (xt, t ) are closely aligned with those of the original large model vθ (xt, t ),i.e., sim (ˆ vθ (xt, t ), v θ (xt, t )) ≈ 1, where sim (·, ·) denotes the cosine similarity. In contrast, the small model’s directional estimates typically diverge more, i.e., sim (vθ (xt, t ), ˆvθ (xt, t )) > sim (vθ (xt, t ), v φ(xt, t )) .Abbreviated paper title 7
+
+Observation 2: In terms of magnitude component, the small-model outputs 
+
+vφ(xt, t ) closely resemble those of the large model vθ (xt, t ), i.e., ∥vθ (xt,t )∥2 
+
+> ∥vφ(xt,t )∥2
+
+≈ 1,where ∥ · ∥ 2 denotes the ℓ2 norm. In contrast, the residual-reuse outputs typically show a larger magnitude discrepancy, i.e., ∥vθ (xt,t )∥2 
+
+> ∥vφ(xt,t )∥2
+
+− 1 < ∥vθ (xt,t )∥2  
+
+> ∥ˆvθ(xt,t )∥2
+
+− 1 .
+
+With respect to the direction component, the residual-reuse outputs closely approximate those of the large model, whereas the small-model outputs display directional deviations. This implies that directly employing a capacity-limited lightweight model for collaborative inference may cause it to diverge from the large model’s denoising trajectory, ultimately leading to suboptimal visual re-tention. Conversely, the learning objective in flow matching models allows for efficient capture of directional information through residual reuse, a finding also supported by [31]. With respect to magnitude component, the outputs of the large and small models are comparatively consistent. This suggests that the small model can serve as an effective lightweight proxy for the large model in estimating out-put magnitude. However, consecutive reuse of residual outputs with inconsistent magnitudes can result in rapid error accumulation, ultimately degrading visual quality. Collectively, in approximating the outputs of the large model, the residual-reuse outputs provide more accurate directional estimates, whereas the small-model outputs better capture the output magnitudes. This insight informs the design of our subsequent acceleration strategy. 
+
+4.2 Acceleration Strategy 
+
+In this subsection, building upon the previous empirical analysis, we propose a novel sampling acceleration strategy called MDD. The objective is to provide a reliable and lightweight alternative to the original large model. The framework of our proposal and its comparison with competing methods are illustrated in Figure 3, with a detailed description provided below. 
+
+Lightweight Alternative Strategy. As discussed in Section 4.1, ˆvθ (xt, t ) and 
+
+vφ(xt, t ) are, respectively, more accurate in capturing the direction and magni-tude components of the original large model output vθ (xt, t ). By leveraging this complementary advantage, MDD retains the magnitude from the lightweight model vφ(xt, t ) while utilizing the residual-reused output ˆvθ (xt, t ) to guide the direction. Formally, at timestep t with input xt and condition c, the output estimated by our MDD strategy can be expressed as: 
+
+vMDD (xt, t | c) = ∥vφ(xt, t | c)∥2
+
+| {z }
+
+> Magnitude
+
+· ˆvθ (xt, t | c)
+
+∥ˆvθ (xt, t | c)∥2
+
+| {z }
+
+> Direction
+
+. (3) Compared to SRDiffusion [6], which performs sampling directly using a small model with directional prediction biases, MDD improves by calibrating the di-rection through residual reuse. As a result, MDD more closely approximates the 8 H. Xu et al. Huawei Proprietary  - Restricted Distribution 1           
+
+> Small
+> Reused
+> Small Small Small Small Small
+> Large Reused Reused Large Reused Large
+> Large
+> Large
+> Large
+> Small
+> Reused
+> Large
+> TeaCache
+> SRDiffusion
+> Ours
+> Large
+> Large
+> Large
+> Large Reused Small Small
+
+Timesteps      
+
+> Large Model Step Small Model Step Small Model Step w/o CFG Residual Reuse
+> Small Small
+> Direction
+> Reused
+> Small
+> Magnitude
+> Small
+> Reused
+> Magnitude
+> Direction
+> Small
+> Reused
+> Magnitude
+> Direction
+> Small
+> Reused
+> Magnitude
+> Direction
+> Small
+> Reused
+> Magnitude
+> Direction Direction
+> Reused
+> Small
+> Magnitude
+
+Fig. 3: Comparison of our method with the adaptive caching method, TeaCache [22], and the large-small model collaborative inference strategy, SRDiffusion [6]. Our method improves the approximation of the original large output by combining direction esti-mation from residual reuse with magnitude estimation from the small model, offering a more reliable lightweight alternative for accelerating inference. 
+
+denoising trajectory of the original large model, thus enhancing visual reten-tion. Compared with Teacache [22], a cache-based method that reuses invariant residuals, MDD combined with the lightweight assistance of the small model for magnitude prediction. From the perspective of caching, MDD equips residual reuse with magnitude-aware capabilities, thereby improving visual fidelity. 
+
+CFG Reuse. As illustrated in Figures 2c and 2e, the magnitude of the model outputs in CFG are nearly identical for both the conditional output vφ(xt, t | c)
+
+and the unconditional output vφ(xt, t | c = ∅), i.e., ∥vφ(xt, t | c)∥2 ≈ ∥ vφ(xt, t |
+
+c = ∅)∥2. Consequently, a single forward evaluation to compute the magnitude of the conditional output in CFG is sufficient. This magnitude information can then be combined with both the residual-guided conditional and unconditional directions, further halving the inference cost of the small model. Formally, the unconditional output estimated by our MDD is expressed as: 
+
+vMDD (xt, t | c = ∅) = ∥vφ(xt, t | c)∥2
+
+| {z }
+
+> Reuse
+
+· ˆvθ (xt, t | c = ∅)
+
+∥ˆvθ (xt, t | c = ∅)∥2
+
+. (4) 
+
+Adaptive Strategy. The reuse of invariant residuals for direction estimation lacks the intrinsic self-correction capability present in small-model magnitude estimation. As a result, even minor directional errors can accumulate progres-sively over successive reuse steps, leading to significant error amplification. Once the directional error exceeds a tolerable threshold, it becomes necessary to in-voke the original large model to promptly correct the direction. In practice, we employ the cumulative cosine error of the output directional components as the criterion for triggering MDD. To reduce the computational cost associated with repeated forward passes of the large model, we instead utilize the small model as a surrogate to estimate the directional error. Formally, we maintain a running Abbreviated paper title 9
+
+Algorithm 1 Magnitude-Direction Decoupling (MDD)                                                                
+
+> 1: Initialize latent variable xT, MDD interval [T1, T 2], directional error E, and thresh-old τ
+> 2: for each timestep tin {T2, . . . , T 1}do
+> 3: if E> τ then
+> 4: Predict outputs: vt←LargeModel (xt, t )# With CFG
+> 5: Cache residuals: r←vt−xt
+> 6: Reset the error: E ← 0
+> 7: else
+> 8: Predict output: v′
+> t←SmallModel (xt, t )# Without CFG
+> 9: Reuse residuals: ˆvt←xt+r
+> 10: MDD: vt←norm (v′
+> t)·(ˆ vt/norm (ˆ vt))
+> 11: Update the error: E ← E +directional error of v′
+> t
+> 12: end if
+> 13: Update latents: xt−1←ODEStep (vt, t, x t)
+> 14: end for
+> 15: return xT1
+
+cumulative error E defined as: 
+
+E =
+
+> t′−1
+
+X
+
+> i=t
+
+
+
+1 − sim (vφ(xi, i | c), v φ(xt′−1, t ′ − 1 | c)) 
+
+
+
+, (5) where t′ denotes the most recent timestep at which a residual is cached, and sim (·, ·) represents the cosine similarity. E quantifies the accumulated deviation of output directions over successive timesteps: smaller values indicate that the directions remain well-aligned and can be safely reused, whereas larger values trigger the use of the original large model to update the directions. Accordingly, the decision function at timestep t is defined as: 
+
+Dτ (t) = 
+
+(
+
+vMDD (xt, t | c), if E ≤ τ ;
+
+vθ (xt, t | c), if E > τ,  (6) where τ denotes the threshold for the maximum tolerable directional error, serv-ing to balance computational efficiency and visual quality. The pseudo code of MDD is available in Algorithm 1. 
+
+Discussion of threshold τ . Following prior work [6, 22], we adopt a fixed threshold to trigger switching in the original large model for corrective pur-poses. In practice, the error accumulation is driven by the small neural network, and under a fixed threshold, this naturally enables dynamic, self-adaptive ad-justment, allowing the strategy to be modulated according to the generated error for different inputs. For parameter selection, a practical approach is to perform a parameter sweep over τ on a small subset of samples from the new model, relating the threshold to perceptual quality metrics. For each candidate value, quality-preservation metrics such as SSIM [43] or LPIPS [50] can be evaluated against the baseline (non-accelerated) results. The largest τ that maintains an acceptable quality level (e.g., SSIM > 0.7) is then selected as the final threshold. 10 H. Xu et al. 
+
+## 5 Experiments 
+
+In this section, we first describe our experimental setup, then present the compar-ison of quantitative results, followed by the ablation study and further analysis. 
+
+5.1 Experimental setup Base Models and Baselines. To verify the effectiveness of our method, we compare it against the most competitive methods across different flow match-ing models. Specifically, we apply our acceleration method to Wan2.1 [41] and EasyAnimateV5.1 [46], each offered in two model scales with a shared VAE. Wan2.1 offers 14B and 1.3B variants, while EasyAnimateV5.1 provides 12B and 7B variants. We compare our method with two competitive baselines: the large-small model collaborative inference method, SRDiffusion [6], and the cache-based method, TeaCache [22]. 
+
+Evaluation Metrics. For the quantitative evaluation of video generation ac-celeration methods, we focus on two key aspects: inference efficiency and visual quality. Following [6,22], inference efficiency is assessed via per-sample inference latency, whereas visual quality is evaluated using VBench [13] in conjunction with three widely adopted metrics capturing perceptual consistency, pixel-level fidelity, and structural similarity: Learned Perceptual Image Patch Similarity (LPIPS) [50], Peak Signal-to-Noise Ratio (PSNR), and Structural Similarity In-dex Measure (SSIM) [43]. 
+
+Implementation Detail. Following the evaluation setup in [22], we use the standard prompt set provided by VBench [13] for text-conditioned video gen-eration. All experiments are conducted on NVIDIA A100 GPUs, with FlashAt-tention [7] enabled by default. Latency is measured on a single A100 GPU. Following [31, 45], we preserve the first 20% of the diffusion steps with the large model for TeaCache and our MDD, as these initial steps are critical to the overall generation process. In line with [22], the error accumulation threshold for the TeaCache baseline is set to 0.2. According to [6], the threshold for transitioning from the large model to the small model in the SRDiffusion baseline is set to 0.1. For our MDD, we set the cumulative directional error threshold τ in Eq. (6) to 0.005. Furthermore, we employ the small model for the final 5% of the steps to ensure the reliability of visual outputs. 
+
+5.2 Main Results 
+
+Table 1 provides a comprehensive quantitative evaluation of our method com-pared to the most competitive baselines. The results indicate that: (1) our MDD consistently achieves highest acceleration (2.95 × for Wan2.1, 1.90 × for EasyAn-imateV5.1) while preserving high visual retention (e.g., LPIPS 0.178, PSNR 22.72, SSIM 0.748 on Wan2.1), demonstrating the effectiveness of our lightweight alternative strategy; (2) compared with the large-small model collaborative in-ference baseline SRDiffusion, MDD leverages direction-calibrated outputs from a lightweight model to more faithfully approximate of the original denoising Abbreviated paper title 11                                                                           
+
+> Table 1: Quantitative evaluation of inference efficiency and visual quality in video generation models. Visual retention metrics, including LPIPS, SSIM, and PSNR, are calculated against the original large models (Wan2.1-14B and EasyAnimateV5.1-12B).
+> Method Efficiency Visual Quality Speedup ↑Latency ↓LPIPS ↓PSNR ↑SSIM ↑VBench ↑
+> Wan2.1 (832 ×480, 81 frames, T= 50 )Wan2.1-14B 1×948 s ---83.09% Wan2.1-1.3B -192 s 0.597 11.81 0.336 81.00% TeaCache [22] 2.62 ×362 s 0.208 20.95 0.680 82.41% SRDiffusion [6] 2.75 ×344 s 0.240 19.10 0.636 83.01%
+> MDD (Ours) 2.95 ×321 s 0.178 22.72 0.748 82.62%
+> EasyAnimateV5.1 (672 ×384, 49 frames, T= 50 )EasyAnimateV5.1-12B 1×246 s ---78.89% EasyAnimateV5.1-7B -133 s 0.622 12.90 0.404 75.71% TeaCache [22] 1.84 ×134 s 0.179 21.30 0.708 78.53% SRDiffusion [6] 1.57 ×157 s 0.380 17.75 0.540 78.24%
+> MDD (Ours) 1.90 ×129 s 0.150 22.66 0.755 78.65%
+
+trajectory, rather than directly using the biased directional predictions of the small model for acceleration. This design, further enhanced by CFG reuse, yields higher acceleration while delivering superior visual retention; and (3) compared with the cache-based baseline TeaCache, MDD can be considered as adopting a magnitude-aware residual reuse strategy assisted by the lightweight model, rather than relying on invariant residual reuse. Consequently, our method can achieve higher reuse rates through more reliable lightweight substitutions, en-abling faster acceleration while maintaining better visual fidelity. 
+
+5.3 Ablation Study The Effect of Threshold τ . Table 2 examines the impact of varying the thresh-old τ in Eq. (6) on inference efficiency and visual quality. The results indicate that: (1) A higher τ allows greater accumulation of directional error, enabling the lightweight model to perform more substitution steps and thus increasing acceleration. However, excessive error may adversely affect performance. For ex-ample, setting τ = 0 .010 yields a 3.12× speedup but reduces fidelity (LPIPS = 0.207, PSNR = 22.21, SSIM = 0.728). (2) A lower τ limits error accumulation, facilitating timely corrections by the original large model and cache updates, which reduces efficiency but improves quality. For example, τ = 0 .001 results in LPIPS = 0.131, PSNR = 23.76, SSIM = 0.786, with a reduced speedup of 2.21×. (3) A moderate value, τ = 0 .005 , provides a favorable trade-off, achieving a 2.95× speedup while maintaining acceptable visual fidelity (LPIPS = 0.178, PSNR = 22.72, SSIM = 0.748). 12 H. Xu et al.                                                           
+
+> Table 2: Ablation study of threshold τin Eq. (6) on Wan2.1-14B. A larger threshold enables a greater proportion of steps to be approximated by the lightweight small-model, yielding higher acceleration at the expense of visual quality.
+> Threshold τEfficiency Visual Quality Speedup ↑Latency ↓LPIPS ↓PSNR ↑SSIM ↑VBench ↑
+> Wan2.1-14B 1×948 s ---83.09%
+> τ= 0 .001 2.21 ×428 s 0.131 23.76 0.786 82.74%
+> τ= 0 .002 2.76 ×344 s 0.148 23.33 0.771 82.85%
+> τ= 0 .005 2.95 ×321 s 0.178 22.72 0.748 82.62%
+> τ= 0 .010 3.12 ×303 s 0.207 22.21 0.728 82.20%
+> Table 3: Ablation study of rescaling with the lightweight model on Wan2.1-14B.
+> Methods LPIPS ↓SSIM ↑PSNR ↑VBench ↑
+> MDD w/o rescaling 0.197 21.40 0.689 81.16% MDD 0.178 22.72 0.748 82.62%
+
+The Effect of Rescaling. Table 3 presents an ablation study evaluating the impact of applying a rescaling strategy using a lightweight model. Relative to MMD without rescaling, incorporating the rescaling strategy leads to consistent improvements across all metrics, resulting in better visual fidelity and overall out-put quality. These results indicate that rescaling effectively compensates for the limitations imposed by the invariant residual caching strategy, yielding perfor-mance gains and validating the effectiveness of the proposed rescaling approach. 
+
+The Effect of CFG Reuse. Table 4 compares the effect of reusing the magni-tude of the conditional output for the unconditional output in CFG. The results demonstrate that: (1) in terms of inference latency, reusing the magnitude of the conditional output for the unconditional output can reduce the inference cost of small models by half, providing an additional 1.20× speedup in overall infer-ence and further decreasing computational overhead; and (2) in terms of visual quality, since the magnitudes of the conditional and unconditional outputs in CFG are nearly identical, reusing the magnitude effectively preserves the orig-inal visual quality. Quantitative evaluations demonstrate that the performance exhibits a negligible decline after CFG reuse, further confirming the effectiveness of this acceleration strategy. 
+
+5.4 Further Analysis Scaling to 720p resolution. Given the substantial computational cost of high-resolution video generation, we evaluate the scalability of our method on Wan2.1-14B using a randomly selected subset of 200 prompts from VBench. As shown in Table 5, our approach demonstrates strong scalability to 720p resolution, main-taining robust performance at higher resolutions. Notably, MDD achieves up to Abbreviated paper title 13                                                         
+
+> Table 4: Ablation study of CFG Reuse on Wan2.1. Visual retention metrics (LPIPS, SSIM, and PSNR) are computed relative to the Wan2.1-14B model, with τset to 0.005.
+> CFG Reuse Efficiency Visual Quality Speedup ↑Latency ↓LPIPS ↓SSIM ↑PSNR ↑VBench ↑×-385 s 0.177 22.73 0.750 82.64%
+> ✓1.20 ×321 s 0.178 22.72 0.748 82.62%
+> Table 5: Results for Wan2.1-14B 720p, with latency measured under an 8 ×NVIDIA A100 GPU setup.
+> Interval Efficiency Visual Quality Speedup ↑Latency ↓LPIPS ↓SSIM ↑PSNR ↑
+> Wan2.1-14B 1×476 s ---TeaCache [22] 2.37 ×201 s 0.367 17.54 0.607 SRDiffusion [6] 2.47 ×193 s 0.381 16.75 0.585 Ours ( τ= 0.002) 2.50 ×190 s 0.276 18.93 0.661 Ours ( τ= 0.005) 2.77 ×172 s 0.292 18.48 0.655
+
+a 2.77 × speedup while consistently outperforming prior acceleration methods in terms of LPIPS, SSIM, and PSNR. These results indicate that the efficiency gains are achieved while preserving high visual fidelity and perceptual similarity. 
+
+Compatibility of MDD with Efficient ODE Solvers. Efficient ODE solvers aim to achieve high-quality sampling with fewer steps, whereas our method reduces inference cost by replacing parts of the original large-model sampling process with lightweight substitutes. Table 6 presents a supplementary analysis of step reduction using MDD with the UniPC [51] and DPM++ [26] solvers, demonstrating its compatibility with efficient ODE solvers. 
+
+Analysis of MDD in Early Denoising. In the early denoising stage, the model needs to synthesize semantic content from pure noise [6]. Unlike the in-termediate stage (20%–95%), the initial phase is critical and exhibits low re-dundancy, as confirmed by prior post-hoc acceleration studies [6, 22, 28]. Conse-quently, the directional component, which relies on redundancy-based residual reuse, is constrained at this point. In contrast, magnitude estimation remains relatively stable, as it is derived from lightweight neural networks. Quantitative results demonstrating the effects of applying lightweight substitutions in the early denoising stage are presented in Table 7. The results show that lightweight substitutions in these critical early steps incur substantial performance degra-dation. Overall, it is generally advisable to rely on the original large model for reliable generation during the early denoising phase, a strategy that has also been widely adopted in post-hoc acceleration methods [6, 22, 28]. 14 H. Xu et al. 
+
+Table 6: Empirical analysis of lightweight substitution intervals. 
+
+Methods ODE solver Efficiency Visual Quality Speedup ↑ Latency ↓ LPIPS ↓ SSIM ↑ PSNR ↑ VBench ↑
+
+Wan2.1-14B (T=50) UniPC 1× 948 s - - - 83.09% Ours (T=50) UniPC 2.95 × 321 s 0.178 22.72 0.748 82.62% Wan2.1-14B (T=40) DPM++ 1× 766 s - - - 82.86% Ours (T=40) DPM++ 2.68 × 286 s 0.169 23.00 0.765 82.45% 
+
+Table 7: Compatibility analysis results between MDD and efficient ODE solvers. 
+
+Interval Efficiency Visual Quality Speedup ↑ Latency ↓ LPIPS ↓ SSIM ↑ PSNR ↑ VBench ↑
+
+0%–95% 3.85 × 246 s 0.567 13.43 0.431 79.02% 20%–95% (Ours) 2.95 × 321 s 0.178 22.72 0.748 82.62% 
+
+Acceleration in Multi-GPU Setups. 
+
+In line with prior work [41], we as-sess the performance of MDD under the same multi-GPU context-parallel config-uration. Figure 4 presents results on Wan2.1-14B, comparing the latency of MDD with SRDiffusion [6] and TeaCache [22] on A100 GPUs. Experimental results show that, when scaled across multiple GPUs, MDD consistently achieves higher inference efficiency than both SRDiffusion and TeaCache, highlighting the effective-ness of the MDD inference strategy in multi-GPU settings. Original 1 GPU 2 GPUs 4 GPUs 6 GPUs 8 GPUs 0200 400 600 800 
+
+> Latency (s)
+> 2.62x 2.76x 2.95x 5.12x 5.48x 5.78x 9.77x 10.42x 11.15x 14.36x 15.05x 16.07x 16.50x 17.44x 18.58x
+> Wan2.1, 81 frames, 480P
+> Original TeaCache SRDiffusion DMC (Ours)
+
+Fig. 4: Multi-GPU inference efficiency analysis. 
+
+## 6 Conclusion 
+
+This study explores lightweight alternatives to accelerate flow-based video gen-eration. Our analysis shows that within the same model family, the small model effectively captures the large model’s magnitude information, while residual reuse provides reliable directional guidance. Based on this, we propose MDD, a training-free method that speeds up inference by replacing part of the denoising steps with lightweight alternatives. Specifically, MDD adaptively integrates mag-nitude estimates from the small model with residual-based directional guidance to approximate the large model’s denoising trajectory, and further reduces com-putational cost via CFG reuse. Extensive experiments show that MDD achieves substantial acceleration while maintaining high visual fidelity, offering a practical solution for faster sampling of flow matching models. Abbreviated paper title 15 
+
+## References 
+
+1. Blattmann, A., Dockhorn, T., Kulal, S., Mendelevitch, D., Kilian, M., Lorenz, D., Levi, Y., English, Z., Voleti, V., Letts, A., Jampani, V., Rombach, R.: Sta-ble video diffusion: Scaling latent video diffusion models to large datasets. CoRR 
+
+abs/2311.15127 (2023) 2. Chen, H., Zhang, Y., Cun, X., Xia, M., Wang, X., Weng, C., Shan, Y.: Videocrafter2: Overcoming data limitations for high-quality video diffusion models. In: CVPR. pp. 7310–7320 (2024) 3. Chen, J., Ge, C., Xie, E., Wu, Y., Yao, L., Ren, X., Wang, Z., Luo, P., Lu, H., Li, Z.: Pixart-Σ: Weak-to-strong training of diffusion transformer for 4k text-to-image generation. In: ECCV. vol. 15090, pp. 74–91 (2024) 4. Chen, L., Meng, Y., Tang, C., Ma, X., Jiang, J., Wang, X., Wang, Z., Zhu, W.: Q-dit: Accurate post-training quantization for diffusion transformers. In: CVPR. pp. 28306–28315 (2025) 5. Chen, P., Shen, M., Ye, P., Cao, J., Tu, C., Bouganis, C., Zhao, Y., Chen, T.:  ∆-dit: A training-free acceleration method tailored for diffusion transformers. CoRR 
+
+abs/2406.01125 (2024) 6. Cheng, S., Wei, Y., Diao, L., Liu, Y., Chen, B., Huang, L., Liu, Y., Yu, W., Du, J., Lin, W., You, Y.: Srdiffusion: Accelerate video diffusion inference via sketching-rendering cooperation. CoRR abs/2505.19151 (2025) 7. Dao, T., Fu, D.Y., Ermon, S., Rudra, A., Ré, C.: Flashattention: Fast and memory-efficient exact attention with io-awareness. In: NeurIPS (2022) 8. Dhariwal, P., Nichol, A.Q.: Diffusion models beat gans on image synthesis. In: NeurIPS. pp. 8780–8794 (2021) 9. Esser, P., Kulal, S., Blattmann, A., Entezari, R., Müller, J., Saini, H., Levi, Y., Lorenz, D., Sauer, A., Boesel, F., Podell, D., Dockhorn, T., English, Z., Rombach, R.: Scaling rectified flow transformers for high-resolution image synthesis. In: ICML (2024) 10. He, Y., Liu, L., Liu, J., Wu, W., Zhou, H., Zhuang, B.: PTQD: accurate post-training quantization for diffusion models. In: NeurIPS (2023) 11. Ho, J., Jain, A., Abbeel, P.: Denoising diffusion probabilistic models. In: NeurIPS (2020) 12. Ho, J., Salimans, T.: Classifier-free diffusion guidance. CoRR abs/2207.12598 
+
+(2022) 13. Huang, Z., He, Y., Yu, J., Zhang, F., Si, C., Jiang, Y., Zhang, Y., Wu, T., Jin, Q., Chanpaisit, N., Wang, Y., Chen, X., Wang, L., Lin, D., Qiao, Y., Liu, Z.: Vbench: Comprehensive benchmark suite for video generative models. In: CVPR. pp. 21807–21818 (2024) 14. Kahatapitiya, K., Liu, H., He, S., Liu, D., Jia, M., Zhang, C., Ryoo, M.S., Xie, T.: Adaptive caching for faster video generation with diffusion transformers. CoRR 
+
+abs/2411.02397 (2024) 15. Karras, T., Aittala, M., Aila, T., Laine, S.: Elucidating the design space of diffusion-based generative models. In: NeurIPS (2022) 16. Kong, W., et al.: Hunyuanvideo: A systematic framework for large video generative models. CoRR abs/2412.03603 (2024) 17. Li, X., Liu, Y., Lian, L., Yang, H., Dong, Z., Kang, D., Zhang, S., Keutzer, K.: Q-diffusion: Quantizing diffusion models. In: ICCV. pp. 17489–17499 (2023) 18. Li, Y., Wang, H., Jin, Q., Hu, J., Chemerys, P., Fu, Y., Wang, Y., Tulyakov, S., Ren, J.: Snapfusion: Text-to-image diffusion model on mobile devices within two seconds. In: NeurIPS (2023) 16 H. Xu et al. 19. Lin, S., Yang, X.: Animatediff-lightning: Cross-model diffusion distillation. CoRR 
+
+abs/2403.12706 (2024) 20. Lipman, Y., Chen, R.T.Q., Ben-Hamu, H., Nickel, M., Le, M.: Flow matching for generative modeling. In: ICLR (2023) 21. Liu, D., Zhang, J., Li, Y., Yu, Y., Lengerich, B., Wu, Y.N.: Fastcache: Fast caching for diffusion transformer through learnable linear approximation. CoRR 
+
+abs/2505.20353 (2025) 22. Liu, F., Zhang, S., Wang, X., Wei, Y., Qiu, H., Zhao, Y., Zhang, Y., Ye, Q., Wan, F.: Timestep embedding tells: It’s time to cache for video diffusion model. In: CVPR. pp. 7353–7363 (2025) 23. Liu, J., Zou, C., Lyu, Y., Chen, J., Zhang, L.: From reusing to forecasting: Accel-erating diffusion models with taylorseers. CoRR abs/2503.06923 (2025) 24. Liu, X., Gong, C., Liu, Q.: Flow straight and fast: Learning to generate and transfer data with rectified flow. In: ICLR (2023) 25. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., Zhu, J.: Dpm-solver: A fast ODE solver for diffusion probabilistic model sampling in around 10 steps. In: NeurIPS (2022) 26. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., Zhu, J.: Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. Mach. Intell. Res. 22 (4), 730–751 (2025) 27. Luo, S., Tan, Y., Huang, L., Li, J., Zhao, H.: Latent consistency models: Syn-thesizing high-resolution images with few-step inference. CoRR abs/2310.04378 
+
+(2023) 28. Lv, Z., Si, C., Song, J., Yang, Z., Qiao, Y., Liu, Z., Wong, K.K.: Fastercache: Training-free video diffusion model acceleration with high quality. In: ICLR (2025) 29. Ma, X., Wang, Y., Chen, X., Jia, G., Liu, Z., Li, Y., Chen, C., Qiao, Y.: Latte: Latent diffusion transformer for video generation. Trans. Mach. Learn. Res. 2025 
+
+(2025) 30. Ma, X., Fang, G., Wang, X.: Deepcache: Accelerating diffusion models for free. In: CVPR. pp. 15762–15772 (2024) 31. Ma, Z., Wei, L., Wang, F., Zhang, S., Tian, Q.: Magcache: Fast video generation with magnitude-aware cache. CoRR abs/2506.09045 (2025) 32. Meng, C., Rombach, R., Gao, R., Kingma, D.P., Ermon, S., Ho, J., Salimans, T.: On distillation of guided diffusion models. In: CVPR. pp. 14297–14306 (2023) 33. Salimans, T., Ho, J.: Progressive distillation for fast sampling of diffusion models. In: ICLR (2022) 34. Sauer, A., Lorenz, D., Blattmann, A., Rombach, R.: Adversarial diffusion distilla-tion. In: ECCV. vol. 15144, pp. 87–103 (2024) 35. Shang, Y., Yuan, Z., Xie, B., Wu, B., Yan, Y.: Post-training quantization on dif-fusion models. In: CVPR. pp. 1972–1981 (2023) 36. Sohl-Dickstein, J., Weiss, E.A., Maheswaranathan, N., Ganguli, S.: Deep unsu-pervised learning using nonequilibrium thermodynamics. In: ICML. vol. 37, pp. 2256–2265 (2015) 37. Song, J., Meng, C., Ermon, S.: Denoising diffusion implicit models. In: ICLR (2021) 38. Song, Y., Dhariwal, P., Chen, M., Sutskever, I.: Consistency models. In: ICML. vol. 202, pp. 32211–32252 (2023) 39. Song, Y., Ermon, S.: Generative modeling by estimating gradients of the data distribution. In: NeurIPS. pp. 11895–11907 (2019) 40. Süli, E., Mayers, D.F.: An introduction to numerical analysis. Cambridge Univer-sity Press (2003) 41. Wang, A., et al.: Wan: Open and advanced large-scale video generative models. CoRR abs/2503.20314 (2025) Abbreviated paper title 17 42. Wang, C., Wang, Z., Xu, X., Tang, Y., Zhou, J., Lu, J.: Towards accurate post-training quantization for diffusion models. In: CVPR. pp. 16026–16035 (2024) 43. Wang, Z., Bovik, A.C., Sheikh, H.R., Simoncelli, E.P.: Image quality assessment: from error visibility to structural similarity. IEEE Trans. Image Process. 13 (4), 600–612 (2004) 44. Wimbauer, F., Wu, B., Schönfeld, E., Dai, X., Hou, J., He, Z., Sanakoyeu, A., Zhang, P., Tsai, S.S., Kohler, J., Rupprecht, C., Cremers, D., Vajda, P., Wang, J.: Cache me if you can: Accelerating diffusion models through block caching. In: CVPR. pp. 6211–6220 (2024) 45. Xia, Y., Ling, S., Fu, F., Wang, Y., Li, H., Xiao, X., Cui, B.: Training-free and adap-tive sparse attention for efficient long video generation. CoRR abs/2502.21079 
+
+(2025) 46. Xu, J., Zou, X., Huang, K., Chen, Y., Liu, B., Cheng, M., Shi, X., Huang, J.: Easyanimate: A high-performance long video generation method based on trans-former architecture. CoRR abs/2405.18991 (2024) 47. Yang, S., Chen, Y., Wang, L., Liu, S., Chen, Y.: Denoising diffusion step-aware models. In: ICLR (2024) 48. Yang, Z., Teng, J., Zheng, W., Ding, M., Huang, S., Xu, J., Yang, Y., Hong, W., Zhang, X., Feng, G., Yin, D., Zhang, Y., Wang, W., Cheng, Y., Xu, B., Gu, X., Dong, Y., Tang, J.: Cogvideox: Text-to-video diffusion models with an expert transformer. In: ICLR (2025) 49. Yu, Z., Zou, Z., Shao, G., Zhang, C., Xu, S., Huang, J., Zhao, F., Cun, X., Zhang, W.: Ab-cache: Training-free acceleration of diffusion models via adams-bashforth cached feature reuse. CoRR abs/2504.10540 (2025) 50. Zhang, R., Isola, P., Efros, A.A., Shechtman, E., Wang, O.: The unreasonable effectiveness of deep features as a perceptual metric. In: CVPR. pp. 586–595 (2018) 51. Zhao, W., Bai, L., Rao, Y., Zhou, J., Lu, J.: Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. In: NeurIPS (2023) 52. Zheng, Z., Peng, X., Yang, T., Shen, C., Li, S., Liu, H., Zhou, Y., Li, T., You, Y.: Open-sora: Democratizing efficient video production for all. CoRR 
+
+abs/2412.20404 (2024)

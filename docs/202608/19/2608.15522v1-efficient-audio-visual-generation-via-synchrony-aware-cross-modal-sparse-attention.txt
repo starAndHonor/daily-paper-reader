@@ -1,0 +1,475 @@
+Title: Efficient Audio-Visual Generation via Synchrony-Aware Cross-Modal Sparse Attention
+
+URL Source: https://arxiv.org/pdf/2608.15522v1
+
+Published Time: Tue, 18 Aug 2026 01:12:47 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Efficient Audio-Visual Generation via Synchrony-Aware Cross-Modal Sparse Attention 
+
+## Shengchuan Gao 1∗ Teng Hu 1∗ Bohao Feng 2∗ Luchen Li 1
+
+## Wenqiang Wang 3 Hongqian Deng 3 Ran Yi 1†
+
+> 1
+
+## Shanghai Jiao Tong University 2Alibaba Token Hub, Alibaba Group 3Alibaba Cloud Computing 
+
+{gscdy111, hu-teng, 66orange, ranyi }@sjtu.edu.cn 
+
+{fengbohao.fbh, channing.wwq }@alibaba-inc.com hongqiandeng@foxmail.com 
+
+> ∗
+
+Equal contribution. †Corresponding author. 
+
+Project page: https://sjtugsc.github.io/synchrony-aware-av-generation/ 
+
+## Abstract 
+
+Recent audio-visual generation models can synthesize syn-chronized video and sound in a unified diffusion process, but their inference cost remains high because long video token sequences require repeated attention computation across denoising steps. A variety of acceleration techniques have been developed for video generation models, includ-ing low-bit quantization, attention sparsification, and fea-ture caching. However, since these methods are originally designed for video generation, directly applying them to audio-visual models overlooks the interactions between the audio and video branches and may therefore disrupt audio-video synchronization. We present a synchronization-aware acceleration framework for efficient audio-visual genera-tion. Our key observation is that bidirectional audio-video cross-attention reveals structured interactions between the two branches, with high responses often concentrated on a few sound-related visual and temporal regions. Guided by this interaction pattern, we introduce a protected sparse attention strategy that preserves high-fidelity computation for synchronization-critical tokens while sparsifying redun-dant attention interactions. By explicitly accounting for cross-modal dependence during acceleration, our method improves inference efficiency while keeping video quality, audio quality, and audio-video synchronization. 
+
+## 1. Introduction 
+
+Audio-visual generation [1, 2, 10, 13, 15, 22, 36] is moving from isolated video or audio synthesis [14, 16, 19, 20, 27, 28, 34] toward unified models that jointly generate what is seen and what is heard. Recent systems such as Ovi [22], Harmony [13], and LTX-2 [10] couple video and audio Dense No Protection PSNR 21.63 
+
+> Ours
+> PSNR 24.74 PSNR 18.09 PSNR 21.07
+> PSNR 21.63 PSNR 24.74 PSNR 18.09 PSNR 21.07
+> Dense No Protection Ours
+
+Figure 1. Our method accelerates audio-visual generation while preserving high visual fidelity. On Ovi (left) and LTX-2.3 (right), our synchronization-aware protection better preserves frame quality and remains closer to dense inference , while achiev-ing nearly 2× and 1.4× end-to-end speedup. 
+
+diffusion backbones through bidirectional cross-modal in-teraction, enabling generated speech, ambient sound, and event sounds to follow the visual scene. This shift makes audio-video synchronization a first-order generation objec-tive rather than a post-processing problem. At the same time, unified audio-visual generation inherits the heavy in-ference cost of modern video diffusion transformers: dense attention over long spatio-temporal token sequences must be repeatedly evaluated over many denoising steps. A growing body of work accelerates video diffusion in-ference through efficient attention kernels, low-bit attention computation, sparse attention patterns, and intermediate-feature caching [6–8, 21, 23, 32, 37, 38]. These approaches exploit the substantial spatial and temporal redundancy present in video diffusion models. However, directly trans-ferring them to unified audio-visual generation introduces an additional challenge. Existing acceleration methods gen-1arXiv:2608.15522v1 [cs.CV] 16 Aug 2026 erally determine which computation to sparsify, approxi-mate, or reuse according to redundancy measured within an individual branch. In an audio-visual generator [13, 26], however, a token or feature that appears redundant within one modality may still provide important evidence to the other modality through bidirectional cross-modal interac-tion. Consequently, modality-agnostic acceleration may re-move or reuse synchronization-critical computation, weak-ening the correspondence between generated sounds and vi-sual events. Therefore, accelerating audio-visual generation requires more than identifying redundant computation. The cen-tral challenge is to distinguish computation that can be safely approximated from computation that carries impor-tant cross-modal evidence. Our key premise is that this distinction cannot be determined from either the video or audio stream independently. Instead, acceleration decisions should explicitly account for the mutual dependencies es-tablished between the two modalities during joint denois-ing. To understand which computation is important to cross-modal synchronization, we analyze the bidirectional atten-tion between the video and audio branches. We observe that cross-modal interaction is highly structured and non-uniform. In the video-to-audio direction, audio queries con-centrate on a sparse subset of video tokens associated with sound-producing objects, temporally aligned events, and other synchronization-relevant visual content. Conversely, in the audio-to-video direction, video queries exhibit selec-tive dependence on audio tokens that characterize speech, acoustic events, and temporal sound cues. Moreover, these salient interaction patterns remain relatively stable across nearby denoising steps. These observations indicate that the model’s native bidirectional cross-modal attention provides an intrinsic and reusable importance signal for identifying synchronization-critical computation. Based on these observations, we propose a training-free audio-visual interaction-aware acceleration framework that uses bidirectional cross-modal saliency as a shared guidance signal for both audio and video branches. We first aggregate the two directions of audio-video attention into modality-specific saliency maps, which characterize the importance of video tokens to the audio branch and the importance of audio tokens to the video branch, respec-tively. Since the current cross-modal attention is gener-ally evaluated after modality-specific self-attention within the same block, we introduce lagged cross-modal saliency reuse to propagate the most recent interaction patterns across nearby denoising steps without an additional pro-filing pass. Guided by the cached saliency maps, we then propose synchronization-aware protected sparse at-tention , which preserves dense attention computation for synchronization-critical tokens in both the video and audio branches while sparsifying low-saliency interactions. We further introduce a synchronization-aware cache-reuse mechanism that jointly considers modality-specific feature variations, changes in salient regions, and the drift of bidi-rectional cross-modal dependencies, thereby preventing un-safe reuse that may disrupt audio-video alignment. To-gether, these components directly address the efficiency– quality–synchronization trade-off in unified audio-visual generation. Our contributions are summarized as follows: • We analyze cross-modal interactions in dual-branch audio-visual generation models and observe that bidirec-tional audio-video attention highlights sound-related vi-sual and temporal regions, providing an internal saliency signal for synchronization-critical content. • We propose a training-free synchronization-aware protected sparse attention mechanism . Guided by modality-specific saliency maps, it preserves high-fidelity attention computation for synchronization-critical tokens in both audio and video branches, while sparsifying low-saliency interactions to reduce redundant computation. • We introduce a synchronization-aware cache-reuse mechanism that jointly considers modality-specific fea-ture variations, changes in cross-modally salient tokens, and the drift of bidirectional audio-video dependencies. The proposed criterion can be integrated into general feature-caching methods, and we instantiate it with block-level caching to prevent unsafe reuse that may disrupt audio-video synchronization. • We validate our method on open-source audio-visual gen-erators, achieving efficient inference while preserving video fidelity, audio quality, and synchronization. 
+
+## 2. Related Work 
+
+2.1. Joint Audio-Visual Generation 
+
+Audio-visual generation has been studied through video-to-audio synthesis, audio-conditioned visual generation, and joint audio-video diffusion. Video-to-audio systems such as FoleyCrafter [40], MMaudio [3], and Hunyuan-Foely [25] synthesize synchronized sound from visual con-tent by aligning audio generation with video semantics and timing. Other works connect pretrained visual and audio diffusion models through shared latent or cross-modal con-ditioning spaces [11, 33]. More recent joint generators, in-cluding Ovi [22], Harmony [13], Jova [17], and LTX-2 [10], move toward unified dual-stream architectures where video and audio branches exchange information through bidirec-tional attention. These models make cross-modal interac-tion central to generation quality: synchronization emerges from the repeated exchange of semantic and temporal infor-mation rather than from a separate post-processing module. Our work is built on this trend, but studies a different 2Dense frame AV saliency + mask Vanilla error Ours error Vanilla - Ours         
+
+> 0.0 0.2 0.4 0.6 0.8 1.0 1.2 Relative projected-feature error
+> −0.5 0.0 0.5 Error reduction Figure 2. Motivation of synchronization-aware protection. From left to right: a generated video frame, the extracted audio-visual saliency and protected regions, feature error of vanilla sparse attention, feature error of our protected sparse attention, and their error difference. Red areas in the difference map indicate regions where our method reduces the approximation error compared with vanilla sparsification.
+
+question. Rather than improving the generative backbone itself, we ask how to accelerate such backbones without weakening the cross-modal evidence used for audio-video synchronization. This is different from ordinary video gen-eration acceleration because the importance of a token or block cannot be determined only from visual redundancy. 
+
+2.2. Efficient Attention for Video Diffusion Models 
+
+Attention is a major bottleneck in video diffusion trans-formers. System-level methods such as FlashAttention [7, 8, 24] accelerate exact attention by reducing memory traffic and improving GPU work partitioning, while low-bit meth-ods such as SageAttention [38] and SageAttention2 [37] use quantized computation. These methods preserve dense at-tention and are complementary to sparsification. Another line of work reduces redundant attention in-teractions. Sparse VideoGen [9, 32, 35] exploits spatial and temporal sparsity in video diffusion attention, while re-lated sparse or block-sparse methods [9, 31, 35] select im-portant token blocks or adapt sparsity to video structure. Cache-based methods[18] instead reuse intermediate repre-sentations across denoising steps. TeaCache [21], Faster-Cache [23], BWCache [6], and SeaCache[4] adopt different reuse criteria based on feature changes, timestep behavior, block redundancy, or CFG redundancy. Their effectiveness stems from the substantial spatial, temporal, and denoising-step redundancy in video diffusion models. However, existing acceleration methods are mainly de-signed for video-only generation, with sparse or cache deci-sions based on intra-modal redundancy, such as video atten-tion patterns or feature similarity across timesteps. Direct application to audio-visual generation can be risky, because a visually redundant token or stable block may still provide important evidence for the audio branch and audio-video synchronization. In contrast, our method uses cross-modal saliency to identify and protect synchronization-critical computation during sparse attention and cache reuse. 
+
+## 3. Motivation and Observation 
+
+Preliminaries: Dual-stream architecture and bottle-neck. Different from video-only diffusion models, joint audio-visual generators maintain separate video and au-dio streams and exchange information through cross-modal attention. A typical Ovi-style block contains modality-specific self-attention and FFN layers, where text attention provides conditioning and bidirectional audio-video atten-tion enables cross-modal interaction. This design makes synchronization a result of repeated interaction between two branches during denoising. However, it also changes the acceleration problem: the number of video tokens is much larger than the number of audio tokens, so video self-attention and video-related attention modules dominate the latency. Meanwhile, computations that appear redun-dant within the video branch may provide important ev-idence for the audio branch. Therefore, directly apply-ing video-oriented sparse attention or cache reuse may skip synchronization-critical computation. 
+
+Cross-modal interaction as acceleration guidance. To identify which computation should be protected, we exam-ine the cross-modal attention patterns of dual-stream audio-visual generators during inference. We observe that bidi-rectional audio-video attention is highly non-uniform: only a small subset of spatiotemporal video regions and audio tokens receives strong responses from the opposite modal-ity. These regions may be inconspicuous under intra-modal redundancy measures, but often carry information impor-tant for audio generation and audio-video synchronization. As illustrated in Fig. 2, the saliency-derived protected re-gions coincide with locations where vanilla sparse attention introduces larger feature errors, while our protected compu-tation reduces such errors. The same principle also applies to the audio branch through reverse cross-modal saliency. Therefore, cross-modal attention can serve as a model-3internal saliency signal for synchronization-aware acceler-ation, guiding the model to protect high-saliency computa-tion and apply sparse computation or feature reuse to low-saliency regions. Fig. 2 provides an empirical illustration of these obser-vations. These results suggest cross-modal interaction can serve as a practical signal for synchronization-aware accel-eration. 
+
+## 4. Method 
+
+Framework overview. The observations in Sec. 3suggest that acceleration for audio-visual generation should distinguish generic computational redundancy from synchronization-critical computation. Based on this prin-ciple, we propose a synchronization-aware acceleration framework that uses bidirectional cross-modal interaction as a shared importance prior at two complementary gran-ularities. At token level, we identify synchronization-critical tokens in both the video and audio branches and preserve high-fidelity self-attention computation for these tokens. At block level, we incorporate modality-specific feature changes and bidirectional cross-modal saliency into the cache-reuse criterion, preventing unsafe reuse when synchronization-critical content or audio-video dependen-cies change substantially. A practical challenge is the cross-modal attention used to estimate importance is evaluated after modality-specific self-attention within a dual-stream block. The current cross-modal saliency therefore cannot guide self-attention that has been executed at the same denoising step. We address this issue with lagged saliency reuse, exploiting the empirical stability of cross-modal interaction across neighboring de-noising steps. As illustrated in Fig. 3, the resulting frame-work consists of three components: bidirectional cross-modal saliency estimation, audio-guided protected sparse attention, and synchronization-aware block reuse. 
+
+4.1. Cross-Modal Saliency and Lagged Reuse 
+
+Bidirectional cross-modal saliency. Let Xv ∈ RNv ×d
+
+and Xa ∈ RNa×d denote video and audio tokens in an audio-visual diffusion transformer block. We first estimate synchronization-critical regions from bidirectional audio-video cross-attention. For clarity, we describe the audio-to-video direction, where audio queries attend to video keys: 
+
+Aa→vt,ℓ,h = softmax 
+
+
+
+Qat,ℓ,h (Kvt,ℓ,h )⊤/pdh
+
+
+
+, (1) where t, ℓ, and h denote denoising step, layer, and attention head. Aggregating attention mass over audio queries, heads, and selected layers gives a video-token saliency map: 
+
+svt,i = Norm 
+
+ X
+
+> ℓ∈L c
+
+X
+
+> hNa
+
+X
+
+> j=1
+
+Aa→vt,ℓ,h [j, i ]
+
+ . (2) The reverse video-to-audio direction is handled analogously to obtain audio-token saliency, reflecting the bidirectional dependence between the two branches. Given the saliency score, we select a protected query set: 
+
+Pv = TopK( {svt,i }Nv
+
+> i=1
+
+, ρ v Nv ), (3) where ρv is a small protection ratio. The selected set iden-tifies video queries that are likely to carry important cross-modal evidence for audio generation and synchronization. 
+
+Lagged saliency reuse. A practical scheduling issue arises in Ovi-style fusion blocks: video self-attention is executed before later audio-video cross-attention in the same block. Therefore, the current cross-attention map cannot directly guide the already executed video self-attention. Instead of introducing an additional dense profiling pass, we use a lagged saliency cache. At denoising step t, cross-modal at-tention updates a cached saliency map, and nearby future steps use it to select protected tokens: 
+
+¯svt = α¯svt−1 + (1 − α)svt . (4) The cache is updated every K denoising steps to reduce overhead and temporal flicker. This design relies on the ob-servation that high-saliency regions change smoothly across neighboring denoising steps. Thus, the same cross-modal saliency signal can be reused in a local temporal window to guide both sparse attention protection and cache reuse. 
+
+4.2. Synchronization-Aware Protected Sparse At-tention 
+
+After obtaining the cached cross-modal saliency maps, we use them to protect synchronization-critical computation in sparse self-attention. For modality m ∈ v, a , standard dense self-attention computes: 
+
+Om 
+
+> dense
+
+= softmax 
+
+ Qm(Km)⊤
+
+√dh
+
+
+
+V m, (5) whose score-computation cost grows quadratically with the modality token length Nm.
+
+Sparse attention. A standard sparse-attention method re-stricts each query to a subset of keys specified by a sparse connectivity pattern S ∗ m. Equivalently, we define an ad-ditive attention mask: 
+
+M mij =
+
+(
+
+0, (i, j ) ∈ S m,
+
+−∞ , (i, j ) /∈ S ∗ m, (6) and compute: 
+
+Om 
+
+> sparse
+
+= softmax 
+
+ Qm(Km)⊤
+
+√dh
+
++ M m
+
+
+
+V m. (7) By masking a large fraction of query-key connections, sparse attention reduces redundant computation. However, 4Figure 3. Overview of the proposed synchronization-aware acceleration framework. Cross-modal interactions between audio and video branches are used to guide protected sparse attention and cache reuse. 
+
+the sparse pattern is typically determined from redundancy within an individual modality and does not account for whether a query carries important evidence for the opposite branch. 
+
+Cross-modal protection. At denoising step t, we use the cached modality-specific saliency maps to select protected query sets: 
+
+Pmt = TopK 
+
+¯smt−1,i  
+
+> Nm
+> i=1
+
+, ⌈ρmNm⌉
+
+
+
+, m ∈ { v, a },
+
+(8) where ρm is the protection ratio for modality m. We then modify the original sparse mask by restoring full key con-nectivity for protected queries: 
+
+( fM m)t,ij =
+
+(
+
+0, i ∈ P mt or (i, j ) ∈ S m,
+
+−∞ , otherwise . (9) The resulting protected sparse attention is 
+
+Om = softmax 
+
+ Qm(Km)⊤
+
+√dh
+
++ fM mt
+
+
+
+V m, m ∈ v, a. 
+
+(10) Equivalently, ordinary queries follow the original sparse pattern, whereas protected queries retain complete dense at-tention rows:                
+
+> Omi=
+> (
+> DenseAttn( qmi, K m, V m),i∈ P m∗t,
+> SparseAttn ∗ S m(qmi, K m, V m),i / ∈ P mt,m∈v, a.
+
+(11) This query-row protection does not merely retain the se-lected token values. Instead, it preserves high-fidelity repre-sentation updates for tokens that are important to the oppo-site modality. Sound-related visual tokens can therefore ag-gregate complete visual context before interacting with the audio branch, while synchronization-relevant audio tokens retain complete acoustic context before interacting with the video branch. Low-saliency queries in both modalities con-tinue to follow the original sparse computation path. As a result, the proposed mechanism reduces redundant atten-tion computation while preserving synchronization-critical representations and maintaining reliable audio-video align-ment. 
+
+4.3. Synchronization-Aware Cache Reuse 
+
+Protected sparse attention reduces redundant token inter-actions within each denoising step, but substantial redun-dancy also exists across neighboring steps, where inter-mediate audio and video features often evolve smoothly. Feature-caching methods exploit this temporal redundancy by reusing previously computed representations when the current features remain sufficiently similar to those at an anchor step. However, directly applying such modality-agnostic criteria to audio-visual generation can be unsafe. A small global feature difference in either branch does not necessarily indicate that the underlying cross-modal depen-dency remains unchanged. Localized variations, such as mouth motion, object contact, or a shift in the active sound source, may involve only a small subset of tokens while still being critical to audio-video synchronization. Therefore, cache reuse should account not only for overall feature sim-ilarity, but also for changes in synchronization-critical re-gions and bidirectional cross-modal interactions. We therefore introduce a synchronization-aware cache-reuse criterion and instantiate it with block-level residual caching. Let (Y vt,ℓ , Y at,ℓ ) be the video and audio outputs of block ℓ at step t, and let ( ˆY vℓ , ˆY aℓ ) be the cached outputs from the previous anchor step. The ordinary stream-wise 5feature changes are: 
+
+∆vt,ℓ = ∥Y vt,ℓ − ˆY vℓ ∥1
+
+∥Y vt,ℓ ∥1 + ϵ , ∆at,ℓ = ∥Y at,ℓ − ˆY aℓ ∥1
+
+∥Y at,ℓ ∥1 + ϵ . (12) To make the cache sensitive to synchronization-critical re-gions, we additionally compute protected-region changes: 
+
+∆pt,ℓ = ∥Y vt,ℓ [Pv ] − ˆY vℓ [Pv ]∥1
+
+∥Y vt,ℓ [Pv ]∥1 + ϵ . (13) We also measure saliency drift between the current and cached cross-modal saliency maps: 
+
+∆st = 1 − ⟨¯svt , ˆsv ⟩∥¯svt ∥2∥ˆsv ∥2 + ϵ . (14) The final synchronization-aware cache indicator is 
+
+∆sync  
+
+> t,ℓ
+
+= max 
+
+
+
+∆vt,ℓ , ∆at,ℓ , λ p∆pt,ℓ , λ s∆st
+
+
+
+. (15) A block output is reused only when ∆sync  
+
+> t,ℓ
+
+< τ , where τ
+
+is a cache threshold. Compared with original BlockCache, this criterion is audio-visual aware in three aspects: it con-siders both video and audio streams, emphasizes protected sound-source regions, and prevents reuse when cross-modal saliency changes significantly. In practice, we apply this cache only to middle denoising steps and selected middle blocks, where diffusion features are more stable and cache reuse is less likely to disturb generation quality. 
+
+4.4. Inference Pipeline and Complexity 
+
+The full inference pipeline contains three components. First, selected audio-video cross-attention layers update the lagged saliency cache. Second, video self-attention uses sparse attention for ordinary queries and dense-row pro-tection for high-saliency queries. Third, eligible fusion blocks use synchronization-aware cache reuse to skip re-dundant block computation when both stream-wise features and cross-modal saliency remain stable. Let κ denote the average sparse keep ratio of video self-attention. Dense video attention has score complexity 
+
+O(HN 2 
+
+> v
+
+dh). Our method has approximate complexity: 
+
+O  H(κN 2 
+
+> v
+
++ ρv N 2 
+
+> v
+
+)dh
+
+ , (16) where the first term is sparse attention and the second term is dense-row protection. Since ρv is small, the protec-tion overhead is limited. The synchronization-aware cache further reduces computation by skipping reusable fusion blocks while avoiding reuse when audio-video interaction changes. Overall, the method is training-free and can be applied to open-source dual-branch audio-visual generators with accessible cross-attention and block outputs. 
+
+## 5. Experiments 
+
+5.1. Experimental Settings 
+
+Base models and baselines. We evaluate our method on two open-source audio-visual generation models, Ovi and LTX-2.3. For Ovi, we generate 141-frame, 5-second videos at 960 × 960 resolution with 50 denoising steps. For LTX-2.3, we use its two-stage pipeline to generate 10-second videos at 1280 × 704 resolution and 24 FPS, with 30 low-resolution denoising steps followed by 3 high-resolution re-finement steps. We compare against the dense model and represen-tative training-free video acceleration methods, includ-ing the sparse attention method SparseVideoGen(SVG)[32] and cache-based methods BWCache[6], TeaCache[21], SeaCache[4], and FasterCache[23]. Since these baselines are designed for video generation, we apply their sparsifica-tion or cache-reuse strategies to the video branch of audio-visual backbones under the default inference setting. 
+
+Implementation details. For Ovi, our acceleration method is applied throughout the 50-step denoising pro-cess. For LTX-2.3, acceleration is applied only to the 30-step low-resolution stage, while the spatial upsampling and high-resolution refinement stage remain unchanged. All ex-periments are conducted on NVIDIA A800 GPUs. 
+
+Evaluation metrics. Following prior video-generation acceleration studies, we evaluate fidelity and efficiency us-ing standard reconstruction and latency metrics. For video quality, we report PSNR, SSIM[29], and LPIPS[39] against dense baseline outputs, along with Q-Align[30] for percep-tual assessment. For joint audio-visual generation, we eval-uate the audio branch in terms of audio-video synchroniza-tion and similarity to dense audio outputs. Specifically, Sync-C and Sync-D[5] measure synchronization, while VISQOL[12] assesses audio similarity. For efficiency, we report end-to-end latency and speedup over dense inference under the same sampling configuration. 
+
+5.2. Main Results 
+
+Quantitative Comparison. Table 1 reports the main comparison on Ovi and LTX-2.3. Across both models, our method achieves the best overall quality among accelerated methods, with gains covering not only video fidelity but also audio similarity and audio-video synchronization. This confirms the benefit of protecting cross-modal saliency re-gions rather than applying sparsification or cache reuse in a modality-agnostic manner. On Ovi, Ours consistently pre-serves visual fidelity, perceptual quality, audio similarity, and synchronization better than other accelerated baselines, while delivering around 2× end-to-end acceleration. On 6Table 1. Main comparison on Ovi and LTX-2.3. Base Model Method Video Quality Audio / Sync. Efficiency PSNR ↑ LPIPS ↓ SSIM ↑ Q-Align ↑ Sync-C ↑ Sync-D ↓ VISQOL ↑ Speedup ↑ Latency (s) ↓
+
+Ovi Dense Baseline ∞ 0.0000 1.0000 0.7953 4.688 8.172 Ref 1.000x 448.75 SVG 21.7630 0.2511 0.7706 0.7601 3.658 8.729 3.3670 1.300x 344.83 BWCache 21.9480 0.2444 0.7672 0.7560 3.822 8.635 3.5192 1.774x 252.71 TeaCache 24.7775 0.1494 0.8365 0.7546 3.743 8.651 3.4610 1.811x 247.83 SeaCache 22.1419 0.2389 0.7743 0.7218 3.901 8.311 3.3588 2.471x 181.47 
+
+FasterCache 22.3227 0.2408 0.7836 0.7489 3.846 8.591 3.4012 1.483x 302.48 Ours 25.6857 0.1398 0.8385 0.7822 4.606 8.378 3.6902 1.992x 225.30 LTX-2.3 Dense Baseline ∞ 0.0000 1.0000 0.8124 5.304 7.3081 Ref 1.000x 255.41 SVG 18.7640 0.3961 0.6193 0.7639 4.722 7.8021 3.2760 1.041x 245.35 BWCache 19.5013 0.3690 0.6224 0.8013 4.838 7.7142 3.4199 1.227x 208.15 TeaCache 18.8912 0.3756 0.6162 0.7874 4.576 7.5110 3.3419 1.269x 201.30 SeaCache 19.1386 0.3689 0.6179 0.8027 4.869 7.5328 3.4527 1.325x 192.74 
+
+FasterCache 18.9218 0.3847 0.6190 0.7826 4.731 7.6654 3.3602 1.132x 225.63 Ours 20.8737 0.3194 0.6737 0.8052 5.134 7.3964 3.7638 1.281x 199.38 20 40 60 80 
+
+> Saliency rank (%)
+> 0.35 0.40 0.45 0.50
+> Relative error
+> (a)
+> Error concentrates at salient tokens
+> Vanilla Sparse Protected Sparse
+> Contact Environment Instrument Speech Physical
+> 0.00 0.05 0.10 0.15 0.20 0.25
+> Error reduction
+> (b)
+> Consistency across 5 cases
+
+Figure 4. Saliency-conditioned feature error analysis. (a) Feature error across different cross-modal saliency ranks. (b) Error reduc-tion on top-5% protected queries. 
+
+LTX-2.3, our method shows a similar trend, achieving bet-ter reconstruction quality and stronger audio metrics under comparable acceleration. 
+
+Efficiency Analysis. The overhead of our method comes from saliency extraction and dense-row recomputation for protected queries. This cost is limited because only a small fraction of high-saliency queries is protected, while most tokens follow the sparse attention path. In addition, the saliency map is updated intermittently and reused across nearby steps, avoiding per-step profiling overhead. The synchronization-aware cache compensates for this cost by reusing stable block outputs. Thus, our method preserves synchronization-critical computation while retaining the ef-ficiency benefits of sparsification and caching. 
+
+Error Analysis. We further analyze the internal video self-attention error by comparing accelerated outputs with dense inference under the same prompt, seed, layer, and denoising step. Fig. 4(a) compares vanilla sparsification and our protected sparsification across tokens with different cross-modal saliency ranks. The error of vanilla sparsifi-cation increases on more salient tokens, while our method 10 20 30 40 49 Denoising step 515 29 Fusion block  0.36 0.35 0.42 0.49 0.54 0.46 0.56 0.70 0.75 0.65 0.14 0.32 0.44 0.55 0.66                 
+
+> (a)
+> Vanilla Sparse salient-token error
+> 10 20 30 40 49 Denoising step 515 29 Fusion block  0.19 0.21 0.28 0.34 0.40 0.30 0.40 0.55 0.62 0.52 0.09 0.23 0.34 0.42 0.52
+> (b)
+> Protected Sparse salient-token error
+> 0.0 0.2 0.4 0.6 Exact relative feature error
+
+Figure 5. Layer–timestep comparison of feature error. 
+
+clearly reduces the error in the most important token re-gions. Although protection is applied only to selected high-saliency queries, we also observe moderate error reduction on less salient tokens, suggesting that preserving key cross-modal representations can benefit the surrounding genera-tion trajectory. Fig. 4(b) summarizes the error reduction on the actual top-5% protected tokens across different semantic cate-gories. The reduction remains positive across representa-tive cases, showing that the benefit is not limited to a single favorable example. Fig. 5 further examines the effect along model depth and denoising steps. Compared with vanilla sparsification, protected sparsification yields lower feature error over the sampled fusion blocks and timesteps, espe-cially in stages where sparse approximation strongly affects the subsequent trajectory. These results indicate that our method selectively protects cross-modal salient queries that are most vulnerable to sparse approximation, while also im-proving the stability of nearby representations. 
+
+5.3. Ablation Studies 
+
+Component ablation. Table 2 studies the contribution of each protection component under the same backbone. With-out protection, sparse computation causes clear degradation in both visual quality and synchronization. Adding atten-7Dense  
+
+> TeaCache
+> BWCache
+> SVG
+> Ours
+> LTX-2.3 Ovi
+> PSNR 19.26 PSNR 19.90 PSNR 16.68 PSNR 21.03 PSNR 23.62 PSNR 22.19 PSNR 20.89 PSNR 25.49 Sync-C 5.68 Sync-C 4.65 Sync-C 4.77 Sync-C 4.49 Sync-C 5.45
+
+Figure 6. Qualitative comparison of dense inference, unprotected acceleration, and our protected acceleration. The protected computation path better preserves salient visual structures and reduces local artifacts under acceleration. 
+
+tion protection substantially improves the results, indicating that dense recomputation for cross-modal salient queries ef-fectively reduces the error introduced by sparse attention. Cache protection brings consistent gains by avoiding unsafe feature reuse, although its effect is smaller than attention protection. When attention, cache, and audio-side protec-tion are combined, the full method achieves the best overall quality among the ablated variants. These results show the improvement comes from explicitly protecting audio-video interaction, rather than merely increasing computation. 
+
+Protection ratio. Table 3 evaluates the effect of the pro-tection ratio. A small ratio of 2% keeps more sparse computation and gives higher speedup, but leaves more synchronization-critical queries unprotected. Increasing the ratio to 10% further improves generation quality and syn-chronization metrics, but the additional dense recomputa-tion reduces the speedup. We therefore use 5% as the de-fault setting, which provides a practical trade-off between generation quality, synchronization preservation, and infer-ence efficiency. 
+
+5.4. Qualitative Analysis 
+
+Fig. 6 compares dense inference, unprotected acceleration, and our protected acceleration. Without protection, acceler-ated inference is more likely to introduce artifacts, identity drift, or temporal inconsistency in salient regions. In con-trast, our method remains closer to the dense baseline by preserving high-fidelity computation for regions indicated by cross-modal saliency. This qualitative result supports the 
+
+Table 2. Component ablation under sparse computation. Check-marks indicate whether the corresponding protection strategy is enabled. Attn Cache Audio PSNR ↑ SSIM ↑ LPIPS ↓ Sync-C ↑ Speedup ↑                     
+
+> 21.5338 0.7689 0.2462 3.626 2.230x
+> ✓24.2551 0.8182 0.1533 3.939 2.152x
+> ✓22.9203 0.7821 0.1915 3.852 2.063x
+> ✓✓✓25.6857 0.8385 0.1398 4.606 1.992x
+
+Table 3. Ablation study on the protection ratio. Prot. Ratio PSNR ↑ SSIM ↑ LPIPS ↓ Sync-C ↑ Speedup ↑
+
+2% 24.8926 0.8133 0.1672 4.539 2.02x 
+
+5% 25.6857 0.8385 0.1398 4.606 1.992x 10% 25.8201 0.8413 0.1369 4.648 1.861x 
+
+importance of the proposed protection mechanism for keep-ing generation quality under sparse or cached computation. 
+
+## 6. Conclusion 
+
+We present an audio-guided protected sparse attention framework for efficient audio-visual generation. The core idea is to use cross-modal attention as sound-source saliency and protect audio-critical video tokens during sparse video self-attention. By aligning the acceleration policy with audio-video interaction, the method aims to re-duce redundant computation while preserving the visual ev-idence needed for synchronized audio generation. 8References 
+
+[1] Yuheng Chen, Qingdong He, Teng Hu, Yuji Wang, Yabiao Wang, Lizhuang Ma, and Jiangning Zhang. Omni-customizer: End-to-end multimodal customization for joint audio-video generation. arXiv preprint arXiv:2605.17488 ,2026. 1 [2] Yuheng Chen, Teng Hu, Yuji Wang, Qingdong He, Zhu-cun Xue, Qianyu Zhou, Jason Li, Lizhuang Ma, Jiangn-ing Zhang, and Dacheng Tao. Cinedance: Towards next-generation multi-shot long-form cinematic audio-video gen-eration. arXiv preprint arXiv:2606.09639 , 2026. 1 [3] Ho Kei Cheng, Masato Ishii, Akio Hayakawa, Takashi Shibuya, Alexander Schwing, and Yuki Mitsufuji. Mmaudio: Taming multimodal joint training for high-quality video-to-audio synthesis. In 2025 IEEE/CVF Conference on Com-puter Vision and Pattern Recognition (CVPR) , pages 28901– 28911. IEEE, 2025. 2 [4] Jiwoo Chung, Sangeek Hyun, MinKyu Lee, Byeongju Han, Geonho Cha, Dongyoon Wee, Youngjun Hong, and Jae-Pil Heo. Seacache: Spectral-evolution-aware cache for accel-erating diffusion models. arXiv preprint arXiv:2602.18993 ,2026. 3, 6 [5] Joon Son Chung and Andrew Zisserman. Out of time: auto-mated lip sync in the wild. In Asian conference on computer vision , pages 251–263. Springer, 2016. 6, 11 [6] Hanshuai Cui, Zhiqing Tang, Zhifei Xu, Zhi Yao, Wenyi Zeng, and Weijia Jia. Bwcache: Accelerating video diffusion transformers through block-wise caching. arXiv preprint arXiv:2509.13789 , 2025. 1, 3, 6 [7] Tri Dao. Flashattention-2: Faster attention with better par-allelism and work partitioning. 2024:35549–35562, 2024. 3[8] Tri Dao, Daniel Y Fu, Stefano Ermon, Atri Rudra, and Christopher R´ e. Flashattention: Fast and memory-efficient exact attention with io-awareness. In Advances in neural in-formation processing systems , 2022. 1, 3 [9] Masato Fujitake and Akihiro Sugimoto. Video sparse trans-former with attention-guided memory for video object detec-tion. IEEE Access , 10:65886–65900, 2022. 3 [10] Yoav HaCohen, Benny Brazowski, Nisan Chiprut, Yaki Bitterman, Andrew Kvochko, Avishai Berkowitz, Daniel Shalem, Daphna Lifschitz, Dudu Moshe, Eitan Porat, et al. Ltx-2: Efficient joint audio-visual foundation model. arXiv preprint arXiv:2601.03233 , 2026. 1, 2, 12 [11] Moayed Haji-Ali, Willi Menapace, Aliaksandr Siarohin, Ivan Skorokhodov, Alper Canberk, Kwot Sin Lee, Vicente Ordonez, and Sergey Tulyakov. Av-link: Temporally-aligned diffusion features for cross-modal audio-video generation. 
+
+arXiv preprint arXiv:2412.15191 , 2024. 2 [12] Andrew Hines, Jan Skoglund, Anil C Kokaram, and Naomi Harte. Visqol: an objective speech quality model. EURASIP Journal on Audio, Speech, and Music Processing , 2015(1): 13, 2015. 6, 11 [13] Teng Hu, Zhentao Yu, Guozhen Zhang, Zihan Su, Zheng-guang Zhou, Youliang Zhang, Yuan Zhou, Qinglin Lu, and Ran Yi. Harmony: Harmonizing audio and video generation through cross-task synergy. arXiv preprint arXiv:2511.21579 , 2025. 1, 2 [14] Teng Hu, Zhentao Yu, Zhengguang Zhou, Sen Liang, Yuan Zhou, Qin Lin, and Qinglin Lu. Hunyuancustom: Amultimodal-driven architecture for customized video gener-ation. arXiv preprint arXiv:2505.04512 , 2025. 1 [15] Teng Hu, Jiangning Zhang, Hongrui Huang, Ran Yi, Zihan Su, Jieyu Weng, Zhucun Xue, Lizhuang Ma, Ming-Hsuan Yang, and Dacheng Tao. Evolution of video generative foun-dations. arXiv preprint arXiv:2604.06339 , 2026. 1 [16] Teng Hu, Jiangning Zhang, Zihan Su, and Ran Yi. Ultragen: High-resolution video generation with hierarchical attention. In Proceedings of the AAAI Conference on Artificial Intelli-gence , pages 4923–4931, 2026. 1 [17] Xiaohu Huang, Hao Zhou, Qiangpeng Yang, Shilei Wen, and Kai Han. Jova: Unified multimodal learning for joint video-audio generation. arXiv preprint arXiv:2512.13677 , 2025. 2[18] Kumara Kahatapitiya, Haozhe Liu, Sen He, Ding Liu, Menglin Jia, Chenyang Zhang, Michael S Ryoo, and Tian Xie. Adaptive caching for faster video generation with diffu-sion transformers. In Proceedings of the IEEE/CVF Interna-tional Conference on Computer Vision , pages 15240–15252, 2025. 3 [19] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. 1[20] Sen Liang, Cong Wang, Zhentao Yu, Fengbin Guan, Zheng-guang Zhou, Teng Hu, Youliang Zhang, Yuan Zhou, Xin Li, Qinglin Lu, et al. Goku: A million-scale universal dataset and benchmark for instruction-based video editing. arXiv preprint arXiv:2606.30599 , 2026. 1 [21] Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep embedding tells: It’s time to cache for video diffusion model. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 7353–7363, 2025. 1, 3, 6 [22] Chetwin Low, Weimin Wang, and Calder Katyal. Ovi: Twin backbone cross-modal fusion for audio-video genera-tion. arXiv preprint arXiv:2510.01284 , 2025. 1, 2, 12 [23] Zhengyao Lyu, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K Wong. Fastercache: Training-free video diffusion model acceleration with high quality. 2025:33132–33156, 2025. 1, 3, 6 [24] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and Tri Dao. Flashattention-3: Fast and accurate attention with asynchrony and low-precision. 
+
+Advances in Neural Information Processing Systems , 37: 68658–68685, 2024. 3 [25] Sizhe Shan, Qiulin Li, Yutao Cui, Miles Yang, Yuehai Wang, Qun Yang, Jin Zhou, and Zhao Zhong. Hunyuanvideo-foley: Multimodal diffusion with representation alignment for high-fidelity foley audio generation. arXiv preprint arXiv:2508.16930 , 2025. 2 
+
+9[26] OpenMOSS Team, Donghua Yu, Mingshu Chen, Qi Chen, Qi Luo, Qianyi Wu, Qinyuan Cheng, Ruixiao Li, Tianyi Liang, Wenbo Zhang, et al. Mova: Towards scalable and synchronized video-audio generation. arXiv preprint arXiv:2602.08794 , 2026. 2 [27] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianx-iao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. 1[28] Ruiyan Wang, Teng Hu, Kaihui Huang, Zihan Su, Ran Yi, and Lizhuang Ma. Poseanything: General pose-guided video generation with part-aware temporal coherence. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 23193–23203, 2026. 1 [29] Zhou Wang, Alan C Bovik, Hamid R Sheikh, and Eero P Si-moncelli. Image quality assessment: from error visibility to structural similarity. IEEE transactions on image processing ,13(4):600–612, 2004. 6, 11 [30] Haoning Wu, Zicheng Zhang, Weixia Zhang, Chaofeng Chen, Liang Liao, Chunyi Li, Yixuan Gao, Annan Wang, Erli Zhang, Wenxiu Sun, et al. Q-align: Teaching lmms for visual scoring via discrete text-defined levels. arXiv preprint arXiv:2312.17090 , 2023. 6, 11 [31] Jianzong Wu, Liang Hou, Haotian Yang, Xin Tao, Ye Tian, Pengfei Wan, Di Zhang, and Yunhai Tong. Vmoba: Mixture-of-block attention for video diffusion models. arXiv preprint arXiv:2506.23858 , 2025. 3 [32] Haocheng Xi, Shuo Yang, Yilong Zhao, Chenfeng Xu, Muyang Li, Xiuyu Li, Yujun Lin, Han Cai, Jintao Zhang, Dacheng Li, et al. Sparse videogen: Accelerating video diffusion transformers with spatial-temporal sparsity. arXiv preprint arXiv:2502.01776 , 2025. 1, 3, 6 [33] Yazhou Xing, Yingqing He, Zeyue Tian, Xintao Wang, and Qifeng Chen. Seeing and hearing: Open-domain visual-audio generation with diffusion latent aligners. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 7151–7161, 2024. 2 [34] Zhucun Xue, Jiangning Zhang, Teng Hu, Haoyang He, Yinan Chen, Yuxuan Cai, Yabiao Wang, Chengjie Wang, Yong Liu, Xiangtai Li, et al. Ultravideo: High-quality uhd video dataset with comprehensive captions. arXiv preprint arXiv:2506.13691 , 2025. 1 [35] Shuo Yang, Haocheng Xi, Yilong Zhao, Muyang Li, Jin-tao Zhang, Han Cai, Yujun Lin, Xiuyu Li, Chenfeng Xu, Kelly Peng, et al. Sparse videogen2: Accelerate video gen-eration with sparse attention via semantic-aware permuta-tion. Advances in Neural Information Processing Systems ,38:96965–96991, 2026. 3 [36] Guozhen Zhang, Zixiang Zhou, Teng Hu, Ziqiao Peng, You-liang Zhang, Yi Chen, Yuan Zhou, Qinglin Lu, and Limin Wang. Uniavgen: Unified audio and video generation with asymmetric cross-modal interactions. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 1950–1960, 2026. 1 [37] Jintao Zhang, Haofeng Huang, Pengle Zhang, Jia Wei, Jun Zhu, and Jianfei Chen. Sageattention2: Efficient attention with thorough outlier smoothing and per-thread int4 quanti-zation. 2024. 1, 3 [38] Jintao Zhang, Jia Wei, Haofeng Huang, Pengle Zhang, Jun Zhu, and Jianfei Chen. Sageattention: Accurate 8-bit atten-tion for plug-and-play inference acceleration. 2024. 1, 3 [39] Richard Zhang, Phillip Isola, Alexei A Efros, Eli Shecht-man, and Oliver Wang. The unreasonable effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer vision and pattern recogni-tion , pages 586–595, 2018. 6, 11 [40] Yiming Zhang, Yicheng Gu, Yanhong Zeng, Zhening Xing, Yuancheng Wang, Zhizheng Wu, and Kai Chen. Foley-crafter: Bring silent videos to life with lifelike and synchro-nized sounds. arXiv preprint arXiv:2407.01494 , 2024. 2 
+
+10 Supplementary Material 
+
+## A. Overview 
+
+This supplementary material consists of: • Evaluation metrics ; • Dual-stream backbone architecture ; • Implementation details ; • Saliency stability analysis ; • Additional qualitative results . 
+
+## B. Evaluation Metrics 
+
+Unless otherwise specified, full-reference video and audio metrics are computed by comparing the accelerated out-put with the dense baseline output generated with the same prompt, random seed, and sampling configuration. For video-level metrics, we compute the score frame by frame and report the average over all frames and evaluation sam-ples. 
+
+Peak Signal-to-Noise Ratio (PSNR). PSNR measures the pixel-level reconstruction fidelity between an acceler-ated video frame and its dense baseline reference. Given a reference frame I and an accelerated frame ˆI, PSNR is defined as 
+
+PSNR( I, ˆI) = 10 log 10 
+
+R2
+
+MSE( I, ˆI)
+
+!
+
+, (17) where R is the maximum possible pixel value and MSE 
+
+denotes the mean squared error between the two frames. A higher PSNR indicates that the accelerated result is closer to the dense baseline in pixel space. 
+
+Structural Similarity Index Measure (SSIM) [29]. 
+
+SSIM evaluates structural similarity by comparing lumi-nance, contrast, and structural information between two im-ages. Given two frames I and ˆI, SSIM is written as 
+
+SSIM( I, ˆI) = (2 μI μˆI + C1)(2 σI ˆI + C2)(μ2 
+
+> I
+
++ μ2ˆI + C1)( σ2 
+
+> I
+
++ σ2ˆI + C2) , (18) where μ, σ2, and σI ˆI denote local means, variances, and covariance, respectively. A higher SSIM indicates better structural fidelity. 
+
+Learned Perceptual Image Patch Similarity (LPIPS) [39]. LPIPS measures perceptual distance using deep features extracted from a pretrained network. Given feature extractor ϕl(·) at layer l, LPIPS can be written as 
+
+LPIPS( I, ˆI) = X
+
+> l
+
+wl ϕl(I) − ϕl( ˆI) 22
+
+, (19) where wl denotes the learned layer-wise weighting. A lower LPIPS indicates smaller perceptual degradation. 
+
+Q-Align [30]. Q-Align is a no-reference perceptual qual-ity assessment metric built upon large multimodal models. It formulates visual quality assessment as a level-alignment problem, where the model predicts quality scores by align-ing visual content with discrete text-defined quality levels. Unlike PSNR, SSIM, and LPIPS, Q-Align does not com-pare the accelerated video with a reference frame, but in-stead evaluates the perceptual quality of the generated vi-sual content itself. We use Q-Align as a complementary metric to measure whether acceleration preserves the over-all perceptual quality of generated videos. A higher Q-Align score indicates better perceptual visual quality. 
+
+Sync-C and Sync-D [5]. Sync-C and Sync-D are SyncNet-style metrics for measuring audio-video synchro-nization. They embed the visual stream and the au-dio stream into a shared synchronization space and com-pare their temporal correspondence across possible off-sets. Sync-D denotes the distance between the best-matched audio-visual embeddings, where a lower value indicates a smaller synchronization error. Sync-C measures the confi-dence of the best temporal alignment, reflecting how clearly the correct audio-video offset can be distinguished from other offsets. A higher Sync-C and a lower Sync-D indi-cate better audio-video synchronization. 
+
+VISQOL [12] VISQOL is a full-reference objective au-dio quality metric designed to estimate perceptual similar-ity between a reference audio signal and a degraded audio signal. It compares audio signals using perceptually mo-tivated time-frequency representations and predicts an ob-jective quality score correlated with human listening judg-ments. In our evaluation, the dense baseline audio is used as the reference, and the accelerated audio is used as the evaluated signal. Thus, VISQOL measures whether accel-eration preserves the perceptual audio quality of the dense generation result. A higher VISQOL score indicates better audio quality preservation. 
+
+## C. Dual-Stream Backbone Architecture 
+
+This section provides a more detailed description of the dual-stream backbone used by recent joint audio-visual dif-11 Figure 7. Illustration of a typical dual-stream audio-visual diffu-sion block. The video and audio branches are processed separately and exchange information through bidirectional audio-video atten-tion. 
+
+fusion models such as Ovi [22] and LTX-2 [10]. As shown in Fig. 7, the model maintains two modality-specific token streams: a video stream for spatiotemporal visual latents and an audio stream for acoustic latents. The two streams are processed by separate transformer branches, each con-taining self-attention and feed-forward layers. Within a typical dual-stream block, modality-specific self-attention first updates video and audio tokens within their own representation spaces. Text tokens are then used as semantic conditions through text-to-video and text-to-audio attention. After that, bidirectional audio-video atten-tion allows two modalities to exchange information: the video branch can attend to audio tokens, and the audio branch can attend to video tokens. Stacking such blocks over denoising steps enables the model to jointly refine vi-sual and acoustic content. Our method operates on this backbone without chang-ing its parameters or training procedure. The cross-modal attention maps produced by the bidirectional audio-video attention modules are used only as saliency signals for iden-tifying tokens or blocks that should be protected during ac-celeration. 
+
+## D. Implementation Details 
+
+We provide the main acceleration hyperparameters used in our experiments. For protected sparse attention, we use a protection ratio of 5% by default, meaning that only the top 
+
+5% cross-modal salient queries are recomputed with dense attention rows. The remaining queries follow the sparse at-tention path. For vanilla sparse baselines, we use the same                          
+
+> Table 4. Ablation on saliency selection strategies. Saliency Strategy PSNR ↑SSIM ↑LPIPS ↓Sync-C ↑Sync-D ↓
+> No Protection 21.5338 0.7689 0.2462 3.626 8.653 Random 5% 22.0219 0.7762 0.2376 3.819 8.578 Video Self-Attn Score 5% 23.5128 0.8025 0.2140 3.764 8.602 Cross-Modal Saliency 5% 25.6857 0.8385 0.1398 4.606 8.378
+
+sparse attention budget but remove the protection mecha-nism. For lagged cross-modal saliency, the saliency cache is updated every 4 denoising steps and reused for the nearby steps. For cache-based acceleration, we keep full computa-tion for 15% of the denoising steps as anchor steps for re-freshing cached features and saliency signals. At the block level, 2 fusion blocks are kept under full computation, while cache reuse is applied to the remaining eligible blocks. For synchronization-aware cache reuse, the protected-region weight is set to λp = 0 .5, and the saliency-drift weight is set to λs = 0.1. The cache reuse threshold is set to τ = 0 .2. A block output is reused only when the synchronization-aware indicator is below this thresh-old. For LTX-2.3, acceleration is applied only to the low-resolution denoising stage, while the upsampling and high-resolution refinement stages are kept unchanged. 
+
+## E. Additional Ablation on Saliency Selection 
+
+To further verify whether the protected regions are effec-tively selected by cross-modal guidance, we compare differ-ent strategies for choosing the protected queries under the same sparse computation setting. The no-protection base-line applies sparse computation without recomputing any query rows. The random baseline protects the same ratio of queries but selects them randomly. The video self-attention baseline selects protected queries according to intra-modal attention scores from the video branch. Our final strat-egy selects the top 5% queries according to cross-modal saliency. As shown in Table 4, cross-modal saliency provides a more effective protection signal than modality-agnostic se-lection. Compared with the no-protection baseline, it sub-stantially improves video reconstruction quality and audio-video synchronization, indicating that the gain comes from protecting synchronization-related computation rather than simply adding more dense computation. 
+
+## F. Saliency Stability Across Denoising Steps 
+
+The main paper uses a lagged cross-modal saliency cache to guide protected sparse attention, instead of recomputing the saliency map at every denoising step. Here we provide an additional analysis to support this design. The analysis is conducted on Ovi using the 15-th fusion block across all 12 Table 5. Ablation on the saliency update interval. 
+
+K PSNR ↑ SSIM ↑ LPIPS ↓ Sync-C ↑ Sync-D ↓
+
+2 25.7033 0.8408 0.1378 4.629 8.492 4 25.6857 0.8385 0.1398 4.606 8.378 
+
+8 24.3362 0.8166 0.1702 4.325 8.522 1 2 4 8 
+
+> Denoising-step interval Δ
+> 0.00 0.25 0.50 0.75 1.00
+> Top-5% overlap
+> Lagged saliency stability
+> Speech Object event Mean Chance (5%)
+> Figure 8. Protected-token overlap across denoising-step intervals. The high overlap at small intervals supports lagged saliency reuse, while the decrease at larger intervals motivates periodic saliency updates.
+
+denoising steps . For two denoising steps t and t + ∆ , we compute the overlap between their protected token sets: 
+
+Overlap( t, t + ∆) = |P t ∩ P t+∆ ||P t| , (20) where Pt denotes the top protected tokens selected from cross-modal saliency at step t. A higher overlap means that the saliency-derived protected regions are more consistent across the two denoising steps. As shown in Fig. 8, adjacent denoising steps have a high overlap of about 0.93 , and the overlap remains around 0.88 
+
+at ∆ = 2 . When the interval increases, the overlap gradu-ally decreases, reaching about 0.78 at ∆ = 4 and about 0.62 
+
+at ∆ = 8 . This indicates that cross-modal saliency is sta-ble over nearby steps but still evolves over longer intervals. Therefore, the saliency map can be safely reused within a short temporal window to reduce overhead, while periodic updates remain necessary to track the changing audio-video interaction. We also report the effect of different saliency update intervals in Table 5. Updating saliency more fre-quently with K = 2 brings only marginal improvement over K = 4 , while requiring more frequent cross-modal saliency recomputation. In contrast, using a larger interval such as K = 8 leads to a clear quality drop, indicating that the cached saliency becomes less reliable when reused for too many denoising steps. Therefore, we use K = 4 as the default setting to balance saliency accuracy and computa-tional overhead. 
+
+## G. Additional Qualitative Results 
+
+We provide additional qualitative comparisons on LTX-2.3 in Figs. 9–12. Each example compares dense inference, existing acceleration baselines, and our method using four representative frames sampled from the generated video. These visualizations complement the quantitative results by showing how different acceleration strategies affect local vi-sual fidelity and temporal consistency. Across diverse sce-narios, including dialogue, object interaction, ASMR-style close-up motion, and animal or human motion, unprotected sparse or cache-based acceleration can introduce local dis-tortions, inconsistent structures, or visible deviations from the dense baseline. In contrast, our method better preserves salient foreground regions and key motion details while still reducing inference cost. These qualitative results further support the effectiveness of synchronization-aware protec-tion for maintaining generation quality under acceleration. 13 Dense SVG TeaCache SeaCache BWCache Ours Dense SVG TeaCache SeaCache BWCache Ours Figure 9. Additional qualitative comparisons on LTX-2.3. 
+
+14 Dense SVG TeaCache SeaCache BWCache Ours Dense TeaCache SeaCache BWCache Ours Figure 10. Additional qualitative comparisons on LTX-2.3. 
+
+15 Dense TeaCache SeaCache BWCache Ours Dense TeaCache SeaCache BWCache Ours Figure 11. Additional qualitative comparisons on LTX-2.3. 
+
+16 Dense SVG TeaCache SeaCache BWCache Ours Dense SVG TeaCache SeaCache BWCache Ours Figure 12. Additional qualitative comparisons on LTX-2.3. 
+
+17
