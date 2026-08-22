@@ -1,0 +1,1328 @@
+Title: A Plug-in Interpretation of Conditioning in Score-Based Diffusion Models
+
+URL Source: https://arxiv.org/pdf/2608.19504v1
+
+Published Time: Fri, 21 Aug 2026 00:17:13 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# A Plug-in Interpretation of Conditioning in Score-Based Diffusion Models 
+
+Libo Chen 1 Souvik Ghosh 2 Teo Deveney 1 Chris Budd 1 Vinay P. Namboodiri 1
+
+> 1
+
+University of Bath, Bath, UK 
+
+> 2
+
+International Institute of Information Technology Hyderabad, India 
+
+Abstract 
+
+We propose a conditioning mechanism for diffusion models based on multi-speed joint diffusion of the target and the condition. The mechanism learns an unconditional joint score network and enforces conditioning at inference via a plug-in correction term. The plug-in term separates the conditioning contribution from the learned unconditional dynamics, offering a transparent view of how the condition steers generation of the target distribution. Building on this, we derive explicit conditional reverse-time SDEs and approximate probability-flow ODEs, enabling principled and directly comparable conditional samplers. To reduce the induced ODE–SDE discrepancy, we introduce a log-Fokker–Planck residual regularization that improves ODE sampling quality. Experiments on conditional image generation tasks demonstrate competitive performance and support the effectiveness of the plug-in conditioning view. Additional ODE–SDE comparison experiments show that the log-Fokker–Planck residual regularization improves deterministic ODE sampling. 
+
+# 1 Introduction 
+
+Score-based diffusion models [16] have emerged as a powerful class of generative models, achieving state-of-the-art performance in image synthesis [5], audio generation [8], and inverse problems [17]. In many practical settings, however, the goal is conditional generation: producing samples that are consistent with observations or constraints, such as arbitrary masks in image inpainting [11], low-resolution measurements in super-resolution [14], or noisy partial observations in data assimila-tion [12]. Conditional generation requires sampling from a condition-dependent reverse process. This, in turn, depends on estimating a conditional score function, which is generally intractable and must therefore be approximated. Existing approaches primarily differ in how the conditioning information is incorporated into the diffusion dynamics. Following [2], existing methods can broadly be divided into two families based on the treatment of the condition during the forward diffusion process. Fixed-condition approaches diffuse only the target state while keeping the condition unchanged, whereas joint-diffusion approaches diffuse both the target and the condition and learn a joint score field. 
+
+Fixed-condition estimators. The first family keeps the condition fixed and learns a conditional score network directly from paired data via denoising score matching, often by concatenating the condition into the score model [15, 18]. While effective, this design tightly couples the learned model to a specific conditioning interface and observation operator. As a result, adapting to new inverse problems may require substantial re-tuning or retraining. Moreover, because the condition itself is 1arXiv:2608.19504v1 [cs.CV] 19 Aug 2026 not modeled as a stochastic variable within the diffusion process, these methods provide limited insight into how observations explicitly influence the reverse-time dynamics. 
+
+Diffused-condition estimators. The second family jointly diffuses the target and the condition and learns a joint score field. This includes the conditional diffusive estimator (CDiffE) and its multi-speed variant (CMDE) [2], where the condition may evolve under a different noise schedule to balance optimization ease and approximation fidelity. Although more flexible, existing joint-diffusion approaches typically rely on implicit schedule matching and do not provide an explicit conditional reverse-time SDE/ODE formulation. Consequently, the mechanism through which observations guide the reverse dynamics remains less transparent. More recently, pretrained-prior approaches have emerged as an effective alternative for inverse problems. Methods such as Diffusion Posterior Sampling (DPS) [3] and DiffPIR [21] combine pretrained diffusion models with observation-consistency updates during sampling. While DPS relies on iterative likelihood-gradient evaluations through the pretrained score network, which can increase computational cost. DiffPIR introduces an optimization-inspired data-consistency step. Our work treats conditioning as an analytic correction to a learned score, applies both to pretrained-prior restoration and to joint target–condition diffusion, and leads directly to conditional reverse SDE/ODE dynamics. In this work, we propose a unified conditional diffusion framework based on multi-speed joint diffusion with analytic plug-in conditioning. We jointly diffuse the target and the condition under potentially different noise schedules and train a single unconditional joint score model. Conditioning is imposed explicitly at inference time through an analytic plug-in correction derived from the forward corruption process, rather than being absorbed implicitly into the learned dynamics. This yields a modular conditional score estimator that separates unconditional generation dynamics from observation-consistency corrections. Building on this, we derive explicit conditional reverse-time stochastic differential equations (SDEs) together with matched approximate probability-flow ordinary differential equations (ODEs). The conditioning contribution appears in closed form within the reverse dynamics, providing a transparent interpretation of how observations influence both stochastic and deterministic sampling trajectories. Beyond methodology, inspired by recent progress on reducing the ODE–SDE discrepancy in unconditional diffusion models [4], we analyze the discrepancy between conditional ODE and SDE samplers. We show that this discrepancy can be bounded by a log-Fokker–Planck residual associated with the learned score dynamics. This provides a mechanism for improving deterministic ODE sampling quality: as the residual decreases, the probability-flow ODE more closely tracks the reverse-time SDE distribution. Empirically, we evaluate the proposed framework on conditional image generation tasks including inpainting and super-resolution across CelebA, FFHQ, and ImageNet. We compare against repre-sentative conditional diffusion approaches as well as modern pretrained-prior methods, including DPS [3] and DiffPIR [21]. Our method achieves competitive or superior reconstruction fidelity and conditional consistency while avoiding the per-step backpropagation through the diffusion model required by gradient-based posterior sampling approaches. 
+
+Contributions. In summary, our main contributions are: 
+
+• We provide another interpretation of how conditional diffusion relates to the sampling time via an analytical plug-in term. We also show that our formulation can work with a pre-trained model for inpainting (Table 3). 2• We derive explicit conditional reverse-time SDE and matched approximate probability-flow ODE formulations with interpretable conditioning dynamics. 
+
+• We establish a theoretical connection between the conditional ODE–SDE discrepancy and a controllable log-Fokker–Planck residual. 
+
+# 2 Background: Conditional and Posterior-Guided Diffusion 
+
+Many applications require sampling from a conditional target distribution p(x0|y), where y denotes an observation, measurement, or side information. In score-based diffusion models, conditional generation is achieved by approximating the conditional score field that governs the reverse-time dynamics. Existing approaches can broadly be categorized into two families: methods that learn conditional score models directly from paired data, and methods that impose observations on a pretrained diffusion prior during sampling. 
+
+Conditional score estimation. A common approach is to learn a score model that directly approximates the conditional score ∇x log pt(xt|y). In fixed-condition estimators, the condition is kept unchanged throughout the diffusion process and provided directly to the score network. Representative examples include conditional denoising estimators (CDE), where the score model is trained on paired data and conditioned explicitly on the observation. An alternative is to jointly diffuse both the target and the condition and learn a joint score field. This includes the conditional diffusive estimator (CDiffE) and its multi-speed extension (CMDE) [2]. In these methods, the condition evolves along the diffusion process and conditional generation is recovered by evaluating the learned joint score using a perturbed version of the observation. While joint-diffusion approaches offer greater flexibility, the role of the observation in the reverse dynamics remains largely implicit. 
+
+Posterior-guided diffusion sampling. A second family of methods uses a pretrained un-conditional diffusion model as a prior and imposes the observation only at sampling time. These approaches are particularly attractive for inverse problems because they avoid retraining the diffusion model for each observation operator. Diffusion Posterior Sampling (DPS) [3] follows a Bayesian formulation in which the posterior score is decomposed as 
+
+∇x log pt(xt|y) = ∇x log pt(xt) + ∇x log pt(y|xt). (1) The first term is provided by the pretrained diffusion model, while the second is approximated through likelihood-gradient guidance during sampling. DPS has demonstrated strong performance on a wide range of noisy inverse problems, but requires differentiating the likelihood term at every sampling step. DiffPIR [21] adopts a related plug-and-play perspective and combines pretrained diffusion priors with iterative data-consistency updates inspired by optimization-based image restoration. Rather than directly estimating a conditional score, DiffPIR alternates between diffusion-based denoising and observation-consistency corrections. 
+
+Our perspective. The methods above incorporate observations either implicitly through learned conditional score models or through iterative posterior-guidance procedures applied to pretrained priors. In contrast, we derive an analytic plug-in correction that explicitly separates unconditional 3generation dynamics from observation-consistency terms. This yields a unified conditioning mecha-nism that applies both to jointly trained diffusion models and to pretrained diffusion priors, while avoiding the repeated likelihood-gradient evaluations required by posterior-sampling approaches such as DPS. 
+
+# 3 Our method 
+
+3.1 Plug-in conditioning with a joint score (Contribution 1) 
+
+We first introduce a conditioning mechanism that avoids learning a separate conditional score model for each Y0. Instead of approximating ∇x log pt(Xt | Y0) directly, we jointly diffuse ( Xt, Y t) and inject conditioning through an explicit plug-in correction in the y-component. We diffuse the forward pair ( Xt, Y t) with possibly different diffusion intensities: 
+
+dX t = fX (Xt, t ) dt + gX (t) dW 1 
+
+> t
+
+,dY t = fY (Yt, t ) dt + gY (t) dW 2 
+
+> t
+
+, (2) where W 1 and W 2 are independent Brownian motions. Let Zt = ( Xt, Y t), define f (Zt, t ) = ( fX , f Y ), and set G(t) = diag( gX (t)I, g Y (t)I). For VE-SDE type forward processes (with zero drift), the marginal noising admits a linear-Gaussian form: Xt = X0 + σX (t) z1,Yt = Y0 + σY (t) z2, (3) where z1, z 2 ∼ N (0 , I ) are mutually independent and independent of ( X0, Y 0), and σ2 
+
+> X
+
+(t) = 
+
+R t 
+
+> 0
+
+g2 
+
+> X
+
+(s) ds , σ2 
+
+> Y
+
+(t) = R t 
+
+> 0
+
+g2 
+
+> Y
+
+(s) ds . Under independent Gaussian assumptions, we have Xt ⊥ Yt | Y0
+
+(Supplementary Section 1 for more details), hence 
+
+pt(Xt, Y t | Y0) = pt(Xt | Y0) pt(Yt | Y0). (4) Therefore, in conditional generation we simulate the reverse-time dynamics of ( Xt, Y t) conditioned on Y0 and finally return the x-component at t = 0 as a sample from p0(X0 | Y0). This is a screening-type approximation: once the high-SNR corrupted observation Yt is given, the original observation Y0 provides only limited additional information about Xt. This is encouraged by the multi-speed design, where the condition channel is diffused more slowly than the target channel. We therefore use 
+
+pt(Xt | Yt, Y 0) ≈ pt(Xt | Yt). (5) which can be viewed as an approximate conditional-independence condition, namely that Xt and Y0
+
+are nearly independent given Yt, Xt ⊥ Y0 | Yt. By Bayes’ rule, 
+
+pt(Y0 | Xt, Y t) = pt(Xt | Yt, Y 0)pt(Y0 | Yt)
+
+pt(Xt | Yt) . (6) Therefore, (5) implies 
+
+pt(Y0 | Xt, Y t) ≈ pt(Y0 | Yt). (7) (See Supplementary Section 2.2 for more details). 4Using Bayes’ rule again, the conditional joint score decomposes as 
+
+∇(x,y ) log pt(Xt, Y t | Y0) = ∇(x,y ) log pt(Xt, Y t)+ ∇(x,y ) log pt(Y0 | Xt, Y t)
+
+≈ ∇ (x,y ) log pt(Xt, Y t)+  0, ∇y log pt(Y0 | Yt),
+
+(8) where ( x, y ) denotes a realization of ( Xt, Y t) and ∇(x,y ) is the gradient with respect to ( x, y ). We approximate the unconditional joint score ∇(x,y ) log pt(Xt, Y t) with a single neural network 
+
+sθ(Xt, Y t, t ) ≈ ∇ (x,y ) log pt(Xt, Y t). (9) Conditioning is injected through the approximate plug-in correction term 
+
+cy(t; Y0, Y t) : ≈ ∇ y log pt(Y0 | Yt)= Y0 − Yt
+
+σ2 
+
+> Y
+
+(t) , (10) which admits an expression under Gaussian forward corruption (Supplementary Section 3 for more details). 
+
+Pretrained-prior instantiation. The same plug-in principle can also be used when a joint score model is not available. Suppose instead that we only have a pretrained unconditional diffusion prior 
+
+sθ(Xt, t ) ≈ ∇ x log pt(Xt). (11) In this case, the observation is imposed directly on the noisy state Xt. For the inpainting case, the condition is simply a partial observation of the target: 
+
+Y0 = M ⊙ X0, (12) where M is the binary observation mask. By Bayes’ rule, 
+
+∇x log pt(Xt | Y0) = ∇x log pt(Xt) + ∇x log pt(Y0 | Xt), (13) since pt(Y0) is independent of Xt. The pretrained model provides the first term, while the second term is approximated by a noisy-state data-consistency correction. Specifically, we use the surrogate likelihood 
+
+pt(Y0 | Xt) ≈ N (M ⊙ Xt, σ 2 
+
+> X
+
+(t)I), (14) which yields 
+
+∇x log pt(Y0 | Xt) ≈ M ⊙ Y0 − M ⊙ Xt
+
+σ2 
+
+> X
+
+(t) = Y0 − Yt
+
+σ2 
+
+> X
+
+(t) . (15) Here M ⊙M = M . This inpainting pretrained-prior case is closely related to the plug-in conditioning mechanism above, and serves as a useful case. In the joint setting, the plug-in term acts on the condition channel Yt, and Xt is influenced indirectly through the dependence of the joint score component sx(Xt, Y t, t ) on Yt. In the pretrained-prior setting, there is no separately learned condition channel. Instead, for inpainting, the condition is part of the target itself, since Y0 = M ⊙ X0. Thus the plug-in correction can be applied directly to the observed part of the noisy target state Xt,equivalently to Yt = M ⊙ Xt. Both cases follow the same principle: a learned diffusion score is combined with an analytic observation-consistency correction at sampling time. 53.2 Plug-in conditional reverse dynamics (Contribution 2) 
+
+We now derive the conditional reverse-time SDE and probability flow ODE induced by the unified conditioning in (8). Let Zt = ( Xt, Y t) follow the joint forward SDE (2), 
+
+3.2.1 Reverse-time SDE with plug-in conditioning 
+
+The conditional reverse-time SDE that generates samples from the conditional marginals p⋆t (·, · | Y0), integrated backward in time from t = T to t = 0, is 
+
+dZ t =
+
+
+
+f (Zt, t ) − G(t)G(t)⊤ ˜s(Zt, t ; Y0)
+
+
+
+dt + G(t) d ¯Wt. (16) where ¯Wt is a reverse-time Brownian motion. Writing (16) in components yields 
+
+
+
+dX t =
+
+
+
+fX (Xt, t ) − g2 
+
+> X
+
+(t) ∇x log pt(Xt, Y t)
+
+
+
+dt 
+
++ gX (t) d ¯W 1 
+
+> t
+
+,dY t =
+
+
+
+fY (Yt, t ) − g2 
+
+> Y
+
+(t) ∇y log pt(Xt, Y t)+ cy(t; Y0, Y t)
+
+dt + gY (t) d ¯W 2 
+
+> t
+
+.
+
+(17) Here pt(Xt, Y t) is the unconditional joint density used in the score terms, and in general p⋆t (·, · | 
+
+Y0)̸ = pt(·, ·). 
+
+3.2.2 Probability flow ODE with plug-in conditioning 
+
+We view Fokker-Planck as a continuity argument, the probability flow ODE [1] whose marginals exactly match p⋆(·, ·, t | Y0) is 
+
+dZ t
+
+dt = f (Zt, t ) − 12 G(t)G(t)⊤∇ log p⋆(Zt, t | Y0), (18) However, p⋆(·, ·, t | Y0) is intractable. We approximate its conditional score by a plug-in correction that affects only the y-channel: 
+
+∇(x,y ) log p⋆(Zt, t | Y0) ≈ ∇ (x,y ) log pt(Zt, t )+ (0 , c y(t; Y0, Y t)) , (19) where cy(t; Y0, Y t) ≈ ∇ y log pt(Y0 | Yt). Substituting (19) into (18) yields an implementable surrogate probability-flow ODE: 
+
+dZ t
+
+dt =
+
+
+
+f (Zt, t ) − G(t)G(t)⊤ ˜s(Zt, t ; Y0)
+
+
+
++ 12 G(t)G(t)⊤ ∇ log pt(Zt, t ) + cy(t; Y0, Y t).
+
+(20) i.e., 
+
+dX t
+
+dt = fX (Xt, t ) − 12 g2 
+
+> X
+
+(t) ∇x log pt(Xt, Y t),dY t
+
+dt = fY (Yt, t ) − 12 g2 
+
+> Y
+
+(t) ∇y log pt(Xt, Y t)+ cy(t; Y0, Y t).
+
+(21) 6Neural implementation. In practice, we approximate the unconditional joint score by a single network sθ(Xt, Y t, t ) ≈ ∇ (x,y ) log pt(Xt, Y t) and inject conditioning by ˜sθ(Xt, Y t, t ; Y0) := sθ(Xt, Y t, t ) + (0 , c y(t; Y0, Y t)) . (22) Simulating (16) or (21) from t = T to t = 0 and discarding Yt yields a valid conditional sample from 
+
+p(Xt | Y0). Algorithm 1 summarizes the unified sampling procedure. 
+
+3.3 Log-Fokker–Planck residual regularization (Contribution 3) 
+
+From subsection 3.2.2, we obtain an approximate conditional probability-flow ODE and a matched reverse-time SDE driven by the same corrected score. In practice, the resulting ODE sampler may still lag behind its SDE counterpart in sample quality [16]. To reduce this discrepancy, we regularize the learned dynamics by encouraging the potential uθ(x, y, t ) to approximately satisfy the joint log-Fokker–Planck equation. This log-FP residual regularization helps close the distributional gap between the plug-in ODE and SDE samplers, thereby improving the quality of the approximation probability-flow ODE sampling. 
+
+Log-FP operator. Let u(x, y, t ) = log p(x, y, t ) denote the log-density of the joint forward process (2). Under plug-in conditioning, the conditional reverse dynamics are driven by the corrected score ˜ sθ, which corresponds to a corrected log-Fokker–Planck operator (see Supplementary 
+
+Section 4 for more details) 
+
+FY0 [u] := F[u] − g2 
+
+> Y
+
+(t)
+
+
+
+∇y · cy(t; Y0, Y t) + cy(t; Y0, Y t) · ∇ yu
+
+
+
+. (23) where F[u] := ∂tu + ∇x · fX + fX · ∇ xu + ∇y · fY + fY · ∇ yu
+
+− 12 g2 
+
+> X
+
+(t) ∆xu + ∥∇ xu∥2 − 12 g2 
+
+> Y
+
+(t) ∆yu + ∥∇ yu∥2 . (24) 
+
+Normalized residual. We measure the violation of the log-FP equation by the (time-averaged) 
+
+L2 residual 
+
+RLFP (θ, t ) := V (T − t)−1
+
+Z Tt
+
+∥F Y0 [uθ]( ·, ·, s )∥2 
+
+> L2(Ω)
+
+ds, (25) where V (r) := r Vol(Ω) and Ω = Ω X × ΩY . All derivatives in F[uθ] are computed by automatic differentiation; when needed, ∆ uθ is estimated by the Hutchinson trace estimator. 
+
+Training objective. We augment the joint DSM loss with the log-FP residual regularizer: 
+
+Ltotal (θ) = Ljoint DSM (θ) + α Et∼Unif(0 ,T )
+
+RLFP (θ, t ). (26) 
+
+Closing the ODE–SDE gap. Under standard smoothness and growth assumptions (Supplemen-tary Section 4 ), a small residual implies that the approximation probability-flow ODE dynamics stay close to the reverse-time SDE dynamics in distribution: 
+
+Theorem 3.1 (Residual controls the ODE–SDE gap) . For any t ∈ [0 , T ], if RLFP (θ, t ) ≤ δ, then 
+
+W2
+
+ pODE  
+
+> θ
+
+(·, ·, t ), p SDE  
+
+> θ
+
+(·, ·, t ) ≤ C δ, (27) 
+
+where C > 0 is independent of δ.
+
+7Algorithm 1 Unified conditional sampling with a shared joint score (plug-in in the y-channel) 
+
+Input: observation Y0, time grid {tk}Kk=0 , joint score sθ, sampler ∈ { SDE , ODE }
+
+Init: sample ZT = ( XT , Y T ) ∼ πT , where πT := N (0 , σ 2
+
+> x
+
+(T )I) × N (0 , σ 2 
+
+> y
+
+(T )I)
+
+(Inpainting) Let M be the binary mask (observed region = 1). Set Y0 ← M ⊙ Y0 and initialize/project yT ← M ⊙ yT (and inject y-noise only on M )
+
+for k = K down to 1 do 
+
+t ← tk, ∆ t ← tk − tk−1, Zt = ( Xt, Y t)(sx, s y) ← sθ(Xt, Y t, t ) // sx ≈ ∇ x log pt(Xt, Y t) depends on Yt
+
+cy ← ∇ y log pt(Y0 | Yt) // plug-in acts only on y (Eq. (10)) ˜sx ← sx; ˜sy ← sy + cy // corrected score ˜ s = (˜ sx, ˜sy) (Eq. (22)) 
+
+if sampler = SDE then 
+
+zt−∆t ← RevSDEStep (zt, t, ∆t, (˜ sx, ˜sy)) 
+
+else 
+
+zt−∆t ← FlowODEStep (zt, t, ∆t, (˜ sx, ˜sy)) 
+
+end if 
+
+// Although cy does not enter ˜ sx explicitly, it influences x indirectly through Yt in sx(Xt, Y t, t ). 
+
+end for Output: X0 (discard the Yt-trajectory) The proof follows an energy estimate for the joint log-Fokker–Planck equation. Moreover, the plug-in terms cancel in the ODE–SDE comparison because the same correction −g2 
+
+> Y
+
+(∇y·cy +cy ·∇ yu)enters both the corrected log-FP equations; see Supplementary Section 4 .
+
+# 4 Experiments 
+
+4.1 Conditional generation: method comparison 
+
+We evaluate the proposed plug-in conditioning mechanism on two conditional generation tasks: inpainting and super-resolution. The goal is to assess whether the proposed plug-in strategy can consistently incorporate different forms of observed conditions into score-based generative sampling. 
+
+Tasks and metrics. We consider two inverse problems in which the condition is a degraded version of the target image. For inpainting , the condition is produced by applying randomly placed square masks covering 25% of the image area. For super-resolution , the condition is generated by bicubic downsampling, and we perform 8 × super-resolution from 16 × 16 to 128 × 128. We report PSNR and SSIM [19] to measure distortion-level fidelity. PSNR measures pixel-wise agreement with the ground truth, while SSIM captures local structural similarity beyond pixel-wise errors. To evaluate perceptual quality, we also report LPIPS [20], which computes distances in a deep feature space and is more aligned with human perceptual similarity than pixel-wise errors. Finally, we report joint Fr´ echet Inception Distance (JFID) [2], which applies the Fr´ echet distance to paired generated samples and their corresponding conditions. This metric is included because conditional generation should be evaluated not only by marginal image realism, but also by consistency with the given observation. All metrics are computed on the CelebA [10] test set using the same number of generated samples per condition. We follow the preprocessing protocol of Batzolis et al. [2]. For fairness, all score-based estimators use the same backbone architecture, training data, preprocessing pipeline, 8Figure 1: Inpainting on CelebA. For each example, we show the ground truth, the masked observation, and samples generated by our method from left to right. Table 1: Conditional generation results on CelebA inpainting. Lower LPIPS and JFID are better; higher PSNR and SSIM are better. All score-based methods use the same backbone and evaluation protocol.                         
+
+> Method PSNR ↑SSIM ↑LPIPS ↓JFID ↓
+> CDE 25.12 0.870 0.042 18.06 CDiffE 23.07 0.844 0.057 19.25 CMDE 24.92 0.864 0.044 17.07 Ours 25.38 0.876 0.046 15.99
+
+sampling budget, and evaluation protocol. 
+
+Baselines. We compare against four representative conditional generation strategies: (i) CDE [16], a fixed-condition estimator that diffuses only Xt while keeping Y ≡ Y0 fixed; (ii) CDiffE [2], a joint-diffusion estimator with matched noise schedules for ( Xt, Y t); (iii) CMDE [2], a multi-speed joint-diffusion estimator where the condition channel is diffused with a smaller noise scale; and (iv) HCFLOW [9], a competitive task-specific baseline for super-resolution. 
+
+Noise schedules and plug-in correction. We use the VE-SDE parameterization for all score-based estimators. Unless otherwise stated, the target channel uses σX (t) = 25, while the condition channel uses a smaller diffusion scale σY (t) = 2 .5. For the joint-diffusion baselines, we follow their original definitions: CDiffE uses matched schedules with σY (t) = σX (t), while CMDE uses a reduced condition-channel noise scale [2]. Our method uses the same multi-speed joint diffusion as CMDE, but differs at sampling time by adding the analytic plug-in correction in the y-channel. This isolates the effect of the proposed conditioning mechanism from the effect of the noise schedule itself. 
+
+Results. Tables 1 and 2 summarize the quantitative results for inpainting and super-resolution, respectively. Figures 1 and 2 show qualitative visual results for inpainting and super-resolution. On 9Table 2: Conditional generation results on CelebA 8 × super-resolution. Our method achieves the best PSNR, LPIPS, and JFID, while HCFLOW obtains the highest SSIM.                             
+
+> Method PSNR ↑SSIM ↑LPIPS ↓JFID ↓
+> CDE 23.80 0.650 0.114 15.77 CDiffE 23.83 0.656 0.139 20.20 CMDE 23.91 0.654 0.109 15.68 HCFLOW 24.95 0.702 0.107 19.55 Ours 25.12 0.672 0.098 14.56
+
+Figure 2: Super-resolution on CelebA. From left to right: ground-truth high-resolution images, low-resolution observations, and samples generated by our method. inpainting, our method achieves the best PSNR, SSIM, and JFID. Although CDE obtains a slightly lower LPIPS, our method improves JFID from 18 .06 to 15 .99, indicating better joint realism and consistency with the observed condition. Compared with CMDE, which uses a similar multi-speed diffusion setup but without the plug-in correction, our method improves both distortion-level fidelity and JFID. This suggests that the gain is not only due to using a smaller noise scale in the condition channel, but also due to the analytic observation-consistency correction during sampling. On super-resolution, our method achieves the best PSNR, LPIPS, and JFID. HCFLOW obtains the highest SSIM, but its JFID is substantially worse than ours, suggesting that stronger structural similarity does not necessarily imply better conditional sample realism. Across both tasks, our method consistently achieves the lowest JFID. This supports the main claim that plug-in conditioning improves the alignment between generated samples and their observations while maintaining competitive perceptual quality. 
+
+4.2 Plug-in correction with a pretrained prior 
+
+We next evaluate whether the proposed plug-in correction can be used with an existing pretrained diffusion prior, without retraining the score network. The pretrained diffusion model provides an unconditional image prior, while the plug-in term is imposed only at sampling time. 10 Table 3: Noisy random inpainting with a pretrained diffusion prior. All methods use the same pretrained prior, masks, perturbations, test images, and sampling budget (NFE = 1000). Metrics are computed using 100 samples. We report LPIPS, PSNR, and JFID as representative measures of perceptual similarity, reconstruction fidelity, and conditional consistency, respectively.                                       
+
+> Dataset Method Grad. LPIPS ↓PSNR ↑JFID ↓
+> FFHQ DPS [3] Yes 0.2001 29.392 26.1210 FFHQ DiffPIR [21] No 0.2097 26.577 18.8032
+> FFHQ Ours No 0.1984 29.916 20.1224 ImageNet256 DPS [3] Yes 0.3390 26.166 44.0984 ImageNet256 DiffPIR [21] No 0.2259 25.505 17.3510 ImageNet256 Ours No 0.2272 28.122 16.7309
+
+Tasks and metrics. We consider noisy random inpainting on 256 × 256 images from FFHQ [7] and ImageNet256 [13]. The mask is sampled independently at the pixel level. For each image, the masking probability is drawn uniformly from [0 .3, 0.7], so that the missing ratio varies across test samples. The observation is a masked image corrupted by Gaussian noise with standard deviation 
+
+σX (t) = 0 .05. All methods are evaluated using the same pretrained diffusion prior checkpoint, the same test images, the same random masks and perturbations, and the same sampling budget with NFE = 1000. Metrics are computed on the same 100 validation images. We report LPIPS, PSNR, and JFID as representative measures of perceptual similarity, reconstruction fidelity, and conditional consistency, respectively. The main controlled comparison is with DPS [3] and DiffPIR [21], since all methods use the same pretrained prior checkpoint from DPS. In DPS, the likelihood term is differentiated at every sampling step by backpropagating through the pretrained U-Net, so it is marked as “Grad.” in Table 3. DiffPIR and our method do not require this U-Net backpropagation during sampling. DiffPIR uses a closed-form proximal/denoising update for the data-consistency step, while our method applies an analytic plug-in correction directly to the observed pixels. Thus both methods incorporate the observation without computing gradients through the pretrained score network. This avoids repeated gradient computation through the pretrained U-Net and can therefore reduce the sampling overhead. 
+
+Results. Table 3 reports the results. Figure 3 shows qualitative results on ImageNet256. Under the same pretrained prior and sampling budget, our method consistently improves over DPS in both reconstruction fidelity and conditional consistency. On FFHQ, it improves PSNR from 29 .39 to 29 .92 and reduces JFID from 26 .12 to 20 .12. On ImageNet256, the gain is more pronounced: JFID decreases from 44 .10 to 16 .73, while PSNR increases from 26 .17 to 28 .12. These improvements are obtained without the per-step U-Net backpropagation required by DPS. Compared with DiffPIR, our method is competitive rather than uniformly better on every metric. DiffPIR achieves the best JFID on FFHQ, whereas our method obtains the best LPIPS and PSNR. On ImageNet256, our method achieves the best PSNR and JFID, while remaining close to DiffPIR in LPIPS. Our framework offers a distinct perspective on conditional generation by viewing conditioning as an analytic plug-in correction to a pretrained diffusion prior. The competitive results suggest that this interpretation is both practically effective and conceptually meaningful. 11 Figure 3: Qualitative comparison on ImageNet256 noisy random inpainting. From left to right: ground truth, noisy observation, DPS, DiffPIR, and Ours. Compared with DPS and DiffPIR, our method produces reconstructions that are more consistent with the observation while maintaining realistic image content. 
+
+4.3 Closing the conditional ODE–SDE gap 
+
+We empirically evaluate whether the proposed conditional log–Fokker–Planck residual reduces the discrepancy between the conditional probability-flow ODE and the reverse-time SDE. Experiments are conducted on MNIST conditional inpainting, where the left half of each image is observed and the right half is generated. 
+
+Evaluation protocol. The purpose of this experiment is to isolate the ODE–SDE gap under a fixed conditional generative model and sampling budget. We compare samples generated by the conditional probability-flow ODE and the conditional reverse-time SDE. The SDE sampler uses 500 Euler–Maruyama steps, while the ODE sampler uses a fixed-step RK4 solver with a matched number of score evaluations. We measure the sampler discrepancy using the sliced Wasserstein–2 distance W2(ODE , SDE). To verify that reducing this discrepancy does not degrade sample quality, we also report W2(ODE , GT) and W2(SDE , GT), where GT denotes ground-truth test samples. All evaluations are performed on N = 2048 test conditions. We compute the sliced Wasserstein distance over 8 equal splits and report mean ± std. For reproducibility, the sampling seed is fixed for each epoch and split. For each method, the reported checkpoint is selected by minimizing 
+
+W2(ODE , SDE) under this evaluation protocol, and all metrics are reported at the selected epoch. 
+
+Methods compared. We compare two training objectives using the same network architecture, optimizer, data, and sampling procedures. The baseline is trained with the standard conditional denoising score matching objective. CLOSE augments this objective with the proposed conditional log–Fokker–Planck residual, using a fixed residual weight α = 0 .1. 12 Table 4: MNIST conditional inpainting test results. Lower values are better. The checkpoint is selected by minimizing W2(ODE , SDE). Results are reported as mean ± std over 8 splits with 
+
+N = 2048 test conditions.                             
+
+> Method W2(ODE ,SDE) ↓W2(ODE ,GT) ↓W2(SDE ,GT) ↓
+> Baseline 0.0329 ±0.0009 0.0469 ±0.0016 0.0368 ±0.0013 CLOSE ( α= 0 .1) 0.0323 ±0.0011 0.0452 ±0.0018 0.0347 ±0.0011
+
+Results. Table 4 shows that adding the conditional log–Fokker–Planck residual reduces the discrepancy between the ODE and SDE samplers. CLOSE decreases W2(ODE , SDE) from 0 .0329 to 0.0323, indicating a smaller empirical ODE–SDE gap under the same sampling budget. Importantly, this reduction does not come at the cost of sample quality. At the same selected checkpoint, CLOSE also improves W2(ODE , GT) and W2(SDE , GT). This supports the claim that the residual regularizer encourages better agreement between the deterministic and stochastic conditional samplers while preserving, and slightly improving, their alignment with the ground-truth conditional distribution. 
+
+Scope of the comparison. We emphasize that this experiment is intended as a controlled validation of the residual regularization rather than evidence of a uniform reduction of the ODE– SDE gap across high-dimensional conditional generation tasks. MNIST enables distribution-level evaluation using sliced W2 over a large number of conditional samples while keeping residual-based training computationally tractable. Across eight data splits, CLOSE consistently improves both W2(ODE , GT) and W2(SDE , GT); however, the reduction in W2(ODE , SDE) is checkpoint-dependent. We therefore interpret these results as evidence for the regularization effect in this controlled setting. 
+
+# 5 Conclusion and Discussion 
+
+We proposed a plug-in conditioning framework for conditional score-based diffusion models. The method learns a joint score field and imposes conditioning at inference through an analytic plug-in correction term, providing a transparent view of conditioning as learned diffusion dynamics plus an observation-consistency correction. We also showed that the same principle extends naturally to pretrained-prior settings. Building on this formulation, we derived conditional reverse-time SDEs and matched approxi-mate probability-flow ODEs. We further introduced a log-Fokker–Planck residual to analyze and reduce the conditional ODE–SDE discrepancy. Experiments on inpainting and super-resolution demonstrate competitive performance, while controlled ODE–SDE experiments provide evidence for the effectiveness of residual regularization in improving deterministic ODE sampling. Several limitations remain. The closed-form plug-in correction relies on a linear-Gaussian forward kernel for the condition channel. The same construction can be extended to VP and sub-VP processes, whose transition kernels are also Gaussian, by using their corresponding conditional scores. For non-Gaussian forward corruptions or nonlinear observation processes, a closed-form correction may not be available and an approximate likelihood score may instead be required. Moreover, the screening approximation may become less accurate when the conditional posterior is strongly multimodal or when the condition-noise level is high. This motivates the slower condition diffusion used in our multi-speed formulation. The effectiveness of the plug-in correction also depends on the 13 diffusion schedules and the accuracy of the learned joint score. Our formulation is conceptually complementary to classifier-free guidance (CFG) [6]: CFG combines conditional and unconditional score estimates to strengthen conditioning, whereas our framework derives an analytic observation-consistency correction from the forward corruption model. These mechanisms act on different aspects of conditional sampling and may in principle be combined, which we leave for future investigation. Finally, we use uniform sampling of t, which provides an unbiased Monte Carlo estimator of the uniformly time-averaged log-Fokker–Planck residual used in our objective. Adaptive strategies such as SNR- or residual-weighted time sampling may improve optimization efficiency. Exploring these extensions and developing tighter quantitative characterizations of the conditional ODE–SDE discrepancy are promising directions for future work. 
+
+# References 
+
+[1] Brian DO Anderson. Reverse-time diffusion equation models. Stochastic Processes and their Applications , 12(3):313–326, 1982. [2] Georgios Batzolis, Jan Stanczuk, Carola-Bibiane Sch¨ onlieb, and Christian Etmann. Conditional image generation with score-based diffusion models. arXiv preprint arXiv:2111.13606 , 2021. [3] Hyungjin Chung, Jeongsol Kim, Michael T Mccann, Marc L Klasky, and Jong Chul Ye. Diffusion posterior sampling for general noisy inverse problems. arXiv preprint arXiv:2209.14687 , 2022. [4] Teo Deveney, Jan Stanczuk, Lisa Kreusser, Chris Budd, and Carola-Bibiane Sch¨ onlieb. Closing the ode–sde gap in score-based diffusion models through the fokker–planck equation. Philo-sophical Transactions A , 383(2298):20240503, 2025. [5] Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis. 
+
+Advances in neural information processing systems , 34:8780–8794, 2021. [6] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 , 2022. [7] Tero Karras, Samuli Laine, and Timo Aila. A style-based generator architecture for generative adversarial networks. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 4401–4410, 2019. [8] Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. Diffwave: A versatile diffusion model for audio synthesis. arXiv preprint arXiv:2009.09761 , 2020. [9] Jingyun Liang, Andreas Lugmayr, Kai Zhang, Martin Danelljan, Luc Van Gool, and Radu Timofte. Hierarchical conditional flow: A unified framework for image super-resolution and image rescaling. In Proceedings of the IEEE/CVF international conference on computer vision ,pages 4076–4085, 2021. [10] Ziwei Liu, Ping Luo, Xiaogang Wang, and Xiaoou Tang. Deep learning face attributes in the wild. In Proceedings of the IEEE international conference on computer vision , pages 3730–3738, 2015. [11] Andreas Lugmayr, Martin Danelljan, Andres Romero, Fisher Yu, Radu Timofte, and Luc Van Gool. Repaint: Inpainting using denoising diffusion probabilistic models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 11461–11471, 2022. 14 [12] Fran¸ cois Rozet and Gilles Louppe. Score-based data assimilation. Advances in Neural Informa-tion Processing Systems , 36:40521–40541, 2023. [13] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, et al. Imagenet large scale visual recognition challenge. International journal of computer vision , 115(3):211–252, 2015. [14] Chitwan Saharia, Jonathan Ho, William Chan, Tim Salimans, David J Fleet, and Mohammad Norouzi. Image super-resolution via iterative refinement. IEEE transactions on pattern analysis and machine intelligence , 45(4):4713–4726, 2022. [15] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution. Advances in neural information processing systems , 32, 2019. [16] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 , 2020. [17] Yang Song, Liyue Shen, Lei Xing, and Stefano Ermon. Solving inverse problems in medical imaging with score-based generative models. arXiv preprint arXiv:2111.08005 , 2021. [18] Pascal Vincent. A connection between score matching and denoising autoencoders. Neural computation , 23(7):1661–1674, 2011. [19] Zhou Wang, Alan C Bovik, Hamid R Sheikh, and Eero P Simoncelli. Image quality assessment: from error visibility to structural similarity. IEEE transactions on image processing , 13(4): 600–612, 2004. [20] Richard Zhang, Phillip Isola, Alexei A Efros, Eli Shechtman, and Oliver Wang. The unreasonable effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 586–595, 2018. [21] Yuanzhi Zhu, Kai Zhang, Jingyun Liang, Jiezhang Cao, Bihan Wen, Radu Timofte, and Luc Van Gool. Denoising diffusion models for plug-and-play image restoration. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 1219–1229, 2023. 15 Supplementary Material 1 Conditional Independence Under Independently Corrupted VE Forwards 
+
+This appendix justifies the conditional independence claim used in main paper. Under a VE-SDE forward backbone, we corrupt X0 and the observation Y0 with independent Gaussian noises: 
+
+Xt = X0 + σX (t) Z1,Yt = Y0 + σY (t) Z2, (28) where Z1, Z 2 ∼ N (0 , I ) are independent and ( Z1, Z 2) ⊥ (X0, Y 0). 
+
+Proposition 1.1 (Conditional independence) . Under (28) , we have Xt ⊥ Yt | Y0 and hence 
+
+pt(Xt, Y t | Y0) = pt(Xt | Y0) pt(Yt | Y0). (29) 
+
+Proof. Fix Y0 = y0. Then Yt = y0 + σY (t)Z2 depends only on Z2. Meanwhile, Xt = X0 + σX (t)Z1
+
+depends only on ( X0, Z 1), which is independent of Z2 by assumption. Therefore Xt and Yt are independent given Y0, i.e. Xt ⊥ Yt | Y0. The density factorization (29) is the definition of conditional independence. 
+
+# 2 Score Decomposition and the Plug-in Approximation in VE Conditional Sampling 
+
+This appendix derives the score decomposition and provides a quantitative justification for the plug-in approximation in the VE-SDE noise regime. 
+
+2.1 Exact identity via Bayes’ rule 
+
+Assume that the conditional density pt(Xt, Y t | Y0) and the unconditional density pt(Xt, Y t) exist and are positive. Then Bayes’ rule gives, for ( Xt, Y t), log pt(Xt, Y t | Y0) = log pt(Xt, Y t) + log pt(Y0 | Xt, Y t) − log p(Y0). (30) Taking the gradient with respect to ( Xt, Y t) and using that log p(Y0) is constant in ( Xt, Y t) yields the exact score decomposition 
+
+∇(x,y ) log pt(Xt, Y t | Y0) = ∇(x,y ) log pt(Xt, Y t) + ∇(x,y ) log pt(Y0 | Xt, Y t), (31) 
+
+2.2 Plug-in term from conditional independence: a derivation 
+
+We justify the plug-in replacement pt(Y0 | Xt, Y t) ≈ pt(Y0 | Yt) (and hence ∇(x,y ) log pt(Y0 | Xt, Y t) ≈
+
+(0 , ∇y log pt(Y0 | Yt))) via the implication conditional independence =⇒ Bayes identity =⇒ plug-in term .
+
+16 Step 1: Assumption. Fix a time t ∈ (0 , T ] such that the plug-in correction is applied. We assume that, conditioned on the current corrupted observation Yt, the original observation Y0 provides only negligible additional information about Xt. Formally, we assume the approximation 
+
+pt(Xt | Yt, Y 0) ≈ pt(Xt | Yt). (32) We interpret (32) quantitatively by assuming that the conditional likelihood ratio is close to one: there exists a small error εt ≥ 0 such that 
+
+log pt(Xt | Yt, Y 0)
+
+pt(Xt | Yt) ≤ εt. (33) Moreover, we model εt as controlled by the y-channel noise level, i.e., εt = ω(σY (t)) for some nondecreasing function ω with ω(0) = 0. In particular, the conditional dependence between Xt and 
+
+Y0 given Yt is weak in this regime, which can be quantified, for instance, by a small conditional mutual information It(Xt; Y0 | Yt). This can be viewed as an approximate conditional independence assumption, namely, 
+
+Xt ⊥ Y0 | Yt.
+
+By the Bayes identity, 
+
+pt(Y0 | Xt, Y t) = pt(Xt | Yt, Y 0)pt(Y0 | Yt)
+
+pt(Xt | Yt) .
+
+Therefore, under the approximation pt(Xt | Yt, Y 0) ≈ pt(Xt | Yt), we obtain 
+
+pt(Y0 | Xt, Y t) ≈ pt(Y0 | Yt).
+
+Heuristic justification. Under VE corruption, Yt = Y0 + σY (t) Z2 with Z2 ∼ N (0 , I ). When 
+
+σY (t) is small (high-SNR), Yt already localizes Y0 sharply, so conditioning on Y0 in addition to Yt
+
+yields only a minor refinement. In our setting, this regime is enforced by choosing a smaller diffusion intensity in the y-channel (e.g. gY (t) ≪ gX (t), or σY (t) = βσ X (t) with β ≪ 1), so that Yt remains close to Y0 throughout most of the reverse trajectory. 
+
+2.3 Exact validation of the screening approximation 
+
+The screening relation in (32) is a working approximation adopted by our framework rather than an exact identity. We therefore quantify the plug-in approximation error in a tractable setting where the true conditional score is available in closed form. For jointly Gaussian ( X0, Y 0) under the VE corruption schedule, the approximation error can be decomposed into two components: (i) the screening error in the x-channel induced by 
+
+pt(Xt | Yt, Y 0) ≈ pt(Xt | Yt), and (ii) the error associated with replacing the full conditional correction ∇y log pt(Y0 | Xt, Y t) by the y-channel plug-in term ∇y log pt(Y0 | Yt). The latter contribution is negligible relative to cy in the high-SNR regime. For the inpainting-like observation Y0 = M ⊙ X0, Table 5 reports the worst-case-over-t score error of the screening approximation together with the end-to-end relative W2 distance between the resulting samples and the analytic posterior. For reference, the exact-score sampler gives a relative 
+
+W2 floor of 0 .003. The approximation error decreases rapidly as β decreases. At our default β = 0 .1, the worst-case score error is 0 .099, while the final distribution remains within 4 .5% relative W2 of the analytic posterior. This indicates that the local approximation errors do not substantially accumulate through the complete reverse sampler. 17 Table 5: Exact plug-in approximation error as a function of the condition diffusion speed ratio β.The empirical score error decays approximately as O(β0.98 ).                    
+
+> β=σY/σ X0.02 0.05 0.1 0.3 1.0 Score error 0.020 0.050 0.099 0.287 0.706 End-to-end rel. W20.008 0.020 0.045 0.138 0.414
+
+2.4 Ablation on the condition diffusion speed β
+
+We study the effect of the condition-channel diffusion speed ratio β (relative to the state channel) in our multi-speed joint diffusion. Table 6 reports quantitative results on conditional inpainting. Table 6: Ablation on β (condition diffusion speed ratio). Higher is better for PSNR/SSIM, lower is better for LPIPS. 
+
+β PSNR ↑ SSIM ↑ LPIPS ↓
+
+0.05 24.02 0.912 0.061 0.10 25.38 0.876 0.046 
+
+0.20 25.04 0.854 0.058 0.30 24.36 0.802 0.067 Overall, β = 0 .1 provides the best empirical trade-off, achieving the highest PSNR and the lowest LPIPS. Interestingly, although the exact analysis above shows that the plug-in approximation is more accurate at β = 0 .05, this does not translate into better end-to-end performance: β = 0 .1performs better in both PSNR and LPIPS. Approximation fidelity alone therefore does not determine reconstruction quality, suggesting a trade-off between approximation accuracy and optimization or sampling behavior. We use β = 0 .1 as the default setting in all main experiments. 
+
+Step 2: Bayes rule under the assumption. By using the definition of the conditional probability, we have the following identities 
+
+pt(Y0 | Xt, Y t) = pt(Y0, X t, Y t)
+
+pt(Xt, Y t) = pt(Xt | Y0, Y t) pt(Y0, Y t)
+
+pt(Xt | Yt) pt(Yt)= pt(Xt | Y0, Y t) pt(Y0 | Yt)
+
+pt(Xt | Yt) .
+
+Recall our assumption (32), then we conclude that 
+
+pt(Y0 | Xt, Y t) ≈ pt(Y0 | Yt).
+
+# 3 Closed-form Plug-in Term 
+
+For the VE-SDE forward process in the y-channel (with zero drift), the marginal perturbation admits the linear-Gaussian form 
+
+Yt = Y0 + σY (t) Z2, Z2 ∼ N (0 , I ), (34) 18 where 
+
+σ2 
+
+> Y
+
+(t) = 
+
+Z t
+
+> 0
+
+g2 
+
+> Y
+
+(s) ds. 
+
+Rearranging (34) gives 
+
+Y0 = Yt − σY (t) Z2.
+
+Hence the conditional distribution is Gaussian: 
+
+Y0 | Yt ∼ N  Yt, σ 2 
+
+> Y
+
+(t) I.
+
+Its log-density (up to an additive constant independent of Yt) is log pt(Y0 | Yt) = − 12σ2 
+
+> Y
+
+(t) ∥Y0 − Yt∥22 − d
+
+2 log  2πσ 2 
+
+> Y
+
+(t).
+
+Taking the gradient with respect to Yt yields 
+
+∇Yt log pt(Y0 | Yt) = Y0 − Yt
+
+σ2 
+
+> Y
+
+(t) .
+
+Therefore, the plug-in correction used in the main text is 
+
+cy(t; Y0, Y t) := ∇y log pt(Y0 | Yt) = Y0 − Yt
+
+σ2 
+
+> Y
+
+(t) .
+
+# 4 Proof of Theorem 
+
+To obtain samples from p(Xt, Y t | Y0), the conditional term p(Y0 | Yt) affects only the y-component of the conditional score. Hence we first derive the reverse SDE / probability-flow ODE for the joint score ∇(x,y ) log pt(x, y ), and then incorporate the plug-in correction in the y-drift. The score function represents the gradient of the log-probability density with respect to the state variables Xt and Yt. Specifically, this score function can be split into two components 
+
+∇(x,y ) log pt(x, y ) =  ∇x log pt(x, y ), ∇y log pt(x, y ). (35) where ∇x log p (Xt, Y t) is the gradient of the log-probability with respect to x and ∇y log p (Xt, Y t)is the gradient of the log-probability with respect to y. This allow us to formulate the following SDEs 
+
+dX t =
+
+
+
+fX (Xt, t ) − g2 
+
+> X
+
+(t)∇x log pt(Xt, Y t)
+
+
+
+dt + gX (t) d ¯W 1 
+
+> t
+
+,dY t =
+
+
+
+fY (Yt, t ) − g2 
+
+> Y
+
+(t)∇y log pt(Xt, Y t)
+
+
+
+dt + gY (t) d ¯W 2 
+
+> t
+
+.
+
+(36) In the unified conditional sampler, the y-equation is corrected by the plug-in term: 
+
+dY t =
+
+
+
+fY (Yt, t ) − g2 
+
+> Y
+
+(t)∇y log pt(Xt, Y t) − g2 
+
+> Y
+
+(t)cy(t; Y0, Y t)
+
+
+
+dt + gY (t) d ¯W 2 
+
+> t
+
+. (37) Here, Xt, Y t are adapted to the reverse time filtration Ft and according Assumption 1, has a unique solution that is continuous in time. The marginal density of Xt, Y t is denoted by p(·, ·, t )at time t. We assume it is equipped with some terminal distribution π of Xt, Y t at time T , i.e., 
+
+p(·, ·, T ) = Π, where Π is chosen as a Gaussian approximation of p(·, ·, T ). 19 The corresponding ODEs for the score function, derived from the Fokker-Planck equation for the reverse process, are given by 
+
+
+
+dX t
+
+dt = fX (Xt, t ) − 12 g2 
+
+> X
+
+(t)∇x log pt(Xt, Y t),dY t
+
+dt = fY (Yt, t ) − 12 g2 
+
+> Y
+
+(t)∇y log pt(Xt, Y t),
+
+(38) In the unified conditional sampler, the plug-in correction modifies only the y-drift: 
+
+dY t
+
+dt = fY (Yt, t ) − 12 g2 
+
+> Y
+
+(t)
+
+
+
+∇y log pt(Xt, Y t) + cy(t; Y0, Y t)
+
+
+
+. (39) and it is equipped with terminal distribution p(·, ·, T ) for Xt, Y t.Now we have derived the reverse joint SDEs (36) and ODEs (38), we proceed by following the log-Fokker–Planck residual strategy of Deveney et al. We leverage the log-Fokker-Planck residual to help close the gap in the unified method. The log-Fokker-Planck residual serves as a correction term that aligns the dynamics of the ODE-based process with the more accurate SDE-based process. By incorporating this residual into the training loss, we can ensure that the unified method’s reverse process accurately reflects the target conditional distribution. This allows us to reduce the approximation error between the two methods and improve the overall performance of the unified model. To formalize the alignment between the ODEs and SDEs dynamics in the unified method, we begin by defining the approximate log-probability densities for the joint system involving Xt and Yt.Let uθ(x, y, t ) := log pθ(x, y, t ) be a neural approximation of the log-density on Ω X × ΩY × [0 , T ]. We write ∇xuθ and ∇yuθ for its partial gradients. Using this, we can derive approximate versions of the reverse SDE (36) and its deterministic flow (38). To simplify our notation, we define the approximate reverse drift as 
+
+(f SDE  
+
+> X,θ
+
+(x, y, t ) = fX (x, t ) − g2 
+
+> X
+
+(t)∇xuθ(x, y, t ),f SDE  
+
+> Y,θ
+
+(x, y, t ) = fY (y, t ) − g2 
+
+> Y
+
+(t)∇yuθ(x, y, t ). (40) which is obtained by substituting the potential model into the drift term of (36). According to Assumption 1, we have f SDE X,θ , f SDE Y,θ ∈ C∞ and 
+
+f SDE  
+
+> X,θ
+
+(x, y, t ) 2 ≤  Kf + M 2Ku
+
+ (1 + ∥(x, y )∥2) , f SDE  
+
+> Y,θ
+
+(x, y, t ) 2 ≤  Kf + M 2Ku
+
+ (1 + ∥(x, y )∥2) .
+
+Plug (40) into (36) to get 
+
+(dX t = f SDE  
+
+> X,θ
+
+(Xt, Y t, t ) dt + gX (t) d ¯W 1 
+
+> t
+
+,dY t = f SDE  
+
+> Y,θ
+
+(Xt, Y t, t ) dt + gY (t) d ¯W 2 
+
+> t
+
+. (41) Applying the reverse-time SDE formula (e.g., [1]), the density pSDE  
+
+> θ
+
+associated with (41) satisfies a forward-time Fokker–Planck equation. Equivalently, one may write a forward-time SDE whose drift involves ∇ log pSDE  
+
+> θ
+
+, namely (42). 
+
+
+
+dX t =
+
+
+
+f SDE  
+
+> X,θ
+
+(Xt, Y t, t ) + g2 
+
+> X
+
+(t) ∇x log pSDE  
+
+> θ
+
+(Xt, Y t, t )
+
+
+
+dt + gX (t) dW 1 
+
+> t
+
+,dY t =
+
+
+
+f SDE  
+
+> Y,θ
+
+(Xt, Y t, t ) + g2 
+
+> Y
+
+(t) ∇y log pSDE  
+
+> θ
+
+(Xt, Y t, t )
+
+
+
+dt + gY (t) dW 2 
+
+> t
+
+.
+
+(42) 20 where initial state X0, Y 0 is drawn from pSDE θ (·, ·, 0). For the forward SDE (42) the density 
+
+P SDE θ follows the the forward Fokker–Planck equation 
+
+∂p SDE 
+
+> θ
+
+∂t (x, y, t ) = −∇ x ·
+
+
+
+f SDE  
+
+> X,θ
+
+(x, y, t ) pSDE  
+
+> θ
+
+(x, y, t )
+
+
+
+− ∇ y ·
+
+
+
+f SDE  
+
+> Y,θ
+
+(x, y, t ) pSDE  
+
+> θ
+
+(x, y, t )
+
+
+
++ 12 g2 
+
+> X
+
+(t) ∆ xpSDE  
+
+> θ
+
+(x, y, t ) + 12 g2 
+
+> Y
+
+(t) ∆ ypSDE  
+
+> θ
+
+(x, y, t ).
+
+(43) equipped with the terminal condition Π on the full space, i.e., pSDE θ (x, y, T ) = Π( x, y ). Consider-ing (43), we introduce positive Dirichlet boundary conditions. Let pSDE B : ∂ΩX × ∂ΩY × [0 , T ] → R
+
+denote a positive function which is equal to pSDE θ on ∂ΩX × ∂ΩY . We obtain the approximate Fokker-Planck equation (43) on the domain ∂ΩX × ∂ΩY with initial data p0(·, ·, 0) restricted to 
+
+∂ΩX × ∂ΩY and Dirichlet boundary conditions pSDE B on ∂ΩX × ∂ΩY × [0 , T ]. To complete the analysis of the Fokker–Planck equations for the probability densities, one can also consider the log-Fokker–Planck equations, which describe the evolution of the potential function. The log-density uSDE θ (x, y, t ) = log pSDE θ (x, y, t ), where pSDE θ is the solution to (43) in forward time, satisfies the approximate log-Fokker–Planck equation (in forward time) given by 
+
+∂u SDE θ
+
+∂t = − ∇ x · f SDE X,θ − f SDE X,θ · ∇ xuSDE θ − ∇ y · f SDE Y,θ − f SDE Y,θ · ∇ yuSDE θ
+
+− 12 g2
+
+> X
+
+
+
+∆xuSDE θ + ∇xuSDE θ
+
+> 2
+
+
+
+− 12 g2
+
+> Y
+
+
+
+∆yuSDE θ + ∇yuSDE θ
+
+> 2
+
+
+
+.
+
+(44) We equip (44) with terminal data uSDE θ (·, ·, T ) restricted to Ω X × ΩY and boundary conditions 
+
+uSDE B = log pSDE B on ∂ΩX × ∂ΩY × [0 , T ]. We obtain the approximate log-Fokker-Planck equation (44) on the domain ∂ΩX × ∂ΩY with initial data u0(·, ·, 0) restricted to ∂ΩX × ∂ΩY and Dirichlet boundary conditions uSDE B on ∂ΩX × ∂ΩY × [0 , T ]. For the forward SDE (2), the density obeys the forward Fokker–Planck equation 
+
+∂p ∂t (x, y, t ) = −∇ x ·  fX (x, t ) p(x, y, t ) − ∇ y ·  fY (y, t ) p(x, y, t )
+
++ 12 g2 
+
+> X
+
+(t) ∆ xp(x, y, t ) + 12 g2 
+
+> Y
+
+(t) ∆ yp(x, y, t ).
+
+(45) equipped with the initial data p(·, ·, 0) on the whole space. Considering (45), we introduce positive Dirichlet boundary conditions. Let pB : ∂ΩX × ∂ΩY × [0 , T ] → R denote a positive function which is equal to p on ∂ΩX × ∂ΩY . Notice that (43) and (45) share the same transport structure. The difference lies in which drift is used (the learned reverse drift versus the true forward drift), while the diffusion operator keeps the standard forward sign. From the density satisfying the forward Fokker–Planck equation (45) of the forward SDE (2) and the associated potential u = log p, we get the forward log-Fokker–Planck equation as 
+
+∂u ∂t (x, y, t ) = − ∇ x · fX (x, t ) − fX (x, t ) · ∇ xu − ∇ y · fY (y, t ) − fY (y, t ) · ∇ yu
+
+− 12 g2
+
+> X
+
+
+
+∆xu + ∥∇ xu∥2
+
+− 12 g2
+
+> Y
+
+
+
+∆yu + ∥∇ yu∥2
+
+.
+
+(46) For deriving the residual for the approximate log-Fokker-Planck equation (44), we use a neural 21 network with parameters θ trained to approximate the solution uθ of (44). uθ satisfies 
+
+∂u θ
+
+∂t + ∇x · f SDE X,θ + f SDE X,θ · ∇ xuθ + ∇y · f SDE Y,θ + f SDE Y,θ · ∇ yuθ + 12 g2
+
+> X
+
+
+
+∆xuθ + ∥∇ xuθ∥2
+
++ 12 g2
+
+> Y
+
+
+
+∆yuθ + ∥∇ yuθ∥2
+
+= ∂u θ
+
+∂t + ∇x · (fX − g2 
+
+> X
+
+∇xuθ) + ( fX − g2 
+
+> X
+
+∇xuθ) · ∇ xuθ + ∇y · (fY − g2 
+
+> Y
+
+∇yuθ)+ ( fY − g2 
+
+> Y
+
+∇yuθ) · ∇ yuθ + 12 g2
+
+> X
+
+
+
+∆xuθ + ∥∇ xuθ∥2
+
++ 12 g2
+
+> Y
+
+
+
+∆yuθ + ∥∇ yuθ∥2
+
+= ∂u θ
+
+∂t + ∇x · fX + fX · ∇ xuθ + ∇y · fY + fY · ∇ yuθ − 12 g2
+
+> X
+
+
+
+∆xuθ + ∥∇ xuθ∥2
+
+− 12 g2
+
+> Y
+
+
+
+∆yuθ + ∥∇ yuθ∥2
+
+.
+
+(47) 
+
+Residual evaluation Physics-informed neural networks (PINNs) approximate PDE solutions by parameterizing the unknown field with a neural network and minimizing the squared PDE residual evaluated at sampled space–time points. Here we adopt the same principle for the approximate log-Fokker–Planck equation (44): we represent its solution by a neural potential uθ and define the corresponding pointwise residual 
+
+rθ(x, y, t ) := FY0 [uθ]( x, y, t ),
+
+where FY0 is the corrected log-Fokker–Planck operator associated with the plug-in modified reverse-time SDE, obtained from (47) by replacing the y-score ∇yu with ∇yu + cy(t; Y0, y ). In high dimension, the dominant cost comes from the Laplacian terms ∆ xuθ = tr( ∇2
+
+> x
+
+uθ) and ∆yuθ = tr( ∇2
+
+> y
+
+uθ). We therefore compute all first-order derivatives in FY0 [uθ] (i.e., ∂tuθ, ∇xuθ,
+
+∇yuθ) by automatic differentiation, and when needed we estimate the Laplacians using an unbiased Hutchinson trace estimator implemented via Hessian–vector products (computed by automatic differentiation). By the same algebraic manipulation as in the unconditional case, the corrected residual can be written by adding the plug-in contributions −g2 
+
+> Y
+
+(∇y·cy +cy ·∇ yuθ) to the standard log-Fokker–Planck residual. Accordingly, we define the (time-averaged, normalised) log-Fokker–Planck residual as 
+
+R(θ, u θ, t ) := V (T − t)−1
+
+Z Tt
+
+FY0 [uθ]( ·, ·, s ) 2   
+
+> L2(Ω X×ΩY)
+
+ds, (48) where V (r) := r Vol(Ω X × ΩY ). Equivalently, expanding FY0 yields the integrand in (48) with the additional plug-in contributions −g2 
+
+> Y
+
+(∇y · cy + cy · ∇ yuθ). 
+
+R (θ, u θ, t ) = V (T − t)−1
+
+Z Tt
+
+∂u θ
+
+∂s (·, ·, s ) + ∇x · fX (·, s ) + fX (·, s ) · ∇ xuθ(·, s )+∇y · fY (·, s ) + fY (·, s ) · ∇ yuθ(·, ·, s ) − 12 g2 
+
+> X
+
+(s)
+
+
+
+∆xuθ(·, ·, s ) + ∥∇ xuθ(·, ·, s )∥22
+
+
+
+− 12 g2 
+
+> Y
+
+(s)
+
+
+
+∆yuθ(·, ·, s ) + ∥∇ yuθ(·, ·, s )∥22
+
+
+
+−g2 
+
+> Y
+
+(s)
+
+
+
+∇y · cy(s; Y0, ·) + cy(s; Y0, ·) · ∇ yuθ(·, ·, s )
+
+ 2  
+
+> L2(Ω X×ΩY)
+
+ds. 
+
+(49) 22 where V (r) := r Vol(Ω X × ΩY ). We refer to R as the (log-)Fokker–Planck residual. Or alternatively, we define the approximate drift as 
+
+
+
+f ODE θ,X (Xt, t ) = fX (Xt, t ) − 12 g2 
+
+> X
+
+(t)∇x log pt(Xt, Y t),f ODE θ,Y (Yt, t ) = fY (Yt, t ) − 12 g2 
+
+> Y
+
+(t)∇y log pt(Xt, Y t, t ),
+
+(50) where f ODE X,θ , f ODE Y,θ ∈ C∞ and 
+
+f ODE X,θ (x, t ) 2 ≤  Kf + M 2Ku
+
+ (1 + ∥x∥2) , f ODE Y,θ (y, t ) 2 ≤  Kf + M 2Ku
+
+ (1 + ∥y∥2) .
+
+Using (50), we have 
+
+dX t
+
+dt = f ODE θ,X (Xt, t ) ,dY t
+
+dt = f ODE θ,Y (Yt, t ) .
+
+(51) In summary, the formulations (2), (36), and (38) involve the density p. The approximations (41) and (42), which are derived from the reverse SDE (36), have the density pSDE θ . The approximation of the probability flow ODE (51) involves the density pODE θ . Additionally, the density ) uθ = log pθ
+
+as given in (47), is directly implied by the neural network’s approximation of the log-density uθ.It is important to note that p̸ = pθ̸ = pSDE θ̸ = pODE θ . For most calculations and numerical work, we prefer using the logarithms of densities rather than the densities themselves. We denote the log-density associated with a given density p as u or the potential. Specifically, u(x, t ) = log p(x, t ), 
+
+uSDE θ (x, t ) = log pSDE θ (x, t ), uODE θ (x, t ) = log pODE θ (x, t ), and uθ(x, t ) = log pθ(x, t ) for all ( x, t ) ∈
+
+Ω × [0 , T ]. Similarly, u̸ = uθ̸ = uSDE θ̸ = uODE θ .
+
+Theorem 4.1. Let the residual R(θ, u θ, t ) in (48) satisfies R(θ, u θ, t ) < δ . If pSDE θ satisfies (43) 
+
+and pODE θ satisfies (51) , then 
+
+W2
+
+ pODE θ (·, t ), p SDE θ (·, t ) < Cδ, 
+
+where C > 0 is a constant independent of δ.Proof. We proceed in two steps. Firstly, we show that there exists a constant ˜C > 0 independent of δ
+
+such that uθ(·, τ ) − uSDE θ (·, τ ) L2(Ω) < ˜Cδ which allows us to show that R τ 
+
+> 0
+
+∇uθ(·, s ) − ∇ uSDE θ (·, s ) 2 
+
+> L2(Ω)
+
+ds < Cδ for the reverse time variable τ = T − t ∈ (0 , T ] where the constant C > 0 is independent of δ.Finally, we prove that 
+
+W2
+
+ pODE θ (·, t ), p SDE θ (·, t ) < Cδ 
+
+for some constant C > 0 independent of δ.
+
+Step I : To prove the first part, assume that uSDE θ solves (44) on Ω X × ΩY × [0 , T ], that is 
+
+∂u SDE θ
+
+∂t + ∇x · f SDE X,θ + f SDE X,θ · ∇ xuSDE θ + ∇y · f SDE Y,θ + f SDE Y,θ · ∇ yuSDE θ
+
++ 12 g2
+
+> X
+
+
+
+∆xuSDE θ + ∇xuSDE θ
+
+> 2
+
+
+
++ 12 g2
+
+> Y
+
+
+
+∆yuSDE θ + ∇yuSDE θ
+
+> 2
+
+
+
+= 0 .
+
+(52) equipped with terminal data uSDE θ (·, ·, T ) restricted to Ω X × ΩY and boundary conditions 
+
+uSDE B = log pSDE B on ∂ΩX × ∂ΩY × [0 , T ]. Further, assume that uθ satisfies (44) on Ω X × ΩY × [0 , T ]with some residual q, i.e. 
+
+∂u θ
+
+∂t + ∇x · f SDE X,θ + f SDE X,θ · ∇ xuθ + ∇y · f SDE Y,θ + f SDE Y,θ · ∇ yuθ
+
++ 12 g2
+
+> X
+
+
+
+∆xuθ + ∥∇ xuθ∥2
+
++ 12 g2
+
+> Y
+
+
+
+∆yuθ + ∥∇ yuθ∥2
+
+= q(x, y, t ).
+
+(53) 23 equipped with terminal data uSDE θ (·, ·, T ) restricted to Ω X × ΩY and boundary conditions 
+
+uSDE B = log pSDE B on ∂ΩX × ∂ΩY × [0 , T ]. Since equations (52) and (53) come with terminal conditions, it is more natural to work in reverse time. Introducing the reverse time variable τ = T − t, where τ ∈ [0 , T ] , we transform the forward-time equations into their reverse-time counterparts. For equation (52), the reverse-time equation becomes 
+
+∂ ¯uSDE θ
+
+∂τ −∇ x · ¯f SDE X,θ − ¯f SDE X,θ · ∇ x ¯uSDE θ − ∇ y · ¯f SDE Y,θ − ¯f SDE Y,θ · ∇ y ¯uSDE θ
+
+− 12 ¯g2
+
+> X
+
+
+
+∆x ¯uSDE θ + ∇x ¯uSDE θ
+
+> 2
+
+
+
+− 12 ¯g2
+
+> Y
+
+
+
+∆y ¯uSDE θ + ∇y ¯uSDE θ
+
+> 2
+
+
+
+= 0 (54) where all terms are now in reverse time, denoted τ . Similarly, for equation (53), the reverse-time equation is 
+
+∂ ¯uθ
+
+∂τ −∇ x · ¯f SDE X,θ − ¯f SDE X,θ · ∇ x ¯uθ − ∇ y · ¯f SDE Y,θ − ¯f SDE Y,θ · ∇ y ¯uθ
+
+− 12 ¯g2
+
+> X
+
+
+
+∆x ¯uθ + ∥∇ x ¯uθ∥2
+
+− 12 ¯g2
+
+> Y
+
+
+
+∆y ¯uθ + ∥∇ y ¯uθ∥2
+
+= ¯ q(x, y, τ ).
+
+(55) where ¯ q(x, τ ) is the reverse-time equivalent of q(x, y, t ). Note that the log-Fokker-Planck residual (48) is related to ¯ q(·, τ ) for τ = T − t by 
+
+R (θ, u θ, t ) = R (θ, u θ, T − τ ) = V (τ )−1
+
+Z TT −τ
+
+∥q(·, s )∥2
+
+> L2(Ω)
+
+ds = V (τ )−1
+
+Z τ
+
+> 0
+
+∥¯q(·, s )∥2
+
+> L2(Ω)
+
+ds 
+
+Define the reverse-time error e¯u := ¯ uθ − ¯uSDE  
+
+> θ
+
+. In the unified conditional sampler, the plug-in cor-rection enters the reverse-time dynamics only through the additional y-drift term −g2 
+
+> Y
+
+(t)cy(t; Y0, y ), which at the PDE level contributes the same extra terms 
+
+− g2 
+
+> Y
+
+(t)
+
+
+
+∇y · cy(t; Y0, y ) + cy(t; Y0, y ) · ∇ y ¯u(·, ·, t )
+
+
+
+, ¯u ∈ { ¯uθ, ¯uSDE  
+
+> θ
+
+}.
+
+to both reverse-time log-Fokker–Planck equations for ¯ uSDE  
+
+> θ
+
+and ¯ uθ. Therefore, when subtracting (54) from (55) to obtain the error equation for e¯u, all cy-dependent contributions cancel identically, and the resulting error equation has the same form as in the unconditional analysis (with z = ( x, y )and block-diagonal diffusion). This allows us to proceed with the remainder of the derivation as in the unconditional case, ensuring the method’s consistency. 
+
+# 5 Additional Comparison with DPS and DiffPIR 
+
+5.1 Relation to DPS-style guidance 
+
+Our formulation and DPS [3] can both be motivated from Bayes’ rule, but they induce different conditional sampling mechanisms. DPS corrects the marginal x-score using an approximate likelihood gradient ∇x log pt(y | xt), evaluated through per-step backpropagation through the denoising network. In contrast, our formulation decomposes the joint conditional score and introduces an analytic correction in the y-channel, while its effect on the target is mediated through the learned joint dependence sx(Xt, Y t, t ). This construction yields explicit conditional reverse-time SDE and probability-flow ODE dynam-ics. In the pretrained-prior setting, the analytic plug-in correction can also be evaluated without per-step backpropagation through the score network. At equal NFE, this leads to substantially lower sampling cost than DPS, as quantified below. 24 Table 7: Runtime and distributional evaluation on ImageNet256 noisy inpainting using one RTX 3090 with batch size 1. All methods use the same 100 images and sampling budget (NFE = 1000).                         
+
+> Method NFE Backprop s/img FID ↓SSIM ↑JFID ↓
+> DPS 1000 yes 245.1 84.47 0.694 44.10 DiffPIR 1000 no 128.0 38.22 0.753 17.35 Ours 1000 no 130.8 39.64 0.764 16.73
+
+5.2 Runtime and distributional evaluation 
+
+We additionally compare computational cost and distributional quality under the same sampling budget. Table 7 reports results on ImageNet256 noisy inpainting using the same 100 images and NFE = 1000 as in the corresponding main-paper experiment. At equal NFE, our method requires 130 .8 seconds per image, compared with 245 .1 seconds for DPS, corresponding to approximately 1 .9× faster sampling. Its runtime is close to DiffPIR (128 .0 seconds per image), indicating that the analytic plug-in correction introduces little additional computational overhead. Our method achieves an FID of 39 .64, close to DiffPIR’s 38 .22 and substantially lower than DPS’s 84 .47, while obtaining the best SSIM and JFID among the compared methods. 25
