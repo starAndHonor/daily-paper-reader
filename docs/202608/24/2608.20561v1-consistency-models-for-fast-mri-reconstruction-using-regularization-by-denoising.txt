@@ -1,0 +1,408 @@
+Title: Consistency Models for Fast MRI Reconstruction Using Regularization by Denoising
+
+URL Source: https://arxiv.org/pdf/2608.20561v1
+
+Published Time: Mon, 24 Aug 2026 00:17:56 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Consistency Models for Fast MRI Reconstruction Using Regularization by Denoising 
+
+## Merve G¨ ulle ∗, Junno Yun ∗, Ya¸ sar Utku Al¸ calar, Mehmet Ak¸ cakaya 
+
+Department of Electrical and Computer Engineering, University of Minnesota, MN, USA Center for Magnetic Resonance Research, University of Minnesota, MN, USA 
+
+{glle0001, yun00049, alcal029, akcakaya }@umn.edu 
+
+Abstract 
+
+Diffusion models (DMs) have emerged as powerful generative priors for MRI reconstruc-tion with promising results. Yet DM-based methods require extensive iterative refinement, limiting their practical deployment. Consistency models (CMs) provide a compelling alter-native, aiming to map out the diffusion trajectory in a single pass, enabling faster generation. In this work, we propose CM-RED , a novel MRI reconstruction method that integrates a pretrained CM into the regularization by denoising (RED) scheme. Our method builds on accelerated proximal gradient RED (RED-APG), and further incorporates controlled noise injection during the update steps to enhance generative diversity and accelerate convergence. Extensive experiments on the fastMRI knee and brain datasets demonstrate that CM-RED achieves high-quality reconstructions across multiple anatomies, contrast weights, accelera-tion factors, and undersampling patterns, using only 4 network function evaluations (NFEs). The proposed method consistently outperforms existing DM- and CM-based approaches in both quantitative metrics and visual fidelity, and exhibits strong robustness to hyperpa-rameter variations, highlighting CM-RED as an efficient and effective generative framework for accelerated MRI reconstruction. The source code and pretrained models are publicly available at https://github.com/MerveGulle/CM-RED .
+
+Keywords: Computational imaging, consistency models, generative AI, MRI reconstruction, plug-and-play, regularization by denoising. 
+
+# 1 Introduction 
+
+Image reconstruction from accelerated MRI acquisitions has seen steady progress over the past decades Ak¸ cakaya et al. (2022); Hammernik et al. (2018); Lustig et al. (2007); Pruessmann et al. (1999). Nonethe-less, due to the ill-posed nature of this inverse problem at high acceleration rates, conventional reconstruc-tion techniques such as parallel imaging Griswold et al. (2002); Pruessmann et al. (1999) and compressed sensing (CS) Lustig et al. (2007) struggle to simultaneously preserve image fidelity and suppress ar-tifacts Hammernik et al. (2023). More recently, machine/deep learning (ML/DL) methods have been adopted, including data-driven approaches that learn direct mappings Ak¸ cakaya et al. (2019); Han et al. (2019); Lee et al. (2018); Wang et al. (2016), and physics-driven deep learning (PD-DL) methods Aggarwal et al. (2019); Hammernik et al. (2018); Knoll, Hammernik, et al. (2020); Saberi et al. (2026); Schlemper et al. (2018). The latter, encompassing unrolled networks Aggarwal et al. (2019); Hammernik et al. (2018); Schlemper et al. (2018) and plug-and-play (PnP) reconstruction Ahmad et al. (2020), in-corporate the measurement operator into the reconstruction via data consistency operations along with learned regularization modules. In particular, unrolled network have shown improved performance over data-driven approaches Muckley et al. (2021). Despite their success, these approaches have limitations. Unrolled networks, are typically trained for specific imaging configurations, including anatomies, sampling patterns, acceleration factors, and image 
+
+> *
+
+Merve G¨ ulle and Junno Yun contributed equally to this work. 
+
+1arXiv:2608.20561v1 [eess.IV] 20 Aug 2026 contrasts, which limits their performance in out-of-distribution scenarios Yaman et al. (2022). On the other hand, while PnP methods offer improved flexibility, they suffer from a distribution mismatch since the intermediate reconstructions contain structured artifacts instead of simple Gaussian noise, leading to performance degradation Shastri et al. (2022). Furthermore, the denoisers are optimized for low-noise degradation, limiting applications in severely ill-posed regimes Park et al. (2026). Recently, generative models have emerged as a promising paradigm for inverse problems, including MRI reconstruction. In particular, diffusion models (DM) Ho et al. (2020); Karras et al. (2022); Y. Song et al. (2021) have demonstrated a strong ability to model complex image distributions. In the context of MRI reconstruction, diffusion-based sampling frameworks Al¸ calar and Ak¸ cakaya (2024); Chung et al. (2024); Jalal et al. (2021); Y. Song et al. (2022) exhibit robustness to variations in acquisition protocols and data distributions. However, their reliance on hundreds of sequential sampling steps leads to sub-stantial computational overhead, limiting their applicability in time-sensitive workflows and large-scale deployment scenarios Webber and Reader (2024). Motivated by the need for efficient generative priors, consistency models (CM) Y. Song et al. (2023) have recently been proposed in the broader image genera-tion field as efficient models for sampling the DM trajectory in a single step while retaining the expressive power of the learned image prior. In this paper, we propose CM-RED , a novel framework that leverages a pretrained CM as a proximal prior within the RED formulation Romano et al. (2017). Our main contributions are: 
+
+• We propose CM-RED, a plug-and-play framework that integrates a CM as a learned proximal prior within the RED formulation, enabling high-quality reconstruction of accelerated MRI mea-surements with only a few iterations. 
+
+• To further utilize the fast generative sampling properties of CMs, we refine the accelerated proxi-mal gradient scheme (RED-APG) Reehorst and Schniter (2018) framework by incorporating con-trolled noise injection and iteration-adaptive denoising strength for CMs. This design accelerates convergence, enhances robustness of reconstructions across a wide range of noise conditions, and synergistically utilizes the powerful generative capabilities of CMs. 
+
+• We establish unified hyperparameters across anatomies, contrasts, and sampling patterns, with settings differing only by acceleration rate, and demonstrate robustness to moderate parameter perturbations. 
+
+• We validate CM-RED through extensive evaluations on fastMRI knee and brain datasets. We also train CMs from scratch for various anatomies. Our method consistently outperforms existing DM-and CM-based inverse problem solvers, while providing a 25 ×–250 × speed-up. Preliminary versions of this work were presented in a conference publication G¨ ulle et al. (2026b) and abstract G¨ ulle et al. (2026a). The current work substantially extends these through broader evaluations across knee and brain MRI, multiple contrasts, acceleration factors, and undersampling patterns, together with an expanded methodological description, additional ablation, and comprehensive comparisons with DM- and CM-based reconstructions. 
+
+# 2 Background and Related Works 
+
+## 2.1 MRI Reconstruction Inverse Problem 
+
+MR image reconstruction solves: arg min  
+
+> x
+
+∥y − EΩx∥22 + R(x), (1) where y ∈ CM is the acquired k-space measurements, EΩ ∈ CM ×N is the multi-coil encoding operator that samples locations indexed by Ω, n ∈ CM is i.i.d. Gaussian noise. Here, the first term enforces data fidelity with the acquired data, and R(·) is a regularizer. In classical parallel imaging, this problem is solved either without a regularizer or with a Tikhonov-type regularizer, leading to a linear reconstruction process Pruessmann et al. (2001, 1999). Subsequently, sparsity-focused ℓ1-norm based regularizers were popularized with compressed sensing Lustig et al. (2007). These lead to a non-linear optimization problem, which is typically solved with iterative algorithms that alternate between data fidelity updates and proximal operations associated with R(x) Fessler (2020). More recently, ML/DL approaches have been popular to design powerful regularizers or proximal operators, parameterized by neural networks and learned directly from data. Among these methods, 
+
+2algorithm unrolling Aggarwal et al. (2019); Hammernik et al. (2018, 2023) follows the alternating opti-mization principle, but learns both the data fidelity and regularization modules for a fixed number of unrolls. While such end-to-end learned methods achieve high reconstruction quality on in-distribution data, they often exhibit reduced robustness to variations in sampling patterns, acceleration factors, or SNR, limiting their generalizability Yaman et al. (2022). PnP methods Ahmad et al. (2020) general-ize this framework by replacing the explicit regularizer R(x) with a pre-trained denoiser that acts as an implicit proximal operator. However, PnP performance may be limited since denoisers are typically optimized for Gaussian noise, whereas the errors encountered during iterative updates exhibit complex, non-Gaussian behavior Shastri et al. (2022), which may degrade reconstruction quality. 
+
+## 2.2 Diffusion Models 
+
+DMs have achieved remarkable success in data synthesis across a wide range of applications Ho et al. (2020); Karras et al. (2022); Y. Song et al. (2021). Among them, Denoising Diffusion Probabilistic Models (DDPMs) Ho et al. (2020) generate data by progressively denoising samples through a series of steps. In DDPMs, the forward diffusion process gradually corrupts the data by adding Gaussian noise over T time steps: 
+
+xt = p1 − βt xt−1 + pβt ϵ, ϵ ∼ N (0 , I), (2) which yields the closed-form distribution: 
+
+q(xt | x0) = N  xt; √¯αt x0, (1 − ¯αt)I , (3) where αt = 1 − βt and ¯ αt = Qts=1 αs, with {βt}Tt=1 denoting a predefined noise schedule. The reverse process aims to recover samples from the target data distribution by iteratively removing noise. Aneural network ϵθ (xt, t ) is trained to estimate the noise added during the forward diffusion, enabling the approximation of the reverse-time dynamics. After training, sampling starts from a Gaussian noise sample xT ∼ N (0 , I) and proceeds backward from t = T to 1. 
+
+DM-based Inverse Problem Solvers. From a Bayesian perspective, the objective in (1) for i.i.d. Gaussian noise can be interpreted as maximum a posteriori (MAP) estimation arg max  
+
+> x
+
+log p(y | x) + log p(x). (4) Utilizing the connection between the score function and DMs, several inverse problem solvers have been proposed to combine these generative priors with physics-based data fidelity terms Chung et al. (2023, 2024); Chung and Ye (2022); Jalal et al. (2021); Y. Song et al. (2022). In particular, these rely on 
+
+∇xt log p(xt|y) = ∇xt log p(xt) + ∇xt log p(y|xt), (5) where the first unconditional score term is provided by a pre-trained DM, while the second term, the likeli-hood score, which is crucial for enforcing data fidelity to the physical measurements y, is intractable Chung et al. (2023); J. Song et al. (2023). Early DM-based MRI solvers Chung and Ye (2022); Jalal et al. (2021); Luo et al. (2023) circumvented this issue with heuristic approximations that directly evaluate the physical forward model on the noisy intermediate state: 
+
+∇xt log p(y|xt) ≈ ∇ xt log p(y|x0) x0=xt
+
+∝ − AH (Ax t − y). (6) This approximation was combined with either gradient-based Langevin-type samplers Jalal et al. (2021); Luo et al. (2023) or numerical SDE solvers and a strict data consistency step Chung and Ye (2022). On the other hand, more recent methods, such as Diffusion Posterior Sampling (DPS) Chung et al. (2023) and Denoising Diffusion Samplers (DDS) Chung et al. (2024) note that measurements y is connected via A only to the clean data manifold, and provide new approximations for the likelihood term instead of relying on heuristic projections on noisy latents. Specifically, DPS evaluates this approximate measurement likelihood term at the Tweedie estimate of the clean signal given as: ˆx0 =  xt − √1 − ¯αt ϵθ (xt, t ) /√¯αt, (7) showing improved performance across a range of inverse problems Chung et al. (2023). However, it typically requires hundreds of NFEs to achieve stable convergence, limiting its applicability in large-scale imaging applications. Building on DPS, DDS makes the observation that the clean data distribution can 
+
+3Figure 1: Illustration of DM and CM trajectories on MRI data. 
+
+be locally approximated by an affine subspace corresponding to the tangent space of the data manifold. It uses this local linear structure to replace the single gradient correction in DPS with a few conjugate gradient (CG) iterations restricted to the subspace that spans the local tangent of the manifold, thereby reducing the NFEs to ∼100. Nevertheless, despite this improvement, the computational burden of DDS remains substantial, rendering deployment still impractical. 
+
+## 2.3 Consistency Models 
+
+CMs Y. Song et al. (2023) offer an attractive alternative to DMs by achieving high-quality generation with a single or few NFEs, thereby alleviating the heavy sampling burden of DMs. The key distinction between DMs and CMs lies in their denoising mechanisms: DMs perform sequential denoising along the entire diffusion trajectory (red arrows in Fig. 1), whereas CMs are trained to directly map a noisy sample at any timestep t to a clean estimate in a single step Y. Song et al. (2023) (blue arrows in Fig. 1). This is achieved by defining a consistency function 
+
+fθ (xt, t ) = fθ (xt′ , t ′), ∀ t, t ′ ∈ [ϵ, T ]. (8) with a boundary condition fθ (xϵ, ϵ ) = xϵ. The model parameters θ are optimized using a consistency objective that enforces agreement between outputs corresponding to two noisy versions of the same underlying clean sample: 
+
+LCM = Ex0,t,t ′ [w(t) d(fθ (xt, t ), f θ− (xt′ , t ′))] , (9) where w(t) is a weighting function, d(·, ·) is a distance metric such as ℓ2, and fθ− is a teacher network. When a CM is obtained via distillation from a pretrained DM, the sample xt′ is generated from xt using an ordinary differential equation (ODE) solver Y. Song et al. (2023). As a result, the CM learns to recover the clean sample from any point along the ODE trajectory. This training paradigm fundamentally differs from the denoising objective of DMs, which focuses on learning an average denoising direction rather than a globally consistent mapping. 
+
+CM-based Inverse Problem Solvers. Owing to their computational efficiency and expressive learned priors, CMs have recently attracted attention for inverse problem solving. Most existing CM-based approaches Garber and Tirer (2025); Zhao et al. (2024), however, were developed in the context of natural image restoration, and their applicability to MRI reconstruction remains limited. The original CM framework Y. Song et al. (2023) incorporates data fidelity during the sampling process, yet still requires on the order of 40 NFEs, rendering it impractical for large-scale imaging problems. CoSIGN Zhao et al. (2024) augments this framework with a ControlNet that explicitly encodes the forward operator, enabling guidance in a few inference steps but requires retraining for each acquisition setting. CM4IR Garber and Tirer (2025) enforces measurement consistency via a pseudo-inverse back-projection step, effectively combining CMs with linear reconstruction techniques. Nevertheless, this approach does not readily generalize to MRI forward models, where pseudo-inverse solutions E†
+
+> Ω
+
+y typically suffer from residual aliasing artifacts and noise amplification Pruessmann et al. (2001). 
+
+43 Methods 
+
+## 3.1 Regularization by Denoising (RED) 
+
+Regularization by Denoising (RED) is a framework to incorporate image denoisers into inverse problem solvers through an explicit regularization functional. Similar to plug-and-play (PnP) methods, RED leverages powerful pretrained denoisers within iterative reconstruction algorithms, while additionally providing an explicit regularization term. Specifically, given a denoising operator D(·), RED defines the regularization term: 
+
+RRED (x) = λ
+
+2 x⊤ x − D(x), (10) where λ > 0 controls the strength of regularization. Under certain assumptions on the denoiser, such as local homogeneity and Jacobian symmetry, the gradient of RRED (x) admits a closed-form expression proportional to x − D(x), which allows RED to be naturally embedded into gradient-based optimization schemes Romano et al. (2017). Several variants of RED has been proposed for integrating denoisers into iterative reconstruction algorithms. Among these, a quadratic majorization of the RED objective has been explored in Reehorst and Schniter (2018), leading to the RED proximal gradient (RED-PG) algorithm and its accelerated variant, RED-APG. These methods decouple the data fidelity and denoising updates, and the accelerated version further incorporates a momentum term following the data fidelity update, which has been shown to substantially reduce the number of iterations required for convergence in practice Reehorst and Schniter (2018). 
+
+## 3.2 Proposed Method: CM-RED 
+
+To leverage the fast generative sampling capabilities of consistency models (CMs) for MRI reconstruction, we propose CM-RED, a reconstruction framework that integrates a pretrained CM within the RED-APG formulation. Specifically, we employ the CM sampling as the surrogate denoising operator in this optimization framework, combining CM-based prior updates with explicit data fidelity enforcement and momentum acceleration. Notably for this to work efficiently, we incorporate controlled noise injection into the CM updates to enable stronger corrective denoising steps during reconstruction. The overall process for CM-RED is summarized in Alg. 1, where N denotes the number of iterations, indexed in reverse order from N − 1 to 0. Next, we detail the individual components. 
+
+CM-based Proximal Update with Noise Injection. At each iteration, CM-RED first applies a CM-based prior update to the previous iterate x(m)
+
+> n+1
+
+. Specifically, the pretrained CM fθ (·) produces a refined reconstruction from a perturbed version of the current iterate, and the resulting CM output is combined with the previous estimate through a weighted interpolation (Alg. 1, line 4): ˜xn = νnfθ
+
+ x(m) 
+
+> n+1
+
++ σnϵ, ˜σn
+
+ + (1 − νn)x(m)
+
+> n+1
+
+, (11) where ϵ ∼ N (0 , I), σn is the injected noise standard deviation, ˜ σn is the CM denoising noise level, and 
+
+νn ∈ (0 , 1) controls the contribution of the CM output. This interpolation allows the influence of the CM output to gradually increase throughout the reconstruction process, enabling stronger CM-driven refinement in later iterations. Notably, Gaussian perturbations are intentionally injected into the CM input before denoising at every iteration. CMs are trained to satisfy the boundary condition fθ (xϵ, ϵ ) = xϵ, implying that the CM increasingly behaves like an identity mapping as the denoising noise level approaches zero. Consequently, operating the CM at very low noise levels leads to only minor corrective updates within the iterative reconstruction process. On the other hand, injecting additional perturbations increases the amount of corruption that must subsequently be removed by the CM, thereby producing larger corrective denoising updates during reconstruction. In practice, these larger updates enable the reconstruction to reach high-quality solutions in substantially fewer iterations. Similar stochastic perturbation strategies have previously been explored in CM-based inverse problem solvers Garber and Tirer (2025); Y. Song et al. (2023) and stochastic optimization frameworks Atchad´ e et al. (2017); Park et al. (2026); Renaud et al. (2024). The effect of noise injection on reconstruction quality and convergence behavior is further investigated empirically in Sec. 5.3. 
+
+5Algorithm 1 Proposed Algorithm: CM-RED 
+
+Require: CM fθ(·), encoding operator EΩ, number of iterations N , momentum coef-ficients μn, regularization parameter λn, CM output scales νn, injected noise levels 
+
+σn, CM denoising levels ˜ σn.
+
+▷ Initialize with CG-SENSE reconstruction  
+
+> 1:
+
+xN = x(m) 
+
+> N
+
+= ( EH 
+
+> Ω
+
+EΩ)−1EH 
+
+> Ω
+
+y 
+
+> 2:
+
+for n = N − 1 to 0 do 
+
+▷ CM-based proximal update with noise injection  
+
+> 3:
+
+ϵ ∼ N (0, I) 
+
+> 4:
+
+˜xn = νn fθ
+
+
+
+x(m) 
+
+> n+1
+
++ σn ϵ, ˜σn
+
+
+
++ (1 − νn) x(m)
+
+> n+1
+
+▷ Data-fidelity (DF) update via CG  
+
+> 5:
+
+xn = ( EH 
+
+> Ω
+
+EΩ + λnI)−1
+
+
+
+EH 
+
+> Ω
+
+y + λn ˜xn
+
+
+
+▷ Momentum acceleration  
+
+> 6:
+
+x(m) 
+
+> n
+
+= xn + μn (xn − xn+1 ) 
+
+> 7:
+
+end for  
+
+> 8:
+
+Return: x 0
+
+Data Fidelity. Following the CM-based proximal update, data fidelity is enforced by solving the fol-lowing quadratic penalized least-squares problem: 
+
+xn = arg min  
+
+> x
+
+∥EΩx − y∥22 + λn∥x − ˜xn∥22, (12) where ˜ xn corresponds to the CM-refined reconstruction estimate. This update enforces consistency with the measured data while allowing the CM to provide strong generative regularization. The resulting linear system as given in Alg. 1 line 5, is solved efficiently using CG. 
+
+Momentum Acceleration. Momentum acceleration (Alg. 1, line 6), inherited from RED-APG, is applied after the data fidelity update according to 
+
+x(m) 
+
+> n
+
+= xn + μn(xn − xn+1 ), (13) where μn denotes the momentum coefficient. The effect of momentum on reconstruction quality and convergence behavior is further investigated empirically in Sec. 5.3. A visualization of the CM-RED reconstruction process for 4 iterations is provided in Fig. 2, depicting the progressive refinement of the intermediate images. 
+
+Figure 2: Illustration of CM-RED steps with N = 4, as described in Alg. 1. 6Table 1: Complete set of hyperparameters for our four-step sampling setup, including noise schedule, regularization parameters, CM out scale parameter, and momentum coefficients. 
+
+Acc. iN γ δn κ ρ μ(0) 
+
+4× 50 0.1  0.4, 3.0, 3.0, 2.5  0.5, 5.0 –2.0 0.9 8× 50 0.1  0.5, 7.0, 6.0, 3.5  1.0, 2.5 –3.0 0.9 
+
+# 4 Experimental Setup 
+
+## 4.1 Datasets 
+
+We conducted a comprehensive evaluation of the proposed method, assessing its performance both quan-titatively and qualitatively across multiple acceleration factors, undersampling patterns, and datasets. All experiments were performed on complex-valued multi-coil k-space measurements from the New York University (NYU) fastMRI dataset Knoll, Zbontar, et al. (2020), acquired with institutional review board approval. The dataset includes fully-sampled coronal PD and PD-FS knee scans, as well as axial T1-, T2-, and FLAIR-weighted brain MRI scans. 
+
+## 4.2 DM and CM Training Details 
+
+For training on the knee dataset, we utilized 973 subjects from the fastMRI knee training set, excluding the first and last five slices of each volume, following the protocol in prior work Chung et al. (2024). For the brain dataset, 4,469 subjects from the fastMRI brain training set were initially considered, and volumes with image width smaller than 320 were discarded, resulting in 4,267 subjects used for training. In all cases, the complex-valued coil-combined images were represented as two-channel inputs by concatenating the real and imaginary components along the channel dimension, resulting in a spatial resolution of 320 × 320 × 2. We used a pretrained CM for the knee dataset from our earlier work G¨ ulle et al. (2026b). For the brain dataset, the CM was trained from scratch. Following the publicly available implementations provided in Karras et al. (2022); Y. Song et al. (2023), we trained EDM/CM for brain datasets in two stages with the same configurations in G¨ ulle et al. (2026b); Zhao et al. (2024). Specifically, the EDM model for the brain dataset was trained for 700K iterations with a batch size of 16, and then distilled into a CM over 1.05M iterations using a batch size of 12. All training was performed on NVIDIA A100 GPUs. 
+
+## 4.3 CM-RED Implementation Details 
+
+CM-RED was implemented using N = 4 outer iterations (except the ablation studies), with each data fidelity update solved using 10 CG iterations. The algorithm includes a small number of reconstruction hyperparameters that control the injected noise level, the CM denoising level, the relative contribution of the CM output, the quadratic penalty parameter, and the momentum coefficient. These parameters correspond to the quantities in Alg. 1: σn, ˜ σn, νn, λn, and μn, respectively. 
+
+Noise Schedule. We employ a noise scheduling strategy that gradually decreases the injected noise across iterations using a small set of hyperparameters, similar to CM4IR Garber and Tirer (2025). Let {βi}Ti=1 ⊂ (0 , 1) denote the forward noising variance schedule in standard DDPM notation, with 
+
+αi = 1 − βi and ¯ αi = Qij=1 αj . We first select an initial diffusion index iN ∈ [1 , T ], which determines the injected noise level at the first CM-RED iteration. To avoid overloading the diffusion index with the CM-RED iteration index, we define an auxiliary sequence {an}N −1 
+
+> n=0
+
+as 
+
+aN −1 = ¯ αiN , an = min {(1 + γ)an+1 , 1}, (14) where γ > 0. The injected perturbation level at iteration n is then given by 
+
+σn = √1 − an, n = N − 1, . . . , 0. (15) Note iN controls the starting perturbation level, while γ > 0 indirectly controls how quickly the pertur-bation level decays over the CM-RED iterations. 
+
+7Figure 3: Representative reconstructions of DM- and CM-based methods on fastMRI knee and brain data with equidistant R = 4 and R = 8 undersampling. The number of NFEs used by each method is shown in parentheses. Yellow boxes indicate magnified regions, and red arrows highlight residual artifacts. Best viewed when zoomed in. 
+
+CM Denoising Level. The CM denoising noise level ˜ σn is allowed to differ from the injected per-turbation level σn. Following the observation in prior CM-based inverse problem solvers Garber and Tirer (2025); G¨ ulle et al. (2026c) that the denoising level can be chosen slightly larger than the injected perturbation level, we parametrize ˜σn = (1 + δn)σn, n = N − 1, . . . , 0, (16) where δn ≥ 0 is an iteration-dependent offset. This parameter controls the effective denoising strength of the CM update at each iteration. 
+
+CM Output Scaling Parameter. At each iteration, the CM output is combined with the current mo-mentum iterate through a νn-weighted linear combination, following the RED-APG strategy of blending the denoiser-based update with the current reconstruction estimate. To simplify the tuning, we parame-terize {νn}Nn=1 using a smooth, monotonically increasing schedule constrained to the interval (0 , 1). The 
+
+8Figure 4: Representative reconstructions for Gaussian undersampling. Number of NFEs for by each method is provided in parentheses. Yellow boxes indicate magnified regions, and red arrows highlight residual artifacts. Best viewed zoomed in. 
+
+scaling coefficients are defined as 
+
+sn = κ1 + n − 1
+
+N − 1 (κ2 − κ1), κ2 ≥ κ1, νn = 1 − e−sn
+
+where κ1 and κ2 control the initial and final relative weighting in the CM output. This parametrization ensures that νn increases gradually approaches 1, enabling a controlled transition from data fidelity-dominated updates to CM-driven refinement while keeping hyperparameter tuning tractable. 
+
+Data Fidelity Penalty Parameter. The parameter λn controls the strength of the quadratic penalty that couples the reconstruction estimate to the CM-refined output ˜ xn in the data fidelity update. In our implementation, we use a constant value across iterations, i.e., λn = λ, to avoid introducing additional iteration-dependent hyperparameters. This choice follows the common practice of sharing reconstruction parameters across iterations in unrolled MRI reconstruction frameworks Aggarwal et al. (2019) to reduce parameter complexity. To ensure positivity and facilitate tuning over a wide range of small positive 
+
+9Table 2: Quantitative comparison of reconstruction methods on fastMRI Knoll, Zbontar, et al. (2020) knee and brain datasets with R = 4 and 8 using 1D equidistant undersampling. Best: 
+
+BOLD , second-best: Underlined.                                                                                                               
+
+> Method NFEs ↓RCor PD Cor PD-FS Axial T1-Pre Axial T1-Post Axial T2 Axial FLAIR
+> PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑
+> DPS 1000 ×434.82 0.886 32.37 0.781 37.70 0.928 38.25 0.932 34.49 0.911 34.37 0.907
+> ×831.79 0.832 30.30 0.727 33.75 0.896 33.89 0.899 30.14 0.868 30.23 0.862
+> DDS 100 ×434.86 0.901 31.40 0.781 38.24 0.958 38.17 0.955 34.22 0.928 35.29 0.936
+> ×831.63 0.837 29.67 0.720 34.82 0.927 34.63 0.923 30.88 0.884 31.35 0.887
+> CM4IR 4×429.96 0.766 24.32 0.528 36.83 0.918 37.35 0.917 31.43 0.856 34.47 0.915
+> ×830.38 0.786 24.34 0.519 34.70 0.912 35.68 0.921 29.99 0.858 29.49 0.842
+> CM-RED 4×436.58 0.927 32.02 0.804 40.61 0.969 40.97 0.969 36.13 0.945 36.96 0.948
+> ×832.94 0.861 30.46 0.749 37.02 0.939 37.06 0.936 32.34 0.902 33.35 0.908
+
+penalty values, λ is parameterized using a softplus transformation, 
+
+λ = softplus( ρ) = log(1 + eρ),
+
+where ρ ∈ R is the scalar parameter being tuned. 
+
+Momentum Coefficient. Momentum acceleration is applied after the data fidelity update, following the RED-APG update structure. In our implementation, we use a simple decreasing momentum schedule. Starting from an initial value μ(0) , the momentum parameter is reduced at each iteration as 
+
+μn = μ(0) /(N − n).
+
+As a result, momentum updates are gradually dampened, limiting oscillatory behavior in the final stages of the algorithm. The complete set of hyperparameters employed in each experiment is summarized in Tab. 1. As shown, the well-tuned hyperparameters are shared across all experiments, with the exception of those distinguishing acceleration factors R = 4 and R = 8. The same configuration was used across anatomies, contrast weightings, and undersampling patterns, with separate settings only for acceleration rates. 
+
+## 4.4 Evaluations and Comparison Methods 
+
+For evaluation, the corresponding fully sampled k-space data were retrospectively undersampled using uniform (equidistant) and Gaussian random masks at acceleration factors of R ∈ { 4, 8}. For all cases, 24 central k-space lines were retained, except for Gaussian random sampling at R = 8, where 12 central lines were preserved. We selected 10 subjects from the validation set, resulting in 228 PD, 240 PD-FS, 157 axial T1 (pre-contrast), 158 axial T1 (post-contrast), 156 axial T2, and 156 axial FLAIR slices. Performance was evaluated quantitatively using peak signal-to-noise ratio (PSNR) and structural similarity index measure (SSIM). We compared CM-RED against two DM-based MRI reconstruction methods, DPS Chung et al. (2023) and DDS Chung et al. (2024), and one CM-based inverse problem solver, CM4IR Garber and Tirer (2025), using their publicly available implementations. For DPS and DDS, we used pretrained publicly available models trained separately for the knee and brain datasets Chung et al. (2024). DPS and DDS were im-plemented using 1000 and 100 NFEs, respectively. For CM4IR, we used the same pretrained CM models employed in CM-RED and performed reconstruction with 4 NFEs. For all comparison methods, hyper-parameters were empirically optimized separately for each acceleration factor, undersampling pattern, and dataset to obtain their best reconstruction performance. 
+
+10 Table 3: Quantitative comparison of reconstruction methods on fastMRI Knoll, Zbontar, et al. (2020) knee and brain datasets with R = 4 and 8 using 1D Gaussian undersampling. Best: 
+
+BOLD , second-best: Underlined.                                                                                                               
+
+> Method NFEs ↓RCor PD Cor PD-FS Axial T1-Pre Axial T1-Post Axial T2 Axial FLAIR
+> PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑PSNR ↑SSIM ↑
+> DPS 1000 ×435.19 0.894 32.81 0.795 35.36 0.915 35.88 0.918 33.37 0.903 32.92 0.901
+> ×833.64 0.862 31.65 0.757 33.87 0.906 34.16 0.909 32.22 0.893 31.92 0.887
+> DDS 100 ×435.10 0.909 31.94 0.796 37.77 0.956 38.00 0.956 34.15 0.928 35.47 0.940
+> ×833.14 0.871 30.47 0.745 35.63 0.939 35.68 0.936 32.19 0.903 33.14 0.912
+> CM4IR 4×432.71 0.839 26.58 0.598 36.62 0.927 37.63 0.934 32.31 0.879 33.33 0.900
+> ×832.38 0.833 25.76 0.561 36.04 0.927 36.40 0.928 31.55 0.885 31.92 0.878
+> CM-RED 4×436.58 0.930 33.24 0.838 40.06 0.969 40.46 0.968 35.51 0.943 37.41 0.953
+> ×834.15 0.886 31.19 0.770 37.40 0.945 37.37 0.938 33.06 0.911 34.71 0.922
+
+# 5 Experiments and Results 
+
+## 5.1 Reconstruction Results 
+
+Figs. 3 and 4 show representative reconstructions for equidistant and Gaussian undersampling, respec-tively. DPS exhibits reduced sharpness and residual aliasing in several cases, while DDS improves sharp-ness but does not fully suppress the artifacts. CM4IR shows noticeable noise amplification due to its use of a pseudo-inverse back-projection step, degrading the overall visual quality. In contrast, CM-RED more consistently suppresses residual artifacts while preserving anatomical detail across the evaluated settings. This is particularly visible in the axial T1-pre example in Fig. 3, where the lateral ventricles are more clearly delineated. Tab. 2 and Tab. 3 summarize the quantitative reconstruction results for equidistant and Gaussian undersampling, respectively, at R = 4 and R = 8. Consistent with the qualitative comparisons, CM-RED achieves the highest PSNR and SSIM in nearly all configurations despite using only 4 NFEs. The only exceptions are the PSNR values for coronal PD-FS at R = 4 with equidistant undersampling and at R = 8 with Gaussian undersampling, where CM-RED achieves the second-best performance. Notably, DPS and DDS require substantially more NFEs (1000 and 100, respectively) yet still underperform compared to CM-RED. Although CM4IR also operates with 4 NFEs, its reliance on a pseudo-inverse back-projection step limits its applicability to MRI forward models, resulting in inferior reconstruction performance. 
+
+## 5.2 Hyperparameter Sensitivity 
+
+To evaluate the robustness of CM-RED to hyperparameter selection, we consider a representative setting with R = 8 Gaussian undersampling. Starting from the nominal hyperparameter configuration reported in Tab. 1, we introduce independent random perturbations to each hyperparameter during inference. For each slice, every hyperparameter is scaled by an independent factor sampled from U(0 .9, 1.1), corre-sponding to ±10% variations. We then compute the per-slice PSNR and SSIM differences between the nominal and perturbed reconstructions. As shown in Fig. 5, the distributions remain centered near zero across all six datasets, with 25–75 percentile ranges within approximately ±0.2 dB in PSNR and ±0.01 in SSIM. These results indicate robustness to moderate perturbations around the nominal configuration. 
+
+## 5.3 Ablation Studies 
+
+Our first ablation study assessed the individual and combined effects of two CM-RED components: controlled noise injection in the CM update and momentum acceleration after the data fidelity update. Four variants were evaluated: (i) without noise injection or momentum, (ii) with momentum only, (iii) with noise injection only, and (iv) with both. Experiments were conducted using 4 NFEs on coronal PD knee and axial T2 brain data with R = 4 equidistant undersampling. The results in Table 4 indicate 
+
+11 Figure 5: Hyperparameter sensitivity analysis for CM-RED with R = 8 Gaussian undersampling. Violin plots show the per-slice difference in PSNR (left) and SSIM (right) between the nominal configuration and reconstructions obtained with randomly perturbed hyperparameters. 
+
+that both components improve reconstruction quality, and the variant combining them consistently yields the highest performance. This demonstrates that momentum and noise injection provide complementary benefits across different anatomies and contrasts. Our second ablation study further evaluated how these components affect reconstruction quality with increasing NFEs. Fig. 6 shows the performance of the same four variants on axial T1-post brain data with 
+
+R = 8 equidistant undersampling for 4–30 NFEs. Across the evaluated NFE range, the configuration using both noise injection and momentum consistently achieved the highest PSNR and SSIM. In fact, even at NFE = 6, this configuration already reaches performance comparable to the best results of the other variants at their convergence point. As expected, momentum and noise injection help avoid shallow local minima, allowing the reconstruction to converge to a substantially better solution. Importantly, noise injection and momentum do not introduce a separate reconstruction objective; instead, they modify the update dynamics within the same CM-RED reconstruction formulation. 
+
+# 6 Discussion 
+
+This work demonstrates that CMs can serve as computationally efficient generative priors for accelerated MRI reconstruction. By embedding a pretrained CM into a RED-APG-inspired reconstruction scheme, CM-RED retains the fast few-step sampling behavior of CMs while enforcing consistency with acquired multi-coil k-space measurements. Across knee and brain MRI datasets, contrast weightings, acceleration factors, and undersampling patterns. 
+
+Table 4: PSNR/SSIM on coronal PD knee and axial T2 brain R=4 equidistant undersampling with/without momentum and noise injection using 4 NFEs. 
+
+Noise Inj. Momentum Cor PD Knee Ax T2 Brain 
+
+✗ ✗ 35.59 / 0.917 34.96 / 0.936 
+
+✗ ✓ 36.09 / 0.923 35.25 / 0.937 
+
+✓ ✗ 35.71 / 0.917 35.23 / 0.937 
+
+✓ ✓ 36.58 / 0.927 36.13 / 0.945 
+
+12 Figure 6: Effect of noise injection and momentum on CM-RED convergence for fastMRI axial T1-post brain data with R=8 equidistant undersampling. PSNR and SSIM are reported between 4 to 30 NFEs. 
+
+In our framework, the CM serves as the denoising prior during iterative reconstruction. While DM-based priors estimate clean images through approximate likelihood updates from noisy states, CM-RED directly uses the CM clean-image estimate within an explicit data-fidelity step. This avoids repeatedly traversing a long diffusion trajectory and enables few-step reconstruction. A related line of work in the broader inverse problems community has shown increasing interest in flow matching models Liu et al. (2023), which leverage rectified flow-based generative priors as strong priors for inverse problems Kim et al. (2025); Patel et al. (2025) and enable high-quality few-step generation Shi et al. (2026). However, these approaches have primarily focused on latent-space generative models. To the best of our knowledge, no publicly available flow-matching generative model has been trained specifically on MRI data, which has unfortunately precluded a direct comparison with CM-RED. A central design choice in CM-RED is the joint use of noise injection and momentum acceleration within the iterative updates. Controlled noise injection enables the CM to operate at non-negligible denoising levels, which empirically leads to more effective prior-driven updates under a limited NFE budget. Momentum acceleration, inherited from RED-APG, further improves the efficiency of these updates. Together, these components improve the effectiveness of the iterative updates under a limited NFE budget. The ablation studies support this interpretation: noise injection and momentum each improve reconstruction quality individually, while their combination provides the strongest performance across the evaluated settings. Although CM-RED includes several hand-tuned reconstruction hyperparameters, the proposed im-plementation was shown to be robust to moderate variations around the nominal configuration. This is important for practical MRI reconstruction, where exhaustive protocol-specific tuning is undesirable. In our experiments, the same hyperparameter configuration was used across anatomies, contrast weightings, and undersampling patterns, with separate settings only for different acceleration factors. The sensitivity analysis further showed that moderate perturbations of the selected parameters led to limited changes in PSNR and SSIM, suggesting that CM-RED operates reliably within a reasonably broad parameter range. Compared with existing CM-based inverse problem solvers such as CM4IR, the main distinction of CM-RED lies in the form of the data fidelity update. Back-projection-based approaches can be effective for some image restoration problems, but in accelerated multi-coil MRI where measurements are inherently noisy, back-projection steps may amplify measurement noise. CM-RED addresses these limitations by combining the strong generative prior of CMs with a quadratic penalized data fidelity update based on the multi-coil MRI forward model. This design allows the reconstruction to benefit from the learned CM prior while explicitly enforcing consistency with the acquired k-space measurements. Empirically, this balance improves reconstruction quality across both fastMRI knee and brain datasets. It is also important to distinguish CM-RED from PD-DL reconstruction methods. PD-DL methods can achieve excellent performance, particularly when trained and evaluated under matched acquisition protocols Aggarwal et al. (2019); Hammernik et al. (2018, 2023); Knoll, Hammernik, et al. (2020); Ya-man et al. (2022), but they are typically optimized for specific sampling patterns, acceleration factors, anatomies, and contrast weightings. CM-RED is positioned differently: it uses a pretrained generative prior at test time and combines it with the measurement model without end-to-end retraining for each 
+
+13 undersampling pattern. Thus, the goal of this work is not to replace PD-DL reconstruction networks, but to demonstrate that CMs can be used as efficient and flexible generative priors for MRI inverse problems. The results also suggest several directions for future work. Although CM-RED requires only a few NFEs at inference, training the underlying DM and distilling it into a CM remain computationally demanding. Training CM priors on broader MRI datasets and pathology-rich cohorts may further improve their generalizability and practical utility. Similarly, evaluating CM-RED on non-Cartesian scans and patient cohorts may help assess its robustness in other acquisition settings. Another important direction is reducing the dependence on fully-sampled training data, which were used for training the generative priors in this work. However, fully-sampled datasets are not always available in clinical MRI. Recent unsupervised and measurement-domain generative learning approaches for DMs, including AmbientGAN-style training and ambient diffusion/posterior sampling methods, provide a potential path toward learning MRI priors directly from undersampled or corrupted measurements Aali et al. (2025) and a method for training/distilling CMs in a similar setting may be valuable for practical purposes. 
+
+# 7 Conclusion 
+
+We introduced CM-RED, a few-step MRI reconstruction framework that uses pretrained consistency models as a learned proximal operator. CM-RED achieved consistently strong reconstruction quality across knee and brain MRI experiments, while requiring only four NFEs, outperforming existing DM-and CM-based solvers in nearly all settings. Overall, CM-RED provides a practical, computationally efficient, and reliable generative-model-based reconstruction strategy for accelerated MRI. 
+
+# Acknowledgment 
+
+This work was partially supported by NIH R01EB032830, NIH R01HL179616 and NIH P41EB027061. 
+
+# References 
+
+Aali, A., Daras, G., Levac, B., Kumar, S., Dimakis, A., & Tamir, J. (2025). Ambient diffusion posterior sampling: Solving inverse problems with diffusion models trained on corrupted data. In Proc. Int. Conf. Learn. Represent. 
+
+Aggarwal, H. K., Mani, M. P., & Jacob, M. (2019). MoDL: Model-based deep learning archi-tecture for inverse problems. IEEE Trans. Med. Imag. , 38 (2), 394–405. Ahmad, R., Bouman, C. A., Buzzard, G. T., Chan, S., Liu, S., Reehorst, E. T., & Schniter, P. (2020). Plug-and-play methods for magnetic resonance imaging: Using denoisers for image recovery. IEEE Signal Process. Mag. , 37 (1), 105–116. Ak¸ cakaya, M., Moeller, S., Weing¨ artner, S., & Ugurbil, K. (2019, Jan.). Scan-specific robust artificial-neural-networks for k-space interpolation (RAKI) reconstruction: Database-free deep learning for fast imaging. Magn. Reson. Med. , 81 (1), 439–453. Ak¸ cakaya, M., Doneva, M., & Prieto (eds.), C. (2022). Magnetic resonance image reconstruction: theory, methods, and applications (Vol. 7). Academic Press. Al¸ calar, Y. U., & Ak¸ cakaya, M. (2024). Zero-shot adaptation for approximate posterior sampling of diffusion models in inverse problems. In Proc. Eur. Conf. Comput. Vis. (pp. 444–460). Atchad´ e, Y. F., Fort, G., & Moulines, E. (2017). On perturbed proximal gradient algorithms. 
+
+J. Mach. Learn. Res. , 18 (10), 1–33. Chung, H., Kim, J., Mccann, M. T., Klasky, M. L., & Ye, J. C. (2023). Diffusion posterior sampling for general noisy inverse problems. In Proc. Int. Conf. Learn. Represent. 
+
+Chung, H., Lee, S., & Ye, J. C. (2024). Decomposed diffusion sampler for accelerating large-scale inverse problems. In Proc. Int. Conf. Learn. Represent. 
+
+Chung, H., & Ye, J. C. (2022). Score-based diffusion models for accelerated MRI. Med. Image Anal. , 80 . (Art. no. 102479) Fessler, J. A. (2020). Optimization methods for magnetic resonance image reconstruction. IEEE Signal Process. Mag. , 37 , 33–40. 14 Garber, T., & Tirer, T. (2025). Zero-shot image restoration using few-step guidance of consis-tency models (and beyond). In Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recog. (pp. 2398–2407). Griswold, M. A., Jakob, P. M., Heidemann, R. M., Nittka, M., Jellus, V., Wang, J., . . . Haase, A. (2002). Generalized autocalibrating partially parallel acquisitions (GRAPPA). Magn. Reson. Med. , 47 (6), 1202–1210. G¨ ulle, M., Yun, J., Al¸ calar, Y. U., & Ak¸ cakaya, M. (2026a). Consistency model priors for fast and accurate generative MR reconstruction. In Proc. ISMRM Annu. Meeting. (Art. no. 04681) G¨ ulle, M., Yun, J., Al¸ calar, Y. U., & Ak¸ cakaya, M. (2026b). Consistency models for fast MRI using regularization by denoising. In Proc. IEEE Int. Symp. Biomed. Imag. 
+
+G¨ ulle, M., Yun, J., Al¸ calar, Y. U., & Ak¸ cakaya, M. (2026c). PnP-CM: Consistency models as plug-and-play priors for inverse problems. In Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recog. (arXiv:2509.22736) Hammernik, K., Klatzer, T., Kobler, E., Recht, M. P., Sodickson, D. K., Pock, T., & Knoll, F. (2018). Learning a variational network for reconstruction of accelerated MRI data. Magn. Reson. Med. , 79 (6), 3055–3071. Hammernik, K., K¨ ustner, T., Yaman, B., Huang, Z., Rueckert, D., Knoll, F., & Ak¸ cakaya, M. (2023). Physics-driven deep learning for computational magnetic resonance imaging: Combining physics and machine learning for improved medical imaging. IEEE Signal Process. Mag. , 40 (1), 98–114. Han, Y., Sunwoo, L., & Ye, J. C. (2019). k-space deep learning for accelerated mri. IEEE Trans. Med. Imag. , 39 (2), 377–386. Ho, J., Jain, A., & Abbeel, P. (2020). Denoising diffusion probabilistic models. In Proc. Adv. Neural Inf. Process. Syst. (pp. 6840–6851). Jalal, A., Arvinte, M., Daras, G., Price, E., Dimakis, A. G., & Tamir, J. (2021). Robust compressed sensing MRI with deep generative priors. In Proc. Adv. Neural Inf. Process. Syst. (pp. 14938–14954). Karras, T., Aittala, M., Aila, T., & Laine, S. (2022). Elucidating the design space of diffusion-based generative models. In Proc. Adv. Neural Inf. Process. Syst. (pp. 26565–26577). Kim, J., Kim, B. S., & Ye, J. C. (2025). FlowDPS: Flow-driven posterior sampling for inverse problems. In Proc. IEEE/CVF Int. Conf. Comput. Vis. (pp. 12328–12337). Knoll, F., Hammernik, K., Zhang, C., Moeller, S., Pock, T., Sodickson, D. K., & Ak¸ cakaya, M. (2020). Deep-learning methods for parallel magnetic resonance imaging reconstruction: A survey of the current approaches, trends, and issues. IEEE Signal Process. Mag. , 37 (1), 128–140. Knoll, F., Zbontar, J., Sriram, A., Muckley, M. J., Bruno, M., Defazio, A., . . . others (2020, Jan.). fastMRI: a publicly available raw k-space and DICOM dataset of knee images for accelerated MR image reconstruction using machine learning. Radiol., Artif. Intell , 2 (1). (Art. no. e190007) Lee, D., Yoo, J., Tak, S., & Ye, J. C. (2018). Deep residual learning for accelerated MRI using magnitude and phase networks. IEEE Trans. on Biomed. Engin. , 65 (9), 1985–1995. Liu, X., Gong, C., & qiang liu. (2023). Flow straight and fast: Learning to generate and transfer data with rectified flow. In Proc. Int. Conf. Learn. Represent. 
+
+Luo, G., Blumenthal, M., Heide, M., & Uecker, M. (2023). Bayesian MRI reconstruction with joint uncertainty estimation using diffusion models. Magn. Reson. Med. , 90 (1), 295–311. Lustig, M., Donoho, D., & Pauly, J. M. (2007, Dec.). Sparse MRI: The application of compressed sensing for rapid MR imaging. Magn. Reson. Med. , 58 (6), 1182–1195. Muckley, M. J., Riemenschneider, B., Radmanesh, A., Kim, S., Jeong, G., Ko, J., . . . others (2021). Results of the 2020 fastMRI challenge for machine learning MR image reconstruc-tion. IEEE Trans. Med. Imag. , 40 (9), 2306–2317. 15 Park, C. Y., Chandler, E. P., Hu, Y., McCann, M. T., Garcia-Cardona, C., Wohlberg, B., & Kamilov, U. S. (2026). Stochastic generative plug-and-play priors. (arXiv:2604.03603) Patel, M., Wen, S., Metaxas, D. N., & Yang, Y. (2025). FlowCHEF: Steering of rectified flow models for controlled generations. In Proc. IEEE/CVF Int. Conf. Comput. Vis. (pp. 15308–15318). Pruessmann, K. P., Weiger, M., B¨ ornert, P., & Boesiger, P. (2001). Advances in sensitivity encoding with arbitrary k-space trajectories. Magn. Reson. Med. , 46 (4), 638–651. Pruessmann, K. P., Weiger, M., Scheidegger, M. B., & Boesiger, P. (1999). SENSE: Sensitivity encoding for fast MRI. Magn. Reson. Med. , 42 (5), 952–962. Reehorst, E. T., & Schniter, P. (2018). Regularization by denoising: Clarifications and new interpretations. IEEE Trans. Comput. Imag. , 5 (1), 52–67. Renaud, M., Prost, J., Leclaire, A., & Papadakis, N. (2024). Plug-and-play image restoration with stochastic denoising regularization. In Proc. Int. Conf. Mach. Learn. 
+
+Romano, Y., Elad, M., & Milanfar, P. (2017). The little engine that could: Regularization by denoising (RED). SIAM J. Imaging Sci. , 10 , 1804–1844. Saberi, M., Kilic, T., & Ak¸ cakaya, M. (2026). UMPIRE-Net: Unrolled magnitude–phase regu-larization network for accelerated MRI. In Proc. IEEE Int. Workshop Mach. Learn. Signal Process. 
+
+Schlemper, J., Caballero, J., Hajnal, J. V., Price, A. N., & Rueckert, D. (2018). A deep cascade of convolutional neural networks for dynamic MR image reconstruction. IEEE Trans. Med. Imag. , 37 (2), 491–503. Shastri, S. K., Ahmad, R., Metzler, C. A., & Schniter, P. (2022). Expectation consistent plug-and-play for MRI. In Ieee inter. conf. on acoustics, speech and sig. proc. (icassp) (pp. 8667–8671). Shi, X., Chandler, E. P., Park, C. Y., Shoushtari, S., & Kamilov, U. S. (2026). Nullflow: One-step generative reconstruction. arXiv preprint arXiv:2606.22696 .Song, J., Vahdat, A., Mardani, M., & Kautz, J. (2023). Pseudoinverse-guided diffusion models for inverse problems. In Proc. Int. Conf. Learn. Represent. 
+
+Song, Y., Dhariwal, P., Chen, M., & Sutskever, I. (2023). Consistency models. In Proc. Int. Conf. Mach. Learn. 
+
+Song, Y., Shen, L., Xing, L., & Ermon, S. (2022). Solving inverse problems in medical imaging with score-based generative models. In Proc. Int. Conf. Learn. Represent. 
+
+Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021). Score-based generative modeling through stochastic differential equations. In Proc. Int. Conf. Learn. Represent. 
+
+Wang, S., Su, Z., Ying, L., Peng, X., Zhu, S., Liang, F., . . . Liang, D. (2016). Accelerating magnetic resonance imaging via deep learning. In Proc. IEEE Int. Symp. Biomed. Imag. 
+
+(pp. 514–517). Webber, G., & Reader, A. J. (2024). Diffusion models for medical image reconstruction. BJR – Artificial Intelligence , 1 (1). (Art. no. ubae013) Yaman, B., Hosseini, S. A. H., & Akcakaya, M. (2022). Zero-shot self-supervised learning for MRI reconstruction. In Proc. Int. Conf. Learn. Represent. 
+
+Zhao, J., Song, B., & Shen, L. (2024). CoSIGN: Few-step guidance of consistency model to solve general inverse problems. In Proc. Eur. Conf. Comput. Vis. (pp. 108–126). 16
