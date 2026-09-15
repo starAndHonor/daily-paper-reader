@@ -1,0 +1,3097 @@
+SAS: Simple Attention Sparsification via
+End-to-End Optimization of Context Ranking
+Zhiwei Li1,2,∗, Lei Zhu1,∗,†, Hao Gu1,3, Xiang Hu1, Yan Wang1, Haitao Mi1, Sirui Han3, Leowei Liang1,
+Zhijiang Guo2,3
+1Tencent HY LLM Frontier 2Hong Kong University of Science and Technology (Guangzhou)
+3Hong Kong University of Science and Technology
+∗Equal Contribution, †Corresponding Author
+Post-training attention sparsification reduces the quadratic cumulative attention cost of pretrained
+Transformers by selecting a small set of context units (tokens or blocks) for each query. Existing
+trainable methods usually rely on a lightweight selector to score context units followed by a hard
+Top-K selection, which blocks gradients from the language modeling loss. As a result, these methods
+commonly resort to distilling layer-wise dense attention distributions. While this approach encourages
+the selector to rank context units according to dense attention weights in the original model, such
+a ranking is not directly aligned with their impact on the model’s final predictions under a fixed
+attention budget (i.e., the number of attended context units per query), which can waste the limited
+attention budget on less useful units.
+To address this ranking misalignment, we propose Simple
+Attention Sparsification (SAS), a gated sparse attention mechanism that optimizes context ranking
+end-to-end with the language modeling loss.
+The key idea is to inject the selector’s continuous
+scores into the attention logits during training, allowing the language modeling loss to update the
+selector through standard backpropagation.
+We identify several choices that are crucial to make
+this simple design work well in practice: placing the gate inside the attention softmax in log form,
+using normalized softmax gates to calibrate historical context against the always-retained current
+block, and preserving continuous selector scores so the model learns relative priorities rather than
+only hard selections. To support long-sequence training, we implement a memory-efficient Triton
+kernel that integrates our method into FlashAttention-style computation. Across reasoning, long-
+context understanding, and agentic tasks, SAS consistently outperforms trainable sparse attention
+baselines across attention budgets, with especially large gains under tight budgets, demonstrating
+more effective context ranking for downstream tasks.
+Date: September 14, 2026
+Code: https://github.com/Tencent-Hunyuan/Simple-Attention-Sparsification
+1
+Introduction
+Long-context inference has become a critical efficiency bottleneck for LLMs, as autoregressive generation
+requires dense attention over all preceding context tokens when generating each new token. This makes the
+cumulative attention cost grow quadratically with context length. Since many high-performing LLMs are
+already deployed with dense attention, practice favors inference-efficient methods that avoid architectural
+changes or retraining. This motivates post-training attention sparsification1 [12, 13, 25, 40], which adapts
+dense models into sparse-attention models after pretraining.
+In post-training attention sparsification for LLMs, the central question is how to select the most useful context
+units (tokens or blocks) for each query under a limited attention budget, where a unit can be an individual
+token or a coarse-grained block depending on the sparsification scheme. Many training-free methods address
+this problem with heuristic or empirical rules [21, 24, 40, 45, 47]. While these training-free methods are
+1We use “post-training” relative to dense pretraining: it includes methods applied after a dense model has been pretrained,
+such as mid-training adaptation, post-training fine-tuning, and training-free inference-time sparsification.
+arXiv:2609.13141v1  [cs.CL]  11 Sep 2026
+
+
+𝐒𝐨𝐟𝐭𝐦𝐚𝐱𝐪𝐊𝓢
+𝐓𝐕𝓢
+q
+K
+V
+Selector
+Score
+Computation
+Top-K
+Index Select
+Output
+Backward
+Gradient Blocked
+Forward
+✘
+𝐪𝐊𝓢
+𝐓
+q
+K
+V
+Score
+Computation
+Output
+Gradient Flowed
+✔
+𝐒𝐨𝐟𝐭𝐦𝐚𝐱𝐪𝐊𝓢
+𝐓+ 𝐥𝐨𝐠 𝐠𝓢𝐕𝓢
+Selector
+Index Select
+𝐪𝐊𝓢
+𝐓
+𝐪𝐊𝓢
+𝐓+ 𝐥𝐨𝐠 𝐠𝓢
+Top-K
+Block-summary
+ℝ!×# →ℝ
+!
+"×#
+Block-summary
+Broadcast
+ℝ$ →ℝ$%
+Broadcast
+Log-space-Gate
+𝐥𝐨𝐠 𝐠∈ℝ
+!
+"
+n:-sequence-length
+k:-attention-budget
+b:-block-size
+𝓢:-selected-token-indices
+(a)
+(b)
+-
+Figure 1 (a) Gradient Blockage in Discrete Selection. Sparse attention with discrete Top-K selection prevents gradients
+propagation from language modeling loss to selector. Existing approaches bypass this issue using auxiliary distillation
+[10, 13] or heuristics [29, 59]. (b) Differentiable Continuous Gating. SAS keeps discrete Top-K selection but attaches
+a continuous soft gate to each selected block, enabling gradient flow from the language modeling loss to the selector.
+attractive for their simplicity, their hand-crafted selection rules cannot adapt the selection strategy to the
+model’s own prediction behavior. More recently, trainable sparsification has emerged as a promising direction
+by introducing learnable selectors [12, 13, 25]. A selector is a lightweight module that scores context units
+for each query, after which a hard Top-K step chooses the attended units, enabling a higher performance
+ceiling than hand-crafted selection rules. Because hard Top-K selection is non-differentiable, these methods
+commonly train selectors through layer-wise distillation of dense attention distributions: the selector in each
+layer is supervised to match the attention mass produced by the original dense model. However, this surrogate
+supervision can induce a ranking misalignment: it teaches the selector to rank context units according to
+where the original dense model attends, rather than by their impact on the model’s final predictions under a
+limited attention budget. This distillation strategy has two limitations. First, per-layer targets can overlook
+cross-layer complementarity in context usage. Second, attention matching constrains only attention weights,
+ignoring how attended values (the V matrix in Figure 1) affect the final prediction.
+In this work, we explore end-to-end optimization of context selection with the language modeling loss. Our
+key idea is to make the selector’s scores part of the differentiable attention computation during training, so
+that the standard language modeling loss can update the selector through backpropagation. We instantiate
+this idea in the open-source block sparse setting of SeerAttention-R [13], where layer-wise selectors score
+context blocks for each query. Instead of using layer-wise attention distillation as in SeerAttention-R, we
+optimize the selectors end-to-end via a simple design: during training, blockwise scores from selector are
+interpreted as log-space gates, and added to the qK⊤attention logits, allowing gradients to flow from the
+attention computation to the selectors (Figure 1b).
+The effectiveness of this simple design, however, depends on four key choices in how the selector is trained
+from the language modeling loss. (1) The gate should be added inside the attention softmax in log form, so
+selector scores directly modulate attention mass rather than merely rescaling attention outputs. (2) The gate
+activation should normalize scores across context blocks (e.g., with a softmax), so the gates encode calibrated
+relative importance rather than unnormalized scores. (3) The selected gates should stay continuous rather
+than being collapsed into binary Top-K indicators, because the model must learn not only which context
+blocks are selected but also their relative priorities. (4) Training should update only the selected blocks rather
+than all context blocks, since it is much cheaper and still reaches comparable final performance. Together,
+2
+
+
+the first three choices make end-to-end gradients from the language modeling loss informative for learning
+which context blocks actually support the model’s prediction, while the last keeps training efficient.
+Besides the design choices above that make the end-to-end optimization effective, we also implement spe-
+cialized Triton [42] kernels that make long-context training practical. Since a naive implementation would
+materialize the full attention matrix before adding the log-space gates, which is prohibitive for long-context
+training, our kernel fuses the gate addition into the tile-level qK⊤computation in FlashAttention [9]. As a re-
+sult, attention sparsification with SAS is simplified to replacing the attention kernel with our gated-attention
+kernel and optimizing the standard language modeling loss, without auxiliary distillation.
+Despite its simplicity, extensive experiments demonstrate that SAS consistently outperforms existing post-
+training attention sparsification baselines across reasoning, long-context understanding, and agentic tasks.
+We further provide initial evidence that the same end-to-end optimization applies to continued pretraining,
+where the backbone and selector are trained jointly. The improvements are most pronounced under low
+attention budgets, where accurate context ranking is most critical: on reasoning tasks at a 1024 token budget,
+SAS improves over SeerAttention-R [13] by 6.0–7.7 points on MATH500 and 10.6–15.5 points on GPQA-
+Diamond across Qwen3-4B, 8B, and 14B. The gains extend beyond reasoning: on long-context understanding
+(LongBench) SAS leads SeerAttention-R at every budget, with the largest margins on the longest inputs (e.g.,
++3.2 on the 8K+ bucket of Qwen3-4B at budget 2048), and on agentic tasks it improves BFCL by up to +3.5
+and remains ahead on VitaBench, nearly recovering full attention at budget 4096. Our contributions are:
+• We propose SAS, an end-to-end post-training attention sparsification paradigm that trains context selec-
+tors with the language modeling loss, removing the need for teacher attention or auxiliary distillation.
+In controlled comparisons with matched backbones, selector architectures, and training data, SAS learns
+more effective sparse routing than layer-wise attention distillation.
+• We identify the design choices that make the simple gated relaxation effective and practical, including log-
+space gate injection, normalized gate activation, preservation of fine-grained score differences, an efficient
+sparse training scope, and a memory-efficient kernel for long-context training.
+• SAS consistently improves performance across reasoning (MATH500, GPQA-Diamond, AIME24, AIME25),
+long-context understanding (LongBench), and agentic tasks (BFCL, VitaBench), with gains of over 10%
+under low attention budgets.
+2
+Related Work
+Inference time attention sparsification / KV-cache selection. A practical way to reduce long-context attention
+cost is to sparsify attention at inference time by selecting a subset of context units without updating the
+backbone LLM [21, 26, 40, 45, 48, 50, 57, 58]. Closely related are KV-cache methods that dynamically select
+relevant cached tokens without irreversible eviction, which is more suitable for long reasoning generation
+where future token importance is hard to predict [4, 15, 18, 26, 31, 40, 55]. These methods are attractive
+because they can be applied to existing dense LLMs with little or no additional training. However, their
+sparse locations are usually determined by heuristic rules, post-hoc statistics, or external retrieval/indexing
+procedures, leaving the selection rule largely fixed rather than learned from the model’s prediction objective.
+In contrast, our method keeps the post-training sparsification setting but learns a lightweight block selector
+directly from the language modeling loss.
+Trainable sparse attention. Another line of work makes sparse attention patterns trainable. Early sparse
+Transformers impose fixed layouts, such as local windows, global tokens, strided connections, or block-wise
+patterns [3, 5, 53], but typically require training or adapting models around prescribed sparse patterns. Recent
+methods use learnable routing, gating, or dense-sparse switching modules [12, 13, 25, 29, 41, 52, 59, 61].
+However, hard Top-K selection prevents language-modeling gradients from directly updating the selector, so
+existing methods often rely on dense-attention distillation [12, 13, 25] or proxy selection signals [29, 52]. In
+contrast, we relax hard block selection into continuous log-space gates inside attention, enabling end-to-end
+3
+
+
+selector optimization with the language modeling loss.
+3
+Preliminaries
+This section reviews the attention computation underlying autoregressive language models and block sparse
+attention, which reduces long-context inference cost by restricting each query to a subset of context blocks.
+Standard attention. Let q ∈Rd denote a query vector of the current token, and K, V ∈Rn×d denote the key
+and value matrices of the n previous tokens, which are referred to as context tokens. Standard attention [43]
+computes the output o ∈Rd as
+o = softmax(qK⊤)V.
+(1)
+Here we omit the scaling factor for notational simplicity. During autoregressive decoding, each new query
+attends to all previous keys and values. Since the number of previous tokens grows linearly with the decoding
+step, the cumulative attention cost over a sequence of length n grows as O(n2).
+Block sparse attention. To mitigate this quadratic cost, block sparse attention [39, 56] restricts the query q
+to attend only to a selected subset of context blocks. Let S ⊆{1, . . . , n} denote the selected token-index set.
+The attention output is formulated as
+o = softmax
+ qK⊤
+S
+
+VS.
+(2)
+For a single query, this reduces the computation cost from O(n) to O(|S|). Over a sequence of length n,
+the cumulative cost is therefore reduced to O(n|S|). To construct S, the n context positions are partitioned
+into C contiguous index blocks {B1, . . . , BC}, where each Bm denotes a set of token indices and contains b
+tokens (i.e., C = n/b). A lightweight selector Rθ(·) computes relevance scores s ∈RC over these blocks. The
+selector chooses the K most important blocks from all C context blocks, and the query only attends to the
+union of these selected blocks. Formally, the selected block indices and the corresponding token-index set are
+I = Top-K(s, K),
+S =
+[
+m∈I
+Bm.
+(3)
+Under plain hard Top-K, the selected index set is piecewise constant with respect to selector scores. Therefore,
+the language modeling loss provides no useful gradient through the selection path to update the selector, as
+illustrated in Figure 1a. To make the selector end-to-end trainable, the core problem is how to make selector
+scores affect attention differentiably, so that the language modeling loss can train the selector.
+4
+Method
+We present SAS, a Simple Attention Sparsification method that trains a lightweight selector to rank context
+blocks from the language modeling loss. In this section, we first reformulate sparse block selection as context
+ranking. We then analyze how to make such rankings learnable from the language modeling loss, focusing on
+gate position, gate activation, ranking preservation, and training scope. Finally, we introduce a specialized
+training kernel for the practical implementation of SAS.
+4.1
+From Sparse Selection to Context Ranking
+The starting point is that Top-K selection is determined by the ordering of selector scores over context
+blocks. Before producing a discrete selected set, the selector first defines a ranking of candidate blocks. A
+good selector should assign higher ranks to blocks that are more useful for prediction. We therefore view
+attention sparsification as context ranking: during training, the selector learns a continuous ordering over
+blocks, and this ordering provides the basis for sparse block selection.
+4
+
+
+q
+K
+V
+𝐥𝐨𝐠 𝐠
++
+softmax
+inner gate
+q
+K
+V
+g
+softmax
+outer gate
+⊙
+(
+)
+(
+)
+Score
+Computation
+Selector
+q
+K
+s
+Score
+Computation
+Selector
+s
+softmax
+q
+K
+no-act.-or-sigmoid
+competitive
+non-competitive
+q
+K
+V
+(
+)
+softmax
+continuous
+q
+K
+V
++
+softmax
+discrete
+0 0
++ )
+(
+)
+q
+K
+V
+(
+)
+softmax
+full scope
+q
+K
+V
+softmax
+sparse scope
+} discard
+(
+)
+(a)
+(c)
+(b)
+(d)
+-∞-∞
+𝐥𝐨𝐠 𝐠
+𝐥𝐨𝐠 𝐠hard
+Figure2 Components of learnable context ranking. (a) Gate position, whether the gates are injected into the softmax or
+applied outside the softmax. (b) Gate activation, whether historical-block scores are normalized jointly with softmax,
+activated independently with sigmoid, or injected as raw logits; the current block always has a unit gate. (c) Ranking
+preservation, whether continuous scores are preserved or collapsed into binary masks. (d) Training scope, whether
+training receives the gradient from all context blocks or only the selected blocks.
+Differentiable ranking. To make block ranking learnable, the selector scores must affect the attention compu-
+tation during training. Following the block partition in Section 3, we single out the always-retained current
+block as B0 and treat the remaining C context blocks H = {B1, . . . , BC} as the candidate historical blocks
+that the selector ranks. The selector produces scores s ∈RC only for H, which we convert into positive gates
+g = ϕ(s) ∈RC
++,
+g0 = 1,
+(4)
+where ϕ(·) is a differentiable activation function and g0 = 1 leaves the current block unbiased. This transfor-
+mation allows historical-block scores to modulate attention rather than determine a discrete Top-K set.
+For each historical block Bm ∈H, the gate gm is broadcast to all tokens in that block, while tokens in B0
+retain the unit gate. By making the attention computation depend on these broadcast gates, gradients from
+the language modeling loss can flow back to g and then to the selector. The key design question is how to
+integrate gates into the attention computation so that gradients provide a reliable signal for block ranking.
+Components of learnable ranking. Merely allowing language modeling gradients to reach the selector does
+not guarantee effective block ranking: different gated formulations shape the resulting ranking signals differ-
+ently. As illustrated in Figure 2, we investigate four design elements: gate position, gate activation, ranking
+information preservation, and training scope.
+• Gate position: whether the gates are applied into the softmax, i.e., oinner = softmax(qK⊤+ log g)V, or
+applied outside the softmax, i.e., oouter = softmax(qK⊤)(g⊙V). For the inner placement, log(·) ensures
+that the gates act as multiplicative weights on the attention probabilities after the softmax.
+• Gate activation: how block scores are transformed before being injected into attention. We compare
+normalized gates g = softmax(s), independent gates gσ = sigmoid(s), and unnormalized logit injection,
+which adds s directly to attention logits. In all variants, current block remains unbiased with g0 = 1.
+• Ranking preservation: whether training uses a soft gate g = ϕ(s), or a hard Top-K gate using STE, i.e.,
+ˆg = stopgrad(ghard −g) + g with ghard
+m
+= I[m ∈Top-K(s, K)].
+5
+
+
+Table 1 Ablation of four gating design choices on GPQA-Diamond using Qwen3-4B with a 2048-token budget. We
+report avg@16 accuracy (%), with average generation length; standard deviations (2.0–2.8) are omitted. gσ denotes
+sigmoid-activated gates, and full∗simulates full-scope training by adding noise before Top-K. Formulations show only
+historical-context terms; the current block always uses a unit gate.
+Setting
+Gate Pos.
+Gate Act.
+Rank Pres.
+Train Sco.
+10 step
+100 step
+1000 step
+1 epoch
+Baseline
+(1) softmax(qK⊤)V
+–
+–
+–
+–
+–
+–
+–
+56.1 8547
+I. Gate Position (inner softmax vs. outer softmax)
+(2) softmax(qK⊤+ log g)V
+inner
+softmax
+✓
+full
+30.8 25277
+52.2 8696
+53.7 6977
+54.4 7109
+(3) softmax(qK⊤)(g ⊙V)
+outer
+softmax
+✓
+full
+28.3 25594
+38.9 16969
+43.2 12801
+41.6 13807
+II. Gate Activation (softmax, sigmoid, or none)
+(4) softmax(qK⊤+ log g)V
+inner
+softmax
+✓
+full
+30.8 25277
+52.2 8696
+53.7 6977
+54.4 7109
+(5) softmax(qK⊤+ log gσ)V
+inner
+sigmoid
+✓
+full
+19.6 27717
+20.4 27997
+17.6 27989
+17.0 28444
+(6) softmax(qK⊤+ s)V
+inner
+–
+✓
+full
+23.4 27540
+19.9 27418
+18.9 26703
+18.8 26401
+III. Ranking Preservation (continuous vs. discrete)
+(7) softmax(qK⊤+ log g)V
+inner
+softmax
+✓
+full
+30.8 25277
+52.2 8696
+53.7 6977
+54.4 7109
+(8) softmax(qK⊤+ log ˆg)V
+inner
+softmax
+✗
+full
+46.5 9821
+42.4 8438
+49.6 7135
+46.0 7289
+IV. Training Scope (full scope vs. sparse scope)
+(9)
+softmax(qK⊤+ log g)V
+inner
+softmax
+✓
+full
+30.8 25277
+52.2 8696
+53.7 6977
+54.4 7109
+(10) softmax(qK⊤
+S + log gS)VS
+inner
+softmax
+✓
+sparse
+24.8 27504
+51.0 8087
+53.6 7401
+54.8 7410
+(11) softmax(qK⊤
+˜
+S + log g ˜
+S)V ˜
+S
+inner
+softmax
+✓
+full∗
+26.3 27350
+51.2 7732
+52.6 7424
+52.2 7552
+• Training scope: whether training uses the full scope in Equation 1, the sparse scope in Equation 2, or a
+stochastic approximation to full scope by adding noise to the scores before activation.
+4.2
+Learning Reliable Block Ranking
+We next use controlled ablations to evaluate how the four design elements introduced above affect the effec-
+tiveness and stability of block-ranking optimization.
+4.2.1
+Experimental setup
+We conduct controlled experiments using the AttnGate selector from SeerAttention-R [13]. For our exper-
+iments, we set the block size to 64 and Top-K of 32. The experiments are performed on Qwen3-4B [49]
+trained on 93.7K examples from OpenR1-Math-220k [11]. Both the training and generation lengths are set
+to 32,768 tokens. The LLM backbone is frozen during training. We evaluate GPQA-Diamond [37] with
+inference consistently performed under the block sparse attention formulation in Equation 2, and report the
+accuracy averaged over 16 runs and average generation length.
+4.2.2
+Ablation analysis
+Overall observation. Table 1 and Figure 8 compare four design dimensions for learning reliable block rankings.
+First, inner softmax gating performs better than outer gating, showing that gates should participate in
+attention normalization instead of only rescaling values (V matrix). Second, normalized gating is important:
+softmax consistently outperforms independent sigmoid gates and unnormalized raw-logit injection because
+it calibrates historical context against the unit-gated current block. Third, preserving ranking information
+through soft gating improves training stability, while achieving better final performance. Unlike the first three,
+training scope mainly affects efficiency: sparse scope training converges more slowly at first but gradually
+approaches full scope, reaching comparable final performance at lower cost.
+Gate position.
+The key distinction is whether gates participate in attention normalization.
+Outside the
+softmax, the attention probabilities are already fixed, and the gate only rescales the value contribution of
+each block. Inside the softmax as log-space biases, they directly change how attention mass is allocated
+6
+
+
+1
+0
+1
+2
+3
+4
+5
+0.6
+1.2
+1.8
+L5
+softmax(qK
++log g)V , 
+=
+0.21, =0.23
+softmax(qK
++log g )V, 
+=
+4.71, =0.30
+softmax(qK
++s)V
+, 
+=
+0.04, =0.24
+0
+2
+4
+6
+8
+0.8
+1.6
+2.4
+softmax(qK
++log g)V , 
+=
+1.22, =0.35
+softmax(qK
++log g )V, 
+=
+6.40, =0.34
+softmax(qK
++s)V
+, 
+=
+0.11, =0.16
+0
+2
+4
+6
+0.8
+1.6
+2.4
+softmax(qK
++log g)V , 
+=
+1.25, =0.39
+softmax(qK
++log g )V, 
+=
+6.23, =0.29
+softmax(qK
++s)V
+, 
+=
+0.08, =0.18
+1
+0
+1
+2
+3
+4
+5
+6
+1.5
+3.0
+softmax(qK
++log g)V , 
+=
+0.91, =0.32
+softmax(qK
++log g )V, 
+=
+4.99, =0.19
+softmax(qK
++s)V
+, 
+=
+0.09, =0.13
+1
+0
+1
+2
+3
+4
+5
+1.0
+2.0
+3.0
+L15
+softmax(qK
++log g)V , 
+=
+0.13, =0.28
+softmax(qK
++log g )V, 
+=
+4.14, =0.39
+softmax(qK
++s)V
+, 
+=
+0.03, =0.13
+1
+0
+1
+2
+3
+4
+5
+6
+7
+1.5
+3.0
+softmax(qK
++log g)V , 
+=
+0.92, =0.27
+softmax(qK
++log g )V, 
+=
+6.07, =0.44
+softmax(qK
++s)V
+, 
+=
+0.04, =0.12
+0
+1
+2
+3
+4
+5
+6
+7
+1.5
+3.0
+4.5
+softmax(qK
++log g)V , 
+=
+1.37, =0.26
+softmax(qK
++log g )V, 
+=
+6.43, =0.28
+softmax(qK
++s)V
+, 
+=
+0.07, =0.11
+0
+2
+4
+6
+8
+1.5
+3.0
+4.5
+softmax(qK
++log g)V , 
+=
+0.96, =0.28
+softmax(qK
++log g )V, 
+=
+6.93, =0.25
+softmax(qK
++s)V
+, 
+=
+0.03, =0.10
+1
+0
+1
+2
+3
+4
+5
+6
+Step 50
+0.6
+1.2
+1.8
+L25
+softmax(qK
++log g)V , 
+=
+0.07, =0.25
+softmax(qK
++log g )V, 
+=
+4.72, =0.33
+softmax(qK
++s)V
+, 
+=
+0.96, =0.35
+0
+2
+4
+6
+8
+Step 500
+1.0
+2.0
+3.0
+softmax(qK
++log g)V , 
+=
+1.24, =0.45
+softmax(qK
++log g )V, 
+=
+7.92, =0.20
+softmax(qK
++s)V
+, 
+=
+0.21, =0.23
+0
+2
+4
+6
+8
+10
+Step 1000
+1.5
+3.0
+softmax(qK
++log g)V , 
+=
+1.77, =0.54
+softmax(qK
++log g )V, 
+=
+8.77, =0.19
+softmax(qK
++s)V
+, 
+=
+0.05, =0.22
+0
+2
+4
+6
+8
+10
+1 epoch
+1.0
+2.0
+3.0
+softmax(qK
++log g)V , 
+=
+2.36, =0.81
+softmax(qK
++log g )V, 
+=
+8.73, =0.22
+softmax(qK
++s)V
+, 
+=
+0.02, =0.22
+Figure 3
+Evolution of selector logits s under softmax, sigmoid gating and raw-logit injection in different layers.
+Sigmoid gating saturates historical gates toward one, while raw injection collapses logits toward zero with reduced
+variance.
+Thus, both transformations approach effectively ungated attention and fail to provide a discriminative
+signal for learning block rankings. These observations highlight the importance of the competitive nature of softmax
+normalization in avoiding such trivial solutions and preserving discriminative block selection.
+across blocks. Let pi denote the attention probability without gating, ˜pi the attention probability with inner
+gating. This difference is reflected in the gate gradients:
+dginner
+m
+=
+X
+i∈Bm
+˜pi
+gm
+do⊤(vi −o),
+dgouter
+m
+=
+X
+i∈Bm
+pi do⊤vi.
+(5)
+Outer gating uses fixed attention probabilities, while inner gating provides a relative signal through vi −o
+for reallocating attention mass, enabling gates to learn relative importance among blocks.
+Activation function. The activation function determines how the selector calibrates historical context against
+the always-retained current block. For historical blocks, g = softmax(s) gives
+log gm = sm −LSE(s),
+Bm ∈H,
+(6)
+while the current block has g0 = 1 and hence zero additive bias. Although −LSE(s) is shared by all historical
+blocks, it does not cancel in the subsequent attention softmax because it is not applied to the current block.
+It therefore calibrates the aggregate attention mass assigned to historical context relative to the current
+block. This normalization also makes the gates invariant to a global shift s 7→s + c. By contrast, directly
+injecting the unnormalized logits s changes the historical-to-current attention balance under the same shift.
+Empirically, Figure 3 shows that sigmoid gates gradually saturate toward 1, whereas unnormalized logits
+collapse toward 0 with reduced variance. Both behaviors diminish the distinction between historical blocks
+and the unit-gated current block, weakening the learned gating signal.
+Ranking preservation. The key difference is whether the forward pass preserves the continuous ranking or
+collapses it into a binary Top-K mask. Let zi = qk⊤
+i denote the attention logit of token i, where ki is its
+key vector, and let b(i) index the block that token i belongs to. Soft gating keeps every block under a single
+normalizer that sums over all tokens, so each attention weight stays bounded. Hard gating instead relies on
+STE for a differentiable backward: its forward normalizer sums only over the selected set S, and a dropped
+block m /∈I is ranked by the attention mass its tokens would receive under this restricted normalizer, from
+7
+
+
+0.16
+0.12
+0.08
+0.04
+1.0
+0.5
+0.0
+0.5
+dsm
+Sparse scope
+×10
+5
+qpos=1024   Bj=8
+non Top-K block
+Top-K block
+0.15
+0.12
+0.09
+0.06
+0.03
+-4.0
+-2.0
+0.0
+×10
+6
+qpos=1536   Bj=12
+0.18
+0.12
+0.06
+0.00
+1
+0
+1
+2
+3
+×10
+5
+qpos=2048   Bj=16
+0.20
+0.15
+0.10
+0.05
+gm
+-1.0
+0.0
+1.0
+2.0
+dsm
+Full scope
+×10
+5
+qpos=1024   Bj=8
+0.16
+0.12
+0.08
+0.04
+gm
+0.6
+0.0
+0.6
+1.2
+×10
+6
+qpos=1536   Bj=12
+0.18
+0.12
+0.06
+0.00
+gm
+2
+1
+0
+1
+×10
+4
+qpos=2048   Bj=16
+Figure 4 Gradient behavior under sparse and full training scopes with Top-K of 3. For non Top-K blocks, sparse
+scope training yields noisy and highly correlated gradients, with gradients of these unselected blocks simultaneously
+being either positive or negative across blocks, ignoring their own importance scores (x-axis). This provides a less
+informative optimization signal and leads to less efficient gate optimization than full scope training.
+which its own tokens are absent:
+˜psoft
+i
+=
+gb(i) exp(zi)
+P
+j gb(j) exp(zj) ≤1,
+˜phard
+i
+=
+exp(zi)
+P
+j∈S exp(zj) ≤exp
+
+zi −max
+j∈S zj
+
+.
+(7)
+The soft weight ˜psoft
+i
+is always bounded, while the hard weight ˜phard
+i
+has no upper bound and grows exponen-
+tially once a dropped block outscores the selected set. Since the gate gradient satisfies dgm ∝pi (Equation 5),
+these unbounded weights are directly translated into large gradients. Early in training, the randomly ini-
+tialized selector frequently leaves high-score blocks outside Top-K, causing the contributions from dropped
+blocks, tokens, and heads to accumulate and producing gradient norms that are orders of magnitude larger
+than those of soft gating.
+Training scope. The key difference is whether non-Top-K blocks receive independent gradient signals. Under
+sparse scope, only the current Top-K blocks participate in attention. A block outside the selected set therefore
+has no direct gate gradient, even if its score may still change indirectly through the softmax normalization
+over selector scores. This indirect update does not evaluate the content of the unselected block itself. For
+ϕ(·) = softmax(·), consider an unselected block Bm with m /∈I. Gradients under sparse and full scope are
+dssparse
+m
+= −gm ·
+X
+ℓ∈I
+gℓdgℓ
+|
+{z
+}
+Top-K blocks
+,
+dsfull
+m
+= −gm ·
+
+−dgm +
+C
+X
+ℓ=1
+gℓdgℓ
+
+|
+{z
+}
+own signal + full normalization
+.
+(8)
+As shown in Figure 4, sparse scope updates an unselected block only through selected blocks, while full scope
+gives it its own gradient dgm, allowing its score to be adjusted based on its own content.
+Empirically, as shown by settings (9) and (10) in Table 1, sparse scope starts worse than full scope but
+gradually catches up, reaching comparable final performance. This trend holds across model scales and bud-
+gets (Appendix C). Given its lower training cost, we therefore rely mainly on sparse scope in our subsequent
+experiments. We provide the whole gradient derivations in Appendix D.
+4.3
+Instantiating Simple Attention Sparsification
+Based on the above analysis, SAS adopts four design choices: 1) inner softmax gate injection, 2) softmax gate
+activation, 3) soft gate to keep ranking information, 4) sparse scope during training. Given the query q, the
+8
+
+
+Algorithm 1 SAS Training Step
+Require: q, K, V, selector Rθ, budget K
+1: s = Rθ
+ q, {KBm}C
+m=1
+
+2: g = softmax(s)
+3: I = Top-K(g, K), S = B0 ∪S
+m∈I Bm
+4: o = softmax(qK⊤
+S + log gS)VS
+5: Update θ with ∇θLLM
+6: return Rθ
+Algorithm 2 SAS Inference Step
+Require: q, K, V, selector Rθ, budget K
+1: s = Rθ
+ q, {KBm}C
+m=1
+
+2: I = Top-K(s, K)
+3: S = B0 ∪S
+m∈I Bm
+4: o = softmax
+ qK⊤
+S
+
+VS
+5: Forward to obtain next token logits
+6: return next token
+selector computes relevance scores for the historical blocks s = Rθ
+ q, {KBm}C
+m=1
+
+. The scores are converted
+into normalized gates g = softmax(s), and the Top-K historical blocks are selected as I = Top-K(g, K). We
+define the attended token set as S = B0 ∪S
+m∈I Bm, including the always-retained current block B0, and
+broadcast the selected block gates to the token-level gate gS aligned with the attention logits. The resulting
+attention computation used during training is given by
+oSAS = softmax
+ qK⊤
+S + log gS
+
+VS.
+(9)
+Thus, the selected historical blocks receive normalized log-gate biases, whereas the current block remains
+unbiased with a unit gate, which instantiates the differentiable continuous gating illustrated in Figure 1b. At
+inference time, the learned ranking is discretized into Top-K block indices. Algorithms 1 and 2 summarize
+the training and inference procedures, respectively.
+Kernel Design.
+SAS training computes sparse scope attention, softmax(qK⊤
+S + log gS)VS, where log gS
+contains normalized log-gate biases for selected historical blocks and zero bias for the always-retained current
+block. The selected historical set is encoded by a per-query threshold on the gate: a block is active when its log
+gate reaches the threshold, which realizes the Top-K selection I without an explicit sort. FlashAttention [9]
+kernels neither support injecting such per-block gates inside the tiled softmax nor skipping blocks according
+to a learned gate. A naive implementation materializes the gated attention matrix, incurring prohibitive
+memory overhead.
+We implement a FlashAttention-style Triton [42] kernel that fuses the block gate into the tile-level qK⊤
+S
+computation. During the streaming scan over key–value tiles, the kernel adds the normalized log gate to
+the attention logits of each selected historical block, masks out non-selected historical blocks, leaves the
+always-retained current block unbiased, and performs the standard online softmax update. The backward
+pass accumulates block-level log-gate gradients by summing the attention-logit gradients within each selected
+historical block. This kernel keeps the sparse training scope while avoiding attention-matrix materialization
+and retaining FlashAttention-style memory efficiency. Pseudocode is provided in Appendix E.
+5
+Experiments
+We primarily evaluate SAS in the post-training sparsification setting (Section 5.2), where the backbone LLM
+is frozen and only the selector is trained, allowing a controlled comparison against distillation-based methods.
+We then verify that the same end-to-end formulation extends beyond this setting to continued pretraining
+(Section 5.3), where the backbone and the selector are trained jointly.
+5.1
+Experimental Setup
+Baselines, models, and evaluation. We first compare our method with full attention and SeerAttention-R [13],
+which is a strong post-training sparse attention baseline that freezes the backbone LLM, uses a carefully
+designed AttnGate selector, and trains through dense attention distillation.
+We keep the same selector
+9
+
+
+Table 2 Evaluation results on reasoning benchmarks. Quest∗denotes results extracted from Figure 5 of SeerAttention-
+R using the WebPlotDigitizer tool, while SeerAttn-R# denotes our reproduced results. Standard deviations are shown
+in parentheses.
+Budget
+Method
+MATH500
+GPQA-Diamond
+AIME24
+AIME25
+4B
+8B
+14B
+4B
+8B
+14B
+4B
+8B
+14B
+4B
+8B
+14B
+Full
+Full Attn
+93.93
+94.43
+95.22
+56.19
+60.54
+65.25
+71.25
+74.48
+78.91
+66.41
+67.86
+70.21
+1024
+Sliding Window
+20.18 (1.3)
+-
+-
+1.52
+(0.5)
+-
+-
+-
+-
+-
+-
+-
+-
+Quest∗
+10.38
+31.65
+54.45
+4.05
+8.76
+18.15
+-
+-
+-
+-
+-
+-
+StreamingLLM
+72.72 (1.8)
+72.17 (1.8)
+73.47 (1.8)
+13.86 (1.7)
+13.04 (1.8)
+19.07 (2.2)
+-
+-
+-
+-
+-
+-
+SeerAttn-R
+84.67
+83.57
+86.12
+39.84
+39.43
+45.64
+-
+-
+-
+-
+-
+-
+SAS
+90.65 (1.1)
+91.27 (1.1)
+92.93 (1.0)
+50.41 (2.8)
+53.17 (2.9)
+61.14 (2.9)
+-
+-
+-
+-
+-
+-
+2048
+Sliding Window
+50.72 (1.8)
+-
+-
+8.93
+(1.6)
+-
+-
+5.47
+(2.4)
+-
+-
+2.19
+(1.1)
+-
+-
+Quest
+40.74
+68.66
+81.52
+12.17
+24.83
+41.01
+0
+12.98
+25.12
+0
+12.66
+27.22
+StreamingLLM
+83.65 (1.5)
+83.40 (1.5)
+84.97 (1.4)
+27.18 (2.4)
+27.46 (2.4)
+34.06 (2.7)
+29.69 (7.2)
+25.89 (7.1)
+28.85 (7.4)
+15.94 (6.1)
+15.94 (6.3)
+15.68 (6.2)
+SeerAttn-R
+91.85
+91.67
+93.02
+49.94
+54.41
+61.68
+55.83
+58.23
+63.65
+45.16
+43.30
+48.70
+SAS
+93.47 (1.0)
+93.17 (1.0)
+93.54 (1.0)
+54.86 (2.8)
+58.74 (2.8)
+65.09 (2.8)
+68.85 (6.6)
+70.73 (6.7)
+77.76 (6.6)
+56.38 (7.3)
+58.41 (7.2)
+64.19 (7.1)
+4096
+Sliding Window
+75.33 (1.6)
+-
+-
+23.74 (2.6)
+-
+-
+19.74 (5.7)
+-
+-
+16.35 (5.7)
+-
+-
+Quest
+71.59
+86.68
+90.76
+23.21
+43.18
+58.02
+12.41
+43.99
+46.67
+12.41
+32.14
+42.13
+StreamingLLM
+91.03 (1.1)
+91.12 (1.1)
+92.07 (1.1)
+40.40 (2.8)
+42.27 (2.8)
+47.35 (2.9)
+45.94 (7.9)
+46.35 (8.0)
+49.32 (8.1)
+31.56 (7.3)
+31.15 (7.4)
+32.60 (7.5)
+SeerAttn-R
+94.10
+94.00
+95.12
+55.40
+60.48
+63.83
+69.32
+71.35
+75.73
+58.59
+57.81
+64.79
+SeerAttn-R#
+93.00 (1.1)
+94.25 (0.9)
+94.83 (0.8)
+54.86 (2.8)
+59.03 (2.9)
+63.67 (2.8)
+69.16 (6.9)
+69.43 (6.9)
+75.10 (6.8)
+56.59 (7.6)
+57.66 (7.4)
+64.69 (7.0)
+SAS
+93.67 (1.0)
+94.23 (1.0)
+95.23 (0.8)
+55.11 (2.9)
+60.42 (2.8)
+65.03 (2.8)
+71.72 (6.8)
+73.49 (6.7)
+78.28 (6.4)
+59.97 (7.3)
+63.41 (7.2)
+67.29 (6.9)
+Table 3 Evaluation results on LongBench, grouped by input length (0-4K, 4-8K, and 8K+ tokens).
+Budget
+Method
+Qwen3-4B
+Qwen3-8B
+Qwen3-14B
+0-4K
+4-8K
+8K+
+Avg.
+0-4K
+4-8K
+8K+
+Avg.
+0-4K
+4-8K
+8K+
+Avg.
+Full
+Full Attn
+53.9
+52.4
+50.5
+52.2
+57.4
+54.1
+51.7
+54.4
+59.2
+55.6
+55.0
+56.6
+2048
+SeerAttn-R
+53.5
+51.6
+48.4
+51.2
+57.0
+53.1
+47.6
+52.6
+58.9
+54.3
+51.5
+54.9
+SAS
+53.6
+52.1
+48.8
+51.5
+57.0
+53.9
+49.3
+53.4
+59.2
+54.4
+53.9
+55.8
+4096
+SeerAttn-R
+54.0
+52.1
+49.7
+51.9
+57.4
+53.9
+50.0
+53.8
+59.0
+54.8
+53.5
+55.7
+SAS
+53.8
+52.4
+49.8
+52.0
+57.4
+54.1
+50.4
+53.9
+58.9
+54.8
+54.8
+56.2
+structure, but train block selection from the language modeling loss. On reasoning tasks, we also compare
+with Sliding Window Attention, StreamingLLM [46], and Quest [40]. We conduct experiments on Qwen3 [49]
+backbones (4B, 8B, 14B). We evaluate on three types of tasks: reasoning, including MATH500 [23], GPQA-
+Diamond [37], AIME24, and AIME25 [33]; long-context understanding, using LongBench [2]; and agentic
+tasks, using BFCL (Multi-Turn) [35] and VitaBench [16]. For reasoning tasks, we follow the same evaluation
+protocol as SeerAttention-R. For long-context understanding, we evaluate LongBench in the non-thinking
+mode. For agentic tasks, we use YaRN [36] to extend the context window to 65,536 during evaluation.
+Training setup. In all settings we train only the AttnGate selector with the LLM backbone frozen, using
+AdamW [28] with learning rate 1e-3, cosine decay, and block size 64. The selector is trained on OpenR1-
+MATH-220K2 for one epoch with global batch size 32 and a maximum sequence length of 32,768, and the
+same trained selector is used across reasoning, long-context, and agentic evaluations. Our implementation
+builds on VeOmni [30] with FSDP distributed training.
+Inference implementation. We implement our method as a native attention backend in SGLang [60], built
+on top of its paged KV cache and FlashInfer [51] attention kernels. Following the standard prefill/decode
+pipeline of LLM serving, the prefill phase uses dense attention, while the decode phase uses block sparse
+attention. At each decoding step, the trained selector scores all cached blocks, selects the Top-K blocks for
+each query group, and gathers only the corresponding KV blocks for the FlashInfer sparse decode kernel.
+This reduces the decoding complexity from O(n) to O(|S|), independent of the total context length n. The
+backend supports grouped query attention (GQA) with per-group block selection, CUDA graph capture for
+the decode path, and batched concurrent decoding. Since our method and SeerAttention-R share the same
+AttnGate architecture and inference-time block selection procedure, differing only in how the gate is trained,
+both run through the same backend by simply loading their respective gate checkpoints; the dense baseline
+uses the same FlashInfer paged-attention implementation on an identical model configuration.
+2https://huggingface.co/datasets/open-r1/OpenR1-Math-220k
+10
+
+
+Table 4 Evaluation results on BFCL (Multi-Turn).
+Budget
+Method
+Qwen3-4B
+Qwen3-8B
+Qwen3-14B
+Full
+Full Attn
+35.75
+42.75
+44.50
+2048
+SeerAttn-R
+29.00
+34.38
+38.88
+SAS
+32.50
+36.75
+39.50
+4096
+SeerAttn-R
+33.38
+39.25
+43.88
+SAS
+34.38
+41.25
+44.00
+Table 5 Evaluation results on VitaBench with Qwen3-14B.
+Budget
+Method
+Delivery
+Instore
+OTA
+Avg@4
+Pass@4
+Pass^4
+Avg@4
+Pass@4
+Pass^4
+Avg@4
+Pass@4
+Pass^4
+Full
+Full Attn
+29.0 (3.3)
+62.0 (4.8)
+8.0 (2.7)
+27.2 (2.9)
+64.0 (4.8)
+5.0 (2.2)
+12.5 (2.1)
+37.0 (4.8)
+1.0 (1.0)
+2048
+SeerAttn-R
+32.2 (3.0)
+67.0 (4.7)
+4.0 (2.0)
+19.0 (2.5)
+48.4 (5.1)
+2.1 (1.5)
+4.2 (1.4)
+14.9 (4.3)
+0.0 (0.0)
+SAS
+30.0 (3.3)
+61.0 (4.9)
+9.0 (2.9)
+19.2 (2.5)
+51.0 (5.0)
+3.0 (1.7)
+10.2 (1.8)
+28.0 (4.5)
+0.0 (0.0)
+4096
+SeerAttn-R
+32.5 (3.1)
+63.0 (4.8)
+4.0 (2.0)
+26.7 (2.8)
+56.0 (4.9)
+1.0 (1.0)
+11.7 (2.2)
+29.0 (4.5)
+1.0 (1.0)
+SAS
+34.2 (3.0)
+68.0 (4.6)
+4.0 (2.0)
+28.7 (3.0)
+61.0 (4.9)
+5.0 (2.2)
+12.3 (2.3)
+27.0 (4.4)
+2.0 (1.4)
+5.2
+Post-Training Results
+Reasoning task performance. As shown in Table 2, SAS outperforms all sparse baselines across nearly all
+budgets, backbones, and tasks. The training-free static-sparsity baselines (Sliding Window, StreamingLLM)
+and the query-aware Quest all degrade sharply at tight budgets: the fixed local (plus optional sink) patterns
+of Sliding Window and StreamingLLM discard reasoning-critical context, and Quest collapses entirely (e.g.,
+0 on AIME24/25 at budget 2048), whereas SAS stays strong.
+Against SeerAttention-R, which uses the
+identical AttnGate but is trained by attention distillation, SAS still wins clearly on harder tasks (e.g., +13.0
+on AIME24 at budget 2048, Qwen3-4B); since the two differ only in the training signal, this directly shows the
+language modeling loss is a more effective supervision for sparse selection. At budget 4096, SAS matches or
+exceeds full attention in several cases (e.g., 71.72 vs. 71.25 on AIME24, Qwen3-4B), recovering full attention
+reasoning while attending to only a small fraction of the KV blocks.
+Longcontextunderstandingperformance. Table 3 reports LongBench results, where the selector is trained only
+on math data and evaluated directly on long-context inputs. Despite this distribution shift, SAS outperforms
+SeerAttention-R at nearly every budget and backbone, with the gap widening on longer inputs where selection
+quality matters most: at budget 2048 on Qwen3-14B, SAS improves the 8K+ bucket by +2.4 (53.9 vs. 51.5).
+At budget 4096, SAS essentially recovers full attention (e.g., 56.2 vs. 56.6 average on Qwen3-14B), showing
+that a selector trained purely on math data still transfers effectively to long-context understanding.
+Agentic task performance. On BFCL multi-turn (Table 4), SAS beats SeerAttention-R across all backbones
+and budgets, e.g., +3.5 on Qwen3-4B at budget 2048, and nearly closes the gap to full attention at budget
+4096 (e.g., 44.00 vs. 44.50 on Qwen3-14B). The advantage carries over to VitaBench (Table 5): at budget 4096,
+SAS leads SeerAttention-R on most metrics across the Delivery, Instore, and OTA scenarios and approaches
+full attention, showing that end-to-end selection remains reliable in realistic long-horizon tool-use settings.
+5.3
+Extension to Continued Pretraining
+Baselines,model,andevaluation. We follow HiLS-Attention [20] to conduct a continued pretraining experiment.
+We start from the OLMo3-7B [34] stage-1 base checkpoint and apply SAS with block size 64 and Top-K 32.
+Instead of the AttnGate used in post-training, here we design a lightweight selector with a dedicated retrieval
+query/key projection, initialized from the attention projections. All query heads within a group share the
+same selected blocks. We compare with three baselines built on the same checkpoint: OLMo3-Base, the
+11
+
+
+Table 6 Evaluation results on general downstream tasks for OLMo3-7B continued pretraining.
+Task
+Olmo3-Base
+Olmo3-512SWA
+HiLS-Attn RoPE
+SAS-RoPE
+General Knowledge
+MMLU (5-shot)
+59.90
+59.12
+56.69
+58.58
+GPQA (5-shot)
+29.29
+31.31
+24.75
+26.77
+Hellaswag (10-shot)
+44.17
+42.96
+33.17
+50.63
+ARC-c (25-shot)
+53.56
+55.59
+54.92
+52.54
+BoolQ (5-shot)
+61.01
+64.22
+63.43
+62.87
+Race (3-shot)
+73.89
+72.97
+69.50
+74.05
+Mathematics
+CMath
+41.53
+39.98
+42.44
+42.17
+GSM8K
+37.00
+33.43
+35.71
+34.42
+Code
+CRUX
+24.62
+24.50
+25.62
+19.25
+HumanEval+
+20.10
+19.50
+18.90
+20.10
+MBPP+
+37.60
+32.30
+33.30
+34.60
+Average
+43.88
+43.24
+41.68
+43.28
+Table 7 Evaluation results on LongBench for OLMo3-7B continued pretraining.
+Model
+<8K
+>8K
+Average
+SDoc
+MDoc
+Summ.
+Few-shot
+Synth.
+Code
+SDoc
+MDoc
+Summ.
+Few-shot
+Synth.
+Code
+Olmo3-Base
+36.9
+33.9
+23.4
+63.8
+5.8
+61.8
+11.4
+14.4
+12.1
+36.0
+3.3
+41.0
+29.0
+Olmo3-512SWA
+37.4
+27.8
+22.1
+64.1
+4.1
+59.4
+10.0
+14.2
+12.9
+33.6
+3.2
+32.9
+28.0
+HiLS-Attn-RoPE
+37.2
+33.1
+22.2
+61.0
+5.4
+60.6
+17.5
+17.3
+14.0
+42.0
+4.3
+47.1
+30.0
+SAS-RoPE
+34.4
+34.7
+22.8
+64.1
+4.1
+58.8
+16.1
+16.3
+14.8
+41.4
+3.4
+48.3
+30.0
+original dense model; OLMo3-512SWA, a sliding-window baseline with continued pretraining; and HiLS-
+Attn-RoPE, the RoPE variant of HiLS-Attention (HiLS-Attn RoPE-Q-Cal in their paper). We evaluate on
+general downstream tasks, spanning general knowledge (MMLU [17], GPQA [38], HellaSwag [54], ARC-c
+[7], BoolQ [6], Race [22]), mathematics (CMath [44], GSM8K [8]), and code (CRUX [14], HumanEval+ [27],
+MBPP+ [1]), and on long-context understanding with LongBench.
+Training setup. Here we train the whole model, both the OLMo3 backbone and the selector, jointly. Following
+HiLS-Attention, we train on the OLMo3 pretraining corpus with a maximum sequence length of 8,192 for
+13,000 steps with a global batch size of 512, corresponding to about 50B tokens, using AdamW with the
+learning rate warmed up to 2e-4 and cosine decayed to 2e-5.
+Downstream task and long-context performance. Table 6 shows that, among the continued-pretrained models,
+SAS achieves the best average score (43.28), performing comparably to the sliding-window baseline OLMo3-
+512SWA (43.24), clearly ahead of HiLS-Attn-RoPE (41.68), and nearly matching the dense OLMo3-Base
+(43.88). SAS leads on knowledge tasks such as HellaSwag (50.63) and Race (74.05), and remains compet-
+itive on mathematics and code.
+Table 7 further shows that SAS attains a tied-best LongBench average
+(30.0), clearly surpassing the dense base (29.0) and the sliding-window continued-pretraining baseline (28.0).
+The gains concentrate on long inputs (>8K), where accurate block selection matters most, providing initial
+evidence that end-to-end sparse selection also transfers to the continued pretraining stage.
+6
+Analysis
+This section analyzes why end-to-end training yields a better sparse selector. We first inspect the learned
+block selection, and find that SAS covers less attention mass per layer yet its cross-layer union better matches
+the full attention oracle. We then show that this more effective selection lets SAS reach answers with shorter
+reasoning traces and fewer truncations. Finally, we quantify the end-to-end decode efficiency and report
+substantial speedups over full attention.
+12
+
+
+16
+32
+64
+Top-K (Early Layers: L4, L10)
+0.60
+0.70
+0.80
+0.90
+1.00
+Mass Coverage
+0.83
+0.68
+0.74
+0.71
+0.89
+0.76
+0.83
+0.78
+0.94
+0.84
+0.90
+0.85
+16
+32
+64
+Top-K (Middle Layers: L16, L22)
+0.84 0.83
+0.79
+0.81
+0.90
+0.88
+0.86 0.86
+0.95
+0.92 0.93
+0.91
+16
+32
+64
+Top-K (Late Layers: L28, L34)
+0.87
+0.66
+0.79
+0.65
+0.92
+0.72
+0.86
+0.71
+0.95
+0.78
+0.92
+0.79
+Method:
+Metric:
+Distill Learned
+NTP Learned
+Distill Learned
+NTP Learned
+qK
+qK
++ log V 2
+(a)
+8K - 10K
+10K - 12K
+12K+
+Context Length (K=16)
+0.80
+0.85
+0.90
+0.95
+1.00
+Overlap Recall
+0.898
+0.878
+0.806
+0.924
+0.891
+0.857
+Distill Learned
+NTP Learned
+8K - 10K
+10K - 12K
+12K+
+Context Length (K=32)
+0.983
+0.955
+0.902
+0.988
+0.983
+0.962
+8K - 10K
+10K - 12K
+12K+
+Context Length (K=64)
+0.998
+0.996
+0.979
+1.000
+1.000
+0.998
+(b)
+Figure5 Analysis of the learned block selection, comparing the block selection learned by distillation (SeerAttention-R)
+and by end-to-end NTP (next-token prediction) training (SAS). (a) Per-layer attention mass coverage of the selected
+Top-K blocks, under both raw weight qK⊤, and value-aware weight qK⊤+ log ∥V∥2 from STEM [32]. SAS covers
+less mass than distillation. (b) Overlap recall of the cross-layer union of selected blocks against the full attention
+oracle. SAS attains higher recall than distillation, consistent with more complementary cross-layer selection.
+6.1
+Analyzing the Learned Block Selection
+Per-layer attention mass coverage. A natural way to assess a sparse selector is how much attention mass its
+selected token set S covers. Reusing the attention logit zi = qk⊤
+i , we define the covered mass ratio with a
+per token weight wi as
+Cov(S) =
+P
+i∈S wi
+P
+j wj
+.
+(10)
+We consider two instantiations of wi. The first is wi = exp(zi), which depends only on the attention weight.
+The second is wi = exp(zi + log ∥vi∥2), which additionally incorporates the magnitude of the value vector
+vi, following [32].
+As our objective is the final language modeling loss, which depends on all attention
+components including V, we expect SAS to favor blocks that contribute larger attention outputs. However,
+Figure 5a shows that SAS covers less mass than distillation under both metrics in almost all layers. One
+possible explanation is that distillation explicitly optimizes for full attention coverage as its training target,
+naturally encouraging higher attention mass coverage, whereas SAS is never trained to match the full attention
+distribution.
+Overlap with the full attention oracle. The per-layer coverage above, however, ignores that selection is dis-
+tributed across layers: a block missed at one layer can still be attended at another. We therefore take, for
+each method, the union of its selected blocks across all layers and measure how much of the full attention
+model’s attended blocks it recovers. On long training sequences (>8K) with Qwen3-4B, we obtain the oracle
+set from full attention; since it uses GQA, we aggregate the per-head Top-K within each group into one
+group-level set by majority vote. Taking the union of these sets over all L layers gives the oracle set I⋆
+all, and
+13
+
+
+MATH500
+GPQA-Diamond
+AIME24
+AIME25
+0
+4000
+8000
+12000
+16000
+20000
+Generation Length (tokens)
+5535
+8665
+15912
+19418
+5082
+7642
+14087
+16960
+Distill Learned
+NTP Learned
+MATH500
+GPQA-Diamond
+AIME24
+AIME25
+0
+5
+10
+15
+20
+Truncation Rate (%)
+1.30%
+1.01%
+12.76%
+21.67%
+0.33%
+0.63%
+3.49%
+6.67%
+Figure 6 Generation behavior of distillation (SeerAttention-R) and end-to-end NTP (SAS) on Qwen3-4B at a 4096
+token budget across four reasoning benchmarks. Left: average generation length; SAS generates shorter traces. Right:
+truncation rate under a maximum generation length of 32,768; SAS truncates less often. These trends are consistent
+with more effective context selection, suggesting SAS reaches answers with fewer tokens, with the gap largest on the
+harder AIME tasks.
+applying the same procedure to a method’s own selection gives Iall. We then report the overlap recall
+Recall(Iall, I⋆
+all) = |Iall ∩I⋆
+all|
+|I⋆
+all|
+,
+Iall =
+L
+[
+j=1
+Ij,
+(11)
+where Ij is the per-layer block set at layer j and I⋆
+all is defined analogously. As shown in Figure 5b, SAS
+attains consistently higher overlap recall across context lengths and budgets. This matches our expectation:
+distillation fits the full attention layer by layer as a local objective, whereas SAS is trained end-to-end, so its
+block selection is optimized jointly across layers. As a result, even though SAS retains less attention mass
+within each individual layer, its per-layer choices are more complementary, and their union attains higher
+overlap recall against the oracle.
+6.2
+Analyzing the Generation Behavior
+Beyond final accuracy, the quality of sparse selection also affects token efficiency, measured here by the
+generation length needed to reach an answer.
+When important context is dropped, the model tends to
+generate longer, less focused reasoning traces and is more likely to hit the maximum generation length before
+finishing. We therefore compare SeerAttention-R and SAS on Qwen3-4B at a 4096 token budget, reporting
+the average generation length and the truncation rate under a maximum length of 32,768 (Figure 6). Across
+all four reasoning benchmarks, SAS produces shorter generations and a lower truncation rate, with the gap
+widening on the harder AIME tasks where long reasoning is required. These results are consistent with more
+effective context selection: they suggest that SAS can complete its reasoning with fewer tokens and less
+frequent truncation, complementing the accuracy gains in Section 5.2.
+6.3
+End-to-End Decode Efficiency
+Decode speedup over full attention. We measure wall-clock decode efficiency by serving Qwen3-4B in SGLang
+with our block sparse attention against full attention under an identical configuration: a single GPU (tensor
+parallel size 1), CUDA graphs enabled, chunked prefill, and a steady-state decode measurement (the input
+is prefilled, then 512 generated tokens are timed). Since SAS sparsifies decode-time attention only, prefill is
+unchanged, and the reported numbers isolate the per-token decode cost. Full attention must read the entire
+KV cache at every step, so its decode latency grows linearly with context length, whereas SAS reads only a
+fixed token budget of blocks and stays essentially flat. The gap therefore widens with context: at batch 1
+(Figure 7a) the two are near parity at 8K but SAS is 2.4×, 4.6×, and 5.6× faster at 64K, 256K, and 512K.
+Increasing the batch amortizes the fixed per-step overhead and further favors sparsity: at batch 8 (Figure 7b)
+the speedup reaches ∼13× at 64K. A tighter token budget reads fewer blocks and is thus faster, but the
+difference across budgets is modest, indicating that the benefit comes primarily from avoiding the full KV
+14
+
+
+8k
+64k
+256k
+512k
+Context Length
+101
+102
+Decode latency (ms)
+Full Attn
+Sparse Attn
+2.4×
+4.6×
+5.6×
+(a)
+4k
+8k
+16k
+32k
+64k
+Context Length
+2
+4
+6
+8
+10
+12
+Decode speedup
+Budget = 4096
+Budget = 2048
+Budget = 1024
+(b)
+8k
+64k
+256k
+512k
+Context Length
+0
+2
+4
+6
+8
+10
+Time per decode step (ms)
+0.9
+1.3
+4.6
+9.8
+58%
+43%
+83%
+90%
+(1) Selector scoring
+(2) Top-K selecting
+(3) Attention computing
+(c)
+Figure 7 End-to-end decode efficiency of SAS versus dense attention on Qwen3-4B in SGLang (single GPU, CUDA
+graphs, steady-state decode). (a) At batch 1, dense latency grows linearly with context length, while SAS remains
+nearly constant, achieving up to 5.6× lower latency at 512K. (b) At batch 8, speedup reaches ∼13× and is largely
+insensitive to the token budget. (c) Sparse-decode latency breakdown: attention cost remains constant, while Top-K
+selection dominates at long contexts.
+read rather than from the exact budget.
+Decode step cost breakdown. To understand the scaling behavior, we decompose one sparse attention decode
+step into its three components: selector scoring (the gate query projection and its dot-product against the
+block summaries), Top-K block selection, and the attention compute over the selected blocks (Figure 7c).
+The attention compute is context invariant, since the number of blocks read is capped by the token budget
+regardless of sequence length. Selector scoring, by contrast, scans all block summaries and thus grows with
+context in absolute terms, rising from well below the attention compute at 8K to roughly matching it at
+512K; extrapolating to longer context, it is expected to surpass the attention compute. The Top-K selection
+grows even faster, as it must rank all candidate blocks, and comes to dominate the step, shifting from 21%
+at 8K (where attention compute dominates at 58%) to 90% at 512K. This identifies the selection stage, Top-
+K ranking together with the growing selector scoring, rather than the attention compute, as the primary
+bottleneck and the main target for further kernel optimization at very long context.
+7
+Conclusion
+In this paper, we presented SAS, a simple yet effective paradigm for end-to-end post-training attention spar-
+sification. By shifting from layer-wise attention distillation to direct optimization with language modeling
+loss, SAS overcomes the surrogate supervision and captures cross-layer dependencies more effectively. Our
+empirical analysis identifies the design choices that enable stable, informative gradient flow for context selec-
+tion, including log-space gate injection, normalized gate activation, and preservation of continuous rankings.
+Facilitated by our fused Triton kernels, SAS is computationally practical for long-context training and supe-
+rior in performance. Extensive evaluations across reasoning, long-context understanding, and agentic tasks
+demonstrate that SAS outperforms existing baselines, particularly in budget-constrained scenarios.
+References
+[1] Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang,
+Carrie Cai, Michael Terry, Quoc Le, and Charles Sutton. Program synthesis with large language models, 2021.
+URL https://arxiv.org/abs/2108.07732.
+[2] Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan
+Zeng, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. LongBench: A bilingual, multitask benchmark for long
+context understanding. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Proceedings of the 62nd
+Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 3119–3137,
+Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.172.
+URL https://aclanthology.org/2024.acl-long.172/.
+15
+
+
+[3] Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint
+arXiv:2004.05150, 2020.
+[4] Zefan Cai, Wen Xiao, Hanshi Sun, Cheng Luo, Yikai Zhang, Ke Wan, Yucheng Li, Yeyang Zhou, Li-Wen Chang,
+Jiuxiang Gu, Zhen Dong, Anima Anandkumar, Abedelkadir Asi, and Junjie Hu. R-kv: Redundancy-aware kv
+cache compression for reasoning models. In Advances in Neural Information Processing Systems, 2025.
+[5] Rewon Child, Scott Gray, Alec Radford, and Ilya Sutskever. Generating long sequences with sparse transformers.
+arXiv preprint arXiv:1904.10509, 2019.
+[6] Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova.
+BoolQ: Exploring the surprising difficulty of natural yes/no questions. In NAACL, 2019.
+[7] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord.
+Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457,
+2018.
+[8] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert,
+Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training verifiers to solve
+math word problems. arXiv preprint arXiv:2110.14168, 2021.
+[9] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient
+exact attention with io-awareness. Advances in neural information processing systems, 35:16344–16359, 2022.
+[10] DeepSeek-AI. Deepseek-v4: Towards highly efficient million-token context intelligence, 2026.
+[11] Hugging Face. Open r1: A fully open reproduction of deepseek-r1, January 2025. URL https://github.com/
+huggingface/open-r1.
+[12] Yizhao Gao, Zhichen Zeng, Dayou Du, Shijie Cao, Peiyuan Zhou, Jiaxing Qi, Junjie Lai, Hayden Kwok-Hay So,
+Ting Cao, Fan Yang, et al. Seerattention: Learning intrinsic sparse attention in your llms. In Advances in Neural
+Information Processing Systems, 2025.
+[13] Yizhao Gao, Shuming Guo, Shijie Cao, Yuqing Xia, Yu Cheng, Lei Wang, Lingxiao Ma, Yutao Sun, Tianzhu Ye,
+Li Dong, et al. Seerattention-r: Sparse attention adaptation for long reasoning. In International Conference on
+Learning Representations, 2026.
+[14] Alex Gu, Baptiste Rozière, Hugh Leather, Armando Solar-Lezama, Gabriel Synnaeve, and Sida I. Wang. Cruxeval:
+A benchmark for code reasoning, understanding and execution. In International Conference on Machine Learning,
+pages 16568–16621, 2024.
+[15] Jitai Hao, Yuke Zhu, Tian Wang, Jun Yu, Xin Xin, Bo Zheng, Zhaochun Ren, and Sheng Guo.
+Omnikv:
+Dynamic context selection for efficient long-context llms. In The Thirteenth International Conference on Learning
+Representations, 2025.
+[16] Wei He, Yueqing Sun, Hongyan Hao, Xueyuan Hao, Zhikang Xia, Qi GU, Hui Su, and Xunliang Cai. Vitabench:
+Benchmarking LLM agents with versatile interactive tasks in real-world applications. In The Fourteenth Inter-
+national Conference on Learning Representations, 2026. URL https://openreview.net/forum?id=rtcX9qOBaz.
+[17] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt.
+Measuring massive multitask language understanding. Proceedings of the International Conference on Learning
+Representations (ICLR), 2021.
+[18] Coleman Hooper, Sehoon Kim, Hiva Mohammadzadeh, Monishwaran Maheswaran, Sebastian Zhao, June Paik,
+Michael W Mahoney, Kurt Keutzer, and Amir Gholami. Squeezed attention: Accelerating long context length llm
+inference. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume
+1: Long Papers), pages 32631–32652, 2025.
+[19] Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, and Boris Ginsburg.
+RULER: What’s the real context size of your long-context language models? In First Conference on Language
+Modeling, 2024. URL https://openreview.net/forum?id=kIoBbc76Sy.
+[20] Xiang Hu, Xinyu Wei, Hao Gu, Minshen Zhang, Tian Liang, Huayang Li, Lei Zhu, Yan Wang, Sirui Han,
+Yushi Bai, et al. Hierarchical sparse attention done right: Toward infinite context modeling. arXiv preprint
+arXiv:2607.02980, 2026.
+16
+
+
+[21] Huiqiang Jiang, Yucheng Li, Chengruidong Zhang, Qianhui Wu, Xufang Luo, Surin Ahn, Zhenhua Han, Amir H
+Abdi, Dongsheng Li, Chin-Yew Lin, et al.
+Minference 1.0: Accelerating pre-filling for long-context llms via
+dynamic sparse attention. Advances in Neural Information Processing Systems, 37:52481–52515, 2024.
+[22] Guokun Lai, Qizhe Xie, Hanxiao Liu, Yiming Yang, and Eduard Hovy.
+RACE: Large-scale ReAding com-
+prehension dataset from examinations. In Martha Palmer, Rebecca Hwa, and Sebastian Riedel, editors, Pro-
+ceedings of the 2017 Conference on Empirical Methods in Natural Language Processing, pages 785–794, Copen-
+hagen, Denmark, September 2017. Association for Computational Linguistics. doi: 10.18653/v1/D17-1082. URL
+https://aclanthology.org/D17-1082.
+[23] Hunter Lightman, Vineet Kosaraju, Yura Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John
+Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In International Conference on Learning
+Representations, 2024.
+[24] Chaofan Lin, Jiaming Tang, Shuo Yang, Hanshuo Wang, Tian Tang, Boyu Tian, Ion Stoica, Song Han, and
+Mingyu Gao.
+Twilight: Adaptive attention sparsity with hierarchical top-p pruning.
+In Advances in Neural
+Information Processing Systems, 2025.
+[25] Aixin Liu, Aoxue Mei, Bangcai Lin, Bing Xue, Bingxuan Wang, Bingzheng Xu, Bochao Wu, Bowei Zhang,
+Chaofan Lin, Chen Dong, et al. Deepseek-v3. 2: Pushing the frontier of open large language models. arXiv
+preprint arXiv:2512.02556, 2025.
+[26] Di Liu, Meng Chen, Baotong Lu, Huiqiang Jiang, Zhenhua Han, Qianxi Zhang, Qi Chen, Chengruidong Zhang,
+Bailu Ding, Kai Zhang, et al. Retrievalattention: Accelerating long-context llm inference via vector retrieval. In
+Advances in Neural Information Processing Systems, 2025.
+[27] Jiawei Liu, Chunqiu Steven Xia, Yuyao Wang, and Lingming Zhang. Is your code generated by chatGPT really
+correct?
+rigorous evaluation of large language models for code generation.
+In Thirty-seventh Conference on
+Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=1qvx610Cu7.
+[28] Ilya Loshchilov and Frank Hutter.
+Decoupled weight decay regularization.
+In International Conference on
+Learning Representations, 2019.
+[29] Enzhe Lu, Zhejun Jiang, Jingyuan Liu, Yulun Du, Tao Jiang, Chao Hong, Shaowei Liu, Weiran He, Enming
+Yuan, Yuzhi Wang, et al. Moba: Mixture of block attention for long-context llms. In The Thirty-ninth Annual
+Conference on Neural Information Processing Systems, 2025.
+[30] Qianli Ma, Yaowei Zheng, Zhelun Shi, Zhongkai Zhao, Bin Jia, Ziyue Huang, Zhiqi Lin, Youjie Li, Jiacheng Yang,
+Yanghua Peng, et al. Veomni: Scaling any modality model training with model-centric distributed recipe zoo. In
+Proceedings of the AAAI Conference on Artificial Intelligence, 2026.
+[31] Pierre-Emmanuel Mazaré, Gergely Szilvasy, Maria Lomeli, Francisco Massa, Naila Murray, Hervé Jégou, and
+Matthijs Douze. Inference-time sparse attention with asymmetric indexing. arXiv preprint arXiv:2502.08246,
+2025.
+[32] Lin Niu, Xin Luo, Linchuan Xie, Yifu Sun, Guanghua Yu, Jianchen Zhu, and S Kevin Zhou. Stem: Rethinking
+causal information flow in sparse attention. In International Conference on Machine Learning, 2026.
+[33] Art of Problem Solving. Aime problems and solutions.
+https://artofproblemsolving.com/wiki/index.php/
+AIME_Problems_and_Solutions.
+[34] Team Olmo, :, Allyson Ettinger, Amanda Bertsch, Bailey Kuehl, David Graham, David Heineman, Dirk Groen-
+eveld, Faeze Brahman, Finbarr Timbers, Hamish Ivison, Jacob Morrison, Jake Poznanski, Kyle Lo, Luca Soldaini,
+Matt Jordan, Mayee Chen, Michael Noukhovitch, Nathan Lambert, Pete Walsh, Pradeep Dasigi, Robert Berry,
+Saumya Malik, Saurabh Shah, Scott Geng, Shane Arora, Shashank Gupta, Taira Anderson, Teng Xiao, Tyler
+Murray, Tyler Romero, Victoria Graf, Akari Asai, Akshita Bhagia, Alexander Wettig, Alisa Liu, Aman Ranga-
+pur, Chloe Anastasiades, Costa Huang, Dustin Schwenk, Harsh Trivedi, Ian Magnusson, Jaron Lochner, Jiacheng
+Liu, Lester James V. Miranda, Maarten Sap, Malia Morgan, Michael Schmitz, Michal Guerquin, Michael Wil-
+son, Regan Huff, Ronan Le Bras, Rui Xin, Rulin Shao, Sam Skjonsberg, Shannon Zejiang Shen, Shuyue Stella
+Li, Tucker Wilde, Valentina Pyatkin, Will Merrill, Yapei Chang, Yuling Gu, Zhiyuan Zeng, Ashish Sabharwal,
+Luke Zettlemoyer, Pang Wei Koh, Ali Farhadi, Noah A. Smith, and Hannaneh Hajishirzi. Olmo 3, 2026. URL
+https://arxiv.org/abs/2512.13961.
+17
+
+
+[35] Shishir G. Patil, Huanzhi Mao, Charlie Cheng-Jie Ji, Fanjia Yan, Vishnu Suresh, Ion Stoica, and Joseph E. Gon-
+zalez. The berkeley function calling leaderboard (bfcl): From tool use to agentic evaluation of large language
+models. In Forty-second International Conference on Machine Learning, 2025.
+[36] Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and Enrico Shippole. Yarn: Efficient context window extension of
+large language models. In International Conference on Learning Representations, 2024.
+[37] David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian
+Michael, and Samuel R. Bowman. GPQA: A graduate-level google-proof q&a benchmark. In First Conference
+on Language Modeling, 2024. URL https://openreview.net/forum?id=Ti67584b98.
+[38] David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian
+Michael, and Samuel R. Bowman. GPQA: A graduate-level google-proof q&a benchmark. In First Conference
+on Language Modeling, 2024. URL https://openreview.net/forum?id=Ti67584b98.
+[39] Yutao Sun, Zhenyu Li, Yike Zhang, Tengyu Pan, Bowen Dong, Yuyi Guo, and Jianyong Wang. Efficient attention
+mechanisms for large language models: A survey. arXiv preprint arXiv:2507.19595, 2025.
+[40] Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. Quest: Query-aware
+sparsity for efficient long-context llm inference. In International Conference on Machine Learning, pages 47901–
+47911, 2024.
+[41] MiniCPM Team, Chaojun Xiao, Yuxuan Li, Xu Han, Yuzhuo Bai, Jie Cai, Haotian Chen, Wentong Chen, Xin
+Cong, Ganqu Cui, et al. Minicpm4: Ultra-efficient llms on end devices. arXiv preprint arXiv:2506.07900, 2025.
+[42] Philippe Tillet, Hsiang-Tsung Kung, and David Cox. Triton: an intermediate language and compiler for tiled
+neural network computations. In Proceedings of the 3rd ACM SIGPLAN International Workshop on Machine
+Learning and Programming Languages, pages 10–19, 2019.
+[43] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and
+Illia Polosukhin. Attention is all you need. Advances in neural information processing systems, 30, 2017.
+[44] Tianwen Wei, Jian Luan, Wei Liu, Shuang Dong, and Bin Wang. Cmath: Can your language model pass chinese
+elementary school math test?, 2023. URL https://arxiv.org/abs/2306.16636.
+[45] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models
+with attention sinks. In International Conference on Learning Representations, 2024.
+[46] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models
+with attention sinks. In International Conference on Learning Representations, volume 2024, pages 21875–21895,
+2024.
+[47] Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian Guo, Shang Yang, Haotian Tang, Yao Fu, and Song
+Han. Duoattention: Efficient long-context llm inference with retrieval and streaming heads. In International
+Conference on Learning Representations, 2025.
+[48] Ruyi Xu, Guangxuan Xiao, Haofeng Huang, Junxian Guo, and Song Han. Xattention: Block sparse attention
+with antidiagonal scoring. In International Conference on Machine Learning, pages 69819–69831. PMLR, 2025.
+[49] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen
+Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan
+Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou,
+Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei
+Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao
+Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger
+Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. Qwen3
+technical report, 2025. URL https://arxiv.org/abs/2505.09388.
+[50] Shang Yang, Junxian Guo, Haotian Tang, Qinghao Hu, Guangxuan Xiao, Jiaming Tang, Yujun Lin, Zhijian Liu,
+Yao Lu, and Song Han. Lserve: Efficient long-sequence llm serving with unified sparse attention. Proceedings of
+Machine Learning and Systems, 7, 2025.
+[51] Zihao Ye, Lequn Chen, Ruihang Lai, Wuwei Lin, Yineng Zhang, Stephanie Wang, Tianqi Chen, Baris Kasikci,
+18
+
+
+Vinod Grover, Arvind Krishnamurthy, et al.
+Flashinfer: Efficient and customizable attention engine for llm
+inference serving. Proceedings of Machine Learning and Systems, 7, 2025.
+[52] Jingyang Yuan, Huazuo Gao, Damai Dai, Junyu Luo, Liang Zhao, Zhengyan Zhang, Zhenda Xie, Yuxing Wei,
+Lean Wang, Zhiping Xiao, et al. Native sparse attention: Hardware-aligned and natively trainable sparse atten-
+tion. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1:
+Long Papers), pages 23078–23097, 2025.
+[53] Manzil Zaheer, Guru Guruganesh, Kumar Avinava Dubey, Joshua Ainslie, Chris Alberti, Santiago Ontanon,
+Philip Pham, Anirudh Ravula, Qifan Wang, Li Yang, et al. Big bird: Transformers for longer sequences. Advances
+in neural information processing systems, 33:17283–17297, 2020.
+[54] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish
+your sentence? In Proceedings of the 57th annual meeting of the association for computational linguistics, pages
+4791–4800, 2019.
+[55] Hailin Zhang, Xiaodong Ji, Yilin Chen, Fangcheng Fu, Xupeng Miao, Xiaonan Nie, Weipeng Chen, and Bin
+Cui. Pqcache: Product quantization-based kvcache for long context llm inference. Proceedings of the ACM on
+Management of Data, 3(3):1–30, 2025.
+[56] Jintao Zhang, Rundong Su, Chunyu Liu, Jia Wei, Ziteng Wang, Pengle Zhang, Haoxu Wang, Huiqiang Jiang,
+Haofeng Huang, Chendong Xiang, et al. A survey of efficient attention methods: Hardware-efficient, sparse,
+compact, and linear attention. https://attention-survey.github.io, 2025.
+[57] Jintao Zhang, Chendong Xiang, Haofeng Huang, Jia Wei, Haocheng Xi, Jun Zhu, and Jianfei Chen. Spargeattn:
+Accurate sparse attention accelerating any model inference. In International Conference on Machine Learning
+(ICML), 2025.
+[58] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian,
+Christopher Ré, Clark Barrett, et al. H2o: Heavy-hitter oracle for efficient generative inference of large language
+models. Advances in Neural Information Processing Systems, 36:34661–34710, 2023.
+[59] Weilin Zhao, Zihan Zhou, Zhou Su, Chaojun Xiao, Yuxuan Li, Yanghao Li, Yudi Zhang, Weilun Zhao, Zhen Li,
+Yuxiang Huang, et al. Infllm-v2: Dense-sparse switchable attention for seamless short-to-long adaptation. In
+International Conference on Learning Representations, 2026.
+[60] Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody H Yu, Shiyi Cao, Christos
+Kozyrakis, Ion Stoica, Joseph E Gonzalez, et al.
+Sglang: Efficient execution of structured language model
+programs. Advances in neural information processing systems, 37:62557–62583, 2024.
+[61] Lei Zhu, Xinjiang Wang, Zhanghan Ke, Wayne Zhang, and Rynson WH Lau. Biformer: Vision transformer
+with bi-level routing attention. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, pages 10323–10333, 2023.
+19
+
+
+A
+Training Dynamics
+We provide the loss and gradient norm curves for the controlled ablation studies in Section 4.2 in Figure 8.
+The training dynamics reveal distinct optimization behaviors across designs. The inner-softmax gate consis-
+tently achieves lower training loss than the outer-gate formulation. Independent sigmoid gates and raw-logit
+injection achieve even lower losses, but fail to improve sparsification, as both effectively approach ungated
+attention and learn little discriminative block ranking. Similarly, although the STE formulation yields lower
+training loss, its final sparsification performance remains inferior, indicating that training loss alone is insuf-
+ficient to assess ranking quality. Hard gating further reduces loss while substantially increasing the gradient
+norm, suggesting more aggressive optimization. Sparse-scope training starts with higher loss but gradually
+approaches full-scope training, indicating that the two scopes can eventually reach comparable solutions de-
+spite different gradient dynamics. Overall, effective selector training requires not only loss minimization but
+also preservation of a meaningful and discriminative block ranking signal.
+0
+25
+50
+75
+100
+125
+150
+175
+200
+1.0
+3.0
+5.0
+Loss
+I. Gate Position
+(2) softmax(qK
++log g)V
+(3) softmax(qK
+)(g
+V)
+0
+25
+50
+75
+100
+125
+150
+175
+200
+0.5
+0.8
+1.1
+1.4
+II. Activation Function
+(4) softmax(qK
++log g)V
+(5) softmax(qK
++log g )V
+(6) softmax(qK
++s)V
+0
+25
+50
+75
+100
+125
+150
+175
+200
+Training Step
+0.6
+0.9
+1.2
+1.5
+Loss
+III. Ranking Preservation
+(7) softmax(qK
++log g)V
+(8) softmax(qK
++log g)V
+0
+25
+50
+75
+100
+125
+150
+175
+200
+Training Step
+0.6
+1.0
+1.4
+1.8
+IV. Training Scope
+(9) softmax(qK
++log g)V
+(10) softmax(qK
++log g )V
+(11) softmax(qK
++log g )V
+(a)
+0
+25
+50
+75
+100
+125
+150
+175
+200
+100
+Grad Norm
+I. Gate Position
+(2) softmax(qK
++log g)V
+(3) softmax(qK
+)(g
+V)
+0
+25
+50
+75
+100
+125
+150
+175
+200
+10
+1
+100
+II. Activation Function
+(4) softmax(qK
++log g)V
+(5) softmax(qK
++log g )V
+(6) softmax(qK
++s)V
+0
+25
+50
+75
+100
+125
+150
+175
+200
+Training Step
+10
+1
+100
+101
+102
+103
+Grad Norm
+III. Ranking Preservation
+(7) softmax(qK
++log g)V
+(8) softmax(qK
++log g)V
+0
+25
+50
+75
+100
+125
+150
+175
+200
+Training Step
+100
+101
+IV. Training Scope
+(9) softmax(qK
++log g)V
+(10) softmax(qK
++log g )V
+(11) softmax(qK
++log g )V
+(b)
+Figure 8 Training dynamics for different gated sparsification designs. Inner softmax gate yields lower training loss
+than outer gate. Independent sigmoid gates and raw-logit injection achieve lower loss than normalized softmax gates.
+Hard gating reduces the training loss, but substantially increases the gradient norm. Sparse scope training starts with
+a higher loss but gradually approaches full scope training, while introducing noise yields little difference.
+20
+
+
+B
+Limitation
+We further explore the scalability of the learned selector to RULER [19]. Specifically, we sample 0.5B tokens
+from the allenai/dolma3_longmino_mix-100B-1125 dataset 3 and train the selector on 64K sequences using
+a packing strategy. During evaluation, we use the non-thinking mode and extend the context window to 128K
+with YaRN. As shown in Table 8, while SAS consistently improves over SeerAttention-R under shorter context
+lengths, its performance still degrades substantially as the context length increases, leaving a considerable gap
+from full attention. We believe this limitation primarily stems from the use of pooling based block summaries,
+which may struggle to preserve fine grained, localized information, such as needle-like signals, within each
+block, especially as the context length increases. Designing more expressive yet efficient selectors that can
+capture fine-grained information under context block compression is therefore an important direction for
+future work.
+Table 8 Evaluation results on the RULER benchmark.
+Budget
+Method
+Qwen3-4B
+Qwen3-8B
+Qwen3-14B
+4K
+8K
+16K
+32K
+64K
+128K
+4K
+8K
+16K
+32K
+64K
+128K
+4K
+8K
+16K
+32K
+64K
+128K
+Full
+Full Attn
+92.95
+91.27
+86.61
+79.25
+73.17
+63.81
+93.10
+90.13
+89.59
+87.04
+77.25
+73.87
+95.28
+92.71
+92.91
+92.15
+92.19
+82.23
+2048
+SeerAttn-R
+92.08
+79.28
+56.01
+30.29
+18.12
+13.09
+92.15
+80.16
+63.76
+42.16
+24.49
+13.99
+94.40
+84.50
+62.80
+44.73
+30.73
+14.95
+SAS
+92.82
+78.22
+63.94
+39.54
+25.65
+17.92
+92.45
+81.39
+69.34
+46.94
+30.31
+19.38
+94.43
+85.10
+69.01
+54.76
+34.12
+23.80
+4096
+SeerAttn-R
+93.49
+87.90
+72.93
+47.41
+27.96
+16.29
+92.96
+90.13
+77.39
+57.92
+37.43
+18.75
+95.28
+91.62
+76.77
+64.96
+42.34
+22.36
+SAS
+93.49
+89.09
+75.72
+51.90
+35.53
+21.87
+92.96
+87.96
+79.88
+63.50
+39.18
+23.46
+95.28
+91.52
+83.35
+66.82
+45.92
+29.95
+C
+Final Performance of Sparse vs. Full Training Scope
+The gradient analysis in Appendix D.3 shows that sparse scope updates unselected blocks only indirectly,
+which slows early optimization but does not change the final ranking quality.
+Table 9 reports the final
+accuracy of full scope and sparse scope across Qwen3-4B/8B/14B and token budgets of 1024, 2048, and 4096.
+Consistent with the training dynamics in Table 1, sparse scope matches full scope at convergence across all
+model scales and budgets, while incurring lower training cost.
+Table 9 Final accuracy (%) of full training scope versus sparse training scope across model scales and token budgets.
+Standard deviations are shown in parentheses.
+Budget
+Train scope
+MATH500
+GPQA-Diamond
+AIME24
+AIME25
+4B
+8B
+14B
+4B
+8B
+14B
+4B
+8B
+14B
+4B
+8B
+14B
+1024
+full
+91.33 (1.1)
+91.71 (1.1)
+93.08 (1.0)
+51.42 (2.9)
+55.62 (2.8)
+61.77 (2.9)
+-
+-
+-
+-
+-
+-
+sparse
+90.65 (1.1)
+91.27 (1.1)
+92.93 (1.0)
+50.41 (2.8)
+53.17 (2.9)
+61.14 (2.9)
+-
+-
+-
+-
+-
+-
+2048
+full
+93.00 (1.0)
+93.09 (1.1)
+93.56 (1.0)
+54.40 (2.9)
+58.43 (2.9)
+64.14 (2.8)
+68.13 (6.7)
+70.73 (6.6)
+76.67 (6.7)
+55.39 (7.3)
+59.27 (7.3)
+64.04 (7.2)
+sparse
+93.47 (1.0)
+93.17 (1.0)
+93.54 (1.0)
+54.86 (2.8)
+58.74 (2.8)
+65.09 (2.8)
+68.85 (6.6)
+70.73 (6.7)
+77.76 (6.6)
+56.38 (7.3)
+58.41 (7.2)
+64.19 (7.1)
+4096
+full
+93.10 (1.0)
+93.40 (1.0)
+94.12 (1.0)
+54.80 (2.8)
+60.32 (2.8)
+64.39 (2.9)
+71.17 (6.6)
+73.52 (6.7)
+78.49 (6.6)
+61.30 (7.3)
+64.24 (7.1)
+67.58 (7.0)
+sparse
+93.67 (1.0)
+94.23 (1.0)
+95.23 (0.8)
+55.11 (2.9)
+60.42 (2.8)
+65.03 (2.8)
+71.72 (6.8)
+73.49 (6.7)
+78.28 (6.4)
+59.97 (7.3)
+63.41 (7.2)
+67.29 (6.9)
+D
+Gradient Derivation
+D.1
+Gradient Derivation for Gate Position
+We derive the gate gradients for outer and inner gate injection. First, we let
+zi = qk⊤
+i ,
+pi =
+exp(zi)
+P
+j exp(zj),
+b(i) = m if i ∈Bm.
+3https://huggingface.co/datasets/allenai/dolma3_longmino_mix-100B-1125
+21
+
+
+Outer gate. For outer gating, the attention probability is computed before applying the gate:
+oouter =
+X
+i
+pigb(i)vi.
+Since pi does not depend on gm, the outer-gate gradient is
+dgouter
+m
+= ∂L
+∂gm
+= do⊤∂oouter
+∂gm
+= do⊤X
+i
+pi
+∂gb(i)
+∂gm
+vi
+=
+X
+i∈Bm
+pi do⊤vi.
+Inner gate. For inner gating, the gate is injected into the attention logits:
+oinner =
+X
+i
+˜pivi,
+˜pi =
+gb(i) exp(zi)
+P
+j gb(j) exp(zj).
+For a block gate gm, its derivative is
+∂˜pi
+∂gm
+=
+I[b(i) = m] exp(zi) P
+j gb(j) exp(zj) −gb(i) exp(zi) P
+j∈Bm exp(zj)
+P
+j gb(j) exp(zj)
+2
+= I[b(i) = m] exp(zi)
+P
+j gb(j) exp(zj)
+−
+gb(i) exp(zi)
+P
+j gb(j) exp(zj) ·
+P
+j∈Bm exp(zj)
+P
+j gb(j) exp(zj)
+= I[b(i) = m]
+gm
+gb(i) exp(zi)
+P
+j gb(j) exp(zj) −
+gb(i) exp(zi)
+P
+j gb(j) exp(zj) ·
+X
+j∈Bm
+exp(zj)
+P
+r gb(r) exp(zr)
+= I[b(i) = m]
+gm
+˜pi −˜pi
+X
+j∈Bm
+1
+gm
+gm exp(zj)
+P
+r gb(r) exp(zr)
+= I[b(i) = m]
+gm
+˜pi −˜pi
+X
+j∈Bm
+˜pj
+gm
+= ˜pi
+
+I[b(i) = m]
+gm
+−
+X
+j∈Bm
+˜pj
+gm
+
+.
+22
+
+
+Therefore,
+dginner
+m
+= ∂L
+∂gm
+= do⊤∂oinner
+∂gm
+= do⊤X
+i
+∂˜pi
+∂gm
+vi
+= do⊤X
+i
+˜pi
+
+I[b(i) = m]
+gm
+−
+X
+j∈Bm
+˜pj
+gm
+
+vi
+= do⊤
+
+1
+gm
+X
+i∈Bm
+˜pivi −1
+gm
+
+X
+j∈Bm
+˜pj
+
+X
+i
+˜pivi
+
+
+= 1
+gm
+do⊤X
+i∈Bm
+˜pi (vi −oinner)
+=
+X
+i∈Bm
+˜pi
+gm
+do⊤(vi −oinner) .
+D.2
+Gradient Derivation for Ranking Preservation
+Both variants use inner gate injection, so both inherit the inner-gate gradient from Appendix D.1, with
+zi = qk⊤
+i . They differ only in the attention weight that the forward normalizer assigns to each token.
+Soft gating. All C blocks stay active, so the normalizer runs over the full context and block Bm appears in
+its own normalizer:
+˜psoft
+i
+=
+gb(i) exp(zi)
+P
+j gb(j) exp(zj) ≤1,
+dgm =
+X
+i∈Bm
+˜psoft
+i
+gm
+do⊤(vi −o) .
+Hence ˜psoft
+i
+≤1 for every token, and the gate gradient dgm stays bounded.
+Hard gating with STE. The unselected blocks satisfy log ghard
+m
+= −∞, so the forward normalizer sums only
+over the selected set S = S
+m∈I Bm. STE still propagates a gate gradient to a non-selected block m /∈I,
+whose ranking signal evaluates the attention mass ˜phard
+i
+its tokens would receive. Because Bm is excluded
+from LSES, this weight has no upper bound:
+˜phard
+i
+=
+exp(zi)
+P
+j∈S exp(zj) = exp(zi −LSES) ≤exp
+
+zi −max
+j∈S zj
+
+,
+LSES = log
+X
+j∈S
+exp(zj),
+which grows exponentially once a dropped block outscores the selected set, zi > maxj∈S zj. The unbounded
+˜phard
+i
+enters dgm and, accumulated over all dropped blocks, tokens, and heads, inflates the gate gradient.
+D.3
+Gradient Derivation for Training Scope
+We derive the score gradients under sparse and full scopes. Let the activation function softmax.
+23
+
+
+For any gate gradient dgℓ, we first give the softmax backward formulation
+dsm = ∂L
+∂sm
+=
+C
+X
+ℓ=1
+∂L
+∂gℓ
+∂gℓ
+∂sm
+=
+C
+X
+ℓ=1
+dgℓgℓ(I[ℓ= m] −gm)
+= gmdgm −gm
+C
+X
+ℓ=1
+gℓdgℓ
+= gm
+ 
+dgm −
+C
+X
+ℓ=1
+gℓdgℓ
+!
+.
+Sparse routing scope. Let I = Top-K(s, K) denote the selected block indices. Under sparse routing scope,
+only selected blocks participate in the gated attention computation. For an unselected block m /∈I, the
+output does not depend on gm, so dgsparse
+m
+= 0.
+Moreover, only selected blocks have nonzero gate gradients:
+dgsparse
+ℓ
+= 0,
+ℓ/∈I.
+Therefore, for m /∈I,
+dssparse
+m
+= gm
+ 
+dgsparse
+m
+−
+C
+X
+ℓ=1
+gℓdgsparse
+ℓ
+!
+= −gm
+C
+X
+ℓ=1
+gℓdgsparse
+ℓ
+= −gm
+X
+ℓ∈I
+gℓdgsparse
+ℓ
+.
+Full routing scope. Under full routing scope, all blocks participate in the gated attention computation during
+training. Therefore, an unselected block m /∈I still has its own gate gradient dgfull
+m
+. Using the same softmax
+backward identity,
+dsfull
+m
+= gm
+ 
+dgfull
+m
+−
+C
+X
+ℓ=1
+gℓdgfull
+ℓ
+!
+= −gm
+ 
+−dgfull
+m
++
+C
+X
+ℓ=1
+gℓdgfull
+ℓ
+!
+.
+E
+Kernel Implementation
+We provide a custom Triton implementation for the sparse scope soft gated attention used during SAS training.
+The block gate is organized as a table log G, where each query position and attention head holds one log
+gate value for every previous context block. Block selection is encoded by a per query threshold τ: a block
+is selected when its log gate reaches the threshold (log gm ≥τ), which realizes the Top-K set I without an
+explicit sort. Non selected blocks are masked out of the softmax so that only the selected set S participates.
+For simplicity of presentation, the pseudocode omits the grouped query attention, and variable length packing
+that the full implementation supports, and focuses on the gate injection and the sparse scope.
+Forward pass. The kernel traverses causal key value blocks in a tiled manner. The current (self) block always
+24
+
+
+uses a unit gate and a causal mask, so local causal attention is always preserved. For each earlier block, the
+kernel maps key positions to their block index, loads the corresponding log gate, and adds it to the qK⊤
+S
+scores before the online softmax update; blocks below the threshold are masked to −∞and an entire block
+is skipped when no query in the tile selects it.
+Backward pass. We follow the standard recomputation based attention backward procedure. The kernel
+first computes the row-wise correction term ∆= P
+d Od · dOd. It then recomputes the gated attention
+probabilities from the saved log-sum-exp values and uses them to obtain gradients for Q, K, and V. In
+addition, the gradient of each block log gate is accumulated by summing the score gradients over all tokens
+inside the corresponding selected block, producing a compact block-level gradient tensor that is propagated
+back to the selector. As a result, the implementation supports sparse scope gated attention training without
+storing the dense attention matrix.
+Algorithm 3 Forward Pass of Fused SAS Kernel
+def gated_scores(q, k, logG, tau, q_tile, kv_tile, B, sm_scale, self_block):
+S = sm_scale * matmul(q, k.T)
+b = block_id(kv_tile, B)
+if self_block:
+# current block: unit gate (log 1 = 0), causal mask
+return apply_causal_mask(S, q_tile, kv_tile)
+log_g = load(logG, q_tile, b) # [q_rows] per-query block gate
+active = log_g >= load(tau, q_tile) # selected blocks only (Top-K set)
+S = S + broadcast(log_g, kv_tile) # inject gate inside softmax
+return where(active, S, -inf) # mask out non-selected blocks
+def soft_gate_fwd(Q, K, V, logG, tau, B, sm_scale):
+O, LSE = empty_output(Q, V), empty_lse(Q)
+for q_tile in tiles(Q):
+q = load(Q, q_tile)
+m, l = full(q.rows, -inf), zeros(q.rows)
+acc = zeros(q.rows, V.dim)
+# Phase 1: self block (causal) ; Phase 2: earlier blocks (sparse)
+for kv_tile in causal_tiles(K, q_tile):
+self_block = in_self_block(kv_tile, q_tile, B)
+if (not self_block) and no_query_selects(logG, tau, q_tile, kv_tile, B):
+continue # skip fully non-selected block
+k, v = load(K, kv_tile), load(V, kv_tile)
+S = gated_scores(q, k, logG, tau, q_tile, kv_tile, B, sm_scale, self_block)
+m_new = maximum(m, rowmax(S))
+P = exp(S - m_new[:, None])
+acc = acc * exp(m - m_new)[:, None] + matmul(P, v)
+l = l * exp(m - m_new) + rowsum(P)
+m = m_new
+O[q_tile] = acc / l[:, None]
+LSE[q_tile] = m + log(l)
+return O, LSE
+25
+
+
+Algorithm 4 Backward Pass of Fused SAS Kernel
+def soft_gate_bwd(Q, K, V, logG, tau, O, dO, LSE, B, sm_scale):
+dQ, dK, dV = zeros_like(Q), zeros_like(K), zeros_like(V)
+dLogG, Delta = zeros_like(logG), rowsum(O * dO)
+# ---- Pass 1: dQ and dLogG (loop q outer, kv inner) ----
+for q_tile in tiles(Q):
+q, do = load(Q, q_tile), load(dO, q_tile)
+lse, delta = load(LSE, q_tile), load(Delta, q_tile)
+dq = zeros_like(q)
+for kv_tile in causal_tiles(K, q_tile):
+self_block = in_self_block(kv_tile, q_tile, B)
+if (not self_block) and no_query_selects(logG, tau, q_tile, kv_tile, B):
+continue
+k, v = load(K, kv_tile), load(V, kv_tile)
+S = gated_scores(q, k, logG, tau, q_tile, kv_tile, B, sm_scale, self_block)
+P = exp(S - lse[:, None])
+dS = P * (matmul(do, v.T) - delta[:, None])
+dq += sm_scale * matmul(dS, k)
+if not self_block:
+for b in blocks(kv_tile, B):
+# gate gradient: sum dS over kv tokens in the selected block
+dLogG[q_tile, b] += rowsum(dS[:, tokens(kv_tile, b)])
+dQ[q_tile] = dq
+# ---- Pass 2: dK and dV (loop kv outer, q inner) ----
+for kv_tile in tiles(K):
+k, v = load(K, kv_tile), load(V, kv_tile)
+dk, dv = zeros_like(k), zeros_like(v)
+for q_tile in attending_q_tiles(Q, kv_tile):
+self_block = in_self_block(kv_tile, q_tile, B)
+if (not self_block) and no_query_selects(logG, tau, q_tile, kv_tile, B):
+continue
+q, do = load(Q, q_tile), load(dO, q_tile)
+lse, delta = load(LSE, q_tile), load(Delta, q_tile)
+S = gated_scores(q, k, logG, tau, q_tile, kv_tile, B, sm_scale, self_block)
+P = exp(S - lse[:, None])
+dS = P * (matmul(do, v.T) - delta[:, None])
+dk += sm_scale * matmul(dS.T, q)
+dv += matmul(P.T, do)
+dK[kv_tile], dV[kv_tile] = dk, dv
+return dQ, dK, dV, dLogG
+26

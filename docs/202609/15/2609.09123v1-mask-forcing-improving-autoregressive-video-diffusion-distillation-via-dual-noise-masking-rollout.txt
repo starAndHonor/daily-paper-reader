@@ -1,0 +1,1831 @@
+MASK
+FORCING:
+IMPROVING
+AUTOREGRESSIVE
+VIDEO DIFFUSION DISTILLATION VIA DUAL-NOISE
+MASKING ROLLOUT
+Zhuoran Zhao1,2, Shengju Qian3, Tongtong Liang4, Xianghao Kong2, Songchun Zhang2,
+Junchao Huang5, Guian Fang6, Xin Wang3, Pan Hui1,2, Anyi Rao2
+1HKUST(GZ) 2HKUST 3LIGHTSPEED 4UCSD 5CUHK(SZ) 6NUS
+ABSTRACT
+Autoregressive (AR) video diffusion models have shown great potential in real-
+time video generation. Recent methods distill pretrained bidirectional video dif-
+fusion models into causal AR students through Distribution Matching Distilla-
+tion (DMD), but the generated videos often suffer from over-saturation and over-
+smoothing issues, resulting in limited visual quality and realism. The key con-
+tributing factor is the mode-seeking behavior of the reverse KL objective in DMD,
+which can cause the student distribution to collapse onto only a few modes of the
+teacher distribution. To address this, we propose Mask Forcing, a Dual-Noise
+Masking Rollout strategy that perturbs the AR student self-rollout to mitigate
+mode collapse induced by reverse-KL mode seeking. The core idea is to inject
+cleaner signals into noisy rollout inputs via random masks along spatial and tem-
+poral axes during the self-rollout process of AR diffusion distillation. Such per-
+turbations encourage the student rollouts to explore more regions of the teacher
+distribution, allowing DMD to provide learning signals beyond the modes already
+covered by the student. Moreover, the cleaner tokens act as denoising guidance for
+other noisier tokens, improving the intermediate rollout predictions and reducing
+error accumulation. Extensive experiments demonstrate that our method improves
+multiple AR video diffusion distillation methods with higher visual quality effi-
+ciently, without incorporating real video data or additional post-training stages.
+Project page: https://alicezrzhao.github.io/mask-forcing.
+1
+INTRODUCTION
+Video diffusion models have advanced rapidly in recent years, enabling the generation of long-
+duration and high-fidelity videos (Wan et al., 2025; Kong et al., 2024; HaCohen et al., 2026). How-
+ever, these models typically rely on bidirectional attention and multiple denoising timesteps, limiting
+their applicability to real-time streaming generation scenarios. Therefore, autoregressive (AR) dif-
+fusion models have emerged as a promising paradigm for real-time video generation (Huang et al.,
+2026b; Zhu et al., 2026; Yang et al., 2025; Hu et al., 2026; Gao et al., 2026). By leveraging causal
+attention mechanisms, AR diffusion models can generate future chunks sequentially, conditioning
+each chunk on previously generated ones via causal dependencies. This formulation supports real-
+time inference and unbounded video generation without recomputing previously generated frames.
+Teacher Forcing (Hu et al., 2024; Gao et al., 2025) and Diffusion Forcing (Chen et al., 2024) are
+two representative paradigms for training causal autoregressive video diffusion models. Teacher
+Forcing trains the model to predict the next frames conditioned on the ground-truth frames, leading
+to exposure bias since the model can only condition on its own predictions during inference. Dif-
+fusion Forcing instead trains the model by assigning each frame with independently sampled noise.
+While this paradigm alleviates the distribution shift, it still fails to align training with inference.
+Self Forcing (Huang et al., 2026b) bridges the train-test gap by training the model with self-rollout,
+generating the next frame based on previously self-generated frames rather than ground-truth con-
+text and distilling the teacher’s knowledge via a DMD loss (Yin et al., 2024b). However, a critical
+1
+arXiv:2609.09123v1  [cs.CV]  8 Sep 2026
+
+
+Visual Quality
+Distribution
+Self Forcing
++ Ours
+Single-Prompt Short Video
+Single-Prompt Long Video
+Camera-Controlled I2V
+LongLive
++ Ours
+Self Forcing
++ Ours
+Camera Trajectory
+Causal Forcing
++ Ours
+Figure 1: Mask Forcing improves autoregressive video generation through a Dual-Noise Masking
+Rollout strategy that alleviates the mode-seeking behavior of the reverse KL objective in DMD,
+enhancing video visual quality efficiently without incorporating real video data or additional post-
+training. We show consistent improvement in visual realism across short-video, long-video, and
+camera-controlled autoregressive generation.
+limitation of combining self-rollout with a DMD loss is that it often produces over-saturated and
+over-smoothed videos, exhibiting low visual quality and limited realism.
+This phenomenon can be attributed to two key factors. First, the reverse-KL objective in DMD ex-
+hibits mode-seeking behavior that tends to cover only the high-probability regions of the teacher’s
+distribution (Chen et al., 2025; Cai et al., 2026; Zheng et al., 2026b). This behavior induces mode
+collapse, leading to reduced diversity in the generated videos. Second, the intermediate rollout pre-
+dictions receive no explicit training signal at each step and suffer from error accumulation. Recent
+methods mitigate these issues by explicitly incorporating real data into the training objective (Yin
+et al., 2024a; Chen et al., 2026; Liu et al., 2026), but they rely on complex data-curation processes or
+additional post-training, which further complicates the multi-stage training pipeline. Another line of
+research incorporates reinforcement learning post-training to improve the quality of the distilled AR
+model (Zhang et al., 2026), but its performance still relies on reward models and is sensitive to mul-
+tiple hyperparameters. A complementary line of work balances mode-seeking and mode-covering
+objectives (Cai et al., 2026; Zheng et al., 2026b; Li et al., 2026a), but the generated videos can still
+appear over-saturated and lack fine-grained visual details. This begs the question: can we improve
+AR video diffusion distillation without real data curation or additional post-training stages?
+To address this question, we focus on the self-rollout trajectory, which determines both the student
+samples exposed to DMD and the intermediate predictions reused in subsequent denoising and au-
+toregressive conditioning. Perturbing the rollout trajectory can expose DMD to a broader range of
+student samples, allowing it to provide learning signals beyond the modes the student already cov-
+ers. Moreover, cleaner tokens can serve as context for denoising noisier tokens (Chefer et al., 2026),
+helping improve intermediate rollout predictions and reduce error accumulation. Based on these
+motivations, we propose Mask Forcing, which injects randomly masked cleaner tokens into the roll-
+2
+
+
+out input to mitigate both mode-seeking behavior and error accumulation. At each rollout transition,
+Mask Forcing randomly samples a mask and an additional timestep corresponding to a lower noise
+level than the original one and injects the cleaner tokens into the rollout input. Specifically, the latent
+positions selected by the mask are re-noised to this lower noise level, while the remaining positions
+are kept at the original level, producing a dual-noise rollout input. The conditioning timestep fed to
+the model remains the original one, requiring the model to denoise inputs whose local noise levels
+are partially inconsistent with the global timestep. Randomizing both the mask and the lower-noise
+timestep diversifies the student rollout trajectory and broadens the region of sample space explored
+during training, enabling DMD to provide learning signals from teacher modes not yet covered by
+the student. Beyond perturbing the rollout trajectory, Mask Forcing uses lower-noise tokens as con-
+text for denoising noisier tokens. This design is consistent with the observation in Self-Flow (Chefer
+et al., 2026) that cleaner context in mixed-noise inputs can facilitate denoising, thereby improving
+intermediate predictions and reducing error accumulation during self-rollout.
+Extensive experiments across multiple AR video distillation methods validate the effectiveness of
+our method in both chunk-wise and frame-wise settings. Representative results in Fig. 1 show
+that our method significantly improves the visual quality against various baselines, with enhanced
+realism and richer high-frequency details. Comprehensive evaluations demonstrate improvements
+across multiple benchmarks. In summary, our contributions are as follows:
+• We propose Mask Forcing, a simple and effective approach that alleviates the mode-seeking
+behavior of the reverse-KL objective in self-rollout DMD training for AR video diffusion
+distillation, without incorporating real video data or additional post-training stages.
+• We introduce a Dual-Noise Masking Rollout strategy that injects lower-noise signals into
+noisy rollout inputs through random masks along spatial and temporal axes. Such pertur-
+bations diversify student rollout trajectories to cover more teacher modes, while providing
+cleaner context for denoising to reduce error accumulation.
+• Extensive experiments on multiple AR video distillation methods demonstrate the effec-
+tiveness of Mask Forcing in both chunk-wise and frame-wise settings, with significantly
+improved visual quality and faster convergence. Comprehensive ablations further validate
+the effects of different masking mechanisms.
+2
+RELATED WORK
+2.1
+AUTOREGRESSIVE VIDEO GENERATION
+Autoregressive video diffusion models enable real-time video generation by sequentially generating
+videos conditioned on historical context. Teacher Forcing (Hu et al., 2024; Gao et al., 2025) de-
+noises the current chunk conditioned on clean ground-truth context, which suffers from a train-test
+gap and exposure bias. Diffusion Forcing (Chen et al., 2024) assigns each frame with independently
+sampled noise to approximate rollout distributions, but still fails to align training with inference.
+Self Forcing (Huang et al., 2026b) bridges this gap by performing AR self-rollout on self-generated
+histories and distills a bidirectional teacher into the causal student via a DMD loss. Causal Forc-
+ing (Zhu et al., 2026) further uses an AR teacher for ODE initialization to reduce the architecture
+gap. LongLive (Yang et al., 2025) extends causal AR generation to long videos via short window
+attention with frame sink and streaming long tuning. Despite these advances, distilled AR models
+still exhibit limited visual quality and realism, motivating methods that introduce additional training
+signals, real data, or post-training stages. DMD2 (Yin et al., 2024a) introduces a GAN loss and real
+training data, but suffers from training instability and additional real data curation. DFD (Chen et al.,
+2026) integrates real data into the distillation score, but requires post-training on a DMD2-pretrained
+model. Astrolabe (Zhang et al., 2026) explores RL post-training on distilled AR models, but perfor-
+mance is limited by reward models. In contrast, Mask Forcing mitigates mode collapse by perturbing
+student rollouts, improving AR distillation without real video supervision or post-training.
+2.2
+MODE SEEKING AND MODE COVERING IN VIDEO DIFFUSION DISTILLATION
+DMD (Yin et al., 2024b) and DMD2 (Yin et al., 2024a) use score-based reverse KL distribution
+matching to align student-generated samples with the teacher distribution. This mode-seeking ob-
+3
+
+
+jective can improve sample fidelity but may concentrate the student distribution on a limited subset
+of teacher modes. DMD2 further introduces an adversarial loss on real data. In contrast, trajectory-
+based consistency objectives are commonly associated with the mode-covering behavior of forward
+divergence (Song et al., 2023; Kim et al., 2024; Lu & Song, 2025). Such objectives can cover
+more teacher modes, but may average across modes and exhibit lower sample quality. Recent meth-
+ods balance these behaviors by combining complementary objectives. Mode Seeking meets Mean
+Seeking (Cai et al., 2026) uses separate heads for supervised flow matching on long videos and
+reverse-KL distribution matching against a short-video teacher. rCM (Zheng et al., 2026b) aug-
+ments continuous-time consistency with score distillation regularization. DistillAlign (Li et al.,
+2026a) analyzes the initialization effects and jointly optimizes DMD and a consistency distillation
+loss. Unlike these methods, Mask Forcing retains the original DMD objective and instead perturbs
+the student rollouts via dual-noise masking. This broadens the student distribution exposed to DMD,
+allowing it to provide learning signals from teacher modes not reached by standard self-rollout.
+2.3
+MASKED MODELING
+Masked modeling has become a powerful paradigm for representation and generative learning in
+computer vision (He et al., 2022; Bao et al., 2021; Chang et al., 2022). The core idea is to mask a
+portion of the input and train the model to recover it. In representation learning, MAE (He et al.,
+2022) masks a large portion of random patches from the input image and reconstructs them in pixel
+space by leveraging context from visible parts. In generative modeling, MaskGIT (Chang et al.,
+2022) adopts a mask-then-predict objective with parallel iterative decoding to synthesize images.
+Masking can also be realized through heterogeneous noise levels that control the information re-
+tained by each token. For multi-modal generation, Self-Flow (Chefer et al., 2026) introduces a
+self-supervised framework for flow matching that combines mix-timestep scheduling with masking
+for representation alignment. In AR generation, Diffusion Forcing associates each frame with a ran-
+dom, independent noise level, which can be regarded as partial masking along the time axis. Inspired
+by these works, we introduce dual-noise masking into AR video distillation to diversify self-rollout
+trajectories and provide cleaner context for denoising noisier tokens.
+3
+METHOD
+3.1
+PRELIMINARIES
+Autoregressive (AR) Video Generation. An AR video model represents a video as a sequence
+of F chunks x1:F = (x1, . . . , xF ), where each chunk may include one or more latent frames.
+It factorizes the text-conditioned joint distribution as p(x1:F | c) = QF
+i=1 p(xi | x<i, c), where
+c denotes the text prompt and x<i = (x1, . . . , xi−1) denotes the preceding video chunks. Each
+conditional distribution p(xi | x<i, c) is modeled using a diffusion process following the flow-
+matching formulation, where the noisy sample is defined as xt
+i = (1 −t)xi + tϵi, with ϵi ∼N(0, I)
+and t ∈[0, 1]. Each video chunk is generated through this denoising process conditioned on c and
+the historical context x<i, which is stored in the key-value (KV) cache. Teacher Forcing (TF) and
+Diffusion Forcing (DF) are two typical training paradigms for AR video models using frame-wise
+MSE loss between predicted and ground-truth targets. In TF, the timestep t is shared across all
+frames, and the context consists of clean ground-truth frames. In DF, each frame is assigned an
+independently sampled timestep ti, and the historical context is noisy. To mitigate the train-test
+gap and alleviate error accumulation, Self Forcing unrolls the model on its own generated samples
+during training, with xθ
+1:F ∼QF
+i=1 pθ(xi | x<i, c).
+Distribution Matching Distillation (DMD). DMD (Yin et al., 2024b;a) distills a pretrained multi-
+step teacher model into a few-step student model Gθ by minimizing the reverse KL divergence from
+the student generator induced distribution pfake to the teacher distribution preal. Specifically, DMD
+adopts a reverse KL objective, whose gradient is used to update the student model:
+∇θLDMD = E[∇θDKL(pfake,t||preal,t)],
+(1)
+DKL(pfake,t||preal,t) = E
+
+log pfake,t(xt)
+preal,t(xt)
+
+= −E[log preal,t(xt) −log pfake,t(xt)],
+(2)
+4
+
+
+𝒙𝒊"𝟏
+𝒕𝒋
+Self-Rollout DMD Training
+(b) Dual-Noise Masking Rollout
+𝒙𝒊
+𝒕𝒋
+𝒙𝒊"𝟐
+𝒕𝒋
+⨀
+AR Student 𝐺!
+…
+Real Score
+Estimator
+Fake Score
+Estimator
+Add Noise
+𝑠!"#$
+𝑠%#&"
+∇!𝐷"#
+(a) Standard Self-Rollout
+Higher Noise
+Lower Noise
+Noisier State 𝑥!!
+Cleaner State 𝑥!"
+#
+Binary Mask 𝑀
+Timestep Schedule
+𝒙𝒊
+𝒕𝒌
+#
+𝒙𝒊
+𝒕𝒋
+⨀
+𝑴𝒊
+𝟏−𝑴𝒊
+⨁
+𝒙𝒊
+𝒕$%&
+AR Student 𝐺!
+%𝒙𝒊,𝒋"𝟏
+𝟎
+%𝒙𝒊,𝒋
+𝟎
+Continue Rollout
+Mode Seeking
+Broader Mode Coverage
+𝑝%#&"
+𝑝!"#$
+𝑝!"#$
+𝑝%#&"
+𝑡)
+𝑡)*+
+𝑡,
+-
+1
+0
+𝑡.
+Timestep 𝑡
+Figure 2: (a) Standard self-rollout DMD training suffers from mode collapse due to the mode-
+seeking reverse-KL objective, resulting in over-saturation and limited realism. (b) Mask Forcing
+perturbs the student rollout trajectory through dual-noise masking rollout, encouraging broader
+teacher-mode coverage while providing cleaner context for denoising noisy tokens.
+where xt is a noisy sample corresponding to timestep t: xt = (1 −t)Gθ(z) + tϵ with ϵ ∼N(0, I),
+and z is latent drawn from random noise. The gradient to update G is formulated as the difference
+between two score functions:
+∇θLDMD = E
+
+−(sreal(xt, t) −sfake(xt, t))dG
+dθ
+
+,
+(3)
+where sreal(xt, t) = ∇xt log preal,t(xt), sfake(xt, t) = ∇xt log pfake,t(xt) denote the scores of the
+teacher and student distributions, respectively. However, the reverse KL objective is inherently
+mode-seeking and may concentrate the student distribution on a limited set of teacher modes, leading
+to over-saturation and reduced realism (Chen et al., 2026).
+3.2
+DUAL-NOISE MASKING ROLLOUT
+3.2.1
+OVERVIEW
+We propose a dual-noise masking rollout strategy for the self-rollout DMD training to mitigate mode
+collapse induced by the mode-seeking behavior of reverse KL in AR diffusion distillation. The core
+idea is to inject low-noise signals into noisy rollout inputs during the rollout process via random
+masks applied both within and across chunks. These cleaner signals serve two purposes. First, they
+perturb the student rollouts, encouraging broader coverage of high-density regions in the teacher
+distribution and thereby mitigating mode collapse and visual artifacts such as over-saturation and
+over-smoothing. Second, cleaner tokens provide context for denoising noisier tokens, following the
+principle of masked modeling. An overview of our method is shown in Fig. 2.
+3.2.2
+SELF-ROLLOUT WITH DUAL-NOISE MASKING
+An AR video diffusion model represents a video as a sequence of F chunks x = (x1, x2, ..., xF ),
+where each chunk contains one or more latent frames. Using the flow-matching formulation, a noisy
+chunk is defined as:
+xt
+i = (1 −t) x0
+i + t ϵ,
+ϵ ∼N(0, I),
+(4)
+where t ∈[0, 1] denotes the timestep, which interpolates between the clean chunk at t = 0 and
+pure Gaussian noise at t = 1. During the self-rollout training, the student model Gθ generates the
+video chunk by chunk and each chunk is produced by iterative denoising over a fixed schedule of T
+timesteps {t1, . . . , tT } selected from the Nt = 1000 training timesteps, where tT = 1 denotes pure
+noise, t0 = 0 denotes the clean output. We use T = 4 denoising steps throughout training. For each
+5
+
+
+chunk index i, at denoising timestep tj, the student model predicts a clean chunk estimate ˆx0
+i,j from
+the noisy chunk xtj
+i , conditioned on the previously generated clean chunks x<i, the text prompt c,
+and the timestep tj:
+ˆx0
+i,j = Gθ
+
+xtj
+i | x<i, c, tj
+
+.
+(5)
+The DMD objective is evaluated only on the completed self-rollout, providing no explicit training
+signal for intermediate predictions at each step. Since intermediate predictions are reused in sub-
+sequent denoising steps and as context for later chunks, their errors can accumulate throughout the
+rollout. Meanwhile, the reverse-KL objective is inherently mode-seeking and concentrates the stu-
+dent rollout distribution on a narrow set of high-density modes of the teacher distribution. Together,
+these limitations may contribute to degraded visual quality and realism in generated videos.
+We address this issue by injecting cleaner signals into the student model input to perturb the stu-
+dent rollout trajectory, encouraging the student rollouts to reach more high-density regions of the
+teacher distribution. Specifically, we adopt a dual-timestep scheduling strategy inspired by Self-
+Flow (Chefer et al., 2026). We retain the denoising schedule of the base model and define ∆as
+the size of the timestep window measured in training timestep units, corresponding to a normal-
+ized width of ∆/Nt. At each denoising timestep tj, we uniformly sample an additional timestep t′
+k
+within the corresponding window in timestep space:
+ℓj = max
+
+tmin, tj −∆
+Nt
+
+,
+(6)
+t′
+k ∼Uniform
+ [ℓj, tj]
+
+.
+(7)
+Here, t′
+k corresponds to a lower noise level than tj, and the floor tmin prevents the injected signal
+from being nearly clean.
+For each chunk i, we construct a binary mask M i with a masking ratio α. The mask is sampled
+independently across frames within a chunk (spatial axis) and across chunks (temporal axis), so
+that different frames of the same chunk and different chunks receive different dual-noise patterns.
+We observe that such mask diversity affects the visual quality and motion dynamics balance of the
+generated videos. At the j-th denoising step, corresponding to timestep tj, we sample ϵj ∼N(0, I)
+and use it to re-noise the clean prediction from the previous step ˆx0
+i,j+1 at t′
+k and tj, yielding the
+cleaner sample xt′
+k
+i and the noisier sample xtj
+i , respectively:
+xt′
+k
+i = (1 −t′
+k) ˆx0
+i,j+1 + t′
+k ϵj,
+(8)
+xtj
+i = (1 −tj) ˆx0
+i,j+1 + tj ϵj.
+(9)
+We use the random mask M i to select tokens from the cleaner sample at masked positions (M i = 1),
+while retaining tokens from the original noisier sample at the remaining positions. This yields the
+dual-noise input:
+xtmix
+i
+= M i ⊙xt′
+k
+i + (1 −M i) ⊙xtj
+i .
+(10)
+Consequently, the student generator Gθ receives the dual-noise input at denoising step j and pro-
+duces the updated clean prediction:
+ˆx0
+i,j = Gθ
+ xtmix
+i
+| x<i, c, tj
+
+.
+(11)
+The student generator is conditioned on the scheduled timestep tj, while cleaner tokens in the dual-
+noise input are treated as a training perturbation. The model follows the original denoising schedule
+at inference. At the next denoising step, ˆx0
+i,j is re-noised at the scheduled timestep tj−1 and a newly
+sampled cleaner timestep within its corresponding timestep window. The two noisy samples are then
+combined using the mask M i to form the next dual-noise input, replacing the standard re-noising
+operation in self-rollout. Once the current chunk reaches the sampled exit step s, the corresponding
+clean prediction ˆx0
+i,s is used to update the KV cache and condition subsequent chunks.
+This dual-noise perturbation achieves two goals. First, it diversifies the student rollout trajectories,
+so that the distillation score in the DMD loss is evaluated over a broader region of the sample
+space rather than a narrow subset of teacher modes. This encourages the student model to explore
+more diverse modes and prevents it from collapsing onto the high-density modes of the teacher
+model induced by the reverse KL objective. Second, since the masked tokens carry lower noise, the
+student model is guided to exploit them as context, helping denoise the noisier tokens and improving
+intermediate rollout predictions.
+6
+
+
+3.2.3
+DISTRIBUTIONAL ANALYSIS
+We analyze the student rollout distribution induced by dual-noise masking. We characterize it as a
+mixture over masking trajectories and decompose its reverse-KL objective using mutual information.
+Fix a text condition c and a DMD score-noising timestep τ, distinct from the denoising timesteps
+used during self-rollout. Let Xτ denote the completed student rollout noised at τ and let pτ denote
+the corresponding teacher noisy marginal. The masking trajectory V is defined as the collection of
+all masks and lower-noise timesteps sampled during the rollout, with V ∼π, where π is determined
+by the mask ratio, timestep window, and mask sampling scheme.
+Conditioned on a masking trajectory V = v, qv
+θ,τ(x) denotes the corresponding student distribu-
+tion. Marginalizing over V gives the masked-rollout distribution ¯qθ,τ(x) := EV ∼π[qV
+θ,τ(x)]. The
+dependence between V and Xτ conditioned on c is measured by their mutual information, given by
+Iθ(V ; Xτ | c) = EV ∼π
+
+DKL
+ qV
+θ,τ∥¯qθ,τ
+
+.
+(12)
+The reverse-KL objective of the masked-rollout distribution can be decomposed as
+DKL (¯qθ,τ∥pτ) = EV ∼π
+
+DKL
+ qV
+θ,τ∥pτ
+
+−Iθ(V ; Xτ | c).
+(13)
+DKL(¯qθ,τ∥pτ) is the divergence between the marginal masked-rollout distribution and the teacher
+marginal. EV ∼π[DKL(qV
+θ,τ∥pτ)] is the average divergence between each trajectory-conditioned dis-
+tribution and the teacher marginal, while Iθ(V ; Xτ | c) measures their output diversity.
+When different masking trajectories induce distinct conditional distributions, Iθ(V ; Xτ | c) > 0.
+Individual trajectory-conditioned distributions may remain locally concentrated on different teacher-
+supported regions, while their marginal mixture can collectively cover these regions. This explains
+how marginalizing over trajectories can alleviate mode-seeking behavior in the overall student dis-
+tribution without requiring individual conditional distributions to be mode-covering. The detailed
+derivation is provided in Appendix 6.1.
+The mask ratio, timestep window, and mask sampling scheme determine π and the strength of the in-
+duced rollout perturbations. Under weak perturbations, different masking trajectories induce similar
+output distributions, resulting in small Iθ(V ; Xτ | c), and limited additional teacher-mode coverage.
+Stronger perturbations can produce more distinct output distributions and increase Iθ(V ; Xτ | c),
+but excessive perturbations can move them away from teacher-supported regions and increase their
+average reverse KL. These factors balance trajectory diversity and teacher alignment. We study their
+effects through ablations in Sec. 4.2.
+4
+EXPERIMENTS
+Implementation Details. We adopt Self Forcing (Huang et al., 2026b), LongLive (Yang et al.,
+2025), and Causal Forcing (Zhu et al., 2026) as our baselines, using Wan2.1-T2V-1.3B (Wan et al.,
+2025) as the base model and Wan2.1-T2V-14B as the teacher. Our method is applied during the
+self-rollout DMD training stage. The generated videos consist of 81 frames at a resolution of 832
+× 480, and the training prompts are sampled from the VidProM dataset (Wang & Yang, 2024). We
+implement each baseline under both chunk-wise and frame-wise autoregressive generation settings,
+with 3 latent frames per chunk in the chunk-wise setting. Since Self Forcing and LongLive do
+not release their frame-wise ODE initialization models, we train these models using ODE-paired
+data distilled from the bidirectional teacher. For Causal Forcing, we use its causal student model
+initialized via ODE distillation from the autoregressive teacher. During training, we set the mask
+ratio α to 0.2, the timestep window ∆to 250, and the floor tmin to the value at schedule index 20. In
+the chunk-wise setting, the mask is sampled independently across frames within a chunk and across
+chunks, while in the frame-wise setting, the mask is sampled independently across chunks. This
+training procedure takes approximately 1.5k steps and 14 hours on 8 GPUs.
+Evaluation. We adopt the 100-prompt set with rich motion and complex actions from Causal Forc-
+ing and VBench as our primary evaluation benchmarks. For the 100-prompt set, we use HPSv3 (Ma
+et al., 2025) to evaluate the overall visual quality and employ VisionReward (Xu et al., 2026) to
+report vision reward score (Vision.), instruction following (Instruct.), and motion quality (MQ) sub-
+scores following Causal Forcing. Dynamic Degree (Dynamic.) is used to evaluate motions in video
+7
+
+
+Self Forcing
+Self Forcing
++ Ours
+Causal Forcing
+Causal Forcing
++ Ours
+LongLive
+LongLive
++ Ours
+Figure 3: Qualitative comparison of our method (+Ours) against different baselines. Visual results
+show that our method generates videos with higher visual quality and greater realism, exhibiting
+fewer over-saturation artifacts and richer high-frequency details.
+Table 1: Quantitative results on the 100-prompt set and VBench benchmarks under chunk-wise and
+frame-wise settings.
+Method
+HPSv3 ↑
+Vision. ↑
+Instruct. ↑
+MQ ↑
+Dynamic. ↑
+Total ↑
+Quality ↑
+Semantic ↑
+Chunk-wise
+Self Forcing
+9.55
+10.10
+38.50
+15.88
+70
+81.89
+82.99
+77.49
++ Ours
+9.84+.29
+11.37+1.27
+45.03+6.53
+20.49+4.61
+82+12
+82.61+.72
+83.68+.69
+78.74+1.25
+Causal Forcing
+9.37
+10.36
+40.41
+17.73
+76
+82.67
+83.58
+78.98
++ Ours
+10.17+.80
+11.58+1.22
+46.30+5.89
+21.54+3.81
+82+6
+82.76+.09
+83.69+.11
+79.01+.03
+LongLive
+9.11
+10.77
+42.48
+21.20
+76
+82.02
+82.87
+78.66
++ Ours
+10.14+1.03
+11.00+.23
+42.65+.17
+22.34+1.14
+69−7
+82.75+.73
+83.71+.84
+78.91+.25
+Frame-wise
+Self Forcing
+9.34
+9.45
+35.62
+18.27
+53
+80.73
+81.72
+76.78
++ Ours
+9.79+.45
+10.49+1.04
+39.60+3.98
+19.07+.80
+61+8
+81.49+.76
+82.55+.83
+77.23+.45
+Causal Forcing
+9.67
+10.58
+37.56
+20.25
+28
+80.64
+81.55
+77.00
++ Ours
+9.96+.29
+10.71+.13
+39.60+2.04
+23.69+3.44
+52+24
+82.28+1.64
+83.19+1.64
+78.62+1.62
+LongLive
+9.19
+9.35
+38.50
+12.14
+25
+80.97
+81.86
+77.41
++ Ours
+9.46+.27
+10.55+1.20
+42.78+4.28
+19.32+7.18
+76+51
+81.47+.50
+82.33+.47
+78.05+.64
+with RAFT (Teed & Deng, 2020). All metrics are scaled by 100 for readability except for HPSv3.
+For VBench, we report the Total Score, Quality Score, and Semantic Score with the 946 stan-
+dard prompts. For the long-video generation setting, we additionally evaluate our method against
+LongLive with the first 100 prompts from the MovieGen (Polyak et al., 2024) extended version and
+the VBench-Long official prompt set on 30-second video generation following LongLive.
+4.1
+COMPARISONS WITH BASELINES
+Quantitative Comparisons. As shown in Tab. 1, Mask Forcing improves all baseline methods on
+both visual quality (HPSv3 & Vision.) and semantic score (Instruct.) on the 100-prompt set under
+both chunk-wise and frame-wise settings. Especially for visual quality, the consistent improvements
+in visual quality align with our motivation of perturbing student rollout trajectories to alleviate arti-
+facts associated with mode collapse. For motion evaluation, incorporating Mask Forcing produces
+higher motion quality (MQ) and dynamic degree (Dynamic.). Though the dynamic degree score
+for LongLive is lower, this can be attributed to generic VBench rewarding drift-induced optical
+flow (Minar et al., 2026). For the VBench benchmark, including Mask Forcing surpasses all base-
+8
+
+
+0 s
+30 s
+6 s
+12 s
+18 s
+24 s
+LongLive
+LongLive
++ Ours
+LongLive
+LongLive
++ Ours
+Figure 4: Qualitative results of single-prompt long-video setting on LongLive. Incorporating our
+method (+Ours) enhances the video generation quality with more visual details.
+Table 2: Single-prompt 30s long video generation on MovieGen and VBench-Long benchmarks.
+Method
+HPSv3 ↑
+Vision. ↑
+Instruct. ↑
+MQ ↑
+Dynamic. ↑
+Total ↑
+Quality ↑
+Semantic ↑
+LongLive
+8.44
+14.31
+62.04
+18.84
+70
+83.91
+84.71
+80.70
++ Ours
+9.11+.67
+14.93+.62
+66.02+3.98
+19.37+.53
+64−6
+84.51+.60
+85.28+.57
+81.44+.74
+line methods across the VBench metrics in both settings. Additionally, we evaluate Mask Forcing
+on single-prompt long video generation with LongLive, integrating it into both the initialization and
+streaming long-video tuning stages. As reported in Tab. 2, our method can also effectively improve
+visual quality in the long video generation setting.
+Qualitative Comparisons. Fig. 3 presents the qualitative comparisons of our method and the base-
+lines on the 100-prompt set and MovieGen. The baseline methods commonly exhibit limited visual
+quality, with over-saturation and over-smoothing artifacts. Specifically, Self Forcing produces the
+woman’s face with unnaturally high-contrast coloration and the creature with a visually flat appear-
+ance, while LongLive generates scenes lacking fine-grained details. The rock-man and kitchen ex-
+amples produced by Causal Forcing also exhibit severe over-saturation. Incorporating Mask Forcing
+effectively alleviates these issues, greatly enhancing the visual quality and realism of the generated
+videos. We additionally present the qualitative results for long video generation in Fig. 4. Incorpo-
+rating Mask Forcing produces higher visual quality with more high-frequency details, such as the
+fluffy fur and candle in case 1 and the fine-grained stone and sand textures in case 2.
+4.2
+ABLATION STUDIES
+We conduct comprehensive ablation studies on the 100-prompt set with Self Forcing as the baseline
+to validate the design choices in Mask Forcing. We jointly report HPSv3 and Dynamic Degree to
+measure visual quality and motion dynamics during analysis since models trained with DMD may
+suffer from reduced motion dynamics as training progresses. We further compare convergence speed
+across different baselines with and without Mask Forcing.
+Mask Ratio α. We compare different mask ratio values for the dual-noise masking rollout in Tab. 3.
+With a small ratio of 0.1, the masking trajectories only induce similar rollouts and provide limited
+exploration beyond the modes already covered by the student. Therefore, it achieves a high HPSv3
+score of 10.00 but exhibits weak motion dynamics, with a Dynamic Degree of 47. With large ratios
+of 0.4-0.5, a substantial proportion of the input consists of cleaner states derived from the current
+student prediction. The resulting strong denoising cues yield the highest HPSv3 scores of 10.15 and
+10.17. However, the Dynamic Degree decreases to 57 and 44, suggesting that excessive reliance
+on cleaner predictions may restrict the model’s ability to revise or diversify motion patterns during
+subsequent denoising. A moderate mask ratio of 0.2 introduces sufficient perturbation to diversify
+the student rollout trajectories while avoiding excessive reliance on cleaner states derived from the
+9
+
+
+50
+250
+500
+750
+1000
+1250
+1500
+1750
+2000
+Training Steps
+0.3
+0.4
+0.5
+0.6
+VMMD↓
+Self Forcing
+Self Forcing + Ours
+50
+250
+500
+750
+1000
+1250
+1500
+1750
+2000
+Training Steps
+0.2
+0.4
+0.6
+0.8
+LongLive
+LongLive + Ours
+50
+250
+500
+750
+1000
+1250
+1500
+1750
+2000
+Training Steps
+0.2
+0.4
+0.6
+0.8
+Causal Forcing
+Causal Forcing + Ours
+Figure 5: V-JEPA2 Maximum Mean Discrepancy (VMMD) over training steps on the evaluation
+set. Incorporating Mask Forcing leads to faster convergence across various baselines.
+Table 3: Mask ratio α ab-
+lation.
+α
+HPSv3 ↑
+Dynamic. ↑
+0.1
+10.00
+47
+0.2
+9.84
+82
+0.3
+9.82
+65
+0.4
+10.15
+57
+0.5
+10.17
+44
+Table 4:
+Timestep win-
+dow ∆ablation.
+∆
+HPSv3 ↑
+Dynamic. ↑
+50
+9.16
+92
+150
+9.82
+70
+250
+9.84
+82
+450
+9.98
+80
+600
+9.90
+67
+Table 5: Mask scheme ablation.
+Mask scheme
+HPSv3 ↑
+Dynamic. ↑
+shared, per-rollout
+10.12
+56
+shared, per-chunk
+9.84
+81
+shared, per-step
+9.64
+72
+per-frame, per-rollout
+10.03
+53
+per-frame, per-chunk
+9.84
+82
+per-frame, per-step
+9.93
+74
+current student prediction. It achieves a competitive HPSv3 score of 9.84 and the highest Dynamic
+Degree of 82, providing a balance between visual quality and motion dynamics.
+Timestep Window ∆. We ablate the timestep window ∆used to sample the timestep corresponding
+to a lower noise level in Tab. 4. This window controls the maximum difference between original and
+cleaner noise levels. With a small timestep window of ∆= 50, the cleaner noise level remains close
+to the original, providing only mild rollout perturbations and limited denoising cues. Therefore,
+this setting achieves a high Dynamic Degree of 92 but a low HPSv3 score of 9.16. Increasing ∆
+strengthens the rollout perturbation and provides cleaner tokens with more informative denoising
+cues. Consequently, increasing ∆to 150, 250, and 450 improves the HPSv3 score to 9.82, 9.84,
+9.98, respectively. However, an excessively large window of ∆= 600 may cause cleaner predictions
+to dominate subsequent denoising, limiting motion diversity. Therefore, we adopt ∆= 250, which
+achieves a competitive HPSv3 score of 9.84 while maintaining a high Dynamic Degree of 82.
+Mask Scheme. We ablate the influence of different mask schemes for chunk-wise generation in
+Tab. 5. We evaluate the schemes varied along spatial and temporal axes: across the frames within
+each chunk and across chunks during the rollout. Spatially, “shared” applies the same mask to all
+frames within a chunk and “per-frame” independently samples a mask for each frame. Temporally,
+“per-rollout” keeps the mask fixed throughout the entire rollout, “per-chunk” resamples the mask for
+each chunk while keeping it fixed across the denoising steps within the chunk, and “per-step” resam-
+ples the mask at every denoising step. These spatial and temporal mask choices determine how the
+mask-induced perturbations vary throughout the rollout and consequently affect the resulting stu-
+dent rollout distributions. An effective scheme should sufficiently diversify the student distribution
+to improve its coverage of the teacher modes without introducing excessive variation that deviates
+from the teacher distribution. As shown in Tab. 5, applying “per-frame” in the spatial axis and “per-
+chunk” in the temporal axis achieves both high visual quality and motion dynamics, with a HPSv3
+score of 9.84 and Dynamic Degree of 82.
+Convergence Speed. We compare the training convergence of different baselines with and without
+Mask Forcing in Figs. 1, 5 and 9. We use HPSv3 to evaluate the visual quality trend through-
+out the training. To assess the distributional alignment between student- and teacher-generated
+videos, we additionally report Maximum Mean Discrepancy (MMD) (Jayasumana et al., 2024)
+in the CLIP (Radford et al., 2021) and V-JEPA2 (Assran et al., 2025) feature spaces, denoted as
+CMMD and VMMD, respectively. Specifically, we first generate a fixed reference set with the real-
+score teacher on the 100-prompt set. We then generate videos for each step using the causal student
+on the same prompts and compute CMMD and VMMD against the teacher reference set. As shown
+10
+
+
+Self Forcing
+Self Forcing
++ Ours
+Causal Forcing
+Causal Forcing
++ Ours
+8% 12%
+80%
+8% 13%
+79%
+LongLive
+LongLive
++ Ours
+LongLive (Long)
+LongLive (Long)
++ Ours
+6% 11%
+83%
+9%
+19%
+72%
+Figure 6: Pairwise human preferences between baseline models with and without Mask Forcing.
+Blue and red denote preferences for models without and with Mask Forcing, respectively, while
+hatched regions indicate ties.
+in Figs. 1, 5 and 9, Mask Forcing accelerates convergence for all baselines in terms of both visual
+quality and distributional alignment.
+4.3
+HUMAN EVALUATION
+We conduct pairwise human evaluations between anonymized outputs from Mask Forcing (+Ours)
+against different baselines for short and long video generation. We recruit 24 users to conduct this
+human evaluation study, and each user is required to select the video with higher visual quality and
+greater realism from each pair of videos. As shown in Fig. 6, incorporating Mask Forcing receives
+80%, 79%, and 83% of the preference votes over the baseline methods Self Forcing, Causal Forcing,
+and LongLive, respectively. Moreover, for long video generation, Mask Forcing receives 72% of the
+preference votes over the LongLive baseline, further demonstrating the effectiveness of our method.
+5
+CONCLUSION
+In this paper, we introduce Mask Forcing, a Dual-Noise Masking Rollout strategy for AR video
+diffusion distillation that alleviates the mode collapse induced by the mode-seeking reverse KL
+objective in DMD. Mask Forcing injects lower-noise signals into the noisy rollout inputs via ran-
+dom masks varying along spatial and temporal axes. These perturbations promote broader explo-
+ration during self-rollout, diversifying student trajectories and encouraging the student distribution
+to cover more regions of the teacher distribution and thereby allowing DMD to provide learning sig-
+nals beyond the modes already covered by the student. Meanwhile, cleaner tokens act as denoising
+guidance for noisier tokens, improving intermediate rollout predictions and mitigating error accu-
+mulation during the self-rollout process. Extensive experiments demonstrate the effectiveness of our
+method across multiple baselines, with improved visual quality and convergence speed. We further
+investigate the effects of different masking mechanisms on the visual quality and motion dynamics
+balance on the generated videos. Overall, Mask Forcing provides a simple and effective strategy to
+improve AR video diffusion distillation without incorporating real video data or post-training.
+11
+
+
+REFERENCES
+Mido Assran, Adrien Bardes, David Fan, Quentin Garrido, Russell Howes, Matthew Muckley, Am-
+mar Rizvi, Claire Roberts, Koustuv Sinha, Artem Zholus, et al. V-jepa 2: Self-supervised video
+models enable understanding, prediction and planning. arXiv preprint arXiv:2506.09985, 2025.
+Hangbo Bao, Li Dong, Songhao Piao, and Furu Wei. Beit: Bert pre-training of image transformers.
+arXiv preprint arXiv:2106.08254, 2021.
+Shengqu Cai, Weili Nie, Chao Liu, Julius Berner, Lvmin Zhang, Nanye Ma, Hansheng Chen, Ma-
+neesh Agrawala, Leonidas Guibas, Gordon Wetzstein, et al. Mode seeking meets mean seeking
+for fast long video generation. arXiv preprint arXiv:2602.24289, 2026.
+Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T Freeman. Maskgit: Masked generative
+image transformer. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, pp. 11315–11325, 2022.
+Hila Chefer, Patrick Esser, Dominik Lorenz, Dustin Podell, Vikash Raja, Vinh Tong, Antonio Tor-
+ralba, and Robin Rombach. Self-supervised flow matching for scalable multi-modal synthesis.
+arXiv preprint arXiv:2603.06507, 2026.
+Boyuan Chen, Diego Mart´ı Mons´o, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitz-
+mann.
+Diffusion forcing: Next-token prediction meets full-sequence diffusion.
+Advances in
+Neural Information Processing Systems, 37:24081–24125, 2024.
+Howard Chen, Noam Razin, Karthik Narasimhan, and Danqi Chen. Retaining by doing: The role of
+on-policy data in mitigating forgetting. arXiv preprint arXiv:2510.18874, 2025.
+Siyi Chen, Shaowei Liu, Yixuan Jia, Zian Wang, Huan Ling, Qing Qu, and Jun Gao.
+Data-
+forcing distillation: Restoring diversity and fidelity in few-step video generation. arXiv preprint
+arXiv:2606.18478, 2026.
+Kaifeng Gao, Jiaxin Shi, Hanwang Zhang, Chunping Wang, Jun Xiao, and Long Chen. Ca2-vdm:
+Efficient autoregressive video diffusion model with causal generation and cache sharing. In ICML.
+PMLR, 2025.
+Zelin Gao, Qiuyu Wang, Jiapeng Zhu, Jingye Chen, Zichen Liu, Qingyan Bai, Jiahao Wang, Yufeng
+Yuan, Hanlin Wang, Yichong Lu, Ka Leong Cheng, Haojie Zhang, Jian Gao, Tianrui Feng,
+Yuzheng Liu, Yao Yao, Yinghao Xu, Xing Zhu, Yujun Shen, and Hao Ouyang. Infinite worlds
+with versatile interactions. arXiv preprint arXiv:2607.07534, 2026.
+Yoav HaCohen, Benny Brazowski, Nisan Chiprut, Yaki Bitterman, Andrew Kvochko, Avishai
+Berkowitz, Daniel Shalem, Daphna Lifschitz, Dudu Moshe, Eitan Porat, et al. Ltx-2: Efficient
+joint audio-visual foundation model. arXiv preprint arXiv:2601.03233, 2026.
+Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Doll´ar, and Ross Girshick. Masked au-
+toencoders are scalable vision learners. In Proceedings of the IEEE/CVF conference on computer
+vision and pattern recognition, pp. 16000–16009, 2022.
+Anthony Hu, V´aclav Volhejn, Adrien Ramanana Rahary, Chris Mulder, Aditya Makkar, Am´elie
+Royer, Manu Orsini, Alyx Liao, Adam Jelley, Eloi Alonso, et al. Multiplayer interactive world
+models with representation autoencoders. arXiv preprint arXiv:2607.05352, 2026.
+Jinyi Hu, Shengding Hu, Yuxuan Song, Yufei Huang, Mingxuan Wang, Hao Zhou, Zhiyuan Liu,
+Wei-Ying Ma, and Maosong Sun. Acdit: Interpolating autoregressive conditional modeling and
+diffusion transformer. arXiv preprint arXiv:2412.07720, 2024.
+Junchao Huang, Guian Fang, Shengju Qian, Xianghao Kong, Zhuoran Zhao, Wei Huang, Yihua
+Du, Zixin Zhang, Justin Cui, Yuchao Gu, et al. Solarwm: Open data and scalable training for
+long-horizon video world models. arXiv preprint arXiv:2609.02886, 2026a.
+Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging
+the train-test gap in autoregressive video diffusion. Advances in Neural Information Processing
+Systems, 38:167283–167308, 2026b.
+12
+
+
+Team HunyuanWorld. Hy-world 1.5: A systematic framework for interactive world modeling with
+real-time latency and geometric consistency. arXiv preprint, 2025.
+Sadeep Jayasumana, Srikumar Ramalingam, Andreas Veit, Daniel Glasner, Ayan Chakrabarti, and
+Sanjiv Kumar. Rethinking fid: Towards a better evaluation metric for image generation. In 2024
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 9307–9315.
+IEEE, 2024.
+Xuan Ju, Yiming Gao, Zhaoyang Zhang, Ziyang Yuan, Xintao Wang, Ailing Zeng, Yu Xiong, Qiang
+Xu, and Ying Shan. Miradata: A large-scale video dataset with long durations and structured
+captions. Advances in Neural Information Processing Systems, 37:48955–48970, 2024.
+Dongjun Kim, Chieh-Hsin Lai, WeiHsiang Liao, Naoki Murata, Yuhta Takida, Toshimitsu Uesaka,
+Yutong He, Yuki Mitsufuji, and Stefano Ermon. Consistency trajectory models: Learning proba-
+bility flow ode trajectory of diffusion. In International Conference on Learning Representations,
+volume 2024, pp. 44493–44525, 2024.
+Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li,
+Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative
+models. arXiv preprint arXiv:2412.03603, 2024.
+Jiaxing Li, Kai Zou, Cindy Zhou, Kaichen Huang, Junyao Gao, Zile Wang, Yang Liu, Bin Liu,
+Bo An, and Yangguang Li. Distillalign: Coordinating mode covering and mode seeking in au-
+toregressive video distillation. arXiv preprint arXiv:2607.26811, 2026a.
+Zhen Li, Chuanhao Li, Xiaofeng Mao, Shaoheng Lin, Ming Li, Shitian Zhao, Zhaopan Xu, Xinyue
+Li, Yukang Feng, Jianwen Sun, et al. Sekai: A video dataset towards world exploration. Advances
+in Neural Information Processing Systems, 38, 2026b.
+Lu Ling, Yichen Sheng, Zhi Tu, Wentian Zhao, Cheng Xin, Kun Wan, Lantao Yu, Qianyu Guo,
+Zixun Yu, Yawen Lu, et al. Dl3dv-10k: A large-scale scene dataset for deep learning-based 3d
+vision. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp.
+22160–22169. IEEE, 2024.
+Hongyu Liu, Chun Wang, Feng Gao, Xuanhua He, Yue Ma, Ziyu Wan, Yong Zhang, Xiaoming Wei,
+and Qifeng Chen. Opsd-v: On-policy self-distillation for post-training few-step autoregressive
+video generators. arXiv preprint arXiv:2607.08766, 2026.
+Cheng Lu and Yang Song. Simplifying, stabilizing and scaling continuous-time consistency models.
+In International Conference on Learning Representations, volume 2025, pp. 50611–50649, 2025.
+Yuhang Ma, Xiaoshi Wu, Keqiang Sun, and Hongsheng Li. Hpsv3: Towards wide-spectrum human
+preference score. In Proceedings of the IEEE/CVF International Conference on Computer Vision,
+pp. 15086–15095, 2025.
+Matiur Rahman Minar, Seunghun Oh, Ganghyeon Jeong, and Unsang Park. Steady-forcing: Bal-
+ancing spatial persistence and motion continuity in long-horizon nature video diffusion. arXiv
+preprint arXiv:2606.14732, 2026.
+Adam Polyak, Amit Zohar, Andrew Brown, Andros Tjandra, Animesh Sinha, Ann Lee, Apoorv
+Vyas, Bowen Shi, Chih-Yao Ma, Ching-Yao Chuang, et al. Movie gen: A cast of media founda-
+tion models. arXiv preprint arXiv:2410.13720, 2024.
+Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal,
+Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual
+models from natural language supervision. In International conference on machine learning, pp.
+8748–8763. PmLR, 2021.
+Oriane Sim´eoni, Huy V Vo, Maximilian Seitzer, Federico Baldassarre, Maxime Oquab, Cijo Jose,
+Vasil Khalidov, Marc Szafraniec, Seungeun Yi, Micha¨el Ramamonjisoa, et al. Dinov3. arXiv
+preprint arXiv:2508.10104, 2025.
+Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. arXiv preprint
+arXiv:2303.01469, 2023.
+13
+
+
+DreamX Team, Yancheng Bai, Rui Chen, Xiangxiang Chu, Rujing Dang, Hao Dou, Bingjie Gao,
+Qiwen Gu, Siyu Hong, Jiachen Lei, et al. Dreamx-world 1.0: A general-purpose interactive world
+model. arXiv preprint arXiv:2606.16993, 2026a.
+Robbyant Team, Zelin Gao, Qiuyu Wang, Yanhong Zeng, Jiapeng Zhu, Ka Leong Cheng, Yixuan
+Li, Hanlin Wang, Yinghao Xu, Shuailei Ma, et al. Advancing open-source world models. arXiv
+preprint arXiv:2601.20540, 2026b.
+Zachary Teed and Jia Deng. Raft: Recurrent all-pairs field transforms for optical flow. In European
+conference on computer vision, pp. 402–419. Springer, 2020.
+Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu,
+Haiming Zhao, Jianxiao Yang, Jianyuan Zeng, Jiayu Wang, Jingfeng Zhang, Jingren Zhou, Jinkai
+Wang, Jixuan Chen, Kai Zhu, Kang Zhao, Keyu Yan, Lianghua Huang, Mengyang Feng, Ningyi
+Zhang, Pandeng Li, Pingyu Wu, Ruihang Chu, Ruili Feng, Shiwei Zhang, Siyang Sun, Tao Fang,
+Tianxing Wang, Tianyi Gui, Tingyu Weng, Tong Shen, Wei Lin, Wei Wang, Wei Wang, Wenmeng
+Zhou, Wente Wang, Wenting Shen, Wenyuan Yu, Xianzhong Shi, Xiaoming Huang, Xin Xu, Yan
+Kou, Yangyu Lv, Yifei Li, Yijing Liu, Yiming Wang, Yingya Zhang, Yitong Huang, Yong Li, You
+Wu, Yu Liu, Yulin Pan, Yun Zheng, Yuntao Hong, Yupeng Shi, Yutong Feng, Zeyinzi Jiang, Zhen
+Han, Zhi-Fan Wu, and Ziyu Liu. Wan: Open and advanced large-scale video generative models.
+arXiv preprint arXiv:2503.20314, 2025.
+Jiahao Wang, Yufeng Yuan, Rujie Zheng, Youtian Lin, Jian Gao, Lin-Zhuo Chen, Yajie Bao, Chang
+Zeng, Yanxi Zhou, Xiao-Xiao Long, et al. Spatialvid: A large-scale video dataset with spa-
+tial annotations. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pp. 42592–42603, 2026a.
+Wenhao Wang and Yi Yang. Vidprom: A million-scale real prompt-gallery dataset for text-to-video
+diffusion models. Advances in Neural Information Processing Systems, 37:65618–65642, 2024.
+Zile Wang, Zexiang Liu, Jiaxing Li, Kaichen Huang, Baixin Xu, Fei Kang, Mengyin An, Peiyu
+Wang, Biao Jiang, Yichen Wei, et al. Matrix-game 3.0: Real-time and streaming interactive
+world model with long-horizon memory. arXiv preprint arXiv:2604.08995, 2026b.
+Tianhe Wu, Ruibin Li, Lei Zhang, and Kede Ma. Diversity-preserved distribution matching dis-
+tillation for fast visual synthesis. In Forty-third International Conference on Machine Learning,
+2026. URL https://openreview.net/forum?id=R3JzLU2qZj.
+Jiazheng Xu, Yu Huang, Jiale Cheng, Yuanming Yang, Jiajun Xu, Yuan Wang, Wenbo Duan, Shen
+Yang, Qunlin Jin, Shurun Li, et al. Visionreward: Fine-grained multi-dimensional human prefer-
+ence learning for image and video generation. In Proceedings of the AAAI Conference on Artificial
+Intelligence, volume 40, pp. 11269–11277, 2026.
+Shuai Yang, Wei Huang, Ruihang Chu, Yicheng Xiao, Yuyang Zhao, Xianbang Wang, Muyang Li,
+Enze Xie, Yingcong Chen, Yao Lu, et al. Longlive: Real-time interactive long video generation.
+arXiv preprint arXiv:2509.22622, 2025.
+Tianwei Yin, Micha¨el Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Fredo Durand, and
+William T Freeman. Improved distribution matching distillation for fast image synthesis. In
+NeurIPS, 2024a.
+Tianwei Yin, Micha¨el Gharbi, Richard Zhang, Eli Shechtman, Fredo Durand, William T Freeman,
+and Taesung Park. One-step diffusion with distribution matching distillation. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition, pp. 6613–6623, 2024b.
+Songchun Zhang, Zeyue Xue, Siming Fu, Jie Huang, Xianghao Kong, Y Ma, Haoyang Huang, Nan
+Duan, and Anyi Rao. Astrolabe: Steering forward-process reinforcement learning for distilled
+autoregressive video models. arXiv preprint arXiv:2603.17051, 2026.
+Min Zhao, Hongzhou Zhu, Bokai Yan, Zihan Zhou, Yimin Chen, Wenqiang Sun, Kaiwen Zheng,
+Guande He, Xiao Yang, Chongxuan Li, et al. minwm: A full-stack open-source framework for
+real-time interactive video world models. arXiv preprint arXiv:2605.30263, 2026.
+14
+
+
+Guangcong Zheng, Teng Li, Xianpan Zhou, and Xi Li. Realcam-vid: High-resolution video dataset
+with dynamic scenes and metric-scale camera movements. arXiv preprint arXiv:2504.08212,
+2025. URL https://arxiv.org/abs/2504.08212.
+Kaiwen Zheng, Guande He, Min Zhao, Jintao Zhang, Huayu Chen, Jianfei Chen, Chen-Hsuan Lin,
+Ming-Yu Liu, Jun Zhu, and Qianli Ma. Causal-rcm: A unified teacher-forcing and self-forcing
+open recipe for autoregressive diffusion distillation in streaming video generation and interactive
+world models. arXiv preprint arXiv:2606.25473, 2026a.
+Kaiwen Zheng, Yuji Wang, Qianli Ma, Huayu Chen, Jintao Zhang, Yogesh Balaji, Jianfei
+Chen, Ming-Yu Liu, Jun Zhu, and Qinsheng Zhang.
+Large scale diffusion distillation via
+score-regularized continuous-time consistency.
+In The Fourteenth International Conference
+on Learning Representations, 2026b.
+URL https://openreview.net/forum?id=
+2uNlM353RI.
+Yang Zhou, Yifan Wang, Jianjun Zhou, Wenzheng Chang, Haoyu Guo, Zizun Li, Kaijing Ma,
+Xinyue Li, Yating Wang, Haoyi Zhu, et al. Omniworld: A multi-domain and multi-modal dataset
+for 4d world modeling. arXiv preprint arXiv:2509.12201, 2025.
+Hongzhou Zhu, Min Zhao, Guande He, Hang Su, Chongxuan Li, and Jun Zhu. Causal forcing:
+Autoregressive diffusion distillation done right for high-quality real-time interactive video gener-
+ation. arXiv preprint arXiv:2602.02214, 2026.
+Junhao Zhuang, Shiyi Zhang, Yuxuan Bian, Yaowei Li, Yawen Luo, Yijun Liu, Weiyang Jin,
+Songchun Zhang, Xianglong He, Xuying Zhang, Haoran Li, Haoyang Huang, Zeyue Xue, and
+Nan Duan.
+Self gradient forcing: Native long video extrapolation, 2026.
+URL https:
+//arxiv.org/abs/2607.20368.
+6
+APPENDIX
+6.1
+THEORETICAL JUSTIFICATION
+In this section, we characterize the distribution induced by Mask Forcing and derive an exact de-
+composition of its reverse-KL objective. Fix a text condition c and a DMD score-noising timestep
+τ > 0. Let
+pτ(x) := preal,τ(x | c)
+(14)
+denote the teacher noisy marginal. Let
+V := {(Mr, tk,r)}R
+r=1,
+V ∼π,
+(15)
+collect the masks and cleaner timesteps sampled during one Mask Forcing rollout, where π is the
+distribution induced by the corresponding samplers.
+Given a masking trajectory V = v, define the conditional student distribution as
+qv
+θ,τ(x) := pθ(Xτ = x | V = v, c).
+(16)
+Marginalizing over V gives
+¯qθ,τ(x) := EV ∼π
+
+qV
+θ,τ(x)
+
+.
+(17)
+Under exact score estimation, the real and fake scores at noise level τ are
+sreal(x, τ, c) = ∇x log pτ(x),
+sfake(x, τ, c) = ∇x log ¯qθ,τ(x).
+(18)
+Since the fake-score model is not conditioned on V , it estimates the score of the marginal distribution
+¯qθ,τ rather than a component score ∇x log qv
+θ,τ.
+The DMD score-difference update corresponds to the gradient
+∇θDKL (¯qθ,τ∥pτ) = E
+h
+(sfake(Xτ, τ, c) −sreal(Xτ, τ, c))⊤∇θXτ
+i
+.
+(19)
+We therefore analyze the reverse-KL objective
+DKL (¯qθ,τ∥pτ) .
+(20)
+The exact-score assumption is used only for this identification. In practice, both score networks
+approximate the corresponding marginal scores.
+15
+
+
+Proposition (KL decomposition for the masked-rollout distribution).
+Suppose that the KL di-
+vergences below are finite. Then
+DKL (¯qθ,τ∥pτ) = EV
+
+DKL
+ qV
+θ,τ∥pτ
+
+−Iθ(V ; Xτ | c).
+(21)
+Proof.
+By the definition of KL divergence, the average conditional KL can be expanded by multi-
+plying and dividing the density ratio by ¯qθ,τ:
+EV DKL
+ qV
+θ,τ∥pτ
+
+=
+Z
+π(v)
+Z
+qv
+θ,τ(x) log
+qv
+θ,τ(x)
+pτ(x) dx dv
+= EV,Xτ |c
+"
+log
+qV
+θ,τ(Xτ)
+pτ(Xτ)
+#
+= EV,Xτ |c
+"
+log
+qV
+θ,τ(Xτ)
+¯qθ,τ(Xτ) + log ¯qθ,τ(Xτ)
+pτ(Xτ)
+#
+= EV,Xτ |c
+"
+log
+qV
+θ,τ(Xτ)
+¯qθ,τ(Xτ)
+#
++ EV,Xτ |c
+
+log ¯qθ,τ(Xτ)
+pτ(Xτ)
+
+= EV DKL
+ qV
+θ,τ∥¯qθ,τ
+
+|
+{z
+}
+Iθ(V ;Xτ |c)
++DKL (¯qθ,τ∥pτ) .
+(22)
+The first term is the conditional mutual information. By definition,
+Iθ(V ; Xτ | c) = EV,Xτ |c
+
+log
+pθ(V, Xτ | c)
+p(V | c)pθ(Xτ | c)
+
+=
+Z
+π(v)qv
+θ,τ(x) log
+π(v)qv
+θ,τ(x)
+π(v)¯qθ,τ(x) dx dv
+=
+Z
+π(v)
+Z
+qv
+θ,τ(x) log
+qv
+θ,τ(x)
+¯qθ,τ(x) dx
+
+dv
+=
+Z
+π(v)DKL
+ qv
+θ,τ∥¯qθ,τ
+
+dv
+= EV DKL
+ qV
+θ,τ∥¯qθ,τ
+
+.
+(23)
+For the second term, we first expand the joint expectation and then marginalize over V :
+EV,Xτ |c
+
+log ¯qθ,τ(Xτ)
+pτ(Xτ)
+
+=
+Z
+π(v)
+Z
+qv
+θ,τ(x) log ¯qθ,τ(x)
+pτ(x) dx
+
+dv
+=
+Z Z
+π(v)qv
+θ,τ(x) dv
+
+log ¯qθ,τ(x)
+pτ(x) dx
+=
+Z
+¯qθ,τ(x) log ¯qθ,τ(x)
+pτ(x) dx
+= DKL (¯qθ,τ∥pτ) .
+(24)
+Combining the two terms and rearranging proves equation 21.
+The first term in equation 21 is the average reverse KL of the conditional rollout distributions.
+The mutual information measures their dependence on the masking trajectory. It also follows from
+equation 21 that
+DKL (¯qθ,τ∥pτ) ≤EV DKL
+ qV
+θ,τ∥pτ
+
+.
+(25)
+Since mutual information is nonnegative, equality holds when V and Xτ are conditionally indepen-
+dent given c, meaning that the masking trajectory does not affect the conditional output distribu-
+tion. If different masking trajectories induce distinguishable conditional output distributions, then
+Iθ(V ; Xτ | c) > 0, and the inequality is strict.
+16
+
+
+Table 6: Quantitative comparison of Mask Forcing (Ours) with Causal-rCM and DistillAlign on the
+100-prompt set benchmark.
+Method
+HPSv3 ↑
+Vision. ↑
+Instruct. ↑
+MQ ↑
+Dynamic. ↑
+DistillAlign (Li et al., 2026a)
+9.29
+9.46
+37.69
+14.36
+76
+Causal-rCM (Zheng et al., 2026a)
+9.61
+9.43
+38.50
+14.34
+64
+Ours
+10.17
+11.58
+46.30
+21.54
+82
+DistillAlign
+Ours
+6% 11%
+83%
+Causal-rCM
+Ours
+8%
+15%
+77%
+Figure 7: Pairwise human preference between joint distillation methods (DistillAlign and Causal-
+rCM) and Mask Forcing.
+Implication for mode coverage.
+Under limited model capacity, reverse-KL optimization may
+concentrate a conditional rollout distribution on a high-density region of the teacher distribution.
+If different masking trajectories induce distinct conditional distributions, then Iθ(V ; Xτ | c) > 0,
+and equation 21 shows that their marginal mixture has strictly lower reverse KL than their average
+conditional reverse KL. This mixture can cover multiple teacher-supported regions without requiring
+each conditional distribution to place probability mass between them. The result therefore gives a
+distributional mechanism by which randomized masking can alleviate mode-seeking behavior.
+6.2
+COMPARISON WITH JOINT DISTILLATION
+Recent methods seek to improve distillation performance by combining complementary objectives
+that balance mode-seeking and mode-covering behaviors, such as rCM and DistillAlign. We com-
+pare with Causal-rCM (Zheng et al., 2026a) and DistillAlign in terms of visual quality and motion
+dynamics on the 100-prompt set benchmark. While rCM jointly optimizes continuous-time consis-
+tency distillation and score-based distillation in bidirectional models, Causal-rCM decouples these
+objectives into two stages. It first performs consistency distillation under teacher forcing to obtain
+causal initialization with broad mode coverage, and then applies DMD under self-forcing. Since
+DistillAlign is built upon Causal Forcing and Causal-rCM pairs its two distillation objectives with
+two causal training paradigms, we compare Mask Forcing on the Causal Forcing baseline with
+them. For DistillAlign, we use its final joint-distilled generator with the Wan2.1-T2V-14B teacher.
+For Causal-rCM, we follow its 4-step inference setting.
+As shown in Tab. 6, our method outperforms both methods in visual quality, motion dynamics, as
+well as semantic alignment. Qualitative comparison in Fig. 8 is consistent with the quantitative re-
+sults, showing that our method generates videos with richer details and greater realism. We further
+conduct pairwise human preference against joint distillation methods DistillAlign and Causal-rCM.
+As shown in Fig. 7, Mask Forcing receives more preference votes, with 83% and 77% over Distil-
+lAlign and Causal-rCM, respectively. These results demonstrate that Mask Forcing yields videos
+with higher visual quality and realism from the users’ perspective.
+6.3
+ADDITIONAL EVALUATION ON LONGLIVE
+We compare the convergence of LongLive with and without Mask Forcing in Fig. 9. Consistent
+with the results on Self Forcing and Causal Forcing, Mask Forcing achieves higher HPSv3 and
+lower CMMD in fewer training steps, demonstrating faster convergence.
+Moreover, we evaluate LongLive and Mask Forcing on MovieGen over consecutive 6-second inter-
+vals from 0 to 30 seconds. For each interval, we average the CLIP score over all frames and the
+HPSv3 score over 12 uniformly sampled frames. As reported in Tab. 8, both methods exhibit a cer-
+tain decline in CLIP and HPSv3 scores as the video generation progresses, likely due to error accu-
+mulation during autoregressive self-rollout. However, incorporating Mask Forcing achieves higher
+CLIP and HPSv3 scores than LongLive across all intervals, demonstrating consistent improvements
+in semantic alignment and visual quality throughout long video generation.
+17
+
+
+Causal-rCM
+DistillAlign
+Ours
+Causal-rCM
+DistillAlign
+Ours
+Causal-rCM
+DistillAlign
+Ours
+At a misty waterfall shrine in Japan, a shrine maiden in a white and vermilion outfit fills the frame in ultra-realistic UHD with 
+drifting incense. First, she lifts a gohei wand and pauses as water roars behind, eyes calm and focused. Then she performs a slow 
+purification gesture and steps toward the torii, the camera rising to reveal mossy stone, maple leaves, and a river of mist that
+makes the scene feel sacred and stunning. for a beat of silence.
+In spring on a bridge over jade water, a woman in an embroidered blue dress fills the foreground in cinematic 4K. She leans on the 
+railing, then tosses a small flower into the current as the camera glides close to her gentle smile. Behind her, willow buds sway, 
+lantern reflections shimmer, and misty mountains rise beyond old rooftops. Crisp silk folds, natural skin tones, and gentle film grain 
+create a tender, haunting beauty.
+In late autumn in a candle lit chapel, a violinist in a black satin dress fills the foreground in cinematic 4K. She plays a slow phrase, 
+then accelerates into a shimmering run as the camera moves close to bow hair and fingerwork. Outside stained glass, rain taps 
+softly and leaves swirl in the courtyard. Warm flame light paints her face and instrument, with true tones and gentle film grain 
+making the performance hauntingly beautiful.
+Figure 8: Qualitative comparison of our method with Causal-rCM and DistillAlign. Our method
+produces videos with better visual quality and motion dynamics.
+6.4
+DIVERSITY EVALUATION
+Table 7: Video diversity across baselines.
+Method
+CLIP Div.↑
+DINO Div.↑
+Self Forcing
+0.0773
+0.1704
++ Ours
+0.0814
+0.1645
+LongLive
+0.0784
+0.1537
++ Ours
+0.0819
+0.1750
+Causal Forcing
+0.0675
+0.1371
++ Ours
+0.0720
+0.1577
+We further evaluate the video diversity across dif-
+ferent baselines under the chunk-wise setting us-
+ing CLIP-ViT-Large (Radford et al., 2021) and
+DINOv3-ViT-Large (Sim´eoni et al., 2025) following
+DP-DMD (Wu et al., 2026). We use the 100-prompt
+set as the evaluation set and generate 8 videos for
+each prompt with random seeds 0-7, generating 800
+videos for each baseline for evaluation in total.
+As shown in Tab. 7, Mask Forcing improves CLIP
+diversity across all three baselines, indicating con-
+sistently greater semantic variation. It also substan-
+tially improves DINOv3 diversity for Causal Forc-
+18
+
+
+250
+500
+750
+1000
+1250
+1500
+1750
+2000
+Training Steps
+8.5
+9
+9.5
+10
+10.5
+HPSv3↑
+LongLive
+LongLive + Ours
+50
+250
+500
+750
+1000
+1250
+1500
+1750
+2000
+Training Steps
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+CMMD↓
+LongLive
+LongLive + Ours
+Figure 9: HPSv3 and CMMD over training steps on the evaluation set for LongLive and LongLive
+(+Ours).
+Table 8: Quantitative evaluation on long video generation on MovieGen. We evaluate the CLIP
+Score and HPSv3 across 6-second intervals (0–30s).
+Method
+CLIP↑
+HPSv3↑
+0-6
+6-12
+12-18
+18-24
+24-30
+0-6
+6-12
+12-18
+18-24
+24-30
+LongLive
+33.70
+33.41
+33.29
+33.23
+33.15
+8.81
+8.37
+8.23
+7.89
+7.79
++ Ours
+34.12
+33.81
+33.59
+33.63
+33.38
+9.65
+9.44
+9.05
+8.87
+8.68
+ing and LongLive, suggesting increased structural variation. For Self Forcing, DINOv3 diversity
+decreases slightly despite the improvement in CLIP diversity. Together with the consistent gains
+in visual quality, semantic alignment, distributional alignment, and human preference, these results
+suggest that Mask Forcing jointly improves generation quality and diversity.
+6.5
+INTERACTIVE VIDEO WORLD MODEL APPLICATION
+We further explore Mask Forcing on autoregressive video generation with camera control. Current
+interactive world models extend video generation by conditioning future observations on user in-
+puts (Team et al., 2026a;b; HunyuanWorld, 2025; Wang et al., 2026b; Zhao et al., 2026), such as
+actions, camera motions, or instructions. We evaluate Mask Forcing in a camera-controlled image-
+to-video setting, where an input image serves as the initial frame, and the model generates subse-
+quent frames following a specified camera trajectory. We utilize Wan2.2-5B-TI2V as the base model
+and train the bidirectional model with open-source data, such as SpatialVID (Wang et al., 2026a),
+OmniWorld (Zhou et al., 2025), RealCam-Vid (Zheng et al., 2025), DL3DV (Ling et al., 2024),
+Sekai (Li et al., 2026b), and MiraData (Ju et al., 2024). Then we train an AR model using teacher
+forcing and adopt consistency distillation to obtain a few-step generator. Both bidirectional and au-
+toregressive models are trained on 5s videos following SolarWM (Huang et al., 2026a). We compare
+Self Forcing and Mask Forcing for further causal student distillation to align with the teacher’s distri-
+bution with DMD. Fig. 10 presents qualitative comparisons on the Sekai-Game and Sekai-Walking
+test set. Videos generated by Self Forcing become darker and lose fine-grained details as the rollout
+proceeds. This issue can be attributed to the mode-seeking behavior of the reverse KL objective in
+DMD and error accumulation during self-rollout. Mask Forcing mitigates this degradation, produc-
+ing scenes with richer details throughout the rollout. We view this experiment as an initial evaluation
+of our method in the camera-controlled image-to-video setting. To enable long and precise interac-
+tive video generation, future work includes training with long sequences and rollouts (Yang et al.,
+2025) and the context update strategy for temporal extrapolation (Zhuang et al., 2026).
+6.6
+ALGORITHM
+We provide detailed pseudocode for training with Mask Forcing in Algorithm 1. Mask Forcing
+requires no additional forward passes, external data, or post-training stages and can be seamlessly
+integrated into existing self-rollout training pipelines. Mask Forcing constructs a dual-noise input
+at each denoising step by mixing the original- and lower-noise states with a random mask. The
+19
+
+
+Frame 0
+Frame 150
+Frame 30
+Frame 60
+Frame 90
+Frame 120
+Camera Trajectory
+GT
+Self Forcing
+Ours
+The scene depicts an overgrown stone pathway winding through dense foliage under a dimly lit sky, suggesting either dawn or dusk. The path is bordered by thick 
+vegetation, including tall grasses and shrubs, which partially obscure the view of the surrounding area. On the left side, a weathered stone wall with a small 
+window and a door stands, hinting at an old, possibly abandoned building. The ground is uneven and covered with patches of moss and dirt, indicating neglect and 
+the passage of time. The overall atmosphere is quiet and somewhat eerie, with the low light casting long shadows and creating a sense of solitude.
+GT
+Self Forcing
+Ours
+GT
+Self Forcing
+Ours
+The scene depicts a bustling urban street at night, illuminated by the warm glow of streetlights and the bright lights from storefronts. The sidewalk is lined with 
+various shops, including one with a sign suggesting a mix of fashion and design stores. Pedestrians walk along the sidewalk, some carrying backpacks, while others 
+are engaged in conversation. A yellow taxi and other vehicles move along the road, their headlights reflecting off the wet pavement. The buildings lining the 
+street are tall and ornate, with large windows that reflect the surrounding lights. The overall atmosphere is lively yet orderly, typical of a city center after dark.
+The scene depicts a lively urban street at night, illuminated by string lights that hang from the trees lining the cobblestone pathway. The buildings on either side 
+are a mix of brick and modern facades, with storefronts featuring bright signage and awnings in various colors. Pedestrians walk along the sidewalks, some 
+stopping to look into shop windows or interact with street vendors. A few cars are parked along the street, and a green bicycle is visible near the left side. The 
+overall atmosphere is vibrant and bustling, with a festive ambiance created by the warm glow of the lights and the activity of people enjoying the evening.
+GT
+Self Forcing
+Ours
+The scene depicts a desolate, rocky landscape under an overcast sky with muted orange and gray tones, suggesting either dawn or dusk. The foreground is 
+dominated by jagged rocks and boulders scattered across a uneven terrain, with some areas appearing smoother, possibly due to erosion. In the mid-ground, a 
+valley stretches out, flanked by distant, hazy mountains that fade into the horizon. The lighting is diffuse, casting soft shadows and contributing to the somber 
+atmosphere. The overall appearance is one of ruggedness and isolation, with no visible signs of life or human presence.
+Figure 10: Qualitative comparison of Self Forcing and Mask Forcing (Ours) on Sekai-Game and
+Sekai-Walking. As the rollout progresses, Self Forcing videos darken and lose fine details. Mask
+Forcing mitigates this degradation, preserving rich details throughout generation.
+perturbed input is then denoised at the original timestep, and the final clean prediction is cached as
+context for subsequent blocks.
+6.7
+MORE QUALITATIVE RESULTS
+We present additional qualitative comparisons on single-prompt short video generation on the 100-
+prompt set and MovieGen in Figs. 11-13. Qualitative comparisons across different methods show
+that Mask Forcing consistently improves the visual quality of the generated videos, enhancing them
+with greater realism and richer detail while preventing over-saturated and over-smoothed artifacts.
+20
+
+
+Algorithm 1 Mask Forcing Training
+Require: Denoising timesteps T = {t1, . . . , tT } with tT = 1 and clean endpoint t0 = 0
+Require: Text prompt c; number of autoregressive chunks F, latent frames per chunk L, spatial
+latent resolution H×W
+Require: AR diffusion model Gθ (returns KV embeddings via GKV
+θ
+)
+Require: Mask ratio α, timestep window size ∆in training timestep units, number of training
+timesteps Nt, normalized timestep floor tmin
+Notation: Ψ(x, ε, t) = (1 −t)x + tε
+1: loop
+2:
+Initialize KV cache KV ←[ ] and model output Xθ ←[ ]
+3:
+Sample exit index s ∼Uniform{1, . . . , T}
+4: for chunk i = 1, . . . , F do
+5:
+Sample initial noisy latent xtT
+i
+∼N(0, I)
+6:
+Sample a per-frame binary mask M i ∈{0, 1}L×H×W with ratio α
+7:
+if s = T then
+8:
+Enable gradient computation
+9:
+else
+10:
+Disable gradient computation
+11:
+end if
+12:
+ˆx0
+i,T ←Gθ
+ xtT
+i ; c, tT , KV
+
+▷initial unperturbed prediction
+13:
+if s < T then
+14:
+for denoising step j = T −1, T −2, . . . , s do
+15:
+t′
+k ∼Uniform([max(tmin, tj −∆/Nt), tj])
+16:
+Sample εj ∼N(0, I)
+17:
+xt′
+k
+i ←Ψ(ˆx0
+i,j+1, εj, t′
+k),
+xtj
+i ←Ψ(ˆx0
+i,j+1, εj, tj)
+18:
+xtmix
+i
+←M i ⊙xt′
+k
+i + (1 −M i) ⊙xtj
+i
+19:
+if j = s then
+20:
+Enable gradient computation
+21:
+else
+22:
+Disable gradient computation
+23:
+end if
+24:
+ˆx0
+i,j ←Gθ
+ xtmix
+i
+; c, tj, KV
+
+▷perturbed prediction at step j
+25:
+end for
+26:
+end if
+27:
+Append ˆx0
+i,s to Xθ
+28:
+Disable gradient computation
+29:
+kvi ←GKV
+θ
+ ˆx0
+i,s; c, t0, KV
+
+▷cache the exit prediction
+30:
+KV.append(kvi)
+31: end for
+32:
+Update θ via the distribution matching loss LDMD(Xθ)
+33: end loop
+21
+
+
+Self Forcing
+Self Forcing
++ Ours
+Self Forcing
+Self Forcing
++ Ours
+Self Forcing
+Self Forcing
++ Ours
+Self Forcing
+Self Forcing
++ Ours
+Self Forcing
+Self Forcing
++ Ours
+A horse wearing roller skates, gracefully gliding through a city park.
+An adorable kangaroo wearing blue jeans and a white t shirt taking a pleasant stroll in Antarctica during a winter storm.
+A macro shot in realistic style of an elderly man wearing an antique diving helmet with dark glass and a jetpack. He stands confidently
+on the intricate veins of a large leaf, his steps steady and deliberate. The man has a weathered face with a determined expression, 
+his hands resting comfortably on the edges of the helmet. The leaf's surface is detailed, with vibrant green colors and fine vein 
+patterns. The background is blurred, showcasing hints of a forest environment with soft sunlight filtering through the canopy. A 
+close-up from a slightly elevated angle, capturing the man's focused gaze and the intricate details of both the helmet and the leaf.
+Beneath a mountain aurora in Lapland, a photographer in a crimson parka with fur hood and frost-dusted eyelashes dominates the 
+frame in ultra-realistic 4K. First, he adjusts a tripod and warms his hands over a small camp lantern, breath turning to glittering 
+mist. Then he clicks the shutter and spins to gesture at the sky, the camera panning up as green ribbons ripple above snowy pines, 
+ice crystals sharp, and the night breathtakingly vivid. far from any city lights. for one long moment.
+On a winter sunrise on a high ridge, a snowboarder in a bright yellow jacket and mirrored goggles dominates the frame in UHD. He
+drops into a smooth carve, spraying powder as the camera follows low and fast, capturing board scratches and flying crystals.
+Behind him, a frozen fjord cuts through ice and mountains rise under a pale sky. Crisp textures, clean highlights, and subtle film 
+grain make the speed feel visceral and cinematic.
+Self Forcing
+Self Forcing
++ Ours
+A crab made of different jewlery is walking on the beach. As it walks, it drops different jewelry pieces like diamonds, pearls, etc.
+Figure 11: Additional qualitative comparisons between Self Forcing and Self Forcing (+Ours).
+22
+
+
+LongLive
+LongLive
++ Ours
+LongLive
+LongLive
++ Ours
+LongLive
+LongLive
++ Ours
+LongLive
+LongLive
++ Ours
+LongLive
+LongLive
++ Ours
+A wide-angle perspective of a serene lake surrounded by mountains, reflecting the sky and creating a sense of infinite space.
+On a winter night beside an icy shoreline, a man in a navy parka and wool beanie dominates the frame in UHD. He kneels to touch 
+black sand dusted with snow, then rises as aurora ribbons shimmer across a violet sky and reflect in tide pools. The camera holds 
+close on frost on his collar and breath mist, then widens to basalt cliffs and crashing waves. Sharp textures and natural grading 
+make the cold feel sublime and real.
+A cat mermaid swimming under the sea.
+A bear made of strawberrys is walking in the forest, its eyes looking around as if it is seeing the world for the first time.
+A close-up shot of the person's face reveals his fear and desperation as he navigates the ship through the storm.
+LongLive
+LongLive
++ Ours
+Late spring in a street lined with fresh leaves, a violin student in a light trench coat and pleated skirt fills the foreground in UHD. 
+She adjusts her shoulder rest, plays a short warmup phrase, then smiles when the notes ring clean. The camera holds close on 
+hands and bow hair, then drifts outward to show sunlit trees, bicycles passing, and dappled shadows on pavement. Crisp textures, 
+true tones, and gentle film grain make the urban spring feel calm and cinematic.
+Figure 12: Additional qualitative comparisons between LongLive and LongLive (+Ours).
+23
+
+
+Causal Forcing
+Causal Forcing
++ Ours
+Causal Forcing
+Causal Forcing
++ Ours
+Causal Forcing
+Causal Forcing
++ Ours
+Causal Forcing
+Causal Forcing
++ Ours
+Causal Forcing
+Causal Forcing
++ Ours
+A squirrel wearing a tiny aviator hat and goggles, piloting a miniature airplane through a park.
+A person is savoring a slice of pizza at a pizzeria.
+A slow-motion shot of a fiery volcanic landscape, with molten lava erupting from deep craters. The camera flies through the lava, 
+capturing the intense heat and dramatic splashes as they hit the lens. The lighting is cinematic and moody, casting dramatic shadows 
+and highlighting the vivid orange and red hues. The color grade is high-contrast and dramatic, emphasizing the raw power of the 
+eruption. The background features towering cliffs and dense smoke, creating a sense of awe and danger. A dynamic overhead view, 
+providing a thrilling and immersive experience.
+A dog accelerating after being let off the leash, running towards a ball.
+A penguin in a tuxedo, playing the violin at a black-tie event.
+Causal Forcing
+Causal Forcing
++ Ours
+Along a quiet canal in Amsterdam, a cyclist in a mustard sweater, wool coat, and leather gloves dominates the shot in ultra-realistic 
+4K with crisp brick and water reflections. First, she rings her bell softly and adjusts a bouquet tied to the handlebar, smiling at a 
+passing boat. Then she pedals forward, skirt fluttering, and glances back with a playful grin as the camera follows, revealing 
+bridges, houseboats, and golden evening light. in crisp, lifelike detail. with textures razor sharp.
+Figure 13: Additional qualitative comparisons between Causal Forcing and Causal Forcing (+Ours).
+24

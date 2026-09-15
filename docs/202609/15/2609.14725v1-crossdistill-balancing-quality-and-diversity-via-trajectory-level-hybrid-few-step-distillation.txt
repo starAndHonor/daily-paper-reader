@@ -1,0 +1,1162 @@
+CrossDistill: Balancing Quality and Diversity via
+Trajectory-Level Hybrid Few-Step Distillation
+Yuxi Liu∗13, Haoyu Li∗23, Yixiang Cai1, Tengxu Sun†3, Zekun Zhang1, Baole Ai3, Ang Wang3, Jiamang
+Wang3, Lin Qu3, Kun Yuan†1, Kai Zhang†2
+1Peking University, Melon Group, 2Tsinghua University, 3Alibaba Group
+Abstract
+Few-step distillation accelerates diffusion models but must balance diversity and fidelity: trajectory-
+based distillation preserves mode coverage, while distribution matching sharpens samples but
+can reduce diversity. We show that this tension can be exploited in a noise-regime-dependent
+way: high-noise steps largely determine global modes, whereas low-noise steps refine local details.
+We propose CrossDistill, a trajectory-level hybrid distillation framework that splits the sampling
+trajectory at a crossover point, applies a trajectory-preserving objective on the high-noise interval
+and a distribution-matching objective on the low-noise interval, and couples the two stages through
+the crossover state. In contrast to loss-level mixing, and complementarily to training-time two-stage
+recipes, CrossDistill explicitly assigns complementary objectives along the noise axis, so that global
+branching is preserved before local statistics are sharpened. CrossDistill is a noise-level scheduling
+policy: PCM and DMD are plug-in instantiations, while the noise partition, crossover coupling,
+and objective ordering are the key design elements. Experiments on text-to-video diffusion models
+and qualitative image-to-video results show that CrossDistill expands the few-step quality-diversity
+frontier, retaining seed-level variation while achieving competitive visual fidelity.
+E-mail: yuxiliu666@stu.pku.edu.cn
+hy-l24@mails.tsinghua.edu.cn
+lingyan.sk@alibaba-inc.com
+Date: September 15, 2026
+Figure 1 Diversity–quality trade-off. For each of three prompts (rows) we sample four independent initial noise
+seeds (columns) and show the same frame per generated video. AnyFlow and DMD show reduced seed-level variation,
+while rCM is diverse but lower in visual quality. In these examples, CrossDistill improves the trade-off, maintaining
+competitive diversity and visual quality.
+∗Equal contribution. †Corresponding author.
+arXiv:2609.14725v1  [cs.CV]  13 Sep 2026
+
+
+1
+Introduction
+Diffusion models are now a leading paradigm for high-fidelity image and video generation, but sampling
+remains expensive because it typically requires dozens of denoising steps. Few-step distillation trains a
+student model to reproduce the teacher’s generative behavior with a small number of function evaluations
+(NFE). Existing distillation objectives fall into two complementary families. Trajectory-based distillation (TD)
+methods train the student to follow the teacher’s probability-flow trajectory or to satisfy consistency relations
+across noise levels [14, 20, 24, 30, 31]. These objectives tend to preserve mode coverage and seed-level diversity,
+but with only a few steps the regressed trajectory may not land exactly on the data manifold, leading to
+blurred or over-smoothed samples. Distribution-matching (DM) methods instead align the student-generated
+distribution with the teacher distribution using score-based or adversarial objectives [21, 22, 33, 34, 36]. They
+often produce sharper samples, but because they act primarily on marginals rather than trajectories, they
+can become more mode-seeking and may reduce stochastic diversity and video dynamics, as observed in our
+experiments.
+This complementarity motivates a noise-regime view of few-step distillation. Diffusion sampling often proceeds
+in a coarse-to-fine manner: high-noise steps tend to select the global semantic mode, layout, and subject
+identity, while low-noise steps refine textures and local statistics. We therefore use noise level as an objective-
+assignment criterion: diversity is largely shaped at high noise, whereas fidelity is largely refined at low noise.
+If DM is applied too early, it may suppress trajectory branching before alternative modes are preserved; if TD
+is applied too late, it may fail to enforce the local constraints required for high visual fidelity.
+Recent methods often combine multiple distillation objectives, but often leave the noise support of each
+objective implicit. For example, SenseFlow and rCM introduce auxiliary adversarial or trajectory regularization
+to stabilize distribution matching [7, 35]; DMDR enhances DMD by incorporating RL guidance [13]; TDM
+combines trajectory awareness with distribution matching [22]. Two-stage variants separate the objectives in
+training time rather than in noise level: From Structure to Detail [4] trains with trajectory matching first
+and post-trains with distribution matching, while AnyFlow [9] follows an off-policy flow-map stage with an
+on-policy post-training stage. In these recipes, however, the effective noise regime of each objective remains
+entangled with the choice of losses and training stages.
+These observations motivate a noise-level assignment rule: assign TD to the high-noise interval, where mode
+structure is decided, and DM to the low-noise interval, where local fidelity is decided, and couple the two
+through a single crossover state. Loss-level mixing applies both objectives at every noise level, while two-stage
+sequencing separates objectives in training time but may still let each stage act on the whole noise range. We
+provide a conceptual discussion of this rule in Appendix B; the empirical evidence is reported in Secs. 2.4–3.3.
+We instantiate this rule as CrossDistill, a trajectory-level scheduling framework: a trajectory-preserving
+objective drives the high-noise interval [τ ⋆, 1] and a distribution-matching objective drives the low-noise interval
+[0, τ ⋆], coupled through the crossover state. Concrete losses are plug-in choices of the form ObjectiveH +
+ObjectiveL; our default four-step student uses PCMH + DMDL, with the schedule rather than the loss pair as
+the design object. As shown in Fig. 1, it retains seed-level variation while maintaining visual quality.
+Our contributions are summarized as follows:
+• We formulate noise-level objective assignment as an explicit design axis in few-step diffusion distillation,
+and show that the objective ordering along the noise axis matters.
+• We propose CrossDistill, a trajectory-level scheduling policy that couples a high-noise trajectory-
+preserving stage with a low-noise distribution-matching stage through a crossover state. The policy
+separates the scheduling decision from concrete TD/DM instantiations, e.g., PCMH or direct flow
+distillation (DFDH; Sec. 2.3) for the high-noise interval and TDML/DMDL for the low-noise interval.
+• Experiments on text-to-video diffusion models, together with qualitative image-to-video results, show
+that, in our evaluated settings, CrossDistill improves the quality–diversity frontier relative to monolithic
+TD/DM baselines and loss-level hybrids.
+2
+
+
+2
+Hybrid Trajectory Distillation via a Crossover Point
+2.1
+Preliminaries: Two Paradigms of Few-Step Distillation
+Setup. We consider a flow matching model where the forward process constructs a linear probability path
+between data and noise. Let x0 ∼pdata and ϵ ∼N(0, I). The forward diffusion
+xt = (1 −t)x0 + tϵ,
+t ∈[0, 1],
+induces a family of marginals {pt} with p0 = pdata and p1 = N(0, I). The teacher probability-flow ODE
+(PF-ODE) defines a flow map Ψ t→s
+ϕ
+(s ≤t) that deterministically transports samples of pt to ps.
+Trajectory-based distillation (TD). TD methods distill the teacher flow map or its induced trajectory
+structure: the student is required to progressively maintain the teacher’s trajectory [24], or send states on a
+teacher trajectory to the same endpoint as the teacher [8, 14, 30], so that a few student steps shadow the
+full ODE. A representative instance is the phased consistency model (PCM) [31], which partitions [0, 1] into
+sub-intervals, or phases, and enforces a self-consistency relation within each phase: all states on the same
+teacher trajectory segment are mapped to the same phase endpoint. Because such objectives are imposed
+along trajectories, the student inherits the teacher’s mode coverage and diversity. Their limitation is geometric
+fidelity: with only a few steps, the regressed trajectories need not land exactly on the data manifold, which
+appears as blurred or over-smoothed samples.
+Distribution matching (DM). Distribution-matching methods instead align the student-induced marginals
+qθ
+s with the teacher marginals ps over a subset of noise levels, using the score difference ∇log qθ
+s −∇log ps
+estimated by a teacher denoiser and a fake model fit to student outputs, as in DMD [34] and its extensions [33].
+This pressure pushes the student onto the data manifold and yields sharp, high-fidelity samples. However,
+acting on marginals rather than individual trajectories, it is empirically prone to severe mode seeking and
+diversity degradation (Fig. 2).
+2.2
+The Design Principle: Preserve Global Branching at High Noise, Match Distribution at
+Low Noise
+Coarse-to-fine responsibility as a scheduling criterion. The reverse diffusion process is often coarse
+to fine. We use this behavior as an objective-assignment criterion: high-noise states are associated with
+global mode commitment, whereas low-noise states are associated with local detail refinement [2, 26]. Once
+a trajectory has largely committed to a mode at high noise, later low-noise steps can refine that mode but
+typically cannot fully recover discarded alternatives, especially under deterministic few-step sampling.
+Fig. 2 illustrates this behavior in the distillation regime. At high noise levels (around t = 0.94), the purely
+DM-distilled model (DMD) already maps different initial noises to similar states, whereas the teacher, PCM,
+and CrossDistill retain variation. This motivates using TD in the noise-dominated regime to preserve stochastic
+diversity and DM at low noise to refine local details.
+Conceptual bookkeeping. Appendix B distills the above responsibility split into a two-price ledger: wD(t),
+the diversity cost of using DM instead of TD at level t, and wQ(t), the quality cost of the opposite choice.
+The ledger is a conceptual aid rather than a training-dynamics model or a formal guarantee: its coarse-to-fine
+price ordering restates the responsibility split above, is consistent with prior observations of coarse-to-fine
+denoising [5, 10, 11, 23] and with our diagnostics (Fig. 2, Table 3), and is checked where checkable (Fig. 4).
+Within this simplified accounting, per-level loss mixing corresponds to averaging two different targets, uniform
+blends correspond to sweeping a chord between two endpoints, and the reversed order would pay the more
+expensive prices. The empirical case for the rule rests on Secs. 2.4–3.3, not on the ledger.
+Toy manifold illustration. Fig. 8 shows a similar tendency on a 2D toy manifold. The TD student preserves
+the teacher’s trajectories and covers the data distribution, but does not always reach the data manifold; the
+DM student fits the manifold but, lacking trajectory constraints, collapses to a subset of modes; the loss-level
+mixture compromises both. In this toy setting, CrossDistill improves both manifold fitting and mode coverage,
+providing a controlled illustration of trajectory-level scheduling rather than global loss-level mixing.
+3
+
+
+Figure 2 Intermediate denoising states in the high-noise regime (t ≈0.94) for the teacher and four-step distilled
+models, generated from the same text prompt and different initial noises. DMD already maps distinct seeds to similar
+states, whereas the teacher, PCM, and CrossDistill retain seed-level variation.
+Design principle. In our framework, we use trajectory-based distillation at high noise to preserve global
+mode structure, and distribution matching at low noise to refine local statistics. We combine them through a
+single trajectory-level crossover. The resulting rule is a noise-level scheduling policy with disjoint supports;
+concrete TD and DM losses are plug-in instantiations of this policy. a
+aAppendix B provides an optional conceptual discussion of this trade-off. It is intended only to clarify the intuition.
+Why not reverse the assignment? The opposite assignment, DM on H and TD on L, would invert the
+coarse-to-fine responsibilities. At high noise, distribution matching acts on marginal statistics before alternative
+global modes have been stabilized, and therefore may pull different seeds toward common high-density modes.
+Once this seed-level branching is removed, a low-noise TD objective may be unable to recover discarded
+global alternatives, because it can only refine the trajectory that has already been selected. Conversely,
+low-noise fidelity depends on matching local data statistics, which TD does not enforce explicitly. Therefore,
+the reversed schedule is expected to sacrifice diversity without providing a compensating mechanism for
+local fidelity. To test this prediction, we implement a reversed control in Sec. 3.3, where the same crossover
+partition and NFE budget are kept but the noise supports of the TD and DM objectives are swapped. As
+shown in Table 3, the reversed variant underperforms the proposed ordering in both diversity and quality in
+our setting, supporting the coarse-to-fine assignment.
+2.3
+CrossDistill via a Crossover Point
+Definition 2.1 (Crossover partition). Fix a crossover level τ ⋆∈(0, 1) and define the high-noise interval
+H = [τ ⋆, 1] and the low-noise interval L = [0, τ ⋆]. The shared boundary {τ ⋆} has measure zero and can be
+assigned to either stage.
+Definition 2.2 (Relay generator). The student generator Gθ consists of a high-noise TD map fθ : Rd×H →Rd
+and a low-noise sub-sampler gθ. In the default four-step setting, fθ corresponds to one PCM step on H, and
+gθ corresponds to a three-step DMD sub-sampler on L. Abstractly, the two-stage sampler is
+ϵ ∼p1 7−→xτ ⋆:= fθ(ϵ, 1) 7−→ˆx0 := gθ(xτ ⋆).
+(1)
+The policy specifies the noise supports and the relay interface; the objectives below describe our default
+instantiation. In principle, other trajectory-preserving objectives may replace Eq. (2) on H, and other
+distribution-matching objectives may replace Eq. (4) on L; Sec. 3.3 varies both within a limited set of choices.
+4
+
+
+High-noise stage: trajectory-based distillation (TD). The map fθ is constrained to be invariant along
+the teacher PF-ODE on H and anchored at τ ⋆, i.e. fθ(xt, t) = fθ(Ψ t→t′
+ϕ
+(xt), t′) for all t′ ∈H with t′ ≤t, and
+fθ(·, τ ⋆) = id. This is enforced by consistency loss
+LPCM(θ) = Et∼U(H), xt∼pt
+ fθ(xt, t) −sg
+
+fθ(Ψ t→t′
+ϕ
+(xt), t′)
+ 2
+2,
+(2)
+where t′ denotes the next node of the student’s fixed discretization of H toward τ ⋆; in the default one-step
+high-noise setting, t′ = τ ⋆. Its intended fixed point is the teacher-induced crossover state at τ ⋆.
+For the direct flow distillation (DFD) instantiation, fθ directly regresses to the teacher-induced crossover
+state. Let
+xϕ
+τ ⋆:= Ψ 1→τ ⋆
+ϕ
+(x1)
+be the state obtained by flowing x1 with the teacher PF-ODE or its multi-step discrete solver to τ ⋆. The
+DFD objective is formulated as a simple MSE loss:
+LDFD(θ) = Ex1∼p1
+fθ(x1, 1) −sg
+
+xϕ
+τ ⋆
+2
+2.
+(3)
+Under a budget of four function evaluations (NFE= 4), this corresponds to a single high-noise step from t = 1
+to t = τ ⋆. We denote these high-noise TD instantiations by DFDH and PCMH, respectively.
+Low-noise stage: distribution matching (DM). Let ˆx0 = gθ(xτ ⋆) denote the output of the low-noise
+sub-sampler. For s ∈L, sample ϵ ∼N(0, I) and form the noised state
+xs = (1 −s)ˆx0 + sϵ.
+We parameterize the teacher and fake denoiser as Fϕ and Fψ. The low-noise DMD objective is
+LDMD(θ) = Es∼U(L), ϵ∼N(0,I)
+ˆx0 −sg
+
+ˆx0 −Fψ(xs, s, c) −Fϕ(xs, s, c)
+mean|ˆx0 −Fϕ(xs, s, c)|
+
+2
+2
+.
+(4)
+The difference between the fake and teacher clean predictions approximates the difference between the
+student-induced and teacher score fields. Minimizing LDMD encourages the student-induced marginals to
+approach the teacher marginals on L.
+The fake model is trained on stopped student-generated samples
+Lfake(ψ) = Eˆx0, t∼pfake ∥Fψ(xt, t, c) −ˆx0∥2
+2 ,
+(5)
+where xt = (1 −t)ˆx0 + tϵ, and pfake is the noise-level distribution used for fake training.
+Training and gradient flow. The two generator objectives have disjoint temporal support: suppt LPCM = H
+and suppt LDMD = L, and are coupled through the shared crossover state xτ ⋆in (1). In implementation, we
+optimize
+LG = λH LOH + λL LOL,
+min
+ψ
+Lfake,
+where the default instantiation uses (OH, OL) = (PCM, DMD). Because LPCM is sampled only on H and
+LDMD is sampled only on L, this aggregation does not impose competing TD and DM targets at the same
+noise level. In a training rollout, the high-noise relay first produces xτ ⋆, and the low-noise sub-sampler then
+produces the final clean prediction ˆx0. The DMD loss is applied to this low-noise output, while the fake
+model is trained on stopped rollouts. By default, the DMD gradient is stopped at the crossover state and
+is not back-propagated through the PCM relay. Thus the high-noise relay is directly supervised by the TD
+objective, while the low-noise distribution-matching pressure is intended to refine local statistics without
+directly back-propagating into the high-noise mode-selection relay. The low-noise stage is nevertheless trained
+on crossover states produced by the current high-noise relay, so the two stages remain coupled through the
+empirical distribution of xτ ⋆.
+Default step allocation under a fixed NFE budget. In the default four-step student, one function
+evaluation goes to the high-noise relay and three to the low-noise DM sampler. This follows from the role of
+5
+
+
+τ ⋆: around 0.94 the sample has already crossed the main mode-commitment region (Fig. 6), so the high-noise
+stage needs only to preserve the selected branch and produce a reliable crossover state. Extra high-noise steps
+would mainly refine an already committed structure, giving diminishing diversity returns while consuming
+budget that is more valuable for low-noise distribution matching. Here gθ consists of three student velocity
+evaluations on a fixed low-noise timestep grid, and DMD supervises the final output. Under the NFE= 2
+budget, the same principle gives one TD step and one DM step.
+Instantiations of the scheduling policy. We view CrossDistill as a scheduling policy whose effect is not
+tied to a single fixed loss pair. We write an instantiation as CrossDistill(OH, OL), where OH is applied on H
+and OL is applied on L. In this paper, OH ∈{DFDH, PCMH} and OL ∈{TDML, DMDL}. Here DFDH is
+the direct regression objective of Eq. (3), PCMH is the high-noise consistency relay of Eq. (2), DMDL is the
+low-noise distribution-matching objective of Eq. (4), and TDML replaces it with the TDM objective [22] on
+the same low-noise interval. The default instantiation used in Table 1 is CrossDistill(PCMH, DMDL), which
+we abbreviate as CrossDistill when no ambiguity arises.
+2.4
+Trajectory-Level vs. Loss-Level Mixing
+(a) Cosine similarity.
+(b) ℓ2 distance.
+Figure 3 Trajectory alignment metrics between student and teacher trajectories
+during denoising.
+Fig. 3 measures cosine similarity and
+ℓ2 distance between the student’s in-
+termediate states and the teacher’s
+PF-ODE states at the same noise
+level, starting from the same initial
+noise. CrossDistill follows PCM in
+the high-noise regime and DMD in
+the low-noise regime, whereas the
+tuned loss-level mixture (Sec. 3.2)
+and rCM remain intermediate across
+noise levels: less teacher-like than
+PCM at high noise and less teacher-like than DMD at low noise. Trajectory-level scheduling therefore appears
+to retain each paradigm’s strength in its effective noise regime.
+Relation to two-stage sequential training. A third combination axis is training-time sequencing: From
+Structure to Detail [4] applies TD first and DM later, while AnyFlow [9] sequences an off-policy MeanFlow
+stage with an on-policy DMD stage. Sequencing avoids simultaneous conflict between objectives, but without
+an explicit noise-axis partition the later stage can still act on high-noise mode-selection steps. CrossDistill
+instead provides an explicit noise-axis partition (Sec. 2.3); this choice is orthogonal to sequencing, since a
+two-stage curriculum could equally be applied within each interval. Empirically, our comparisons cover the
+cells of this design space: the tuned mixture (Fig. 4) shares CrossDistill’s losses, training protocol, and budget,
+isolating the noise partition under joint training; AnyFlow (Table 1) represents the sequential cell under
+identical evaluation; and the reversed control (Table 3) isolates the ordering.
+3
+Experiments
+3.1
+Experimental Setup
+Models and data. We instantiate the CrossDistill scheduling policy on pre-trained Wan2.1 text-to-video
+diffusion transformers and distill them into few-step students. Unless otherwise stated, the reported model is
+the default instantiation PCMH + DMDL: one high-noise PCM step on [τ ⋆, 1] and three low-noise DMD steps
+on [0, τ ⋆], with τ ⋆= 0.94. For image-to-video, we use Wan2.1 I2V at 720P with the same four-step protocol
+and report qualitative comparisons.
+Baselines. We compare with: (i) Base teacher model, the full-step reference; (ii) PCM [31] and (iii) DMD [34],
+monolithic TD and DM baselines; (iv) rCM [35]; (v) AnyFlow [9], an any-step student distilled through
+a two-stage process; and (vi) loss-level mixture, a single student trained with λPCMLPCM + λDMDLDMD
+applied over the full noise range. Our method is denoted CrossDistill; alternative instantiations of the same
+policy are studied in Sec. 3.3. Since the loss-level mixture contains multiple weight settings, we report its
+6
+
+
+Table 1 VBench comparison on Wan2.1-T2V at the 1.3B and 14B scales. All methods are evaluated at 480 × 832
+resolution. Bold values indicate the best result among the four-step students in each column for the corresponding
+model scale; the full-step teacher row and the NFE= 2 row are reported as references and are excluded from bolding.
+For the full-step teacher, 50 × 2 denotes 50 denoising steps with classifier-free guidance. The NFE= 2 row reports
+CrossDistill under a stricter two-step budget on the 1.3B model. CrossDistill is the proposed trajectory-level scheduling
+policy; the rows below report its default instantiation PCMH + DMDL (see note).
+Method
+Params Resolution NFE ↓
+VBench
+V-JEPA 2
+VideoMAE V2
+Quality ↑Semantic ↑Total ↑Cos ↑
+L2 ↑
+Cos ↑
+L2 ↑
+Wan2.1-T2V-1.3B
+1.3B
+480 × 832
+50 × 2
+85.09
+75.73
+83.22
+0.124
+27.09
+0.0271
+2.91
+PCM
+1.3B
+480 × 832
+4
+82.15
+75.80
+81.38
+0.113 24.88 0.0196
+2.58
+rCM
+1.3B
+480 × 832
+4
+84.87
+75.54
+83.02
+0.105
+24.18
+0.0172
+2.37
+AnyFlow
+1.3B
+480 × 832
+4
+85.16
+76.42
+83.41
+0.082
+19.92
+0.0133
+2.15
+DMD
+1.3B
+480 × 832
+4
+85.32
+73.78
+83.01
+0.071
+20.18
+0.0144
+2.18
+CrossDistill†
+1.3B
+480 × 832
+4
+85.41
+77.21
+83.77
+0.106
+24.70 0.0195
+2.64
+CrossDistill†
+1.3B
+480 × 832
+2
+84.88
+75.77
+82.98
+0.108
+24.81
+0.0192
+2.51
+Wan2.1-T2V-14B
+14B
+480 × 832
+50 × 2
+85.97
+76.68
+84.11
+0.125
+27.15
+0.0252
+2.83
+PCM
+14B
+480 × 832
+4
+84.60
+78.10
+83.30
+0.098 23.93 0.0152
+2.54
+rCM
+14B
+480 × 832
+4
+85.62
+77.24
+83.94
+0.082
+22.09
+0.0129
+2.12
+AnyFlow
+14B
+480 × 832
+4
+85.77
+77.58
+84.13
+0.078
+21.00
+0.0128
+2.01
+DMD
+14B
+480 × 832
+4
+86.06
+74.84
+83.82
+0.056
+18.27
+0.0084
+1.61
+CrossDistill†
+14B
+480 × 832
+4
+85.96
+78.44
+84.74
+0.095
+23.88 0.0154
+2.57
+†CrossDistill denotes the scheduling policy with default instantiation PCMH + DMDL (alternatives in Table 2). Diversity
+columns: raw cosine/ℓ2 distances in frozen V-JEPA 2 and VideoMAE V2 embeddings, N=5 seeds per prompt; higher is more
+diverse. Under the paired bootstrap, the Total-score improvement over the strongest four-step baseline is significant (p < 0.05)
+at both scales, and the diversity improvements over DMD and AnyFlow are significant at p < 0.01.
+quality–diversity frontier in Fig. 4 and qualitative comparisons among the mixed, reversed, and proposed
+schedules in Fig. 7. For PCM, DMD, rCM, and AnyFlow we evaluate the officially released checkpoints
+distilled from the same Wan2.1 teachers, so that each baseline is the strongest published realization of its
+method; the loss-level mixture and all CrossDistill variants are trained by us under an identical protocol
+(same teacher, data, training iterations, optimizer, and critic protocol; Table 4). All methods are evaluated on
+the same prompts, initial noise seeds, resolution, and NFE budget.
+Metrics. We report VBench quality, semantic, and total scores [12] following the official protocol. To evaluate
+stochastic diversity, we measure the input-dependent variation directly in the embedding spaces of two frozen
+video encoders, V-JEPA 2 [1] and VideoMAE V2 [32], following PDD[27]. Specifically, each generated video
+is encoded into a global embedding, and the diversity score is computed as the average pairwise distance
+(both cosine and ℓ2) among N videos generated from the same prompt with different initial noises. The
+V-JEPA 2 cosine distance serves as our primary diversity metric, while the VideoMAE V2 counterpart and
+the ℓ2 metrics act as cross-checks. Where scale-free comparisons are needed, we report the teacher-normalized
+variant (teacher = 1.0). All metrics are computed on the same P prompts and the same N=5 initial noise
+seeds for every method, inducing paired per-prompt measurements; method differences are assessed with a
+paired bootstrap over prompts (10,000 resamples).
+3.2
+Main Results
+Table 1 reports VBench results on Wan2.1-T2V, where CrossDistill corresponds to the default instantiation
+PCMH + DMDL. CrossDistill achieves the best semantic and total scores among four-step students at both
+scales; notably, at 1.3B its total score surpasses the full-step teacher. While monolithic DMD obtains the
+highest raw quality score, it suffers a significant semantic drop. We anchor diversity to the teacher (normalized
+= 1.0) rather than maximizing it: CrossDistill recovers ≈86% of the teacher’s seed-level diversity, versus 57%
+7
+
+
+Figure 4 Quality–diversity comparison under four-step generation (NFE=4) on Wan2.1-T2V-1.3B. Quality is the VBench
+Quality Score and Diversity is the teacher-normalized V-JEPA 2 cosine distance (the primary diversity metric; the corresponding
+VideoMAE V2 diversity scores are reported in Tables 1–2). Gray circles represent PCM–DMD loss-level mixing with λPCM = 1
+and λDMD ∈{1, 0.1, 0.01, 0.001}. Red stars represent CrossDistill with τ ⋆∈{0.90, 0.92, 0.94, 0.96}. Faint points show prompt-
+level results, large markers report aggregate means, and the shaded region shows the range of prompt-level results. Higher values
+are better on both axes.
+for DMD and 66% for AnyFlow at the 1.3B scale. Under the stricter NFE= 2 budget, CrossDistill remains
+highly competitive in total scores with only a marginal quality degradation.
+Fig. 4 compares loss-level mixing and CrossDistill under the same four-step budget. Changing λDMD moves the
+loss-level baseline along a quality–diversity curve: larger λDMD improves quality but reduces diversity, while
+smaller λDMD has the opposite effect. In this sweep, CrossDistill extends the frontier toward the upper-right
+region, with τ ⋆= 0.94 providing a favorable balance.
+Qualitatively, Fig. 1 visualizes the quality–diversity trade-off across baselines: DMD and AnyFlow are sharp
+but map different seeds to nearly identical content, whereas rCM retains seed-level variation with degraded
+quality; CrossDistill improves the trade-off. Fig. 5 further shows 14B results on T2V (480P) and I2V (720P):
+CrossDistill preserves temporal coherence on high-motion prompts without visible drift or ghosting, and
+reduces the collapse of near-static prompts into frozen frames. This matches the stage assignment: high-noise
+TD preserves motion and semantic branching, while low-noise DM refines local details. Appendix C provides
+further qualitative results, including NFE= 2 vs. NFE= 4 comparisons (Fig. 9) showing that the crossover
+design remains effective and preserves semantic alignment under a tighter budget.
+Figure 5 Qualitative T2V and I2V results. We show Wan2.1-14B T2V-480P (left) and Wan2.1-14B I2V-720P (right).
+Each row corresponds to one prompt, with four frames uniformly sampled from an 81-frame sequence. The prompts
+include two high-motion cases and two near-static cases.
+3.3
+Ablation Studies
+Crossover level τ ⋆. We investigate the sensitivity of the crossover level τ ⋆on Wan2.1-1.3B. To determine a
+robust boundary between mode selection and detail refinement, we first visualize the intermediate denoising
+8
+
+
+Table 2 Instantiations of the CrossDistill scheduling policy with identical crossover partition and training protocol.
+The superscripts H and L denote the objective used on the high-noise and low-noise intervals, respectively. All methods
+are evaluated at 480 × 832 resolution on the 1.3B model. Bold values indicate the best result among the configurations.
+The PCMH + DMDL row coincides with the CrossDistill row (1.3B, NFE= 4) of Table 1.
+Configuration
+VBench
+V-JEPA 2
+VideoMAE V2
+Quality ↑
+Semantic ↑
+Total ↑
+Cos ↑
+L2 ↑
+Cos ↑
+L2 ↑
+CrossDistill (DFDH + TDML)
+85.06
+76.17
+83.28
+0.099
+23.50
+0.0169
+2.39
+CrossDistill (PCMH + TDML)
+85.09
+76.85
+83.44
+0.104
+24.49
+0.0181
+2.49
+CrossDistill (DFDH + DMDL)
+85.20
+77.04
+83.57
+0.098
+23.46
+0.0169
+2.37
+CrossDistill (PCMH + DMDL)
+85.41
+77.21
+83.77
+0.106
+24.70
+0.0195
+2.64
+DFDH is the one-step high-noise ℓ2 regression to the teacher-induced crossover state (Eq. (3)). PCMH is the high-noise
+consistency relay (Eq. (2)). TDML and DMDL are low-noise distribution-matching objectives; DMDL uses Eq. (4), and TDML
+uses the TDM objective [22] on the same low-noise interval. The default model in Table 1 is PCMH + DMDL.
+states across a diverse set of prompts and random seeds. As consistently shown in Fig. 6, the global semantic
+mode and coarse motion dynamics largely emerge from the noise around τ ≈0.94, regardless of the specific
+text condition. This cross-prompt consistency suggests that τ ≈0.94 serves as a generalizable phase-transition
+boundary: before this point, trajectory distillation is critical for preserving input-dependent variation; after
+this point, the committed branch primarily requires local manifold refinement. Guided by this qualitative
+observation, we conduct a grid search over τ ⋆to identify the optimal operating point. The quantitative
+results in Fig. 4 confirm that τ ⋆= 0.94 yields the best quality–diversity balance, extending the Pareto frontier
+furthest toward the upper-right region. This validates that our default crossover level is not prompt-specific,
+but a stable scheduling prior for few-step distillation of Wan2.1.
+Figure 6
+Effect of the crossover level on Wan2.1-T2V-
+1.3B. We visualize the intermediate states of the multi-
+step teacher denoised to different noise levels τ. Although
+showing a single instance, this sample is representative
+of a consistent pattern observed across diverse prompts:
+around τ ≈0.94, the global mode reliably transitions from
+a noise-dominated state to a clear semantic structure. This
+observation identifies a generalizable boundary between
+high-noise mode selection and low-noise detail refinement.
+Stage assignment: instantiations of the same policy.
+Table 2 and Fig. 10 instantiate the CrossDistill scheduling
+policy with different objective pairs while keeping the
+crossover partition, relay interface, and training protocol
+fixed. We combine two high-noise TD objectives, DFDH
+and PCMH, with two low-noise DM objectives, TDML
+and DMDL. As shown in Fig. 10 and Table 2, all four
+tested instantiations achieve a favorable quality–diversity
+trade-off under our protocol. This suggests that the benefit
+of CrossDistill comes from the noise-level schedule rather
+than a single loss pair, and is robust to the tested TD/DM
+instantiations. The main-table model, PCMH + DMDL, is
+one default instantiation of this policy.
+Reversed stage assignment.
+The preceding stage-
+assignment study changes the concrete TD/DM losses
+while preserving the proposed ordering. We additionally
+test whether the ordering itself matters. To this end, we im-
+plement a reversed schedule that keeps the same crossover
+point τ ⋆and NFE budget, but swaps the noise supports of the two objectives: the DM objective is sampled
+only on the high-noise interval H, while the TD objective is sampled only on the low-noise interval L. This
+control helps isolate the coarse-to-fine responsibility: if high-noise TD is responsible for preserving mode
+branching and low-noise DM is responsible for local fidelity, reversing the two should reduce diversity and
+should not improve quality.
+Table 3 reports the quantitative results for this control: the reversed variant does not recover the quality–
+diversity trade-off of CrossDistill in our setting. Its diversity is markedly lower, consistent with the hypothesis
+that high-noise DM may prematurely collapse input-dependent variation. Furthermore, its quality does not
+9
+
+
+Table 3 Reversed stage assignment on Wan2.1-T2V-1.3B. All methods use NFE= 4 and τ ⋆= 0.94. The reversed
+variant keeps the same crossover partition and training protocol but swaps the noise supports of the TD and DM
+objectives.
+Configuration
+VBench
+V-JEPA 2
+VideoMAE V2
+Quality ↑
+Semantic ↑
+Total ↑
+Cos ↑
+L2 ↑
+Cos ↑
+L2 ↑
+CrossDistill (PCMH + DMDL)
+85.41
+77.21
+83.77
+0.106
+24.70
+0.0195
+2.64
+Reversed (DMDH + PCML)
+82.42
+75.93
+82.04
+0.082
+20.90
+0.0152
+2.13
+The first row is the same as the 1.3B, NFE= 4 result in Table 1. The reversed variant applies the DM objective on H and the
+TD objective on L; all other settings, including base learning rates, NFE budget, and critic protocol, are kept the same.
+improve, suggesting that low-noise TD does not substitute for low-noise distribution matching in recovering
+local manifold fidelity under our protocol. The qualitative comparison in Fig. 7 provides a visualization
+of this failure mechanism. Under identical prompts and initial noises, both the reversed schedule and the
+tuned loss-level mixture deviate noticeably from the intended prompt semantics in these examples, whereas
+CrossDistill better preserves the global semantic structure. This suggests a possible causal chain: once
+high-noise mode selection is corrupted—whether by reversing the stage order or by blending the two objectives
+at every noise level via loss-level mixing—the discarded semantic alternatives and stochastic diversity may be
+difficult to recover at low noise. Overall, these results show that the proposed noise-level ordering, not merely
+the TD–DM combination, drives the improvement.
+Figure 7 Qualitative comparison of mixed, reversed, and proposed schedules. We compare the tuned
+PCM–DMD loss-level mixture (Mixed), the reversed schedule DMDH+PCML, and our default schedule PCMH+DMDL
+under the same prompts, random seeds, and four-step budget. In these examples, the proposed schedule better preserves
+the intended prompt semantics, while both Mixed and Reversed show noticeable semantic deviations. This visualization
+provides qualitative support for the coarse-to-fine assignment of TD to high-noise mode selection and DM to low-noise
+detail refinement.
+4
+Conclusion
+High-noise decisions tend to shape mode structure and diversity, while low-noise decisions tend to refine
+fidelity and local realism, so distillation objectives can be scheduled according to the role of each noise
+regime. CrossDistill formalizes this idea as a trajectory-level scheduling policy with a single crossover between
+trajectory-based distillation and distribution matching. The default PCMH +DMDL model is one instantiation
+of this policy; the stage-assignment and reversed-schedule results suggest that the noise-level ordering, not
+merely the TD–DM combination, is the key factor. More broadly, this work treats the denoising trajectory as
+a structured design space in which complementary objectives can be composed at the trajectory level.
+5
+Acknowledgments
+This work was supported by Alibaba Group through Alibaba Research Intern Program.
+10
+
+
+References
+[1] Mido Assran, Adrien Bardes, David Fan, Quentin Garrido, Russell Howes, Matthew Muckley, Ammar Rizvi,
+Claire Roberts, Koustuv Sinha, Artem Zholus, et al. V-jepa 2: Self-supervised video models enable understanding,
+prediction and planning. arXiv preprint arXiv:2506.09985, 2025.
+[2] Giulio Biroli, Tony Bonnaire, Valentin De Bortoli, and Marc Mézard. Dynamical regimes of diffusion models.
+Nature Communications, 15(1):9957, 2024.
+[3] Ting Chen. On the importance of noise scheduling for diffusion models. arXiv preprint arXiv:2301.10972, 2023.
+[4] Hanbo Cheng, Peng Wang, Kaixiang Lei, Qi Li, Zhen Zou, Pengfei Hu, and Jun Du. From structure to detail:
+Hierarchical distillation for efficient diffusion model. arXiv preprint arXiv:2511.08930, 2025.
+[5] Jooyoung Choi, Sungwon Kim, Yongjeon Jeong, Youngjune Gwon, and Sungroh Yoon. ILVR: Conditioning
+method for denoising diffusion probabilistic models. In IEEE/CVF International Conference on Computer Vision
+(ICCV), 2021.
+[6] Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik
+Lorenz, Axel Sauer, Frederic Boesel, et al. Scaling rectified flow transformers for high-resolution image synthesis.
+In Forty-first international conference on machine learning, 2024.
+[7] Xingtong Ge, Xin Zhang, Tongda Xu, Yi Zhang, Xinjie Zhang, Yan Wang, and Jun Zhang. Senseflow: Scaling
+distribution matching for flow-based text-to-image distillation, 2026. URL https://arxiv.org/abs/2506.00523.
+[8] Zhengyang Geng, Mingyang Deng, Xingjian Bai, Zico Kolter, and Kaiming He. Mean flows for one-step generative
+modeling. Advances in Neural Information Processing Systems, 38:75460–75482, 2026.
+[9] Yuchao Gu, Guian Fang, Yuxin Jiang, Weijia Mao, Song Han, Han Cai, and Mike Zheng Shou. Anyflow: Any-step
+video diffusion model with on-policy flow map distillation. arXiv preprint arXiv:2605.13724, 2026.
+[10] Amir Hertz, Ron Mokady, Jay Tenenbaum, Kfir Aberman, Yael Pritch, and Daniel Cohen-Or. Prompt-to-prompt
+image editing with cross attention control. In International Conference on Learning Representations (ICLR),
+2023.
+[11] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In Advances in Neural
+Information Processing Systems, volume 33, pages 6840–6851, 2020.
+[12] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu,
+Qingyang Jin, Nattapol Chanpaisit, Yaohui Wang, Xinyuan Chen, Limin Wang, Dahua Lin, Yu Qiao, and Ziwei
+Liu. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition (CVPR), 2024.
+[13] Dengyang Jiang, Dongyang Liu, Zanyi Wang, Qilong Wu, Liuzhuozheng Li, Hengzhuang Li, Xin Jin, David Liu,
+Changsheng Lu, Zhen Li, Bo Zhang, Mengmeng Wang, Steven Hoi, Peng Gao, and Harry Yang. Distribution
+matching distillation meets reinforcement learning, 2026.
+[14] Dongjun Kim, Chieh-Hsin Lai, WeiHsiang Liao, Naoki Murata, Yuhta Takida, Toshimitsu Uesaka, Yutong He,
+Yuki Mitsufuji, and Stefano Ermon. Consistency trajectory models: Learning probability flow ode trajectory of
+diffusion. In International Conference on Learning Representations, volume 2024, pages 44493–44525, 2024.
+[15] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative
+modeling, 2022.
+[16] Dongyang Liu, Peng Gao, David Liu, Ruoyi Du, Zhen Li, Qilong Wu, Xin Jin, Sihan Cao, Shifeng Zhang,
+Hongsheng Li, and Steven Hoi. Decoupled dmd: Cfg augmentation as the spear, distribution matching as the
+shield, 2025. URL https://arxiv.org/abs/2511.22677.
+[17] Tao Liu, Hao Yan, Mengting Chen, Taihang Hu, Zhengrong Yue, Zihao Pan, Jinsong Lan, Xiaoyong Zhu,
+Ming-Ming Cheng, Bo Zheng, and Yaxing Wang. Continuous-time distribution matching for few-step diffusion
+distillation, 2026. URL https://arxiv.org/abs/2605.06376.
+[18] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data
+with rectified flow, 2022.
+[19] Cheng Lu and Yang Song. Simplifying, stabilizing and scaling continuous-time consistency models, 2025. URL
+https://arxiv.org/abs/2410.11081.
+11
+
+
+[20] Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. Latent consistency models: Synthesizing
+high-resolution images with few-step inference. arXiv preprint arXiv:2310.04378, 2023.
+[21] Weijian Luo, Tianyang Hu, Shifeng Zhang, Jiacheng Sun, Zhenguo Li, and Zhihua Zhang. Diff-instruct: A
+universal approach for transferring knowledge from pre-trained diffusion models. Advances in Neural Information
+Processing Systems, 36:76525–76546, 2023.
+[22] Yihong Luo, Tianyang Hu, Jiacheng Sun, Yujun Cai, and Jing Tang. Learning few-step diffusion models by
+trajectory distribution matching, 2025.
+[23] Chenlin Meng, Yutong He, Yang Song, Jiaming Song, Jiajun Wu, Jun-Yan Zhu, and Stefano Ermon. Sdedit:
+Guided image synthesis and editing with stochastic differential equations. In International Conference on Learning
+Representations, 2022.
+[24] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. arXiv preprint
+arXiv:2202.00512, 2022.
+[25] Axel Sauer, Dominik Lorenz, Andreas Blattmann, and Robin Rombach. Adversarial diffusion distillation. In
+European Conference on Computer Vision, pages 87–103. Springer, 2024.
+[26] Antonio Sclocchi, Alessandro Favero, and Matthieu Wyart. A phase transition in diffusion models reveals the
+hierarchical nature of data. Proceedings of the National Academy of Sciences, 122(1):e2408799121, 2025.
+[27] Neta Shaul, Chao Liu, Arash Vahdat, and Julius Berner. Parallel decoding distillation for fast image and video
+generation. arXiv preprint arXiv:2607.26004, 2026.
+[28] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models, 2020.
+[29] Yang Song and Prafulla Dhariwal.
+Improved techniques for training consistency models.
+In International
+Conference on Learning Representations, volume 2024, pages 15078–15097, 2024.
+[30] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models, 2023.
+[31] Fu-Yun Wang, Zhaoyang Huang, Alexander William Bergman, Dazhong Shen, Peng Gao, Michael Lingelbach,
+Keqiang Sun, Weikang Bian, Guanglu Song, Yu Liu, Xiaogang Wang, and Hongsheng Li. Phased consistency
+models. In Advances in Neural Information Processing Systems (NeurIPS), 2024.
+[32] Limin Wang, Bingkun Huang, Zhiyu Zhao, Zhan Tong, Yinan He, Yi Wang, Yali Wang, and Yu Qiao. Videomae
+v2: Scaling video masked autoencoders with dual masking, 2023. URL https://arxiv.org/abs/2303.16727.
+[33] Tianwei Yin, Michaël Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Fredo Durand, and William T
+Freeman. Improved distribution matching distillation for fast image synthesis. Advances in neural information
+processing systems, 37:47455–47487, 2024.
+[34] Tianwei Yin, Michaël Gharbi, Richard Zhang, Eli Shechtman, Fredo Durand, William T Freeman, and Taesung
+Park. One-step diffusion with distribution matching distillation. In 2024 IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR), pages 6613–6623. IEEE, 2024.
+[35] Kaiwen Zheng, Yuji Wang, Qianli Ma, Huayu Chen, Jintao Zhang, Yogesh Balaji, Jianfei Chen, Ming-Yu Liu,
+Jun Zhu, and Qinsheng Zhang. Large scale diffusion distillation via score-regularized continuous-time consistency.
+2025. doi: 10.48550/arXiv.2510.08431. ICLR 2026.
+[36] Mingyuan Zhou, Huangjie Zheng, Zhendong Wang, Mingzhang Yin, and Hai Huang. Score identity distillation:
+Exponentially fast distillation of pretrained diffusion models for one-step generation. In Forty-first International
+Conference on Machine Learning, 2024.
+12
+
+
+Appendix
+A
+Related Work
+Few-step diffusion distillation. Diffusion and flow matching models achieve strong generation quality but
+typically require many sampling steps [6, 11, 15, 18, 28]. Few-step distillation reduces this cost by training a
+student model to approximate the teacher’s generative behavior with a small number of function evaluations.
+Existing objectives are often designed around either trajectory preservation or distribution alignment. Our
+work is not focused on proposing yet another monolithic distillation loss; instead, it makes the noise axis an
+explicit design variable and studies where along the sampling trajectory different distillation objectives should
+act under a fixed few-step budget.
+Trajectory-based distillation. Trajectory-based distillation trains a student to preserve the teacher’s
+transport trajectories over fewer steps. Progressive distillation mimics a teacher over progressively shorter
+sampling intervals [24]. Consistency models enforce that states on the same probability-flow ODE trajectory
+map to a common output [30], with subsequent work improving training stability and sample quality [19, 20, 29].
+Consistency trajectory models extend this idea to mappings between arbitrary noise levels [14], and phased
+consistency models partition the trajectory into phases for few-step sampling [31]. These objectives are useful
+for preserving mode coverage and seed-level variation, but with very few steps they may not fully recover
+local data-manifold fidelity, often leading to blurred or over-smoothed samples. This limitation suggests that
+trajectory preservation alone may not be equally valuable at every noise level.
+Distribution matching and adversarial distillation. Another line of work aligns the student’s marginal
+distribution directly with the teacher’s. DMD uses a score-difference gradient to minimize a distributional
+divergence [34], and DMD2 stabilizes distribution matching with a two-time-scale update rule and adversarial
+supervision [33]. TDM incorporates trajectory awareness into distribution matching [22]. SiD derives a
+score-identity objective for one-step generation [36], and Diff-Instruct transfers knowledge by minimizing an
+integral KL-type objective [21]. Recent DMD-style variants further improve stability and scaling [7, 16, 17].
+These methods often produce sharper samples, but because they act primarily on marginals rather than
+individual trajectories, they can become mode-seeking and reduce stochastic diversity. In video generation,
+this issue is especially visible as reduced seed-level variation and weakened temporal dynamics. The key
+question, therefore, is not whether distribution matching is useful, but in which noise regimes it should be
+allowed to act.
+Hybrid objectives and staged distillation. Recent distillation recipes increasingly involve multiple
+objectives. rCM couples consistency training with distribution-matching-style supervision [35], while other
+methods introduce auxiliary adversarial or regularization terms to stabilize few-step training [13, 25, 33].
+Other approaches separate objectives in training time: AnyFlow [9] applies an off-policy flow-map stage
+followed by an on-policy DMD stage, and From Structure to Detail [4] post-trains a trajectory-distilled
+student with distribution matching. These methods demonstrate that trajectory- and distribution-based
+objectives are complementary. However, in most such recipes the objectives are either mixed over broad
+noise ranges or separated only by training stage, leaving the effective noise regime of each objective implicit.
+CrossDistill differs by making the noise axis an explicit scheduling variable: trajectory-based distillation
+is restricted to the high-noise mode-commitment interval, while distribution matching is restricted to the
+low-noise detail-refinement interval. This trajectory-level partition is orthogonal to training-time sequencing
+and can be instantiated with different plug-in objectives.
+Coarse-to-fine denoising and noise-dependent generation. Several studies observe that diffusion
+sampling proceeds from coarse to fine: high-noise steps are associated with global layout, semantics, and
+mode selection, whereas low-noise steps refine textures and local details [5, 10, 23]. Noise-scheduling analyses
+further show that different noise levels affect different aspects of generation [3, 11]. Unlike prior work that
+uses coarse-to-fine behavior mainly for editing, conditioning, or base-model scheduling, we use it to derive an
+objective-assignment rule for few-step distillation. We further test this rule with controlled ablations, including
+reversed schedules and multiple objective instantiations, rather than treating it as a heuristic curriculum.
+13
+
+
+B
+Conceptual Discussion: A Two-Price View of Noise-Level Scheduling
+This appendix provides a simplified conceptual view of the quality–diversity trade-off. It is not a formal
+theory, proof, or model of optimization dynamics. We use it to clarify the intuition behind the proposed
+noise-level schedule; all empirical claims in the paper are supported by the experiments in the main text.
+A simplified bookkeeping view.
+For a schedule α : [0, 1] →[0, 1] giving the TD weight at noise level t, write
+two reduced-form prices, wD(t) = diversity cost of using DM instead of TD at t, and wQ(t) = quality cost of
+using TD instead of DM at t, and let the total bills add over levels:
+D(α) =
+Z 1
+0
+ 1 −α(t)
+
+wD(t) dt,
+Q(α) =
+Z 1
+0
+α(t) wQ(t) dt.
+Additivity ignores same-level interactions between the two losses. This is related to what Fig. 4 examines: in
+our sweep, tuned uniform blends approximately trace the chord between the two monolithic students and do
+not fall below it, so we do not observe strong same-level synergy within this limited sweep.
+Coarse-to-fine intuition.
+The intuition behind the rule is the ordering of the exchange rate R(t) :=
+wD(t)/wQ(t): diversity is expensive to lose at high noise and cheap at low noise, while quality is cheap to
+lose at high noise and expensive at low noise. This ordering is consistent with prior observations: high-
+noise steps fix global layout, semantics, and mode identity while low-noise steps refine texture and local
+statistics [3, 5, 10, 11, 23]. Two anchors in our own experiments are consistent with it: at t ≈0.94 a purely
+DM-distilled student already maps distinct seeds to nearly identical states (Fig. 2), suggesting that wD is
+large at high noise; and low-noise TD neither restores manifold fidelity nor improves quality over low-noise
+DM (Fig. 3, Table 3), suggesting that wQ is large at low noise. We do not claim R is exactly monotone in
+practice; the ordering defines the regime in which the rule is intended to operate.
+A two-level illustration.
+The mechanism is visible with one high-noise level H and one low-noise level L and
+prices wD(H) = wQ(L) = 1, wD(L) = wQ(H) = 0.1:
+schedule
+prices paid
+D(α)
+Q(α)
+u + v
+TD everywhere
+wQ(H) + wQ(L)
+0
+1.1
+1
+DM everywhere
+wD(H) + wD(L)
+1.1
+0
+1
+uniform blend
+half of each price
+0.55
+0.55
+1
+crossover (TD on H, DM on L)
+the two cheap prices
+0.1
+0.1
+0.18
+reversed (DM on H, TD on L)
+the two expensive prices
+1.0
+1.0
+1.82
+In this idealized example, the crossover pays the two cheap prices, while the reversed order pays the two
+expensive ones and can be worse than uniform blends; uniform blends sweep the chord between the monolithic
+endpoints. The continuum ledger gives an analogous picture, with the chord gap equal to the area between
+the two normalized price curves.
+Informal interpretation.
+Within this simplified bookkeeping view: (i) at a fixed noise level, blending
+corresponds to a convex combination of the two idealized costs; (ii) uniform blends trace a one-parameter
+trade-off between the two monolithic endpoints; and (iii) if the relative cost favors TD at high noise and DM
+at low noise, a single crossover becomes a simple and natural schedule. These statements are intended only as
+intuition and should not be read as guarantees for real training dynamics.
+Scope and limitations.
+The ledger is bookkeeping, not dynamics: it prices which objective drives each level
+regardless of training order, and says nothing about gradient interference or the stop-gradient choice at τ ⋆.
+Three observations would weaken this picture, and two are already tested: a tuned uniform blend below the
+chord (not observed, Fig. 4) would challenge the additivity approximation; a reversed schedule on par with
+ours (not observed, Table 3) would challenge the proposed ordering; a strongly non-monotone measured R
+would motivate considering multi-switch schedules—estimating R level-wise (perturb each level’s objective,
+read off diversity/quality deltas) is a straightforward direction for future work.
+14
+
+
+C
+Additional Results
+C.1
+Toy case
+Figure 8 2D toy manifold distillation setting. From left to right: original teacher, trajectory-based distillation (TD),
+distribution matching (DM), loss-level mixture of TD and DM, and trajectory-level hybrid distillation (CrossDistill;
+ours). All models are trained on the same gray data manifold, and each student is trained to convergence. Colored
+curves denote denoising trajectories of 12 seeds, and black dots denote final generated samples.
+Toy model setup.
+We consider a 2D spiral density-estimation task. The gray background in the figure shows
+the target data distribution. Both the teacher and student are the same 4-layer MLP velocity networks
+with sinusoidal time embedding. The teacher is trained from scratch with flow matching to learn the target
+distribution until convergence, and serves as the ground-truth ODE solver. Each student is then distilled
+from the teacher for 10K iterations with batch size 1024.
+Baselines.
+Trajectory-based distillation (TD) trains the student with the PCM loss on 4-step trajectories.
+Distribution matching (DM) trains the student with the DMD distribution-matching loss on 4-step trajectories.
+The loss-level mixture (Mix) combines the PCM and DMD losses at every timestep. Our trajectory-level
+hybrid (CrossDistill) applies PCM in high-noise regions and DMD in low-noise regions.
+Observations.
+Colored curves denote 4-step denoising trajectories from 12 random seeds, and black dots
+mark the final generated samples. The leftmost panel shows the teacher ODE solver for reference. PCM
+preserves the teacher trajectory well, but the predicted data points are less accurate. DMD places final
+samples on the target manifold, yet without trajectory consistency the points collapse into specific regions
+and lose diversity. The loss-level mixture roughly follows the teacher trajectory, but some generated points
+fall outside the manifold. In contrast, in this toy setting our trajectory-level hybrid better preserves both the
+teacher sampling trajectory and the target distribution modes, with most final samples lying closer to the
+target manifold.
+15
+
+
+C.2
+Additional Qualitative Comparisons
+Figure 9 Qualitative comparison of CrossDistill under the Wan2.1-1.3B 480p setting. Each example shows
+four uniformly sampled frames from an 81-frame video, with the top and bottom rows corresponding to 2-NFE and
+4-NFE generation, respectively. Across diverse scenes, the 2-NFE model preserves strong visual quality, semantic
+fidelity, and temporal consistency comparable to the 4-NFE counterpart, demonstrating an effective quality–efficiency
+trade-off.
+16
+
+
+Figure 10 Qualitative comparison across instantiations of the CrossDistill policy under the Wan2.1-1.3B 4-step
+budget. Rows correspond to the four configurations in Table 2: DFDH + TDML, PCMH + TDML, DFDH + DMDL,
+and PCMH + DMDL. Columns show generated samples across different random seeds.
+17
+
+
+D
+Training and Model Hyperparameters
+We summarize the model and training configurations used in our experiments in Table 4. Unless otherwise
+specified, the same CrossDistill configuration is used for the 1.3B and 14B models.
+Table 4 Training and model hyperparameters for CrossDistill.
+Hyperparameter
+Wan2.1-T2V-1.3B
+Wan2.1-T2V-14B
+Base model
+Wan2.1-T2V-1.3B
+Wan2.1-T2V-14B
+Model parameters
+1.3B
+14B
+Resolution
+480 × 832
+480 × 832
+Student NFE
+4
+4
+Number of frames
+81
+81
+Crossover point τ ⋆
+0.94
+0.94
+High-noise interval
+[0.94, 1]
+[0.94, 1]
+Low-noise interval
+[0, 0.94]
+[0, 0.94]
+High-noise objective
+PCM
+PCM
+Low-noise objective
+DMD
+DMD
+High-noise student steps
+1
+1
+Low-noise student steps
+3
+3
+DMD gradient through PCM relay
+No
+No
+PCM/DMD update-strength ratio
+10 : 1
+10 : 1
+Optimizer
+AdamW
+AdamW
+DMD base learning rate
+2 × 10−6
+2 × 10−6
+PCM base learning rate
+2 × 10−6
+2 × 10−6
+Weight decay
+0.01
+0.01
+Global batch size
+16
+16 (480P) / 8 (720P)
+Training iterations
+10,000
+10,000
+Gradient clipping
+Disabled
+Disabled
+Training precision
+BF16
+BF16
+Critic learning rate
+4 × 10−7
+4 × 10−7
+Critic update ratio
+4:1
+9:1
+18
+
+
+E
+Algorithm
+This appendix gives the full training procedure for the default instantiation of Sec. 2.3; gradient flow, stop-
+gradient at the crossover, and step allocation follow Sec. 2.3 and are not repeated here. The student, teacher,
+and critic networks are parameterized as velocity predictors: for a velocity network F, the clean prediction
+at time t is ˆx0 = xt −tF(xt, t, c). The critic is trained with the flow-matching objective of Eq. (5), denoted
+LFM(F; ˆx0, c), and pD = U([0, 1]), so plate
+D
+in Algorithm 1 is the uniform distribution on L used in Eq. (4). The
+PCM update uses a 10× update-strength multiplier relative to the DMD update. The complete pseudocode is
+as follows:
+19
+
+
+Algorithm 1 CrossDistill Training: PCM–DMD Instantiation
+Require: Frozen teacher velocity network Fϕ; student generator Gθ; critic/fake velocity network Fψ; few-step
+schedule S = {τ0, τ1, . . . , τK}, where τ0 = 1, τ1 = τ ⋆, and τK = 0; student update frequency f; loss
+weights λDMD and λPCM.
+Ensure: Trained few-step generator Gθ.
+1: Define the PCM interval IPCM = [τ1, τ0]
+2: Define the later interval Ilate = [τK, τ1] and plate
+D (t) = pD(t | t ∈Ilate), where pD is the DMD noise
+sampling distribution
+3: Initialize θ from the pretrained teacher
+4: ψ ←ϕ
+▷Initialize critic/fake model from teacher
+5: for i = 0, . . . , N −1 do
+6:
+if i mod f̸ = 0 then
+// Update critic/fake model
+7:
+Sample condition c and z ∼N(0, I)
+8:
+ˆx0 ←sg [Rollout (Gθ, z, c, τ0 →· · · →τK)]
+9:
+Lfake ←LFM (Fψ; ˆx0, c)
+▷Eq. (5)
+10:
+ψ ←ψ −ηψ∇ψLfake
+11:
+else
+// Update student generator
+12:
+Sample condition c and z ∼N(0, I)
+13:
+Sample rollout length m ∼Uniform{2, . . . , K}
+14:
+ˆx0 ←Rollout (Gθ, z, c, τ0 →· · · →τm−1 →τK)
+▷DMD supervises the final prediction; stop
+gradient at the high-noise relay
+// DMD on the low-noise interval
+15:
+Sample tD ∼plate
+D (t) and ϵD ∼N(0, I)
+16:
+xtD ←(1 −tD)ˆx0 + tDϵD
+17:
+vψ ←Fψ(xtD, tD, c)
+18:
+vϕ ←Fϕ(xtD, tD, c)
+▷Teacher prediction with CFG
+19:
+ˆxψ
+0 ←xtD −tDvψ
+20:
+ˆxϕ
+0 ←xtD −tDvϕ
+21:
+Z ←mean
+ |ˆx0 −ˆxϕ
+0|
+
+▷Stop gradient
+22:
+gDMD ←ˆxψ
+0 −ˆxϕ
+0
+Z
+23:
+LDMD ←∥ˆx0 −sg (ˆx0 −gDMD)∥2
+2
+// PCM supervision on the high-noise interval
+24:
+Sample real latent x0, ϵ ∼N(0, I), and ta ∈IPCM
+25:
+xta ←(1 −ta)x0 + taϵ
+26:
+Sample tb < ta within IPCM
+27:
+xtb ←ODEStep (Fϕ, xta, ta →tb, c)
+28:
+xtar
+τ1 ←sg [Gθ (xtb, tb →τ1, c)]
+29:
+xpred
+τ1
+←Gθ (xta, ta →τ1, c)
+30:
+LPCM ←
+xpred
+τ1
+−xtar
+τ1
+2
+2
+// Update student
+31:
+LG ←λDMDLDMD + λPCMLPCM
+32:
+θ ←θ −ηθ∇θLG
+33:
+end if
+34: end for
+35: return Gθ
+20

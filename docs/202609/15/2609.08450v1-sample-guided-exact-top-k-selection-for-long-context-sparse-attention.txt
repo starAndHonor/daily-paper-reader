@@ -1,0 +1,2104 @@
+Tencent Hy
+Sample-Guided Exact Top-K Selection for Long-Context
+Sparse Attention
+Siran Liu,
+Yang Xue,
+Theo Tang,
+Changxu Shao,
+Qian Cheng,
+Haimeng Ren,
+Donghua Jiang
+Haipeng Ming,
+Lehua Ding,
+Zhonghan Lin,
+Shengying Wei,
+Wei Liu∗,
+Kai Liu,
+Jianchen Zhu
+Tencent Inc.
+https://github.com/Tencent/hpc-ops
+sethranliu@tencent.com, reedlauliu@tencent.com
+Abstract
+Sparse attention bounds downstream attention work by retaining a fixed-size subset of
+indexed tokens, but its standalone exact Top-K stage must still process materialized score
+rows whose length grows with context. Production radix selectors discover their first
+actionable boundary only after a complete-row pass, forcing another row-scale traversal
+before exact refinement. We observe that locating a compact upper tail requires sub-
+stantially less resolution than identifying the exact rank boundary, and that fixed-stride
+partial views of the current row remain calibrated to the corresponding complete-row
+rank across ragged lengths. We present HPC-Ops Top-K, a sample-guided exact selector
+for ragged sparse-attention score rows. A fixed-stride view proposes a row-local coarse
+boundary; the mandatory complete-row pass certifies its sufficiency, forms the admitted
+candidate set, and initializes exact FP32 refinement over the unresolved frontier. A nested
+secondary boundary and exact recovery handle underfilled proposals before any output
+is committed, so sampling controls common-path work but never correctness. The GPU
+implementation fuses complete-row certification and candidate formation, and combines
+persistent, KV-split, and direct-exact execution behind graph-capturable ragged-row dis-
+patch. We evaluate HPC-Ops Top-K on indexer scores from Hy4-Preview. It outperforms
+the fastest verified external exact baseline by 1.29–1.75× across 20 operator configurations,
+with a 1.55× geometric-mean speedup. It further achieves 1.36× and 1.48× speedups
+on two framework-derived sparse-attention traces. The implementation is available in
+HPC-Ops, Tencent’s open-source high-performance operator library for LLM inference, at
+https://github.com/Tencent/hpc-ops.
+1
+Introduction
+Long-context inference increases both KV-cache traffic and the cost of determining which tokens each query
+should attend to. Sparse attention bounds the subsequent attention work by retaining a fixed-size subset of
+the indexed context. In indexer-based designs such as DeepSeek Sparse Attention (DeepSeek-AI, 2025), an
+indexer materializes an FP32 relevance-score row for each query, exact Top-K identifies the selected positions,
+and the main attention accesses only the corresponding keys and values. Fixing K bounds the downstream
+attention work, but it does not bound selection: every score row must still be examined over its full valid
+length. At hundreds of thousands of indexed tokens and many ragged rows per invocation, exact Top-K can
+therefore remain on the critical path even after the surrounding kernels have been optimized.
+The central cost is not the unavoidable inspection of an unsorted row, but when an exact selector obtains a
+boundary that can reduce the active set. Production radix selection first streams the complete row into a digit
+histogram; only the completed histogram reveals the bucket containing rank K. Scores encountered before
+∗Correspondence to: Wei Liu.
+– 1 –
+arXiv:2609.08450v1  [cs.DC]  8 Sep 2026
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+the histogram completes cannot be classified on their first encounter, so candidate formation requires another
+row-scale traversal before exact refinement. Other exact GPU selectors maintain ordered state, partition or
+reduce the row, or predict boundaries from prior invocations (Shanbhag et al., 2018; Zhang et al., 2023; Li
+et al., 2024; Xie et al., 2025; Gaihre et al., 2021; Cheng et al., 2026). These mechanisms trade row traffic for
+ordered work, resident state, data-dependent intermediate sets, or reusable history. Closing this gap requires a
+current-row boundary before the complete-row pass, together with exact semantics, regular GPU execution,
+ragged-row support, CUDA-Graph capture, and score traffic close to one complete-row scan.
+Our key insight is that early reduction does not require the resolution of exact selection. Two findings support
+this separation. First, a large boundary error can leave only a compact upper tail: distinguishing the value at
+rank K from its immediate neighbor can demand an extremely precise cutoff, whereas substantially coarser
+boundaries still leave compact upper tails across the captured score rows. Second, fixed-stride views track
+global upper-tail quantiles across ragged lengths without relying on prior invocations. Finite-population order
+statistics explain this position-agnostic baseline, while the endpoint structure observed in sparse-attention
+scores further reduces the estimation error. Together, these findings make the current row itself a low-cost
+source of an early boundary while leaving the unavoidable complete-row pass authoritative for exactness.
+We use this separation to build HPC-Ops Top-K, a three-phase sample-guided exact selector. Phase 1 reads
+a fixed-stride view and proposes a row-local coarse boundary. Phase 2 applies that boundary during the
+mandatory complete-row traversal, certifies the sufficiency of the admitted candidate set, persists the admitted
+candidates, and constructs the leading histogram for exact refinement on their first encounter. If the proposal
+underfills, a nested secondary boundary and, when necessary, exact coarse recovery establish a sufficient
+candidate set before any output is committed. Phase 3 performs exact FP32 radix refinement only over the
+compact certified frontier, committing resolved digit groups and carrying only the unresolved boundary frontier
+forward. Sampling therefore controls common-path work but never determines the returned indices. With
+sampling stride s, the proposal reads approximately L/s scores before the required complete-row traversal,
+rather than introducing another row-scale boundary-localization pass.
+The GPU implementation realizes the sampled pipeline within a shape-dependent portfolio of exact kernels.
+The fused complete-row pass uses vectorized score reads while performing boundary classification, candidate
+collection, and construction of the leading exact histogram in one traversal. Subsequent refinement carries
+forward only the unresolved frontier rather than revisiting resolved scores. Persistent kernels keep each
+row and its compact state under one CTA, KV-split kernels expose parallelism across a few long rows, and
+direct-exact kernels cover complementary shapes for which sampling does not amortize. These paths share
+graph-stable ragged-row dispatch and the same exact FP32 refinement contract.
+We evaluate HPC-Ops Top-K on indexer scores from Hy4-Preview (Tencent Hy Team, 2026) against verified
+exact Top-K implementations from vLLM, TensorRT-LLM, SGLang, FlashInfer, and PyTorch (Kwon et al.,
+2023; NVIDIA Corporation, 2026b; Zheng et al., 2024; Ye et al., 2025; Paszke et al., 2019). HPC-Ops Top-K
+is fastest in all 20 evaluated operator configurations, outperforming the fastest external baseline by 1.29–
+1.75× with a 1.55× geometric-mean speedup. On two framework-derived sparse-attention traces, it achieves
+1.36× and 1.48× speedups. The implementation is released as part of HPC-Ops, Tencent’s open-source
+high-performance operator library for LLM inference, at https://github.com/Tencent/hpc-ops.
+Our contributions are:
+• Workload insight. We identify and analyze the separation between locating a compact upper tail and
+resolving its exact rank boundary, and show that fixed-stride views of the current row can locate a useful
+coarse boundary across ragged lengths.
+• Sample-guided exact selection. We develop a three-phase proposal–certification–refinement algorithm
+in which sampling reduces common-path work while complete-row certification, bounded recovery, and
+exact FP32 refinement preserve exact Top-K semantics.
+• GPU realization and validation. We realize the design through fused complete-row processing and a
+graph-stable dispatcher over persistent, KV-split, and direct-exact kernels, bringing the principal sampled
+path close to the one-scan traffic floor. We validate the resulting operator at both operator and framework
+levels and release it as part of the open-source HPC-Ops library.
+– 2 –
+
+
+Tencent Hy
+2
+Background
+2.1
+Cost of Standalone Top-K Selection
+Sparse-attention models decide which key–value entries each query may attend to by ranking a score vector.
+In indexer-based designs such as DeepSeek Sparse Attention (DeepSeek-AI, 2025), GLM-5.3 (Z.ai, 2026),
+and Hy4-Preview (Tencent Hy Team, 2026), a lightweight indexer scores every historical token against the
+current query,
+ℓt =
+h
+X
+j=1
+wj · ReLU
+ qt,j K⊤
+,
+(1)
+and the selector keeps the K positions with the largest scores. The downstream sparse attention consumes
+those indices, not the scores.
+Two properties of this arrangement set up the rest of the report. The score matrix is materialized before
+selection, so the selector is a standalone operator over an existing array. And its cost scales with context length
+while the attention behind it does not.
+Operator contract.
+The operator maps a materialized score matrix and a per-row valid length to K indices
+per row:
+X ∈RM×N
+|
+{z
+}
+float32
+,
+e ∈NM
+| {z }
+valid lengths
+7−→I ∈ZM×K
+|
+{z
+}
+int32
+.
+Here M is the number of score rows and N is their allocated, possibly padded width. Row r has valid length
+Lr := er ≤N, valid positions [Lr] := {0, . . . , Lr −1}, and scores xr,i := Xr,i for i ∈[Lr]. For a single-row
+argument, we omit r and write L, [L], and xi. When Lr > K, the operator returns K distinct indices from
+[Lr]. For Lr ≤K, row r instead contains every valid index, and any remaining slots j ∈{Lr, . . . , K −1}
+are filled with the sentinel Ir,j = −1; the downstream sparse-attention operator skips those entries. Selection
+is exact when no unselected valid element of a row exceeds any selected one. Ties at rank K leave the index
+set underdetermined, so the contract fixes the selected values rather than a particular index permutation. Inputs
+are float32 and free of NaN; ±∞and subnormals are ordered numerically.
+Deployment requirements.
+Four properties of the serving path decide whether a selector can be dropped
+into it, and they later exclude designs that are otherwise attractive. Rows are ragged: under causal masking
+within a prefill chunk, Lr varies widely, so a schedule that assigns equal work per row is unbalanced. Rows
+are stored at a padded pitch whose alignment, not the logical length, determines the vector width a kernel may
+use. The operator must be capturable in a CUDA graph, which forbids reading a runtime statistic back to the
+host to choose a code path (NVIDIA Corporation, 2026a), and its workspace must be bounded independently
+of the batch. It must accept scores from any producer, and it must be replayable offline on a saved score matrix
+so that numerical regressions in a deep model remain tractable.
+Why long rows are expensive.
+Once the indexer has materialized a score row, the selector must cover its L
+valid entries, whereas downstream sparse attention consumes only the K selected positions. We compare the
+selector’s row-scaled score traffic with the selected-position payload of sparse attention. Let bs be the bytes per
+materialized score, and let ba be the logical bytes consumed by sparse attention per selected position, including
+its index and model-specific cached attention state. For the selector, let Wscore count logical global-memory
+score reads over the valid row: complete traversals and any row fraction revisited before reduction reaches
+a compact candidate frontier. The resulting row-equivalent traffic is Req := Wscore/L, while subsequent
+exact refinement contributes candidate-scale work. The corresponding score-read traffic and selected-position
+payload are then
+Bscan = ReqLbs,
+Bsparse = Kba.
+(2)
+Their ratio exposes the relevant scaling law:
+Bscan
+Bsparse
+= Reqbs
+ba
+L
+K .
+(3)
+– 3 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+For fixed K and data representations, this ratio grows linearly with L; each additional complete-row traversal
+increases it in the same proportion.
+The standalone exact-selection contract also imposes a traffic floor. An arbitrary unsorted row cannot be
+certified without inspecting every valid score, so
+Req ≥1
+for any exact selector.
+(4)
+Each complete global traversal of the valid row contributes 1, while revisiting a fraction of the row contributes
+the same fraction. Values reused from registers or shared memory add no global score read. Once the row
+has been reduced to a compact frontier, its exact work is accounted for separately. Thus Req = 1 denotes one
+complete scan without another row-scaled revisit. For fixed K, bs, and ba, Req is the selector-controlled factor
+in eq. (3), which makes it the traffic axis used to compare the mechanisms in section 2.2.
+2.2
+Approaches to Exact Selection
+The textbook task is to return the K largest entries of a row; GPU selectors differ in how they obtain the
+boundary needed for that result. Figure 1 groups exact mechanisms by whether they maintain ordered state,
+discover a boundary through current-row partitioning, reduce the row before an exact backend, or predict a
+boundary from prior invocations. A separate body of work reduces the same system cost by moving selection
+into score production, sharing indexing work across queries or layers, or relocating sparse-attention data and
+execution; section 7 covers it.
+Exact Top-K
+on a materialized
+row
+Order
+maintenance
+Full sort
+torch.sort+prefix
+Bounded ordered state
+bitonic Top-K (Shanbhag et al., 2018);
+GridSelect (Zhang et al., 2023)
+Boundary-dependent
+partitioning
+Radix / bucket select
+torch.topk; AIR (Zhang et al., 2023);
+RadiK (Li et al., 2024)
+On-chip threshold search
+RTop-K (Xie et al., 2025)
+Reduction
+before exact
+selection
+Delegate reduction
+Dr. Top-k (Gaihre et al., 2021)
+Sampled reduction
+SampleSelect (Ribizel & Anzt, 2019, 2020);
+Qrita (Park et al., 2026); HPC-Ops
+History-dependent
+prediction
+Temporal prediction
+GVR (Cheng et al., 2026)
+Figure 1: Mechanisms for exact Top-K selection over a materialized score row. The leaves name representative
+GPU realisations. The four branches organize the survey; table 1 then distills their seven mechanisms into
+deployment-facing cost and execution categories. HPC-Ops belongs to sampled reduction; methods that alter
+the score producer or the sparsity contract are covered separately in section 7.
+For deployment, however, the algorithmic labels are not enough. The decisive question is what information
+each mechanism makes available before or during the mandatory inspection of a long row, and what resource
+or signal it exchanges for lower complete-row traffic. We examine the mechanisms in turn and then use table 1
+to synthesize their representative work, score traffic, GPU execution, and sensitivity to the input data.
+Order-maintaining selection.
+Sorting the row and keeping a prefix costs log L traversals, and none of that
+work reflects that only K elements are wanted. Bitonic Top-K removes most of it by discarding the losing half
+after each merge stage (Shanbhag et al., 2018), and GridSelect maintains a grid-wide bounded queue whose
+insertion position is computed with a warp ballot, so the expensive sort and merge run only when the queue
+fills (Zhang et al., 2023). Both attain Req = 1, which is the floor of eq. (4).
+What they pay for it is a footprint. The retained structure lives in shared memory and registers, which caps the
+rank at 256 for a bitonic network and 2048 for a warp- or grid-level queue (Zhang et al., 2023). The O(log2 K)
+cost of the merge network compounds this: by the same authors’ measurement a queue is faster only below
+K ≈256, above which radix partitioning wins on identical hardware (Zhang et al., 2023). Reaching the
+one-scan traffic floor through bounded ordered state therefore does not remove its rank-scaling limitation.
+– 4 –
+
+
+Tencent Hy
+Boundary-dependent partitioning.
+Radix and bucket selection build a histogram over successive digits of
+an order-preserving key, locate the bin holding the Kth element, and refine within it, giving Drad iterations
+for a key processed by a Drad-digit schedule. AIR and RadiK are representative GPU realisations (Zhang
+et al., 2023; Li et al., 2024); the CUDA path of torch.topk uses the same radix-selection family (PyTorch
+Contributors, 2026).
+Radix exposes regular SIMD work, and its later active ranges can shrink sharply once a boundary bin is known.
+Its initial cost, however, is fixed by boundary timing: a conventional path spends one complete traversal
+locating the first boundary and another classifying the row against it, so Req ≥2 before later active-range
+work is considered. Section 2.3 traces the CUDA dependency that makes this reread structural and explains
+which later passes round fusion can overlap.
+Its dependability is the other side of the same coin: no input makes it wrong, and skew costs traffic rather than
+correctness. Adversarially clustered keys that share leading bits eliminate nothing in the early iterations, and
+the mitigation chooses between re-reading the row and spilling a candidate buffer according to which moves
+fewer bytes (Zhang et al., 2023; Li et al., 2024). This bounds the cost of skew rather than removing it.
+A numeric threshold search reaches the same result differently, testing candidate thresholds and counting
+qualifying elements with warp ballots (Xie et al., 2025). Loading the row into shared memory once and
+iterating on chip attains Req = 1, and the published evaluation covers rows of a few hundred to a few thousand
+elements. That prerequisite is the constraint rather than the iteration count: the evaluated rows fit in CTA-local
+shared memory, whereas the long sparse-attention rows considered here do not. Once the row spills, each of
+the O(log L) search rounds becomes a global traversal.
+Reduction before exact selection.
+Spending a little work to shrink what an exact backend must examine
+can keep complete-row traffic near the one-scan floor without requiring the row to remain on chip. Unlike the
+preceding mechanisms, its excess work is governed by the size of an intermediate reduction rather than by a
+structurally required full-row reread. Dr. Top-k partitions the row and uses per-partition delegates to prove that
+whole partitions cannot contribute (Gaihre et al., 2021). The bound never fails, but the subrange width that
+controls it has an interior optimum: a wider subrange shrinks the delegate set and enlarges the second stage
+that must then be concatenated. The saving therefore rests on a constant tuned to the data rather than on a
+property of the row.
+Sampling obtains its reduction signal from the current row. SampleSelect estimates splitters from a sample
+and partitions the full input exactly (Ribizel & Anzt, 2019, 2020), while Qrita fits a sampled tail model
+before narrowing the quantile with a multi-pivot search (Park et al., 2026). Prof-K uses a random sample to
+size a one-pass filter and recovers the exact Top-K with user-specified high probability (Dziarmaga et al.,
+2026). SampleSelect and Qrita retain deterministic exact completion through full-row verification; Prof-K
+instead adopts a probabilistic correctness contract. Exactness alone, however, does not determine whether
+the reduction repays its sampling work. On long, ragged sparse-attention rows, the decisive quantity is the
+candidate volume left by a sublinear per-row view: a useful estimate must reduce the exact backend to a
+compact, O(K)-scale tail rather than another row-scale problem.
+History-dependent prediction.
+Consecutive decode steps produce strongly correlated scores, so the previous
+step’s selection is an excellent initial threshold. GVR uses that guess to initialize a full-row secant threshold
+search and then refines exactly. Across its reported DSA decode layers, Phase 2 averages 1.1–2.7 threshold-
+search iterations (Cheng et al., 2026). The guess is strong enough that Phase 2 approaches a single threshold-
+search traversal on high-correlation layers, making the approach highly effective on decode-shaped work.
+Its prerequisite, though, is a property of the schedule rather than of the data, and cannot be supplied when
+absent. There is no previous step at the first chunk of a prefill, on a single offline call, or when replaying a saved
+score matrix, and on those calls the approach falls back to the partitioning path and inherits its multi-pass traffic.
+Full-row counting remains unavoidable: the prior initializes the search but each threshold is checked against
+the current row, and candidate formation adds another traversal. With nsearch threshold-search traversals, its
+row-scaled traffic therefore satisfies Req ≥nsearch + 1 even when the initial proposal is strong.
+Table 1 compares the mechanisms along four deployment-relevant dimensions. The GPU-mapping column
+identifies the dominant execution structure rather than measured speed. Data sensitivity describes how much
+the executed work changes with score distribution or proposal quality at fixed L and K: low denotes a largely
+fixed schedule, moderate data-dependent candidate or refinement work, and high a fast path governed by the
+– 5 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+initial boundary estimate. Because every mechanism retains exact completion, this grade concerns performance
+rather than correctness.
+Table 1: Deployment-facing comparison of the mechanisms in fig. 1 over one valid row. Work is representative
+rather than an implementation-level bound; Req reports row-scaled global score traffic, normalized by one
+complete valid-row read; compact candidate-only exact work remains explicit in the Work column. All rows
+denote exact-completion mechanisms.
+Mechanism
+Representative row work
+Req
+GPU mapping
+Data sensitivity
+Full ordering
+O(L log L)
+log L
+General-purpose
+Low
+Bounded ordered state
+O(L log2 K)
+1
+Rank-limited
+Low
+Radix / bucket select
+O(DradL)
+≥2
+Strong SIMD
+Low–Moderate
+On-chip threshold search
+O(nthrL)
+1
+Capacity-limited
+Moderate
+Delegate reduction
+O(L + Ddel
+√
+LK)
+1 + fdel
+Two-stage
+Moderate
+Sampled reduction
+O(Lsamp + L + Wcand)
+1 + Lsamp/L
+Strong SIMD
+Moderate
+Temporal prediction
+O((nsearch+1)L + Wcand)
+nsearch + 1
+Strong SIMD
+High
+Drad, Ddel, nthr, and nsearch count radix, delegate-refinement, on-chip threshold-search, and temporal threshold-search
+rounds; fdel is the row fraction revisited after delegate filtering; Lsamp is the aggregate sample size; and Wcand is
+candidate-only exact work after row-scale reduction.
+What the landscape leaves open.
+Taken together, the survey and table 1 expose a common tradeoff.
+Order-maintaining and on-chip methods exchange score traffic for excess ordering work or resident state;
+reduction methods exchange it for a data-dependent intermediate set; temporal prediction exchanges it for
+prior invocation state. Production radix avoids these capacity and history prerequisites and retains regular
+GPU execution, but pays an initial full-row reread.
+The missing combination is therefore long-row support, regular GPU execution, current-row state, and
+score traffic near one valid-row scan. Sampled reduction has the appropriate information source, but the
+retained-tail size of a sublinear view at the target rank is the unresolved property. The next subsection isolates
+why production radix obtains its first boundary too late to close this gap; section 3 then evaluates whether
+current-row views supply the required compact tail.
+2.3
+The Production Radix Bottleneck
+Production radix provides self-contained, regular GPU execution, but its gap from the one-scan floor is set by
+when the rank boundary becomes available. Its pass count is not merely the number of digits in the key; it
+follows from a CUDA data dependency between histogram construction and boundary-dependent classification.
+Figure 2 separates this structural dependency from the execution pressure within each pass.
+Structural traffic.
+The first pass contributes every key to an on-chip digit histogram, and only the completed
+bin counts allow a prefix scan to expose the bucket containing rank K. The scores streamed through the CTA
+before that point cannot yet be classified by the resulting boundary. The implementation must therefore touch
+the row again or retain a row-sized copy. Round fusion overlaps each boundary classification with the next
+digit histogram, reducing the worst-case score reads of a four-digit schedule from 8L to 5L (Zhang et al.,
+2023). On well-spread keys, an 11-bit digit also shrinks later active ranges far below L. Neither effect can
+fuse classification into the initial pass that creates the first boundary, so its histogram–classification pair still
+contributes 2L reads before candidate shrinkage can help.
+– 6 –
+
+
+Tencent Hy
+Conventional production radix
+four-digit round-fused schedule
+Req ≤5 (≤5L reads)
+Pass 1
+L reads
+FP32
+score row
+L ordered keys
+Digit histogram
+2048 bins
+in SMEM
+atomic updates
+Prefix + locate
+CUB scan
+CTA barrier
+boundary available
+Pass 2
+L rereads
+same
+score row
+read from
+GMEM again
+Classify + compact
+test against
+boundary
+collect counters
+candidate
+tail
+retained
+indices
+initial L-value reread
+Later
+digits
+active range
+shrinks with
+each digit
+filter + next
+histogram
+round fusion
+lower-bit
+refinement
+exact K indices
+Structural traffic
+boundary after Pass 1 ⇒initial L-value reread
+Per-pass pressure
+SMEM atomics • CTA barrier • compaction
+One-pass target
+boundary before scan →verify + collect →tail-only exact refinement
+Figure 2: Why production radix selection rereads the score row. The first histogram consumes all L keys
+before the rank boundary exists; classification therefore rereads the materialized row. Later round fusion can
+overlap work only after that boundary exists. The lower ledger separates this structural dependency from
+atomics and synchronization that determine the throughput of each pass, and states the execution ordering
+investigated in section 3.
+Execution pressure.
+Each full-row histogram maps L keys onto shared-memory bin counters, followed
+by a CTA-wide prefix scan and barrier; classification then funnels qualifying elements through compaction
+counters. The production path therefore combines repeated score processing with shared-memory atomic
+contention and synchronization (Cheng et al., 2026). Digit width, bin layout, and counter aggregation can
+improve the throughput of these stages, but they do not move the first boundary earlier and cannot remove
+the structural reread. This distinction makes full-row traversals the stable cross-implementation axis, while
+atomics and barriers explain why the cost of each traversal remains architecture-sensitive.
+The production bottleneck is therefore one of boundary timing: approaching the one-scan floor requires an
+actionable upper-tail boundary before the mandatory row inspection, without relaxing the deployment contract
+of section 2.1. Section 3 tests whether production score rows supply the required coarse localization, and
+section 4 turns the resulting evidence into an exact selector.
+3
+Motivation
+3.1
+Empirical Observations
+Exact Top-K selection must resolve the precise Kth boundary, whereas an early filtering boundary need only
+retain a compact superset of the answer. This distinction raises two workload questions: how much boundary
+error can be tolerated before the retained tail ceases to be compact, and whether a regular partial view can
+locate that tail across ragged score rows.
+We answer these questions using indexer scores produced by Hy4-Preview (Tencent Hy Team, 2026) and
+captured immediately after the indexer MQA and before Top-K selection. The measurements use K = 2048.
+Each capture materializes a batch of these FP32 score rows immediately before selection. For row r, we
+analyze the valid vector xr = (xr,0, . . . , xr,Lr−1). When one row is clear from context, we omit r and write
+x = (x0, . . . , xL−1). Three captures span multiple indexer layers and prefill chunks, with maximum valid
+lengths of 65,536, 131,072, and 244,650. In each capture, we retain rows with Lr ≥4K, so every row
+supports a common upper-tail range, and select 4,096 rows at equal spacing from the eligible set. We preserve
+their causal lengths and rank all valid FP32 values, so every quantity below is an exact order statistic of the
+operator input.
+– 7 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+Observation 1: large boundary error can leave only a compact upper tail.
+Ordinary subscripts continue
+to identify positions. To distinguish ranks from positions, let x↓
+(j) denote the j-th largest value, so x↓
+(1) ≥· · · ≥
+x↓
+(L). An exact selector must ultimately distinguish x↓
+(K) from x↓
+(K+1). A coarse boundary has a different task:
+it need only retain a manageable upper tail that contains the final answer. We measure the accuracy–work
+relation directly. Let δ = x↓
+(K) −x↓
+(K+1) be the adjacent score gap demanded by exact selection. We move
+the boundary downward by ϵ such gaps and count the complete-row values it retains:
+θ(ϵ) = x↓
+(K) −ϵδ,
+C(ϵ) = #{i ∈[L] : xi ≥θ(ϵ)}.
+(5)
+Here ϵ measures boundary error in units of the exact adjacent gap. C(ϵ) is the exact number of complete-row
+values at or above θ(ϵ), namely the upper-tail size that remains after applying this coarse boundary. Together
+they expose the accuracy–work frontier: ϵ controls boundary imprecision, and C(ϵ) records its cost in values
+that remain to be resolved.
+Adjacent-gap normalization requires δ > 0, so rows tied at the Kth boundary are omitted from this sweep.
+Figure 3a varies ϵ over four orders of magnitude. A boundary displaced by 100× the exact gap still retains
+a median of 1.03K values, and 95% of rows retain no more than 1.15K. At 500×, the median is 1.18K
+and the 95th percentile is 2.02K. The curve eventually bends upward, making the cost of excessive error
+visible, but its long flat region is the important separation: score precision can be relaxed by hundreds of
+adjacent-boundary gaps before retained work grows by the same scale. All three captures show the same
+flat-then-rising profile, so this tolerance persists across the measured sequence lengths rather than appearing
+only at one favorable length.
+The reason is local rank geometry. One exact gap spans one adjacent pair, whereas lowering a boundary through
+many comparable gaps advances through many ranks. Under a smooth local score density, a displacement
+of ϵδ adds approximately ϵ values, not a factor of ϵ in retained work. Section 3.2 states this approximation
+precisely. The experiment therefore identifies a broad target: a useful early signal need not approximate the
+exact cutoff; it need only land within the flat part of the score-error/work curve.
+Observation 2: regular partial views recover global upper-tail quantiles.
+The first observation supplies
+tolerance but not a cheap source of global information. We next ask whether regularly spaced positions
+preserve the complete-row upper-tail quantiles. For a period s, positions with the same residue modulo s form
+one phase, and each phase reads approximately a 1/s fraction of the row. For a requested complete-row rank
+eK, let q = ⌈eK/s⌉be the corresponding sample rank. In phase a, we take its q-th largest value and write Ja(q)
+for that value’s exact rank in the complete row. A calibrated view therefore satisfies Ja(q) ≈eK.
+We sweep five fractions from 1/16 through 1/256, five requested ranks from K through 2K, and every phase
+of the selected rows. In fig. 3b, their median complete-row ranks follow the requested-rank diagonal throughout
+the sweep. Even the smallest 1/256 view remains within 5% of every requested rank, while views through
+1/64 remain within 1.3%.
+The median curves establish calibration but do not hide its uncertainty. The two distribution glyphs in the
+same panel show the central shape and median, while their capped spines expose the fifth-to-95th-percentile
+range at requested rank 1.5K: 1/64 views span 1.23K–1.77K, while 1/128 views span 1.09K–1.92K. Their
+medians remain within 0.03K of the request, and the full uncensored distributions place 95% of absolute
+errors within 0.32K and 0.50K, respectively. The partial views are therefore globally centered, while their
+remaining dispersion stays on the same O(K) scale as the compact tail identified by Observation 1.
+This representativeness has a position-agnostic basis. If global ranks are exchangeable over positions, each
+phase is a uniform finite-row sample and its order statistic is centered near the requested global rank. The
+exchangeable curve in panel (d) evaluates the corresponding finite-population RMS error at every measured
+causal length; this reference already predicts useful calibration for all five view sizes.
+The captured rows supply additional empirical margin. Across the three captures, the first and last position
+deciles contain 52–74% of exact top-K indices, compared with 20% under uniform positions (panel (c)). These
+endpoint-structured captured rows exhibit 14–28% lower RMS rank error than the exchangeable reference at
+every measured view size (panel (d)). Thus regular partial views work in the general position-agnostic case,
+and the structured real inputs are easier still. The endpoint geometry itself is consistent with prior attention-sink
+and recency analyses (Xiao et al., 2024; Gu et al., 2025; Barbero et al., 2025).
+– 8 –
+
+
+Tencent Hy
+Together, the measurements establish both the tolerance available to a coarse boundary and a low-cost source
+of global rank information. The next subsection gives these two empirical relations a theoretical basis.
+1×
+10×
+100×
+1K×
+10K×
+boundary error / exact score gap
+K
+2K
+4K
+10K
+40K
+100K
+values retained, C(ε)
+K--2K: compact tail
+(a) Coarse precision keeps a compact tail
+median
+95th percentile
+500× score error
+median 1.18K  |  95% ≤2.02K
+K
+1.25K
+1.5K
+1.75K
+2K
+global rank requested, ̃K
+K
+1.25K
+1.5K
+1.75K
+2K
+complete-row rank measured, J
+J =̃ K
+(b) Partial views remain globally centered
+fraction read
+1/16
+1/32
+1/64
+1/128
+1/256
+requested ̃K = 1.5K
+5th--median--95th
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+absolute position decile (causal prefix)
+0%
+10%
+20%
+30%
+40%
+50%
+share of exact top-K indices
+first + last deciles
+52--74% of exact top-K
+uniform positions: 20% at the two endpoints
+sink side
+recent side
+(c) Captured tails cluster at endpoints
+N = 64K
+N = 128K
+N = 245K
+1/16
+1/32
+1/64
+1/128
+1/256
+fraction of row read by one phase
+0.1K
+0.2K
+0.3K
+0.4K
+global-rank error (RMS)
+14--28% lower error
+smaller view ⟶
+(d) Endpoint structure lowers rank error
+exchangeable reference
+endpoint-structured captures
+Figure 3: Method-independent evidence that a regular partial view provides a useful coarse upper-tail locator.
+(a) Complete-row work after lowering the exact boundary by ϵ adjacent score gaps; the shading extends from
+the exact K floor to the 95th percentile. (b) Median measured rank follows the requested global rank for five
+read fractions; the two distribution glyphs combine the observed central shape, median, and fifth-to-95th-
+percentile range for 1/64 and 1/128 views at 1.5K. (c) Exact top-K indices in all three captures concentrate
+in the first and last absolute position deciles, the broad endpoint geometry associated with sink and recency
+regions. (d) At requested rank 1.5K, endpoint-structured captured rows have 14–28% lower RMS rank error
+than the exact position-exchangeable reference across all five read fractions.
+3.2
+Theoretical Basis
+The observations expose two distinct resolutions. In value space, the issue is how a score displacement around
+the exact boundary translates into additional retained ranks. In position space, the issue is how an order statistic
+from a regular partial view maps back to the complete row. Local and finite-population order statistics make
+both relations explicit, while contiguous-interval arithmetic explains the additional margin supplied by the
+observed endpoint structure.
+Local order statistics produce the flat cost region.
+Let F be a smooth local approximation to a row’s
+score distribution, f its density, and ξ(u) = F −1(1 −u) its upper quantile function. Using x↓
+(j) ≈ξ(j/L), a
+first-order expansion around rank K gives (David & Nagaraja, 2003)
+δ = x↓
+(K) −x↓
+(K+1) ≈
+1
+Lf(x↓
+(K))
+,
+x↓
+(K) −x↓
+(C) ≈
+C −K
+Lf(x↓
+(K))
+.
+(6)
+– 9 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+For C = C(ϵ), the threshold definition in eq. (5) implies x↓
+(C) ≥θ(ϵ) > x↓
+(C+1). Thus ϵδ lies between the
+score displacements to ranks C and C + 1. Applying the two local-spacing approximations yields, up to this
+one-rank discretization,
+C(ϵ) −K ≈ϵ.
+(7)
+The unknown local density and row length cancel. At ϵ = 500, for example, the relation predicts a tail near
+K + 500 ≈1.24K, close to the measured 1.18K median. The empirical ribbon then captures the remaining
+variation in local score geometry. This rank-scale interpretation explains the flat opening of fig. 3a: hundreds
+of exact score gaps add hundreds of values to an existing K-sized tail, rather than multiplying its size by
+hundreds.
+Exchangeability supplies the position-agnostic baseline.
+For a valid row of length L, phase a contains
+na ∈{⌊L/s⌋, ⌈L/s⌉} positions. Under positional exchangeability it is a uniform na-subset of the global rank
+order. The complete-row rank Ja(q) of its q-th largest value is a finite-population order statistic (O’Neill,
+2025; David & Nagaraja, 2003) with
+E[Ja(q)] = q(L + 1)
+na + 1
+≈qs ≈eK,
+Var[Ja(q)] = q(na −q + 1)(L + 1)(L −na)
+(na + 1)2(na + 2)
+.
+(8)
+Because na ≈L/s and q = ⌈eK/s⌉, the expectation reduces to the requested global rank up to
+the one-sample rounding margin, giving the diagonal in fig. 3b.
+The RMS error around that request
+is
+q
+Var[Ja(q)] + (E[Ja(q)] −eK)2, so the exact reference retains both the finite-row variance and the
+small rounding bias. Ignoring these edge effects when L ≫eK, the variance reduces to approximately
+eK(s −1)(1 −eK/L); shrinking the view therefore increases uncertainty only at a square-root rate. Evaluating
+the exact expression for every measured causal length and both possible phase sizes produces the exchangeable
+RMS reference in panel (d), rather than a curve fitted to the measurements.
+Contiguous boundary regions distribute themselves across phases.
+For any contiguous boundary region
+B ⊆[L] of m positions,
+#{i ∈B : i mod s = a} ∈
+njm
+s
+k
+,
+lm
+s
+mo
+.
+(9)
+Writing m = ℓs + ν with 0 ≤ν < s makes the balance explicit: every residue occurs ℓtimes in the region
+and exactly ν residues occur once more. Hence counts across phases differ by at most one. When elevated
+upper-tail probability extends across broad endpoint regions, as measured in fig. 3c, every phase receives
+nearly the same number of opportunities to observe it. This shared coverage can suppress phase-to-phase
+rank dispersion; a tail locked to one residue instead creates the classical systematic-sampling alias (Bellhouse,
+1988). The interval identity therefore supplies the geometric mechanism behind the measured reduction, while
+panel (d) measures its magnitude.
+3.3
+Design Implications
+The evidence supports a coarse-to-exact decomposition. Observation 1 shows that locating a compact upper
+tail requires far less score resolution than identifying the final Kth boundary. Observation 2 shows that a
+regular partial view supplies a globally centered estimate at precisely this coarser rank scale, with the observed
+endpoint structure adding margin rather than defining the applicability of the estimate. An early estimator
+should therefore be judged by the work it leaves for exact resolution, not by whether it reproduces the final
+cutoff.
+This division assigns the two stages different responsibilities. The partial view provides an early boundary
+with enough global context to organize the upper tail. The complete-row stage remains authoritative: it sees
+every valid value, verifies that the retained tail is sufficient, and leaves the final ordering to an exact operation
+over that compact set. Sampling error can change the amount of retained work, but the complete-row check
+prevents it from changing the final output.
+The decomposition supplies the early boundary required by section 2.3. The mandatory pass can classify
+and collect values on their first encounter, while subsequent exact work remains confined to the upper tail.
+Section 4 develops this principle into a sample-guided exact selector.
+– 10 –
+
+
+Tencent Hy
+4
+Method
+4.1
+Algorithm Overview
+Consider one valid score row x = (x0, . . . , xL−1) ∈RL, with L > K. Rows are selected independently, so
+the three phases below operate on this row. HPC-Ops separates boundary proposal from exact selection. Phase 1
+reads a regular partial view and proposes a row-local coarse boundary. Phase 2 performs the authoritative
+complete-row traversal, using that boundary to persist candidates, count them, and construct the first exact
+histogram on their first encounter. Phase 3 consumes that histogram, commits resolved digit prefixes, and
+carries only the unique boundary group through the remaining FP32 digits. An underfilled proposal may first
+expand through a bounded secondary boundary before exact coarse recovery; rows without a usable view enter
+exact coarse recovery directly.
+Phase 1
+Coarse boundary
+localization
+row-local view
+Vr,s →histogram
+provisional τ0
+and nested τ1
+Phase 2
+Fused validation + formation
+one complete-row scan →
+A(τ0), C(τ0)
+bh0(·; τ0)
+Phase 3
+Exact radix refinement
+Qj →bj by digit prefix
+commit Rj; retain Qj+1
+propose τ0
+(E0, Q0, k0, h0)
+C(τ0) ≥K
+Bounded band extension
+append A(τ1) \ A(τ0)
+Exact coarse recovery
+rebuild boundary
+from all L values
+certified interface
+(E0, Q0, k0, h0)
+C(τ0) < K
+enough
+still short
+no usable view
+Sampled execution mappings
+same phases and invariant; different exposed parallelism
+Persistent one CTA per row
+Phase 1
+locate τ0
+Phase 2
+scan row
+Phase 3
+Qj →
+Qj+1
+phase state remains local; independent rows
+are taken in completion order
+KV-split for a few long rows
+split Phase 2
+Phase 1
+locate τ0
+scan Ω0
+scan Ω1
+scan ΩP −1
+merge
+U
+p Ap
+P
+p Cp(τ)
+P
+p bh0,p
+Phase 3
+radix
+refine
+row-local boundary • disjoint scans • additive merge • one finisher
+Figure 4: The sample-guided exact-selection pipeline and its two sampled execution mappings. The upper
+path separates boundary proposal, complete-row certification, and exact FP32 refinement; an underfilled
+proposal expands through a precomputed band and otherwise enters an exact coarse recovery. Phase 2 converts
+either a certified proposal histogram or an exact coarse recovery into the common (E0, Q0, k0, h0) refinement
+interface. In Phase 3, each digit commits strictly better groups and advances only the unique boundary group.
+The lower path maps the same phases either to one CTA per row or to a row-local boundary, partitioned
+validation, additive merging, and one-finisher refinement for KV-split execution.
+This organization lets the mandatory complete-row pass validate the proposed boundary and form its admitted
+tail together. The partial view determines how much work remains, whereas the complete row and the FP32
+refinement determine the returned indices.
+Every route entering Phase 3 produces the same initialization (E0, Q0, k0, h0): a committed prefix, one
+unresolved frontier, the remaining quota, and the frontier’s leading-digit histogram. Its certified admitted state
+is S0 := E0 ⊎Q0 ⊆[L], satisfying
+|S0| ≥K,
+i ∈S0, j /∈S0
+=⇒
+xi ≥xj.
+(10)
+The boundary construction guarantees the ordering relation, and the complete-row count establishes its
+sufficiency. Exact refinement does not order this state wholesale. At each FP32 digit, it commits every group
+strictly ahead of the rank boundary and carries only the unique boundary group to the next digit. A conservative
+proposal therefore changes only the initial refinement volume; an underfilled proposal is detected before any
+output is committed.
+– 11 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+Figure 4 summarizes the logical pipeline and its two sampled execution mappings. The three phases preserve
+the same certified-state invariant whether one CTA owns a row or several CTAs partition its complete-row
+traversal.
+4.2
+Phase 1: Coarse Boundary Localization
+Phase 1 locates its boundary in an inexpensive coarse ordering. Let fp16(x) denote round-to-nearest FP16
+projection, and let κ↓
+16(x) be the descending sortable key of that projection, so a larger projected value receives
+a smaller integer key. Grouping adjacent keys by their 11 most significant bits gives
+c(x) =
+$
+κ↓
+16(x)
+25
+%
+∈{0, . . . , Bc −1},
+Bc = 211.
+(11)
+This coarse map is monotone and many-to-one:
+xi > xj
+=⇒
+c(xi) ≤c(xj).
+(12)
+A larger score may share a bin with a smaller one but cannot enter a worse bin. Phase 3 later resolves the order
+within each coarse bin from the original FP32 values.
+Across rows, we distribute the regular views with a balanced deterministic phase schedule. Let πs be a fixed
+permutation of the s residue classes and assign row r the phase ar = πs(r mod s). For its valid length Lr,
+the locator reads
+Vr,s = {i ∈[Lr] : i ≡ar
+(mod s)}.
+(13)
+Every block of s rows consequently uses each phase once. This removes a dataset-wide preference for any one
+residue class while preserving regular, deterministic access within a row. It also allows cooperating execution
+units to reconstruct the same view from row identity alone. The view contains approximately Lr/s values,
+enough to expose an upper-tail order statistic while remaining a fraction of one complete traversal.
+The sampled values form a coarse-key histogram and inclusive prefix count
+hr,s(b) =
+X
+i∈Vr,s
+1[c(xr,i) = b],
+Hr,s(b) =
+b
+X
+v=0
+hr,s(v).
+(14)
+Localization targets the same complete-row rank used in Observation 2. Let eK = ρK, where ρ > 1 supplies a
+compact retention margin, and request sample rank q = ⌈eK/s⌉. The provisional boundary for row r is the
+first coarse bin whose prefix contains that sample rank,
+τ0,r = min{b : Hr,s(b) ≥q}.
+(15)
+Each row therefore derives its own bin threshold τ0,r while sharing the same global-rank target. The relationship
+in sections 3.1 and 3.2 explains why the resulting boundary rank is centered near eK, rather than growing
+with Lr. We choose eK = 1.5K in the evaluated configuration, within the compact O(K) tail established by
+Observation 1 and the rank range evaluated by Observation 2. The margin favors a compact superset over a
+boundary that stops at exactly rank K.
+A deeper target eK1 > eK may be recorded during the same prefix scan, with q1 = ⌈eK1/s⌉and τ1,r ≥τ0,r. The
+primary boundary defines the common path; the secondary boundary remains dormant unless the complete-row
+count exposes an underfilled proposal. Both boundaries come from the same histogram, so this recovery
+margin requires neither a denser view nor another sample traversal. Phase 1 therefore returns a row-local
+primary boundary and, when enabled, a nested recovery boundary. The row subscript is omitted from τ0 and
+τ1 below when the row is clear; rows whose views cannot support the requested sample rank enter the exact
+route directly.
+These row-local boundaries determine the downstream candidate volume and whether secondary or exact
+recovery is needed. Phase 2 materializes the corresponding admitted region over all valid scores and certifies
+its sufficiency; Phase 3 resolves the exact FP32 order.
+– 12 –
+
+
+Tencent Hy
+4.3
+Phase 2: Fused Validation and Candidate Formation
+For a coarse threshold τ, define its admitted upper tail and size as
+A(τ) = {i ∈[L] : c(xi) ≤τ},
+C(τ) = |A(τ)|.
+(16)
+Because c is monotone, the admitted prefix c(x) ≤τ forms a contiguous upper tail in FP32 score space. Its
+cutoff is the smallest FP32 value admitted by that prefix. The inclusive boundary admits an entire coarse bin,
+so reduced precision may enlarge the retained tail but cannot cut through that bin. This C(τ) is the algorithmic
+counterpart of C(ϵ) in eq. (5): both denote retained complete-row work, with their arguments identifying how
+the threshold is chosen.
+Lemma 4.1 (Validated Top-K Containment). If C(τ) ≥K, then A(τ) contains a Top-K solution for x.
+Proof. For any admitted i and excluded j, c(xi) ≤τ < c(xj). If xj > xi, the monotonicity in eq. (12) would
+require c(xj) ≤c(xi), a contradiction. Hence every admitted value is no smaller than every excluded value.
+Because the complete boundary bin is admitted, the K largest values inside A(τ) form a valid exact Top-K
+solution.
+For exact refinement, let κ↓
+32(x) be the descending sortable key of the original FP32 score. We partition its 32
+bits into D = 3 digits of widths 11 + 11 + 10 and write digj(κ↓
+32(x)) for digit j. Before the complete-row
+traversal, Phase 2 converts τ0 once to this FP32 cutoff. It then compares the original FP32 scores directly
+against the cutoff while materializing A(τ0), storing its indices, and measuring C(τ0). On the same encounter,
+each admitted FP32 value contributes to a proposal histogram over the leading exact digit, producing
+bh0(b; τ0) =
+X
+i∈A(τ0)
+1[dig0(κ↓
+32(xi)) = b].
+(17)
+The hat records that this histogram belongs to a proposed admitted tail; the unadorned h0 is reserved below
+for the certified frontier passed to Phase 3. The pass therefore produces a persisted admitted tail A(τ0), its
+containment certificate C(τ0), and its leading exact-digit histogram. On the primary path this tail becomes the
+initial FP32 refinement frontier. Candidate formation and the proposal histogram are fused because they inspect
+the same admitted values. Unlike the conventional path in fig. 2, no complete traversal is spent discovering a
+boundary that can only be used after the row has passed; the provisional boundary already exists when the
+scan starts.
+If C(τ0) = K, the certified tail is already the answer; if C(τ0) > K, it becomes the initial FP32 refinement
+frontier. Estimation error on the loose side increases C and hence refinement work, while error on the tight
+side is detected as underfill.
+Underfilled views.
+When C(τ0) < K, the nested boundary from Phase 1 permits a bounded recovery before
+rebuilding an exact boundary. A second scan appends only the band
+∆A = A(τ1) \ A(τ0) = {i : τ0 < c(xi) ≤τ1}
+(18)
+and extends the proposal histogram by
+bh0(b; τ1) = bh0(b; τ0) +
+X
+i∈∆A
+1[dig0(κ↓
+32(xi)) = b].
+(19)
+The enlarged set is certified by the same complete-row count. Once sufficient, A(τ1) replaces A(τ0) as the
+initial refinement frontier; only continued underfill invokes exact coarse recovery. The secondary threshold
+therefore provides a bounded expansion of the candidate superset without changing the exact-selection
+criterion.
+If no secondary boundary is enabled, or if the enlarged set remains underfilled, the selector enters exact coarse
+recovery. It builds the coarse histogram over all L values and identifies τ⋆= min{b : C(b) ≥K} as the
+exact coarse boundary. A subsequent traversal commits every bin strictly ahead of τ⋆, retains the complete
+boundary bin, discards the remaining bins, and constructs the leading exact-digit histogram only over that
+retained frontier. The resulting initialization is
+E0 = {i : c(xi) < τ⋆}, Q0 = {i : c(xi) = τ⋆}, k0 = K −|E0|, h0(b) =
+X
+i∈Q0
+1[dig0(κ↓
+32(xi)) = b]. (20)
+– 13 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+Consequently, every route that requires refinement supplies (E0, Q0, k0, h0) with the same semantics. A
+certified sampled route sets
+E0 = ∅,
+Q0 = A(τ),
+k0 = K,
+h0(·) = bh0(·; τ),
+(21)
+where τ ∈{τ0, τ1} is the boundary whose tail passed validation; exact coarse recovery supplies eq. (20). In
+both cases, S0 = E0 ⊎Q0 satisfies eq. (10). This route-independent tuple is the interface between validation
+and refinement.
+4.4
+Phase 3: Exact Radix Refinement
+Phase 3 consumes (E0, Q0, k0, h0). At the beginning of round j ∈{0, . . . , D −1}, Ej contains the committed
+indices, Qj is the unique unresolved frontier, and kj = K −|Ej| is the remaining quota. Its histogram and
+inclusive prefix are
+hj(b) =
+X
+i∈Qj
+1[digj(κ↓
+32(xi)) = b],
+Hj(b) =
+b
+X
+v=0
+hj(v).
+(22)
+Because smaller ordered keys denote larger FP32 values, the boundary digit is the first bin whose prefix
+reaches the remaining quota:
+bj = min{b : Hj(b) ≥kj}.
+(23)
+Equivalently, Hj(bj −1) < kj ≤Hj(bj), with Hj(−1) = 0. Thus every digit group before bj is part of the
+result, while the rank boundary lies inside bj. The newly committed group is
+Rj = {i ∈Qj : digj(κ↓
+32(xi)) < bj}.
+(24)
+Every index in Rj is irrevocably selected, every group after bj is discarded, and only the boundary group
+remains unresolved:
+Ej+1 = Ej ⊎Rj,
+Qj+1 = {i ∈Qj : digj(κ↓
+32(xi)) = bj},
+kj+1 = kj −|Rj|.
+(25)
+While classifying Qj, the algorithm retains Qj+1 and builds its next-digit histogram. The next round therefore
+inspects only the unique boundary group rather than the complete admitted tail or score row, following a
+prefix–commit–retain pattern at every digit. Section 5.4 describes the physical buffering of these frontiers.
+After all D digits, candidates in QD have identical FP32 ordered keys. Phase 3 fills the remaining kD slots
+from that group. This returns exactly K indices while leaving the choice among equal-valued boundary
+positions unspecified under the operator’s tie semantics.
+Theorem 4.2 (End-to-End Exactness). For every admissible row with L > K, the algorithm returns K distinct
+valid indices satisfying the exact Top-K contract of section 2.1.
+Proof sketch. Phase 2 either certifies a sampled admitted tail by lemma 4.1 or constructs a sufficient committed-
+prefix–plus–frontier state with the exact coarse route. Equations (23)–(25) then commit every strictly better
+group while preserving enough indices in the unique boundary frontier to fill the remaining quota. The D = 3
+digits exhaust the FP32 ordered key; selecting the remaining indices from the final equal-key group produces
+K distinct valid indices, completing the exact Top-K output.
+The proof isolates the role of reduced precision: the FP16 key bounds candidate membership, but it never
+resolves the final order. Exactness is supplied by complete-row certification, exact FP32 refinement, and the
+sample-independent recovery path.
+4.5
+Execution Mappings
+For the sampled path, the three logical phases admit two GPU mappings, chosen according to the row-level
+parallelism exposed by the call. Both appear in the lower half of fig. 4 and preserve the same certification and
+refinement invariants.
+– 14 –
+
+
+Tencent Hy
+Persistent one CTA per row.
+When the call contains enough rows, one CTA executes Phases 1–3 for a
+row and retains phase-local histograms, candidate indices, and the selected prefix across the pipeline. Rows
+remain mutually independent, so a persistent pool can take them in completion order and absorb variation in
+valid length and candidate volume. This mapping minimizes coordination: the only complete-row work is the
+Phase 2 scan on a certified sample path, while every exact radix round stays local to the CTA’s frontier state.
+KV-split mapping.
+For a small number of long rows, row-level parallelism leaves most of the GPU idle
+during the mandatory scan. We partition [L] into P disjoint contiguous segments Ω0, . . . , ΩP −1. The
+deterministic view lets every participant reconstruct the same row-local boundary, after which the CTAs
+partition Phase 2 across disjoint segments, producing
+Ap(τ) = A(τ) ∩Ωp,
+Cp(τ) = |Ap(τ)|,
+bh0,p(b; τ) =
+X
+i∈Ap(τ)
+1[dig0(κ↓
+32(xi)) = b].
+(26)
+Because the segments do not overlap, their outputs compose exactly:
+A(τ) =
+P −1
+]
+p=0
+Ap(τ),
+C(τ) =
+P −1
+X
+p=0
+Cp(τ),
+bh0(b; τ) =
+P −1
+X
+p=0
+bh0,p(b; τ).
+(27)
+After all segments publish their local state, one finisher reduces eq. (27), compacts the disjoint candidate
+ranges, certifies the aggregate, and initializes the same (E0, Q0, k0, h0) interface used by the one-CTA path.
+An underfilled aggregate enters the same recovery logic. KV-split therefore changes the parallel span of the
+complete-row validation, not the admitted tail or the selection semantics. The next subsection quantifies the
+row-level work and reduced validation span introduced by this mapping.
+4.6
+Complexity Analysis
+On the certified sampled path, Phase 1 reads approximately L/s scores, Phase 2 reads all L scores once, and
+Phase 3 reads only the successively shrinking boundary frontiers. Per row, the work is therefore
+Θ
+
+L
+s + L +
+D−1
+X
+j=0
+|Qj| + K
+
+,
+D = 3.
+(28)
+The first two terms describe fixed-coverage passes over the input row: a regular 1/s view costing L/s and
+one complete certification-and-candidate pass costing L. The frontier sum accounts for exact work over
+successively retained sets and therefore depends on the realized boundary, while the final K term writes the
+output. Exactness still requires the complete L-value pass.
+Table 2: Score-row traffic before frontier-only FP32 refinement. A band attempt and the exact coarse recovery
+each add only after the preceding candidate set underfills; all routes terminate with the same certified-state
+invariant.
+Route
+Score reads
+Initial FP32 frontier
+Certified primary boundary
+(1 + 1/s)L
+admitted tail A(τ0)
+Certified after band extension
+(2 + 1/s)L
+expanded tail A(τ1)
+Exact recovery, no band attempted
+(3 + 1/s)L
+boundary bin; better bins committed
+Exact recovery after failed band
+(4 + 1/s)L
+boundary bin; better bins committed
+Direct-exact route
+2L
+boundary bin; better bins committed
+Before frontier-only refinement, the certified path contributes Req = 1 + 1/s, replacing the second row-scale
+traversal identified in section 2.3 with a fractional view.
+Under the row-scaled traffic normalization of section 2.1, let pband be the probability of attempting the
+secondary band and pexact the probability of ultimately entering exact coarse recovery. For the persistent
+one-CTA sampled route,
+E[Req] = 1 + 1
+s + pband + 2pexact,
+(29)
+– 15 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+while the frontier term P
+j |Qj| remains explicit in the complete work of eq. (28). Observed behavior on the
+target workload bears out this amortization: primary underfill is rare, and the secondary boundary makes exact
+recovery rarer still. Section 6.4 reports the measured pband and pexact. Rows certified by the primary boundary
+incur neither the secondary scan nor the exact-recovery passes.
+KV-split exchanges additional aggregate sample work for a shorter validation span. Each of the P segment
+CTAs reconstructs the same L/s regular view, so the primary row-scaled traffic is Req = 1 + P/s; their
+disjoint Phase 2 segments still cover the row exactly once and reduce the critical validation span from L to
+approximately L/P. For bounded P, the per-row asymptotic work remains that of eq. (28), followed by
+a compact histogram reduction and the same frontier work on the finisher. The mapping therefore targets
+occupancy at small row counts rather than reducing aggregate work.
+Finally, the correctness argument is rank-general. For a different K, the coarse target eK, its sample rank,
+candidate budget, and the choice between sampled and direct-exact routes must be recalibrated for efficiency;
+lemma 4.1, the full-row certificate, and the exact refinement recurrence do not change. The implementation
+constants in section 5.5 specialize this general construction to the ranks and row shapes of section 2.1. Section 5
+also develops the persistent task schedule, finisher election, storage lifetimes, and shape-stable dispatch that
+realize both execution mappings.
+5
+Implementation
+5.1
+Implementation Overview
+HPC-Ops realizes the three phases of section 4 as a family of exact GPU kernels. Its portfolio centers on the
+sampled long-row pipeline, realized through persistent and KV-split execution, while row-local and eight-CTA
+direct-exact kernels cover complementary shape regimes.
+These kernels differ in how row work and intermediate state are owned. Persistent execution keeps an entire
+row under one CTA; KV-split execution partitions its complete-row work and combines compact segment
+state. Row-local exact execution constructs exact coarse state within one wider CTA, whereas the eight-CTA
+cluster constructs that state cooperatively. Every path then enters the same FP32 refinement interface, using a
+common ordered-key layout, commit–retain recurrence, and output procedure. A shape-stable planner selects
+the mapping from captured dimensions.
+The implementation discussion follows the sampled path through three CUDA concerns. Section 5.2 maps
+regular-view access and coarse localization onto registers and reusable shared state; section 5.3 develops
+the vectorized complete-row path, fused candidate storage, and recovery traffic; and section 5.4 follows the
+compact frontier’s storage lifetime across exact digits. Section 5.5 then specifies CTA ownership, coordination,
+and dispatch across captured shapes.
+5.2
+Phase 1: On-Chip Boundary Localization
+The sampled kernels realize the row-phased regular view of section 4.2 with standard and wide-row policies
+that use different constant strides. For row r, a CTA derives offset ar from the row identity and streams the
+corresponding view Vr,s without lookup state. This row-dependent phase distributes consecutive rows across
+sampling offsets while preserving regular address generation within each row. The resulting prefix locates the
+primary boundary τ0 at the rank specified in section 4.2; the wide-row policy also retains the deeper recovery
+boundary τ1 from the same prefix. Under KV-split, every segment CTA reconstructs the same row-local view
+from ar, so boundary state need not be produced by a designated CTA or broadcast across the group.
+Each sampled score moves directly from global memory into a register, where it is projected once to the
+11-bit coarse key c(xi). Shared-memory atomic increments accumulate these keys in the 2,048-bin histogram
+hr,s, and an in-place CTA prefix produces Hr,s and locates τ0 and, when enabled, τ1. A designated thread
+converts the selected bins to their inclusive FP32 endpoints and publishes the resulting shared scalars. The
+same histogram allocation is then cleared for the leading exact-digit histogram in Phase 2. The row remains in
+global memory between the sampled accesses and the complete-row pass: registers hold the sampled operands
+in flight, while shared memory retains only the histogram, prefix state, and endpoints. The first column of
+fig. 5 exposes this residency and reuse.
+– 16 –
+
+
+Tencent Hy
+A view is usable only when it reaches its largest requested rank: |Vr,s| ≥q for a primary-only policy
+and |Vr,s| ≥q1 when the recovery boundary is enabled. Otherwise, the CTA uses the same coarse-key
+representation, shared histogram, and in-place prefix to localize an exact coarse boundary from all Lr valid
+scores. The sampled path passes one or two proposal endpoints to full-row validation; the exact route passes
+the complete-row coarse boundary and its prefix state to the classifier, which emits bins ahead of the boundary
+and materializes only its boundary-bin frontier. Both routes expose compact boundary state to the common
+FP32 refinement interface.
+PERSISTENT SAMPLED EXECUTION
+PHASE 1 Boundary
+PHASE 2 Validation
+PHASE 3 Refinement
+GLOBAL
+MEMORY
+REGISTERS
+SHARED
+MEMORY
+FP32 score row
+x = (x0, . . . , xL−1)
+FP32 score row x
+candidate spill buffer
+FP32 score row x
+ping-pong spill; output [0:K)
+sampled score xi
+coarse key c(xi)
+current/next float4
+FP32 cutoff predicate
+frontier item (i, xi)
+select / drop / retain by digit
+coarse histogram hr,s
+prefix Hr,s
+boundary bins
+τ0; optional τ1
+admitted indices A(τ)
+count C(τ); proposal bh0
+histogram hj →hj+1
+frontier Qj →Qj+1
+quota kj →kj+1
+strided sampled load
+histogram atomicAdd
+128-bit ld.global.cg
+candidate append
+count/histogram atomicAdd
+gather i ∈Qj
+frontier append
+histogram atomicAdd
+FP32 cutoff
+reuse
+Q0, h0
+overflow
+SCORE-ROW READS BY PHASE
+PHASE 1: L/s
+PHASE 2: L
+PHASE 3: PD−1
+j=0 |Qj|
+REUSED 2,048-BIN HISTOGRAM
+same shared allocation: hr,s →bh0/h0 →h1 →h2
+Figure 5: GPU state residency and memory operations in persistent sampled execution. Columns trace
+boundary construction, full-row validation, and frontier refinement; rows separate global-memory, register,
+and shared-memory state. Vertical arrows identify load, append, and atomic-update paths, whereas horizontal
+arrows pass the FP32 cutoff and certified frontier while recycling the shared histogram allocation. Phase 2
+combines 128-bit cache-global loads with candidate and leading-histogram construction. Phase 3 gathers only
+unresolved frontier indices, with surviving overflow continuing through global ping-pong buffers. The lower
+ledgers summarize per-phase score reads and the lifetime of the reused 2,048-bin histogram.
+5.3
+Phase 2: Fused Full-Row Validation
+Phase 1 hands validation the inclusive FP32 endpoint represented by the selected coarse bin. The CTA
+broadcasts its value through shared memory and retains both the value and its bit pattern while streaming the
+row. Comparing each original FP32 score directly with this endpoint reproduces the selected coarse prefix,
+including its boundary value. Coarse-key projection is therefore confined to boundary construction and exact
+coarse recovery rather than repeated in the bandwidth-dominant complete-row pass.
+Aligned rows are fetched with 128-bit cache-global loads (ld.global.cg.v4.f32); two-wide and scalar paths
+cover less aligned layouts and the valid-row tail. In the wide-row single-CTA specialization, every thread keeps
+the current pair of float4 vectors in registers while issuing the next pair. Classification and shared-memory
+updates consume the current values as the following loads are in flight, overlapping memory latency and
+address generation with the collective work.
+The loop fuses endpoint classification, candidate formation, and construction of the leading exact-digit
+histogram. For every admitted score, an atomicAdd on the admitted count reserves its candidate position; the
+same encounter stores the original row index and contributes the score’s leading ordered-key digit to the shared
+histogram. Indices first occupy the CTA-resident candidate array and continue into its global overflow slice
+when that array fills. Candidate storage, the realized count, and the leading histogram consequently describe
+the same tail and proceed to refinement without a separate candidate or histogram pass.
+After the traversal, the admitted count selects the continuation. A sufficient primary tail reuses the candidate
+workspace and histogram already produced by the fused loop. On underfill, the wide-row policy repeats the
+vectorized traversal but appends only the value band newly admitted by τ1; continued underfill enters exact
+– 17 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+coarse localization. The principal path therefore incurs one complete-row traversal, while additional row traffic
+is confined to recovery.
+5.4
+Phase 3: Frontier-Only Radix Refinement
+Phase 2 leaves the initial frontier Q0 and its leading exact-digit histogram h0 in CTA-owned state. The
+11+11+10 ordered-key partition lets every refinement round reuse one 2,048-bin shared allocation. A round
+prefixes the current histogram in place and identifies the boundary digit. Once that prefix has been consumed,
+the CTA clears the allocation and repopulates it with the next histogram during classification. The same storage
+thus advances from hj to hj+1 without rebuilding histogram state from the complete row.
+Two shared arrays of 32-bit row indices physically represent the current and next frontiers. In round j, threads
+gather scores only for i ∈Qj, form the required ordered-key digit in registers, and route each index to the
+output, the discarded suffix, or the surviving boundary group. An atomic reservation appends a surviving
+index to the opposite array while shared-memory increments construct its next-digit histogram; the two arrays
+then exchange roles. Consequently, an FP32 score is gathered again only while its index remains unresolved.
+Direct-exact mappings can instead retain compact (index, ordered key) pairs on chip and refine their resident
+keys without another score load.
+Two global ping-pong slices extend the shared frontier when its resident capacity is exceeded. Resident and
+spilled entries pass through the same digit classifier, and only surviving overflow is written to the opposite
+slice. Under persistent execution, each worker CTA owns these slices and reuses them across the rows it later
+claims, so the spill workspace scales with the bounded worker pool rather than the batch size. Cooperative
+mappings receive segment- or row-owned slices from the same precomputed workspace contract. The global
+continuation therefore changes state residency, not the refinement procedure.
+5.5
+Execution Mappings and Dispatch
+HPC-Ops maps each captured shape to an execution organization that balances grid-level occupancy against
+inter-CTA coordination. Its sampled mappings cover long rows through either persistent row ownership or
+partitioned validation, while row-local and eight-CTA direct-exact kernels cover complementary shape regimes.
+Figure 6 organizes these mappings by captured row capacity M and allocated row width N, and exposes their
+CTA ownership. Within the sampled long-row regime, abundant rows favor persistent execution, whereas
+lower row-level concurrency favors KV-split. For direct-exact execution, a grid of wider per-row CTAs avoids
+peer coordination when it can sustain occupancy; only a few long rows instead favor an eight-CTA cluster.
+Inter-CTA cooperation is therefore introduced where the work per captured row can amortize it.
+Static execution map
+CTA organization within each mapping
+larger captured row width N
+more captured rows M
+Row-local
+exact CTA
+per row
+Persistent sampled
+one CTA
+per row
+Sampled KV-split
+2/4/8 segment
+CTAs
+Eight-CTA
+exact cluster
+per row
+Persistent sampled
+one owner per row
+Sampled KV-split
+F
+2/4/8 segment CTAs • F merges
+Row-local exact
+CTA
+one wide CTA • no peer reduction
+Eight-CTA exact cluster
+0
+1
+2
+3
+4
+5
+6
+7
+eight CTAs • rank 0 refines via DSM
+Figure 6: Static execution mapping and CTA organization. The left panel maps captured row capacity M
+and allocated row width N to the primary mapping; the qualitative regions also depend on device capability.
+The right cards show one owner per row for persistent sampled execution, segment CTAs and a last-arriving
+finisher F for KV-split, one wide CTA for row-local exact execution, and eight clustered CTAs whose rank 0
+refines DSM-shared state.
+– 18 –
+
+
+Tencent Hy
+Persistent sampled.
+When the call exposes enough independent rows to occupy the device, one 512-thread
+CTA owns the complete state of a row. Keeping the row within one CTA removes inter-CTA coordination from
+the common sampled path. The first scheduling wave assigns one row directly to each CTA; CTAs that finish
+this wave claim remaining rows from a device counter. Direct first-wave assignment avoids queue traffic for
+modest calls, while completion-order claiming balances large ragged batches. The sampled histogram, FP32
+endpoint, candidate frontier, and exact histograms remain CTA-owned across all three stages; frontier overflow
+changes residency without introducing a peer owner. The stride-64 and stride-128 views are compile-time
+policies of this common body.
+Sampled KV-split.
+For sampled long-row shapes with limited row-level concurrency, the complete-row
+scan dominates while a one-CTA-per-row grid leaves the device underoccupied. Two, four, or eight CTAs
+therefore process disjoint contiguous row segments. Each CTA reconstructs the same row-phased regular view
+and hence the same sampled endpoint proposal; this small replicated view is amortized by the much longer
+segment scan. During the complete-row stage, a CTA writes a private candidate range, candidate count, and
+leading exact-digit histogram for its segment. The aggregate validation scan still covers every valid score
+exactly once, while its parallel span falls with the number of participating CTAs.
+Each segment publishes its state before incrementing a row-local arrival counter. The last-arriving CTA
+becomes the finisher, reduces the fixed-width histograms, compacts the segment candidate ranges, and
+evaluates the aggregate count. A sufficient aggregate enters frontier refinement on the finisher; an underfilled
+aggregate enters the exact coarse route. The split count is selected as part of the launch geometry, while the
+finisher exposes the same logical row-level selection state to refinement as the one-CTA mapping.
+Row-local exact.
+When one wide block provides sufficient per-row parallelism, row-local ownership avoids
+the coordination cost of a cooperative mapping. A 1024-thread CTA constructs the exact coarse boundary and
+completes selection with row-local state. The short-row specialization keeps several aligned score vectors
+in registers across boundary construction and classification, carrying the loaded values into the exact path
+without materializing a row-sized candidate workspace. The longer-row specialization streams scores under
+the same row-local ownership, using either direct row assignment or a bounded worker schedule according to
+the captured row count. Both variants retain compact exact boundary state on chip and reuse the common
+three-digit FP32 refinement.
+Eight-CTA exact cluster.
+When only a few long rows are available, even a wide row-local CTA leaves
+insufficient blocks to fill the device. An eight-CTA hardware cluster converts row length into intra-row
+parallelism by assigning one contiguous segment to each CTA. The CTAs first construct disjoint exact coarse
+histograms and combine them through distributed shared memory. Once the common coarse boundary is
+known, each CTA rescans its segment and publishes the definitely selected prefix and boundary-bin candidates.
+Rank 0 owns FP32 frontier refinement and directly traverses the compact DSM-resident state, while peer CTAs
+publish disjoint selected ranges and keep their distributed state live until row output is complete. The mapping
+turns coarse localization and boundary classification into intra-row parallel work, then leaves only the reduced
+frontier under one owner for fine-grained refinement.
+Shape-stable dispatch.
+One host planner realizes this execution map before graph capture from the captured
+rank, row capacity, padded width, row pitch, and device capability. It fixes the kernel family, view density,
+KV-split count, and workspace contract behind a single entry point; the same plan drives workspace sizing,
+while a persistent direct-exact body supplies a shape-compatible fallback when sampling is not selected or
+a cooperative launch cannot be formed. The live row count and per-row valid lengths remain device inputs,
+so capture and replay preserve launch geometry, queue counters, split state, and spill ownership without
+allocation, host readback, or data-dependent relaunch; persistent counters are restored on device.
+– 19 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+6
+Evaluation
+We evaluate exact Top-K selection from standalone operator scaling to framework-derived long-context traces
+and score-and-select integration. We first measure how performance changes with rows per call and allocated
+row width, then quantify whether the gains persist under native scheduling and score-matrix workspace
+partitioning. Policy and mechanism ablations finally identify the source of the gain and the row shapes for
+which sampled localization is effective.
+6.1
+Experimental Setup
+Experimental environment.
+We evaluate HPC-Ops Top-K on NVIDIA H20 GPUs using FP32 indexer
+scores produced by Hy4-Preview (Tencent Hy Team, 2026) and captured immediately before selection. The
+evaluated standalone operator uses K = 2048 and preserves the native ragged row lengths. Table 3 summarizes
+the hardware and software environment.
+Table 3: Evaluation environment. CUTLASS Python DSL is used by the TensorRT-LLM CuTe kernels.
+Component
+Configuration
+GPU
+NVIDIA H20 (78 SMs, 96 GiB)
+Selection
+Top-K
+Score tensor
+FP32
+CUDA runtime
+12.8
+PyTorch
+2.11.0+cu128
+CUTLASS Python DSL
+4.5.0
+Timing protocol.
+We measure GPU device time with CUDA events on the execution stream. After the
+workload-specific warmup and conditioning schedule, repeated CUDA-Graph measurements produce the
+per-call median. The timed region contains operator execution; input preparation, allocation, reference
+construction, correctness checks, and one-time compilation are excluded. The terminal-step parameter and
+complete-step mechanism controls use 10 warmups, two conditioning sweeps of 50 replays, and seven rotated
+rounds that each average 100 replays. The crossover sweep uses 10 warmups and seven rotated 100-replay
+rounds, while the score-and-select integration check uses eight warmups, two 25-replay conditioning sweeps,
+and seven 50-replay rounds. Trace- and step-level latency is the sum of the corresponding per-call medians.
+Exactness criterion.
+For the operator, framework, and terminal-step experiments, we validate every returned
+row under the set-valued exactness contract. Its indices must be distinct and lie in the valid prefix [Lr]. For
+Lr > K, a set Sr is exact when |Sr| = K and
+min
+i∈Sr xr,i ≥
+max
+j∈[Lr]\Sr xr,j,
+(30)
+with arbitrary choices permitted among values tied at the boundary. When Lr ≤K, the result must contain
+every valid index and use the contract sentinel for the remaining output slots. The criterion accepts any valid
+choice among boundary ties without imposing output order or a floating-point tolerance. Latency ratios use
+exact executions; invalid results, illegal accesses, and out-of-memory outcomes are reported separately. The
+score-and-select integration applies the same criterion to verified rows from every constituent call.
+Implementations.
+We evaluate the production entry of HPC-Ops and the closest available exact implemen-
+tations from five external families:
+• HPC-Ops. We invoke hpc.topk with its production workspace and internal shape dispatch. We use
+commit f39028d.
+• vLLM. We evaluate two upstream sampler entries (Kwon et al., 2023). Prefill uses top_k_per_row_
+prefill; decode uses top_k_per_row_decode with next_n=1. We use commit c5d840f.
+– 20 –
+
+
+Tencent Hy
+• TensorRT-LLM. We evaluate cute_dsl_topk_prefill_wrapper with both REREAD and GMEM-SPILL
+overflow policies (NVIDIA Corporation, 2026b). Its decode path invokes cute_dsl_radix_filter_topk_
+wrapper; the eight-CTA path invokes cute_dsl_radix_filter_topk_single_pass_multi_cta_wrapper.
+We use commit f5cbe6b.
+• SGLang. We evaluate the JIT Top-K V2 path (Zheng et al., 2024) topk_transform_512_v2, with metadata
+produced by plan_topk_v2. We use commit 155aa26.
+• FlashInfer. We evaluate flashinfer.top_k (Ye et al., 2025) with automatic algorithm selection and
+sorted=False. We use commit 56ed540.
+• PyTorch. We evaluate torch.topk (Paszke et al., 2019) with largest=True and sorted=False as the
+generic dense selector. We use commit 70d99e9.
+All implementations operate on the same valid FP32 score prefixes. Native variable-length interfaces consume
+the original row lengths directly. For dense-only interfaces, a full-suffix-mask adapter sets every invalid
+suffix position to negative infinity before timing while preserving the original row count, allocated width, and
+invocation boundaries.
+6.2
+Operator-Level Top-K Performance
+We first isolate the two dimensions that determine the dominant score traffic: the rows per call and their
+allocated width. The matrix combines M ∈{512, 1024, 2048, 4096, 8192} with four terminal widths of 128K,
+256K, 512K, and approximately 1M elements. All inputs are unchanged scores from the Hy4-Preview captures.
+For each width N, we retain its final 8192 consecutive causal rows, so their valid prefixes span the final 8192
+context lengths ending at N. Consecutive non-overlapping groups form the smaller values of M, so the sweep
+changes launch occupancy and aggregate work without replacing or rescaling the score distribution.
+Every implementation receives the same full-width FP32 tensor for a given shape. Invalid causal suffixes
+are set to negative infinity before timing; length-aware implementations additionally receive the original row
+lengths. The latency of a shape is the median over all groups and repeated executions. For each external
+implementation family, we retain its fastest entry point that passes eq. (30) at that shape, and compare HPC-Ops
+with the fastest of these family-level results.
+HPC-Ops passes exact verification and is fastest in all 20 configurations. Its advantage over the best exact
+external result is 1.29–1.42× at 128K columns, 1.49–1.53× at 256K, 1.60–1.72× at 512K, and 1.68–1.75×
+at 1M, for a geometric mean of 1.55× over the matrix. SGLang supplies the best-exact result in 18 of the
+20 shapes; TensorRT-LLM decode supplies the other two at M = 512 on the longest widths. The gain is
+comparatively stable across M at a fixed width, but widens as N grows. This trend matches the intended
+long-row regime: increasing the row count mainly changes parallel occupancy, whereas increasing the context
+length amplifies the full-row traffic avoided during boundary localization.
+Latency is not the only scaling limit at million-token widths. TensorRT-LLM’s GMEM-spill policy handles
+candidates that exceed on-chip capacity by reserving 2MN additional 32-bit entries. Because this reservation
+follows the full M × N score shape rather than the realized overflow volume, its memory cost grows in
+lockstep with the input and eventually causes an out-of-memory failure. HPC-Ops does not rely on a separate
+matrix-wide spill allocation. Avoiding this second score-matrix-scale footprint leaves substantially more
+device memory available as the row batch and context length grow together.
+6.3
+Framework-Level Top-K Performance
+Framework scheduling determines the sequence of row groups and prefix widths presented to Top-K during a
+long-context request. In the vLLM-based execution considered here, query work from prefill and decode is first
+organized into bounded scheduler steps. The indexer then partitions each step again to keep its materialized
+FP32 score matrix within a fixed workspace budget, so one scheduler step may issue several Top-K invocations.
+As the prefix width N grows, the number of rows that fit in one invocation decreases approximately in inverse
+proportion to N. The resulting trace therefore moves toward wider rows and smaller row groups over the
+course of a request.
+The framework replay caps each scheduler step at 64K query tokens. Under this policy, the 245K and 430K
+requests span four and seven scheduler steps but generate 26 and 71 Top-K invocations, respectively. We
+– 21 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+512
+1K
+2K
+4K
+8K
+Rows per Top-K call, M
+0
+2
+4
+6
+Top-K latency (ms)
+1.29--1.42× faster
+(a) N = 128K columns
+512
+1K
+2K
+4K
+8K
+Rows per Top-K call, M
+0
+3
+6
+9
+Top-K latency (ms)
+1.49--1.53× faster
+(b) N = 256K columns
+512
+1K
+2K
+4K
+8K
+Rows per Top-K call, M
+0
+5
+10
+15
+20
+Top-K latency (ms)
+1.60--1.72× faster
+× TRT failure at 8K
+(c) N = 512K columns
+512
+1K
+2K
+4K
+8K
+Rows per Top-K call, M
+0
+5
+10
+15
+20
+25
+Top-K latency (ms)
+1.68--1.75× faster
+× TRT failure at 4K/8K
+× FlashInfer inexact at 8K
+(d) N = 1M columns
+HPC-Ops
+SGLang
+vLLM best
+TRT-LLM best
+FlashInfer
+PyTorch
+Figure 7: Exact Top-K latency on captured causal terminal windows. Each panel fixes the allocated row width
+N and sweeps the rows per call M. Every implementation receives the same full-width tensor with invalid
+causal suffixes masked to negative infinity. Baseline curves retain the fastest verified exact entry point in each
+family at every shape; missing points denote no verified exact result. PyTorch is retained as a masked-dense
+reference, with values beyond the shared panel ranges clipped to preserve resolution among the competitive
+kernels. HPC-Ops is fastest in all 20 shapes by 1.29–1.75× (1.55× geometric mean).
+preserve each invocation’s original M, allocated N, and per-row valid lengths Lr, together with the original
+invocation boundaries and order. Every implementation therefore sees the same framework-derived shape
+sequence. The timing protocol of section 6.1 is applied throughout each trace, and we report its trace-level
+Top-K latency.
+HPC-Ops remains exact and fastest for both requests. Compared with SGLang, the fastest external exact
+baseline, HPC-Ops reduces trace-level Top-K latency from 77.15 to 56.53 ms at 245K and from 233.50 to
+158.12 ms at 430K, yielding speedups of 1.36× and 1.48×, respectively. The vLLM and TensorRT-LLM
+paths also remain exact but require more time over both traces, while the exact masked dense paths are slower
+still (fig. 8).
+The increase from 1.36× at 245K to 1.48× at 430K follows the progression toward wider rows described
+above. As a request grows, later chunks account for a larger share of trace-level Top-K latency and place more
+of the execution in the wide-row regime, where sampled boundary localization avoids more full-row traffic.
+Their growing weight strengthens the trace-level benefit, reaching 1.55× at the terminal 430K prefix.
+Score-and-select integration.
+We additionally place the selector behind the same DeepGEMM (Zhao et al.,
+2025) FP8 MQA score producer and capture both operations in one CUDA graph. Replacing SGLang V2 with
+HPC-Ops reduces the Top-K segment from 27.41 to 18.15 ms at 245K and from 38.01 to 24.06 ms at 430K,
+corresponding to 1.51× and 1.58×. The complete score-and-select chains fall from 339.99 to 330.84 ms and
+from 488.01 to 474.70 ms, saving 9.15 and 13.31 ms. These measurements cover the terminal score-production
+and selection chain; model layers outside that chain are not included.
+– 22 –
+
+
+Tencent Hy
+0
+200
+400
+600
+800
+1000
+1200
+Trace Top-K latency (ms)
+HPC-Ops topk
+SGLang topk_v2
+TRT-LLM decode
+TRT-LLM prefill (reread)
+TRT-LLM prefill (spill)
+vLLM prefill
+vLLM decode
+FlashInfer top_k
+TRT-LLM multi-CTA (c8)
+PyTorch topk
+56.5  (1.00×)
+77.1  (1.36×)
+87.6  (1.55×)
+87.9  (1.55×)
+88.3  (1.56×)
+98.6  (1.74×)
+199.7  (3.53×)
+206.6  (3.65×)
+566.7  (10.02×)
+866.5  (15.33×)
+(a) 245K request
+0
+1000
+2000
+3000
+Trace Top-K latency (ms)
+158.1  (1.00×)
+233.5  (1.48×)
+264.9  (1.68×)
+265.9  (1.68×)
+268.8  (1.70×)
+292.2  (1.85×)
+689.2  (4.36×)
+591.1  (3.74×)
+1235.5  (7.81×)
+2436.2  (15.41×)
+(b) 430K request
+Figure 8: Exact Top-K latency over the complete framework traces of the 245K and 430K requests. Parenthe-
+sized values report latency relative to HPC-Ops. Every implementation receives the same framework-derived
+sequence of row shapes and valid lengths.
+6.4
+Sampled-Path Ablations
+Having established the gains at both the operator and framework levels, we next examine how the sampled path
+is configured, protected against underfill, and dispatched across row shapes. We first vary the retention margin
+ρ and view stride s to select a compact primary proposal, then evaluate how the secondary target absorbs the
+remaining underfills. A matched exact-proposal control and an (M, N) sweep finally identify where the gain
+comes from and over which row shapes sampling is worthwhile.
+The margin, stride, and rescue experiments replay the final scheduler steps of the 245K and 430K traces at their
+native invocation boundaries. They preserve every call’s original M, N, Lr, and execution order, and report
+step latency as the sum of per-call medians. Recovery rates are aggregated over all rows in the corresponding
+step, and every reported variant satisfies eq. (30).
+Retention margin.
+We first fix the view stride at s = 128 and sweep the requested complete-row rank
+eK = ρK from K to 2K. Moving the proposal deeper into the upper tail gives sampling error more room
+before underfill, but also retains a larger candidate set for exact refinement.
+K
+1.25K
+1.5K
+1.75K
+2K
+Requested coarse rank, ρK
+1.0
+1.2
+1.4
+1.6
+Speedup over best baseline (×)
+1.51 ×
+1.54 ×
+selected margin
+(a) A moderate margin reaches the plateau
+K
+1.25K
+1.5K
+1.75K
+2K
+Requested coarse rank, ρK
+0
+10
+20
+30
+40
+Fallback rate (%)
+34.4
+5.66
+0.40
+35.3
+7.84
+0.86
+≤0.06% fallback
+from 1.75K
+(b) A small margin collapses fallback
+245K context
+430K context
+Figure 9: Retention-margin ablation on the terminal framework chunks. With s = 128 and the secondary
+boundary disabled, panel (a) reports exact speedup over the fastest external baseline and panel (b) reports the
+rows entering exact recovery. A target of eK = 1.5K reaches the shared latency knee while keeping primary
+recovery below 1%.
+At ρ = 1, the proposal has no allowance for estimation error, sending roughly one third of the rows to
+exact recovery and erasing the sampled path’s advantage. Increasing the target to 1.25K lowers recovery to
+5.7–7.8%, while 1.5K lowers it below 1% and reaches 1.51–1.54× speedup (fig. 9). Deeper targets suppress
+– 23 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+the remaining recoveries but retain more candidates on every row, producing a broad latency plateau rather
+than a sharper optimum. The 1.5K target therefore supplies a compact tail with sufficient calibration margin
+on both traces.
+Sampling stride.
+We next hold the requested complete-row rank at eK = 1.5K and vary the view stride
+s from 16 to 256 under the same primary-only policy. Increasing s reduces the sampled proposal work in
+proportion to the view density, but a view that becomes too sparse incurs more exact recovery.
+16
+32
+64
+128
+256
+Sampling stride, s (positions)
+1.0
+1.1
+1.2
+1.3
+1.4
+1.5
+1.6
+Speedup over best baseline (×)
+1.51 ×
+1.54 ×
+selected stride
+(a) Moderate sparsity reaches the latency knee
+16
+32
+64
+128
+256
+Sampling stride, s (positions)
+0
+1
+2
+3
+Exact-recovery rate (%)
+0.40
+2.48
+0.86
+3.26
+≤0.01% exact recovery
+through s = 64
+(b) Very sparse views increase recovery
+245K context
+430K context
+Figure 10: Sampling-stride ablation at eK = 1.5K on the same terminal framework chunks. Panel (a) reports
+exact speedup over the fastest external baseline, and panel (b) reports primary exact recovery. Moderate
+sparsity reduces proposal work through s = 128; the higher recovery rate at s = 256 reverses part of the gain.
+The denser s = 16 view is almost recovery-free but yields only about 1.05× speedup because proposal
+construction still reads a larger fraction of each row. Recovery remains below 0.01% through s = 64, and
+s = 128 raises the speedup to 1.51–1.54× while keeping recovery below 0.9%. At s = 256, recovery rises
+to 2.48–3.26% and the speedup falls on both traces (fig. 10). The common knee at s = 128 balances the
+shrinking proposal view against the growing cost of exact recovery.
+Conditional rescue.
+Figures 9 and 10 disable the secondary boundary to expose the primary proposal in
+isolation. The default policy instead records a secondary complete-row target eK1 = 1.75K alongside the
+primary target eK = 1.5K. The same sampled histogram produces the row-local boundaries τ0,r and τ1,r for
+these targets. Only a row whose primary count satisfies C(τ0,r) < K scans the intervening band up to τ1,r;
+all other rows enter refinement with the original compact frontier. We compare this conditional policy with a
+primary-only variant that sends the same underfilled rows directly to exact coarse recovery.
+0.0
+0.2
+0.4
+0.6
+0.8
+Rows entering exact recovery (%)
+245K
+430K
+0.40%
+0.015%
+−96%
+0.86%
+0.060%
+−93%
+(a) Rescue suppresses exact recovery
+0
+50
+100
+150
+Mean recovery-path latency (μs)
+245K
+430K
+95.6 μs
+37.4 μs
+−61%
+166.7 μs
+63.1 μs
+−62%
+(b) Coarse rescue is 2.6× faster
+Before rescue
+After rescue
+Full exact recovery
+Coarse rescue
+Figure 11: Conditional-rescue ablation at s = 128. Panel (a) compares the fraction of rows entering exact
+recovery before and after applying the secondary boundary. Panel (b) compares the mean recovery-path latency
+of coarse rescue with full exact recovery on affected rows. Conditional rescue resolves 93–96% of primary
+misses, while coarse rescue requires 61–62% less recovery-path time than full exact recovery.
+The primary boundary underfills 0.40% and 0.86% of rows in the two terminal steps. Conditional rescue
+reduces the residual exact-recovery rates to 0.015% and 0.060%, resolving 96% and 93% of those misses,
+– 24 –
+
+
+Tencent Hy
+respectively (fig. 11). On the affected rows, coarse rescue reduces mean recovery-path latency from 95.6 to
+37.4 µs at 245K and from 166.7 to 63.1 µs at 430K. The secondary boundary therefore protects the compact
+primary frontier against rare underestimates without adding a common-path scan.
+Mechanism attribution and activation regime.
+We compare exact and sampled boundary localization at
+the same complete-row target eK = 1.5K while holding the downstream exact selector fixed. The exact control
+derives its boundary from the complete row, whereas the sampled path uses an s = 128 view. We then sweep
+the allocated row width N from 16K to 64K and evaluate seven row counts M from 64 to 4096 over two
+captured score distributions, yielding 14 workload cells at each width. Together, these controls identify both
+the source of the common-path gain and the row shapes over which sampling amortizes its fixed overhead.
+0
+20
+40
+60
+80
+Per-row phase latency (μs)
+Exact
+Sampled
+Exact
+Sampled
+47.5 μs
+30.2 μs
+245K
+74.7 μs
+44.7 μs
+430K
+(a) Sampling removes proposal work
+38%
+45%
+45%
+11%
+10%
+43%
+44%
+46%
+7%
+7%
+92% of Δ
+97% of Δ
+16
+24
+32
+40
+48
+56
+64
+Allocated row width, N (K)
+0.8×
+1.0×
+1.2×
+1.4×
+Speedup over exact proposal
+0/14 wins
+14/14 wins
+(b) Sampling pays off as rows grow
+s = 64
+s = 128
+Threshold proposal
+Full-row validation
+Tail narrowing + refine
+Other overhead
+Figure 12: Mechanism attribution and sampling crossover. Panel (a) decomposes additive M = 1 active-CTA
+phase latency for matched exact- and sampled-proposal controls; brackets report the fraction of their difference
+explained by boundary localization. Panel (b) reports the median speedup over exact proposal across 14
+workload cells—seven M values over two captures—at each width, with error bars spanning the observed
+minimum and maximum. The s = 128 series uses the default dual-boundary policy.
+In the additive per-row measurements, sparse localization reduces proposal time from approximately 18 to 2 µs
+at 245K and from 33 to 3.5 µs at 430K. The reduction accounts for 92% and 97% of the latency difference,
+while full-row validation and exact tail processing remain comparable across the matched controls (fig. 12).
+Over the complete terminal steps, replacing the exact proposal with the sampled proposal lowers latency from
+32.8 to 18.3 ms and from 43.2 to 24.2 ms, corresponding to 1.79× and 1.78×. Together, these results identify
+boundary localization as the dominant source of the complete-step gain.
+The width sweep exposes a transition rather than a single universal cutoff. At 16K and 24K, exact proposal
+wins all tested cells. Results become mixed from 32K through 56K as row count and capture geometry
+determine whether the saved proposal work amortizes sampling. At 64K, both sampled variants win all 14
+cells; their median speedups reach 1.13× for s = 64 and 1.22× for the default s = 128 policy. This regime
+supports dispatching shorter rows to exact localization while reserving sampling for sufficiently wide rows,
+with the transition handled as a range rather than a hard threshold.
+7
+Related Work
+Section 2.2 compares algorithms that accept the same materialized score rows and return exact Top-K indices.
+This section considers systems that reduce the surrounding sparse-attention cost by moving selection into
+score production, sharing indexing work across queries or layers, or relocating the data and execution substrate.
+These approaches change the standalone boundary defined in section 2.1, although several still require token
+selection within their resulting pipelines.
+Fused and streaming indexer selection.
+Fusing selection into score production can eliminate the complete
+materialized score matrix. LiteTopK integrates exact Top-K into the indexer and filters candidates as their
+scores are produced (Yin et al., 2026); StreamIndex evaluates the indexer in chunks and merges bounded
+– 25 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+candidate sets to control the intermediate memory of compressed sparse attention (Jaber & Jaber, 2026). Both
+consume query and key representations rather than an already materialized X ∈RM×N. Their optimization
+boundary is therefore the fused indexer pipeline rather than the standalone materialized-row operator.
+Reusing indexing work.
+Another line reduces how often the indexer and selector run. PIVOT scans
+the prefix through a proxy for nearby queries, then reuses its result or refines an individual Top-K from its
+candidates (Liu et al., 2026). IndexCache shares selected indices across layers that omit their own indexers (Bai
+et al., 2026); LongCat combines cross-layer reuse with hierarchical indexing and streaming-aware layouts (Zan
+et al., 2026). These methods exploit redundancy outside one score row, while their owner layers, full-indexer
+layers, or per-query refinement stages still require candidate selection. Reducing per-selection cost is therefore
+complementary to reducing the number of selections.
+Alternative memory and execution substrates.
+Sparse selection also creates opportunities after indices have
+been produced. HiSparse keeps the complete KV history in host memory and resolves selected entries through
+a bounded GPU cache while preserving the indexer’s choices (Xie et al., 2026). KARAT instead proposes a
+programmable near-memory design for storing index keys and executing scoring, selection, and gathering,
+evaluated in simulation (Ham et al., 2026). HiSparse composes with a GPU selector, whereas KARAT replaces
+the GPU-resident boundary. Both address capacity and data placement rather than materialized-row selection
+cost.
+8
+Conclusion
+Long-context sparse attention creates an exact Top-K regime in which K remains fixed while ragged score
+rows grow to hundreds of thousands of elements. HPC-Ops exploits the separation between locating a compact
+upper tail and resolving its exact rank boundary. A regular partial view proposes a row-local coarse boundary,
+a complete-row pass certifies that proposal and materializes its admitted candidates, and FP32 refinement
+resolves only the remaining frontier. Underfilled proposals are detected and recovered before output is
+committed, preserving exact Top-K semantics on every path.
+HPC-Ops maps this design to persistent and KV-split sampled kernels, complemented by row-local and
+cooperative direct-exact kernels for other shapes. On indexer-score captures from Hy4-Preview, this portfolio
+is 1.29–1.75× faster than the best verified external exact implementation across the operator matrix, with
+a 1.55× geometric-mean speedup. The gain persists over framework-derived long-context traces, reaching
+1.36× and 1.48×. Matched controls show that the improvement comes primarily from replacing complete-row
+boundary localization with a sparse current-row proposal.
+Taken together, these results show that sampling is most useful here as a proposal mechanism rather than an
+approximation to Top-K. The sampled boundary controls the amount of work presented to exact refinement,
+while complete-row certification determines validity and activates recovery when necessary. This separation
+preserves exact Top-K semantics while trading common-path traffic against rare recovery work.
+References
+Yushi Bai, Qian Dong, Ting Jiang, Xin Lv, Zhengxiao Du, Aohan Zeng, Jie Tang, and Juanzi Li. IndexCache:
+Accelerating sparse attention via cross-layer index reuse. arXiv preprint arXiv:2603.12201, 2026. doi:
+10.48550/arXiv.2603.12201.
+Federico Barbero, Álvaro Arroyo, Xiangming Gu, Christos Perivolaropoulos, Michael M. Bronstein, Petar
+Veliˇckovi´c, and Razvan Pascanu. Why do LLMs attend to the first token? In The Second Conference on
+Language Modeling, 2025. URL https://openreview.net/forum?id=tu4dFUsW5z.
+David R. Bellhouse. Systematic sampling. In Handbook of Statistics, volume 6, pp. 125–145. Elsevier, 1988.
+doi: 10.1016/S0169-7161(88)06008-0.
+Long Cheng, Ritchie Zhao, Timmy Liu, Mindy Li, Xianjie Qiao, Kefeng Duan, Yu-Jung Chen, Xiaoming
+Chen, Bita Darvish Rouhani, and June Yang. Guess-Verify-Refine: Data-aware Top-K for sparse-attention
+– 26 –
+
+
+Tencent Hy
+decoding on Blackwell via temporal correlation. arXiv preprint arXiv:2604.22312, 2026. doi: 10.48550/
+arXiv.2604.22312.
+Herbert A. David and Haikady N. Nagaraja. Order Statistics. Wiley, 3rd edition, 2003.
+DeepSeek-AI.
+DeepSeek-V3.2: Pushing the frontier of open large language models.
+arXiv preprint
+arXiv:2512.02556, 2025. doi: 10.48550/arXiv.2512.02556.
+Tadeusz Dziarmaga, Witold Sikora, Łukasz Struski, Jacek Tabor, and Marcin Mazur. Prof-K: Probabilistic
+one-pass filtering for efficient Top-k selection. arXiv preprint arXiv:2608.12573, 2026. doi: 10.48550/
+arXiv.2608.12573.
+Anil Gaihre, Da Zheng, Scott Weitze, Lingda Li, Shuaiwen Leon Song, Caiwen Ding, Xiaoye S. Li, and
+Hang Liu. Dr. Top-k: Delegate-centric Top-k on GPUs. In Proceedings of the International Conference for
+High Performance Computing, Networking, Storage and Analysis, pp. 1–14. Association for Computing
+Machinery, 2021. doi: 10.1145/3458817.3476141.
+Xiangming Gu, Tianyu Pang, Chao Du, Qian Liu, Fengzhuo Zhang, Cunxiao Du, Ye Wang, and Min Lin.
+When attention sink emerges in language models: An empirical view. In The Thirteenth International
+Conference on Learning Representations, 2025. URL https://openreview.net/forum?id=78Nn4QJTEN.
+Hyungkyu Ham, Junhyeong Bae, Seungheon Lee, Myeongjae Jeon, and Gwangsun Kim. Heterogeneous LLM
+serving with general-purpose processing-near-memory for retrieval-based sparse attention. arXiv preprint
+arXiv:2608.03555, 2026. doi: 10.48550/arXiv.2608.03555.
+Jaber Jaber and Osama Jaber. StreamIndex: Memory-bounded compressed sparse attention via streaming
+Top-k. arXiv preprint arXiv:2605.02568, 2026. doi: 10.48550/arXiv.2605.02568.
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez,
+Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with PagedAt-
+tention. In Proceedings of the 29th Symposium on Operating Systems Principles, pp. 611–626. Association
+for Computing Machinery, 2023. doi: 10.1145/3600006.3613165.
+Yifei Li, Bole Zhou, Jiejing Zhang, Xuechao Wei, Yinghan Li, and Yingda Chen. RadiK: Scalable and
+optimized GPU-parallel radix Top-K selection. In Proceedings of the 38th ACM International Conference
+on Supercomputing, pp. 537–548. Association for Computing Machinery, 2024. doi: 10.1145/3650200.
+3656596.
+Hong Liu, Yuan Cheng, Lin Niu, Yi Su, Yufei Xue, Anmin Liu, Guanghua Yu, and Jianchen Zhu. PIVOT:
+Efficient query-group indexing for token-level sparse attention. arXiv preprint arXiv:2607.24593, 2026.
+doi: 10.48550/arXiv.2607.24593.
+NVIDIA Corporation. CUDA C++ Programming Guide, 2026a. URL https://docs.nvidia.com/cuda/
+cuda-c-programming-guide/. Accessed 2026-08-31.
+NVIDIA Corporation. TensorRT-LLM, 2026b. URL https://github.com/NVIDIA/TensorRT-LLM. Accessed
+2026-08-31.
+Ben O’Neill. The distribution of order statistics under sampling without replacement. Journal of Statistical
+Theory and Applications, 24(3):663–698, 2025. doi: 10.1007/s44199-025-00125-y.
+Jongseok Park, Sunga Kim, Alvin Cheung, and Ion Stoica. Qrita: High-performance Top-k and Top-p using
+pivot-based truncation and selection. arXiv preprint arXiv:2602.01518, 2026. doi: 10.48550/arXiv.2602.
+01518.
+Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen,
+Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Köpf, Edward Yang, Zachary
+DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and
+Soumith Chintala. PyTorch: An imperative style, high-performance deep learning library. In Advances
+in Neural Information Processing Systems, volume 32. Curran Associates, Inc., 2019. URL https://
+proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html.
+PyTorch Contributors. CUDA radix selection implementation, 2026. URL https://github.com/pytorch/
+pytorch/blob/70d99e9/aten/src/ATen/native/cuda/SortingRadixSelect.cuh. Commit 70d99e9; ac-
+cessed 2026-08-31.
+– 27 –
+
+
+Sample-Guided Exact Top-K Selection for Long-Context Sparse Attention
+Tobias Ribizel and Hartwig Anzt. Approximate and exact selection on GPUs. In 2019 IEEE International
+Parallel and Distributed Processing Symposium Workshops (IPDPSW), pp. 471–478. IEEE, 2019. doi:
+10.1109/IPDPSW.2019.00088.
+Tobias Ribizel and Hartwig Anzt. Parallel selection on GPUs. Parallel Computing, 91:102588, 2020. doi:
+10.1016/j.parco.2019.102588.
+Anil Shanbhag, Holger Pirk, and Samuel Madden. Efficient Top-K query processing on massively parallel
+hardware. In Proceedings of the 2018 International Conference on Management of Data, pp. 1557–1570.
+Association for Computing Machinery, 2018. doi: 10.1145/3183713.3183735.
+Tencent Hy Team. Hy4-Preview model card, 2026. URL https://huggingface.co/tencent/Hy4-preview.
+Accessed 2026-08-31.
+Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language
+models with attention sinks. In The Twelfth International Conference on Learning Representations, 2024.
+URL https://openreview.net/forum?id=NG7sS51zVF.
+Xi Xie, Yuebo Luo, Hongwu Peng, and Caiwen Ding. RTop-K: Ultra-fast row-wise Top-K selection for neural
+network acceleration on GPUs. In The Thirteenth International Conference on Learning Representations,
+2025. URL https://openreview.net/forum?id=PHg4rAXFVH.
+Zhiqiang Xie, Zhangheng Huang, Tingwei Huang, Ziyi Xu, Ruiyang Ma, and Christos Kozyrakis. HiS-
+parse: Scaling sparse-attention decoding with hierarchical KV cache management.
+arXiv preprint
+arXiv:2608.07009, 2026. doi: 10.48550/arXiv.2608.07009.
+Zihao Ye, Lequn Chen, Ruihang Lai, Wuwei Lin, Yineng Zhang, Stephanie Wang, Tianqi Chen, Baris
+Kasikci, Vinod Grover, Arvind Krishnamurthy, and Luis Ceze.
+FlashInfer: Efficient and customiz-
+able attention engine for LLM inference serving.
+In Proceedings of Machine Learning and Sys-
+tems, volume 7. MLSys, 2025. URL https://proceedings.mlsys.org/paper_files/paper/2025/hash/
+dbf02b21d77409a2db30e56866a8ab3a-Abstract-Conference.html.
+Ziqi Yin, Jianyang Gao, Peiqi Yin, Jiangneng Li, and Gao Cong. LiteTopK: Exploiting the curse of dimension-
+ality for a fused Indexer-TopK kernel in long-context sparse attention. arXiv preprint arXiv:2607.11976,
+2026. doi: 10.48550/arXiv.2607.11976.
+Z.ai. GLM-5.3 model card, 2026. URL https://huggingface.co/zai-org/GLM-5.3. Accessed 2026-08-31.
+Wen Zan, Jiaqi Zhang, Jianchao Tan, Hong Liu, Cunguang Wang, Xiang Li, Duyue Ma, Guanyu Wu, Yifan
+Lu, Fengcun Li, Yerui Sun, Peng Pei, Yuchen Xie, and Xunliang Cai. LongCat sparse attention: Taming the
+lightning via streaming-aware hierarchical cross-layer indexing. arXiv preprint arXiv:2608.01662, 2026.
+doi: 10.48550/arXiv.2608.01662.
+Jingrong Zhang, Akira Naruse, Xipeng Li, and Yong Wang. Parallel Top-K algorithms on GPU: A compre-
+hensive study and new methods. In Proceedings of the International Conference for High Performance
+Computing, Networking, Storage and Analysis, pp. 1–13. Association for Computing Machinery, 2023. doi:
+10.1145/3581784.3607062.
+Chenggang Zhao, Zhean Xu, Liang Zhao, Jiashi Li, Chenhao Xu, Anyi Xu, Shengyu Liu, Kexing Zhou, and
+Kuai Yu. DeepGEMM: Clean and efficient BLAS kernel library on GPU, 2025. URL https://github.
+com/deepseek-ai/DeepGEMM. Accessed 2026-08-31.
+Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody Hao Yu, Shiyi Cao, Christos
+Kozyrakis, Ion Stoica, Joseph E. Gonzalez, Clark Barrett, and Ying Sheng. SGLang: Efficient execution of
+structured language model programs. In Advances in Neural Information Processing Systems, volume 37,
+pp. 62557–62583. Curran Associates, Inc., 2024. doi: 10.52202/079017-2000.
+– 28 –

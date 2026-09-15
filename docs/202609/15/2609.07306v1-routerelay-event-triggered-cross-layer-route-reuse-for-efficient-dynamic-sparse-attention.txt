@@ -1,0 +1,970 @@
+RouteRelay: Event-Triggered Cross-Layer Route Reuse for
+Efficient Dynamic Sparse Attention
+Bin Li1, Sisi Liu1, Chenyang Hu2, Chaoyang Zhang2, Wei Li1, Hui Song1
+1Department of Computer Science, Xiamen University of Technology
+2School of Mathematics and Computer Science, Fuzhou University
+Abstract
+Dynamic sparse attention reduces long-context
+prefill cost by routing each query chunk to a
+small set of key chunks at every Transformer
+layer. The sparse attention kernel avoids most
+token interactions, but the router still rebuilds
+a chunk–chunk score matrix layer after layer,
+even when the selected routes change little.
+We introduce RouteRelay, a router-agnostic
+method that reuses only route metadata across
+depth while continuing to compute attention
+with the current layer’s queries, keys, and val-
+ues. Anchor layers perform full routing. In-
+termediate layers rescore the previous top-k
+route and a compact sentinel set of near-miss
+and randomly probed chunks. A query row is
+rerouted only when a sentinel challenges its
+weakest selected chunk. We give a top-k stabil-
+ity condition, a probabilistic bound on missed
+challengers, and a row-selective GPU execution
+design. In a reproducible empirical evaluation,
+RouteRelay retains at least 99.99% route re-
+call while rerouting 25.0%, 55.4%, and 78.2%
+of rows under low, moderate, and high cross-
+layer drift, respectively. Across routing scales,
+RouteRelay retains 100.0% recall while evalu-
+ating 38.4–51.6% of full-routing score pairs as
+the key-chunk count grows from 128 to 1024.
+Its unfused CPU execution remains slower than
+dense matrix multiplication, exposing row com-
+paction and ledger updates as the main kernel-
+engineering targets.
+1
+Introduction
+Long-context language models enable reason-
+ing over books, repositories, multi-document evi-
+dence, and extended conversations. Their prompt-
+processing cost remains dominated by causal self-
+attention, whose dense computation grows quadrat-
+ically with sequence length. Exact IO-aware ker-
+nels reduce memory traffic (Dao et al., 2022; Dao,
+2024), while sparse attention avoids selected query–
+key interactions entirely (Child et al., 2019; Beltagy
+et al., 2020; Zaheer et al., 2020).
+Post-hoc dynamic sparsity is especially attrac-
+tive because it can accelerate a frozen pretrained
+model. MInference selects structured sparse pat-
+terns and determines their indices online (Jiang
+et al., 2024). DHSA is one prior system that parti-
+tions a sequence into content-aware chunks, scores
+query–key chunk pairs, and expands the highest-
+ranked chunks into exact token interactions (Xiong
+et al.). Such flexible routes preserve more attention
+mass than fixed block grids, but flexibility has a
+systems cost: routing is repeated throughout the
+network.
+This repetition is potentially wasteful. Neighbor-
+ing Transformer layers operate on different repre-
+sentations, yet they process the same token posi-
+tions and often preserve the same broad semantic
+dependencies. Reusing an entire attention output
+would alter the model computation. Reusing only
+a sparse index set is less invasive: every layer still
+evaluates its own queries against its own keys and
+values, but it can skip rebuilding a complete chunk
+score matrix when the prior route remains valid.
+We propose RouteRelay, an event-triggered layer
+for dynamic sparse routers. At an anchor layer, it
+stores each query row’s selected chunks, its closest
+unselected competitors, and a small random sen-
+tinel sample. At an intermediate layer, it scores
+only this compact candidate set. If every selected
+chunk remains above every sentinel, the previous
+route is relayed forward. Otherwise, only the un-
+stable row executes a full route refresh. Figure 1
+illustrates the resulting separation between route
+maintenance and attention computation.
+Our contributions are:
+• Route-only cross-layer reuse. We amortize dy-
+namic sparse routing without sharing KV states,
+attention probabilities, or outputs across layers.
+• Event-triggered partial refresh. Near-miss
+and random sentinels detect route instability,
+1
+arXiv:2609.07306v1  [cs.CL]  7 Sep 2026
+
+
+enabling row-level refresh instead of a fixed
+refresh stride.
+• Stability and miss analysis. We state a suf-
+ficient top-k margin condition and bound the
+probability that random sentinels miss multiple
+newly competitive chunks.
+• Measured evaluation.
+Cross-layer drift,
+sentinel-ablation, and routing-scale experi-
+ments quantify route fidelity, refreshed-row
+fraction, score-pair reduction, and CPU latency.
+2
+Background
+2.1
+Dynamic Sparse Routing
+At layer ℓ, a chunk-based dynamic sparse router
+forms query- and key-chunk representations Qℓ
+c ∈
+Rnq×d and Kℓ
+c ∈Rnk×d. Its routing scores are
+Sℓ= Qℓ
+c(Kℓ
+c)⊤,
+(1)
+and query row i selects
+Rℓ
+i = TopKj(Sℓ
+ij, k).
+(2)
+The selected chunks are expanded into token in-
+dices and passed to a sparse online-softmax kernel.
+Constructing all routes costs O(nqnkd) for scor-
+ing plus selection overhead. Measurements from
+DHSA provide one example in which routing and
+chunk selection are material components of end-to-
+end prefill time at long contexts (Xiong et al.).
+2.2
+Why Route Reuse Is Safer than Attention
+Reuse
+Cross-layer KV sharing reduces memory by letting
+several layers consume common keys and values
+(Brandon et al., 2024). Other work reuses or pre-
+dicts attention structures across depth to reduce
+repeated computation. These approaches demon-
+strate cross-layer redundancy, but changing KV
+states or attention outputs changes the model’s nu-
+merical operation.
+RouteRelay relays only integer chunk IDs.
+Given a reused route Ra
+i from anchor layer a, layer
+ℓcomputes
+oℓ
+i = softmax
+
+qℓ
+i(Kℓ
+Ra
+i )⊤/
+√
+d
+
+V ℓ
+Ra
+i .
+(3)
+Thus all floating-point attention quantities remain
+layer specific. The only approximation is whether
+the chosen index set matches Rℓ
+i.
+3
+RouteRelay
+3.1
+Route Ledger
+Each query row stores a compact ledger at its most
+recent anchor layer a:
+La
+i = (Ra
+i , Ca
+i , a) .
+(4)
+The sentinel set combines:
+1. the m highest-scoring chunks immediately be-
+low the top-k cutoff;
+2. r uniformly sampled omitted chunks; and
+3. mandatory global candidates such as sink and
+recent chunks.
+Near-miss sentinels detect local rank swaps.
+Random sentinels hedge against a previously low-
+ranked chunk becoming important after a represen-
+tation shift. The ledger contains indices and op-
+tional anchor scores, requiring O(nq(k + m + r))
+integer storage.
+3.2
+Candidate Rescoring
+At an intermediate layer, row i evaluates current
+scores only for
+Aℓ
+i = Ra
+i ∪Ca
+i .
+(5)
+Let
+αℓ
+i = min
+j∈Ra
+i
+Sℓ
+ij,
+(6)
+βℓ
+i = max
+j∈Ca
+i
+Sℓ
+ij.
+(7)
+The route is reused when
+αℓ
+i > βℓ
+i + γi,
+(8)
+where γi ≥0 is a configurable guard margin. If the
+inequality fails, the row computes all nk scores, re-
+places its route, and rebuilds its sentinels. Refresh
+decisions are therefore asynchronous across rows
+and layers.
+Hysteresis.
+To prevent repeated refreshes near
+a tie, a refreshed row receives a minimum reuse
+horizon of one layer and may use a larger guard
+margin until its anchor margin recovers.
+Forced anchors.
+Implementations may force full
+routing at embedding-transition layers, every Hmax
+layers, or before layers known to have low route
+persistence. Forced anchors bound the lifetime of
+stale random sentinels.
+2
+
+
+Anchor layer
+full sparse route
+Route ledger
+top-k + sentinels
+Next layer
+candidate rescore
+Stable row
+relay route
+Unstable row
+full reroute
+Current-layer exact
+sparse attention
+pass
+trigger
+update ledger
+Figure 1: RouteRelay reuses route indices, not attention values. Stable rows score only a compact candidate set;
+unstable rows refresh independently. Every layer still computes sparse attention using its own current Q, K, and V.
+3.3
+Top-k Stability
+Define the anchor margin for row i as
+∆a
+i = min
+j∈Ra
+i
+Sa
+ij −max
+j /∈Ra
+i
+Sa
+ij.
+(9)
+Lemma 1 (Deterministic route stability). If
+maxj |Sℓ
+ij −Sa
+ij| ≤ϵi and ∆a
+i
+> 2ϵi, then
+Rℓ
+i = Ra
+i .
+Proof.
+Every selected score can decrease by at
+most ϵi, and every omitted score can increase by
+at most ϵi. A margin larger than 2ϵi therefore pre-
+serves every selected–omitted ordering.
+□
+Computing the exact maximum perturbation
+would require the full score row, so Lemma 1 is
+primarily an analysis tool. The sentinel trigger is a
+cheap empirical test for violations near the decision
+boundary.
+3.4
+Random-Sentinel Miss Probability
+Suppose, outside the deterministic near-miss set, u
+omitted chunks have become competitive enough
+to enter the top-k. If r sentinels are sampled uni-
+formly without replacement from a residual pool of
+size N, the probability of sampling none of those
+challengers is
+Pmiss =
+ N−u
+r
+
+ N
+r
+
+≤
+
+1 −u
+N
+r
+.
+(10)
+Random sentinels are most effective when route
+change is broad (u is large); the deterministic near-
+miss set targets isolated rank swaps near the cutoff.
+Equation 10 does not guarantee perfect recall, but
+makes the overhead–risk trade-off explicit.
+3.5
+Complexity
+Let ρℓbe the fraction of rows refreshed at layer
+ℓ. Ignoring small selection terms, full dynamic
+routing costs
+Tfull = O(nqnkd).
+(11)
+RouteRelay costs
+T ℓ
+relay = O(nq(k + m + r)d + ρℓnqnkd) . (12)
+When k + m + r ≪nk and ρℓ≪1, routing
+work falls substantially. Sparse attention cost is
+unchanged because the same token budget is evalu-
+ated after either reuse or refresh.
+4
+System Design
+4.1
+Route-Maintenance Dataflow
+The route-maintenance state consists of three row-
+major tensors: selected routes with shape [nq, k],
+sentinels with shape [nq, m + r], and anchor ages
+with shape [nq]. An anchor layer constructs this
+state from a complete chunk-score matrix. Interme-
+diate layers form a fixed-width candidate tensor by
+joining the selected and sentinel IDs, gather the cor-
+responding key-chunk representations, and score
+all candidates in one batched operation.
+The update path first compares the weakest se-
+lected score with the strongest sentinel to identify
+rows that fail the stability test. It then compacts
+the IDs of those unstable rows, computes complete
+score rows only for the compacted subset, and re-
+places their selected routes and sentinel sets. Rows
+that remain stable keep their existing routes, and
+their ledger ages are advanced accordingly. This
+separation keeps the common candidate-rescoring
+path regular while isolating full routing to the re-
+fresh subset. It also exposes the refreshed-row frac-
+tion ρℓdirectly to the runtime for scheduling and
+measurement.
+4.2
+Row-Selective Routing Kernel
+Candidate rescoring is a regular batched dot prod-
+uct over a fixed-width index array. A GPU kernel
+computes αℓ
+i, βℓ
+i, and one refresh flag per query
+row. A prefix sum compacts unstable row IDs. If
+no rows are unstable, the full router is skipped. Oth-
+erwise, a second kernel computes complete score
+rows only for the compacted IDs and updates their
+ledgers.
+3
+
+
+Experimental setting
+Value
+Representation dimension
+64
+Selected chunks k
+12
+Default near-miss sentinels m
+12
+Default random sentinels r
+12
+Guard margin γ
+0
+Numeric type
+FP32
+Timing statistic
+median
+Table 1: Default configuration for the routing experi-
+ments.
+4.3
+Interaction with Existing Routers
+RouteRelay leaves the underlying router’s bound-
+ary construction, chunk representations, token ex-
+pansion, causal masking, and sparse attention
+backend unchanged.
+It can therefore be in-
+serted between route scoring and token expan-
+sion. The method also composes with static or
+query-dependent token budgets: the ledger stores
+whichever route width the underlying policy re-
+quests.
+4.4
+Batching and Memory
+Ledgers are bucketed by route width so rows with
+compatible shapes share kernels. For nq query
+blocks and c = k + m + r candidates, storage is
+O(nqc) indices per layer group, not per layer. A
+32-bit index ledger with nq = 1024 and c = 64
+occupies 256 KB, small relative to long-context KV
+states.
+5
+Evaluation
+We evaluate RouteRelay in terms of route stabil-
+ity, sentinel effectiveness, routing scalability, and
+wall-clock cost. Metrics include top-k route recall,
+rerouted-row fraction, evaluated score pairs rela-
+tive to full routing, and CPU routing time. Unless
+otherwise stated, we use 64-dimensional routing
+representations, top-12 routes, 12 near-miss and 12
+random sentinels, γ = 0, and FP32.
+5.1
+Cross-Layer Route Stability
+We first ask whether route reuse remains accurate as
+representations evolve across layers, and whether
+event-triggered refresh adapts more effectively than
+a fixed global refresh schedule.
+Setup.
+We generate 32 layers, 384 query rows,
+and 192 key chunks. Each row has persistent pre-
+ferred chunks together with layer-local Gaussian
+drift. We vary the drift standard deviation from
+Drift
+Method
+Recall (%)
+Rerouted rows
+0.03
+Route every layer
+100.0
+100.0%
+0.03
+Fixed stride 4
+94.9
+25.0%
+0.03
+RouteRelay
+100.0
+55.4%
+0.06
+Route every layer
+100.0
+100.0%
+0.06
+Fixed stride 4
+91.2
+25.0%
+0.06
+RouteRelay
+100.0
+78.2%
+Table 2: Measured cross-layer route reuse (mean over
+ten seeds). Recall compares reused chunk IDs with
+exact per-layer top-k.
+0.02
+0.04
+0.06
+0.08
+0.10
+cross-layer score drift
+0.7
+0.8
+0.9
+1.0
+top-k route recall
+Route every layer
+Fixed stride 4
+RouteRelay
+0.02
+0.04
+0.06
+0.08
+0.10
+cross-layer score drift
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+fraction of rows rerouted
+Figure 2: Route recall and rerouting work as cross-layer
+drift increases. RouteRelay allocates routing work adap-
+tively rather than committing to a fixed global refresh
+stride.
+0.01 to 0.10. Route every layer computes the ex-
+act top-k route independently at every layer and
+serves as the reference. Fixed stride 4 refreshes
+all rows every fourth layer. For this experiment,
+RouteRelay stores 24 near-miss sentinels and 12
+random sentinels and refreshes rows according to
+Equation 8. Results are averaged over ten random
+seeds.
+Results.
+At drift 0.01, RouteRelay reroutes only
+25.0% of rows while retaining 100.0% top-k route
+recall. As drift increases, it automatically spends
+more routing work.
+At drift 0.03, RouteRelay
+reroutes 55.4% of rows while retaining more than
+99.99% recall. In contrast, fixed-stride reuse contin-
+ues to refresh only 25.0% of rows but falls to 94.9%
+recall. At drift 0.06, RouteRelay reroutes 78.2%
+of rows and again retains more than 99.99% recall,
+whereas fixed-stride reuse reaches only 91.2%.
+Relative to routing every row at every layer,
+these operating points reduce the fraction of rows
+executing full routing by 44.6 percentage points at
+drift 0.03 and 21.8 percentage points at drift 0.06.
+The additional work at higher drift is intentional:
+as routes become less stable, the sentinel test iden-
+tifies more rows for refresh.
+These results show that route reuse is poorly
+served by a single global refresh interval when
+stability varies across rows and layers.
+Fixed-
+4
+
+
+Sentinels
+Recall (%)
+Rerouted rows
+Score pairs
+Random only
+92.32
+5.2%
+14.2%
+Near-miss only
+100.00
+37.3%
+50.8%
+12 near-miss + 12 random
+100.00
+37.3%
+50.8%
+24 near-miss + 12 random
+100.00
+37.3%
+55.3%
+48 near-miss + 12 random
+100.00
+37.3%
+64.2%
+Table 3: Sentinel ablation at 256 key chunks and drift
+0.003. Values are means over five seeds.
+Chunks
+Recall (%)
+Score pairs (%)
+Full ms
+Relay ms
+Speedup
+128
+100.00
+51.6%
+3.5
+12.8
+0.27×
+256
+100.00
+41.4%
+8.4
+17.7
+0.48×
+512
+100.00
+38.4%
+13.4
+21.7
+0.61×
+1024
+100.00
+38.5%
+13.4
+27.5
+0.49×
+Table 4: Routing-scale results with 192 query rows, 16
+layers, and drift 0.002 (mean over three seeds). CPU
+speedup compares the unfused candidate pipeline with
+full per-layer routing.
+stride reuse spends constant work regardless of
+the current routing state, whereas RouteRelay uses
+current-layer scores to allocate full routing only to
+rows that exhibit evidence of instability.
+5.2
+Sentinel Ablation
+We next study which sentinel candidates are neces-
+sary for detecting route changes and how sentinel
+width affects the accuracy–work trade-off.
+Setup.
+We use layer-evolving 64-dimensional
+query and key chunk representations with 256
+query rows, 256 key chunks, 24 layers, top-12
+routes, and drift 0.003. We compare random sen-
+tinels alone, near-miss sentinels alone, and com-
+binations of near-miss and random sentinels. We
+additionally increase the near-miss width to deter-
+mine whether broader coverage around the top-k
+cutoff improves route fidelity. We report mean
+route recall, rerouted-row fraction, and evaluated
+query–key score pairs relative to full per-layer rout-
+ing over five random seeds.
+Near-miss sentinels are critical for route fidelity.
+Random sentinels alone minimize routing work,
+evaluating only 14.2% of the score pairs required
+by full routing, but route recall falls to 92.32%.
+This indicates that a small uniform sample is in-
+sufficient to detect isolated rank crossings near the
+top-k boundary.
+Near-miss sentinels recover 100.0% recall while
+evaluating 50.8% of full-routing score pairs.
+Adding 12 random sentinels to 12 near-miss sen-
+tinels changes recall by less than 0.01 percent-
+age point and leaves the rerouted-row fraction un-
+changed. In this setting, the near-miss set therefore
+10
+20
+30
+40
+50
+60
+evaluated score pairs vs. full routing (%)
+92
+93
+94
+95
+96
+97
+98
+99
+100
+top-k route recall (%)
+Random only
+Near-miss only; 12 near-miss + 12 random
+24 near-miss + 12 random
+48 near-miss + 12 random
+Figure 3: Sentinel quality–work trade-off. Near-miss
+sentinels are essential for high route recall; enlarging
+the sentinel set beyond the cutoff neighborhood adds
+score evaluations with little benefit in this setting.
+already captures the observed rank crossings. The
+difference between the two sentinel types is consis-
+tent with their intended roles. Near-miss candidates
+target local reorderings close to the routing cutoff,
+whereas random sentinels provide a probabilistic
+hedge against chunks that were previously far be-
+low the decision boundary but become competitive
+after a larger representation shift.
+A small near-miss set gives the best tested trade-
+off.
+Increasing the near-miss width from 12 to
+24 preserves 100.0% recall but raises the evalu-
+ated score-pair fraction from 50.8% to 55.3%. In-
+creasing the width further to 48 again leaves re-
+call unchanged while increasing the score-pair frac-
+tion to 64.2%. Thus, expanding the sentinel set
+beyond the immediate cutoff neighborhood adds
+routing work without measurable recall improve-
+ment in this benchmark. Among the tested con-
+figurations, 12 near-miss sentinels lie on the best
+observed accuracy–work operating point.
+5.3
+Routing-Scale Study
+We next ask whether RouteRelay becomes more
+favorable as the full routing problem grows.
+Setup.
+We vary the number of key chunks from
+128 to 1024 while using 192 query rows, 16 layers,
+top-12 routes, 12 near-miss sentinels, 12 random
+sentinels, and drift 0.002. Results are averaged
+over three random seeds. In addition to route re-
+call and evaluated score pairs, we measure median
+wall-clock time for full routing and for the unfused
+RouteRelay candidate pipeline on CPU.
+Routing work decreases relative to full routing
+as scale grows.
+RouteRelay retains 100.0% route
+recall at every tested routing size. With 128 key
+5
+
+
+128
+256
+512
+1024
+key chunks
+40.0
+42.5
+45.0
+47.5
+50.0
+evaluated score pairs (%)
+128
+256
+512
+1024
+key chunks
+0.4
+0.6
+0.8
+1.0
+CPU speedup
+Figure 4: Routing-scale results. The fraction of evalu-
+ated score pairs decreases as the number of key chunks
+grows, but unfused gathers, row compaction, and ledger
+maintenance prevent CPU wall-clock speedup. The
+dashed line marks parity.
+chunks, it evaluates 51.6% of the score pairs re-
+quired by full routing. This fraction decreases to
+41.4% at 256 chunks and 38.4% at 512 chunks.
+At 1024 chunks, it remains nearly unchanged at
+38.5%.
+The reduction from 51.6% to approximately 38%
+shows that the fixed-width candidate set becomes
+relatively cheaper as the complete routing matrix
+grows. The plateau between 512 and 1024 chunks
+indicates that, at this drift level, full routing for
+refreshed rows has become a larger component of
+the remaining work than candidate-set width. This
+trend agrees with the complexity in Equation 12:
+the candidate-rescoring term grows with k +m+r,
+whereas the cost of a full refresh grows with the
+total number of key chunks.
+5.4
+Wall-Clock Routing Cost
+Reducing score evaluations does not necessarily
+imply lower latency. We therefore compare the
+unfused RouteRelay pipeline directly against full
+routing on CPU.
+Despite evaluating substantially fewer score
+pairs, the current RouteRelay implementation is
+slower than full routing at every tested scale. At
+128 key chunks, full routing takes 3.5 ms com-
+pared with 12.8 ms for RouteRelay, corresponding
+to a 0.27× speedup. At 256 chunks, the corre-
+sponding times are 8.4 ms and 17.7 ms, or 0.48×.
+The gap is smallest at 512 chunks, where full rout-
+ing takes 13.4 ms and RouteRelay takes 21.7 ms,
+corresponding to 0.61×.
+At 1024 chunks, the
+measured speedup is 0.49×. The unfused candi-
+date pipeline is therefore approximately 1.6–3.7×
+slower than full CPU routing across the tested set-
+tings. This negative systems result exposes an im-
+portant distinction between arithmetic savings and
+realized latency. Full routing maps naturally to
+a highly optimized dense matrix multiplication,
+whereas RouteRelay introduces irregular key gath-
+ers, refresh-flag processing, row compaction, con-
+ditional full-row routing, and ledger reconstruction.
+A practical implementation therefore requires
+the fused GPU design described in Section 4,
+or an equivalent compiled implementation that
+reduces intermediate memory traffic and row-
+management overhead. The current results estab-
+lish that RouteRelay reduces routing arithmetic, but
+also show that arithmetic savings alone are insuffi-
+cient to guarantee wall-clock speedup.
+6
+Related Work
+Efficient attention.
+Reformer replaces dense at-
+tention with locality-sensitive hashing, Linformer
+uses low-rank projections, and Performer approxi-
+mates softmax attention with random features (Ki-
+taev et al., 2020; Wang et al., 2020; Choromanski
+et al., 2021). Routing Transformer instead learns
+content-dependent sparse neighborhoods through
+online clustering (Roy et al., 2021). These methods
+alter the attention operator or its learned sparsity
+pattern; RouteRelay amortizes route construction
+for an already selected dynamic sparse operator.
+Sparse long-context attention.
+Sparse Trans-
+former, Longformer, and BigBird use static pat-
+terns (Child et al., 2019; Beltagy et al., 2020; Za-
+heer et al., 2020). MInference computes struc-
+tured sparse indices online (Jiang et al., 2024),
+while DHSA learns content-aware semantic chunks
+and routes exact token interactions through them
+(Xiong et al.).
+Native Sparse Attention jointly
+trains compressed, selected, and local branches
+(Yuan et al., 2025). Quest selects query-dependent
+KV pages, while InfLLM retrieves relevant blocks
+from an external context memory (Tang et al., 2024;
+Xiao et al., 2024a). RouteRelay does not introduce
+another sparse pattern; it reduces how often an ex-
+isting dynamic pattern must be recomputed.
+KV-cache sparsity and cross-layer redundancy.
+H2O retains recent and heavy-hitter tokens,
+StreamingLLM preserves attention sinks and a re-
+cent window, and SnapKV selects prompt positions
+from an observation window (Zhang et al., 2023;
+Xiao et al., 2024c; Li et al., 2024). PyramidKV
+varies retained cache size across depth, whereas
+DuoAttention keeps full caches only for retrieval
+heads (Cai et al., 2024; Xiao et al., 2024b). Cross-
+Layer Attention shares KV states to reduce cache
+memory (Brandon et al., 2024). Other approaches
+6
+
+
+exploit similarity between attention structures or
+layer representations for faster inference. RouteRe-
+lay is narrower: it preserves every layer’s Q, K, V,
+softmax, and output, and reuses only discrete route
+metadata. It also differs from fixed layer group-
+ing by refreshing individual query rows when their
+local ranking becomes unstable.
+Inference systems.
+PagedAttention provides
+non-contiguous KV-cache management for high-
+throughput serving (Kwon et al., 2023), while
+FlashAttention kernels reduce memory traffic for
+exact attention (Dao et al., 2022; Dao, 2024). These
+optimizations are complementary to reducing the
+score pairs evaluated by a dynamic router.
+Adaptive computation.
+Early-exit and layer-
+skipping methods allocate depth according to in-
+put difficulty.
+RouteRelay instead executes ev-
+ery Transformer layer and adapts the cost of its
+sparse router. The model architecture and back-
+bone weights remain unchanged.
+7
+Conclusion
+We introduced RouteRelay, a router-agnostic
+method that attacks repeated routing cost across
+network depth. Anchor layers compute complete
+routes; intermediate layers rescore only selected
+chunks and compact sentinels, rerouting unstable
+rows on demand. The method leaves exact sparse
+attention within each selected set unchanged and
+is therefore orthogonal to approaches that summa-
+rize omitted content or vary the token budget. Our
+experiments show that event-triggered refresh can
+maintain near-perfect route recall while adapting
+work to cross-layer drift. Across the tested rout-
+ing scales, RouteRelay retains 100.0% recall while
+evaluating as little as 38.4% of full-routing score
+pairs. The slower unfused CPU path shows that
+these arithmetic savings require a fused kernel to
+translate into latency gains.
+References
+Iz Beltagy, Matthew E. Peters, and Arman Cohan. 2020.
+Longformer: The long-document transformer. In
+arXiv preprint arXiv:2004.05150.
+William
+Brandon,
+Mayank
+Mishra,
+Aniruddha
+Nrusimha, Rameswar Panda, and Jonathan Ragan
+Kelly. 2024. Reducing transformer key-value cache
+size with cross-layer attention.
+arXiv preprint
+arXiv:2405.12981.
+Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu,
+Yucheng Li, Tianyu Liu, Keming Lu, Wayne Xiong,
+Yue Dong, Junjie Hu, and Wen Xiao. 2024. Pyra-
+midkv: Dynamic kv cache compression based on
+pyramidal information funneling.
+arXiv preprint
+arXiv:2406.02069.
+Rewon Child,
+Scott Gray,
+Alec Radford,
+and
+Ilya
+Sutskever.
+2019.
+Generating
+long
+se-
+quences with sparse transformers. arXiv preprint
+arXiv:1904.10509.
+Krzysztof Choromanski, Valerii Likhosherstov, David
+Dohan, Xingyou Song, Andreea Gane, Tamas Sar-
+los, Peter Hawkins, Jared Davis, Afroz Mohiuddin,
+Lukasz Kaiser, David Belanger, Lucy Colwell, and
+Adrian Weller. 2021. Rethinking attention with per-
+formers. In International Conference on Learning
+Representations.
+Tri Dao. 2024. Flashattention-2: Faster attention with
+better parallelism and work partitioning. In Interna-
+tional Conference on Learning Representations.
+Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra,
+and Christopher Ré. 2022. Flashattention: Fast and
+memory-efficient exact attention with io-awareness.
+In Advances in Neural Information Processing Sys-
+tems.
+Huiqiang Jiang, Yucheng Li, Chengruidong Zhang,
+Qianhui Wu, Xufang Luo, Surin Ahn, Zhenhua Han,
+Amir Abdi, Dongsheng Li, Chin-Yew Lin, Yuqing
+Yang, and Lili Qiu. 2024. Minference 1.0: Acceler-
+ating pre-filling for long-context llms via dynamic
+sparse attention. In Advances in Neural Information
+Processing Systems.
+Nikita Kitaev, Lukasz Kaiser, and Anselm Levskaya.
+2020. Reformer: The efficient transformer. In Inter-
+national Conference on Learning Representations.
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying
+Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gon-
+zalez, Hao Zhang, and Ion Stoica. 2023. Efficient
+memory management for large language model serv-
+ing with pagedattention. In Proceedings of the 29th
+Symposium on Operating Systems Principles.
+Yuhong Li, Yingbing Huang, Bowen Yang, Bharat
+Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai,
+Patrick Lewis, and Deming Chen. 2024. Snapkv:
+Llm knows what you are looking for before genera-
+tion. arXiv preprint arXiv:2404.14469.
+Aurko Roy, Mohammad Saffar, Ashish Vaswani, and
+David Grangier. 2021. Efficient content-based sparse
+attention with routing transformers. Transactions of
+the Association for Computational Linguistics, 9:53–
+68.
+Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao,
+Baris Kasikci, and Song Han. 2024. Quest: Query-
+aware sparsity for efficient long-context llm inference.
+arXiv preprint arXiv:2406.10774.
+7
+
+
+Sinong Wang, Belinda Z. Li, Madian Khabsa, Han Fang,
+and Hao Ma. 2020. Linformer: Self-attention with
+linear complexity. arXiv preprint arXiv:2006.04768.
+Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan
+Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu,
+and Maosong Sun. 2024a. Infllm: Training-free long-
+context extrapolation for llms with an efficient con-
+text memory. arXiv preprint arXiv:2402.04617.
+Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian
+Guo, Shang Yang, Haotian Tang, Yao Fu, and Song
+Han. 2024b. Duoattention: Efficient long-context llm
+inference with retrieval and streaming heads. arXiv
+preprint arXiv:2410.10819.
+Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song
+Han, and Mike Lewis. 2024c. Efficient streaming
+language models with attention sinks. In Interna-
+tional Conference on Learning Representations.
+Siheng Xiong, Joe Zou, Faramarz Fekri, and Yae Jee
+Cho. Long-context modeling with dynamic hierar-
+chical sparse attention for memory-constrained llm
+inference. In Forty-third International Conference
+on Machine Learning.
+Jingyang Yuan, Huazuo Gao, Damai Dai, Junyu Luo,
+Liang Zhao, Zhengyan Zhang, Zhenda Xie, Y. X.
+Wei, Lean Wang, Zhiping Xiao, Yuqing Wang, Chong
+Ruan, Ming Zhang, Wenfeng Liang, and Wangding
+Zeng. 2025.
+Native sparse attention: Hardware-
+aligned and natively trainable sparse attention. arXiv
+preprint arXiv:2502.11089.
+Manzil Zaheer, Guru Guruganesh, Kumar Avinava
+Dubey, Joshua Ainslie, Chris Alberti, Santiago On-
+tanon, Philip Pham, Anirudh Ravula, Qifan Wang,
+Li Yang, and Amr Ahmed. 2020. Big bird: Trans-
+formers for longer sequences. In Advances in Neural
+Information Processing Systems.
+Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong
+Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuan-
+dong Tian, Christopher Ré, Clark Barrett, Zhangyang
+Wang, and Beidi Chen. 2023. H2o: Heavy-hitter ora-
+cle for efficient generative inference of large language
+models. arXiv preprint arXiv:2306.14048.
+8
