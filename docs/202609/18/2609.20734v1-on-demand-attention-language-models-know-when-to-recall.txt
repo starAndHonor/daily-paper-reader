@@ -1,0 +1,678 @@
+Title: On-Demand Attention: Language Models Know When to Recall
+
+URL Source: https://arxiv.org/pdf/2609.20734v1
+
+Published Time: Fri, 18 Sep 2026 01:46:32 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# ON-D EMAND ATTENTION :LANGUAGE MODELS KNOW WHEN TO RECALL 
+
+Haibo Feng 1, Ruiqi Liang 2, Hanyang Peng 3, Shiqi Yu 1
+
+> 1
+
+Southern University of Science and Technology 
+
+> 2
+
+Peking University 
+
+> 3
+
+Peng Cheng Laboratory 
+
+# ABSTRACT 
+
+Reasoning and agentic workloads increasingly demand efficient long-context in-ference. Yet full-attention decoding reads the growing history at every step, re-gardless of its benefit to the next prediction. We show that a pretrained model’s decoding states already contain information predictive of this benefit, before the global read. Building on this finding, we introduce On-Demand Attention (ODA), a local-first decoding method that uses a lightweight recall head to selectively invoke global attention as its predicted benefit changes during generation. ODA trains only the recall head, leaving pretrained weights unchanged and the complete historical KV cache available for future recall. We further implement GPU-side conditional execution in vLLM, translating reduced global reads into practical de-coding speedups over full attention at long context lengths. Experiments across Qwen and Gemma models, including hybrid-attention backbones, show that se-lective recall recovers most of the performance lost under local attention while substantially reducing global reads. These findings support long-context infer-ence in which pretrained models guide their own access to the information they retain. 
+
+# 1 INTRODUCTION 
+
+Large language models are increasingly used for reasoning and agentic tasks that involve extended generation, making decoding efficiency a growing concern (Anthropic, 2026; Yang et al., 2026). As context lengths grow, attention becomes a major source of decoding cost (Tang et al., 2024). However, the need for distant information varies across generation steps (Vakilian et al., 2026; Luo et al., 2025), while full-attention decoding performs global computation at every step. Matching the use of global attention to the needs of each prediction is therefore a key challenge for efficient long-context inference. Such an allocation requires predicting the value of global attention before performing it. One class of dynamic attention methods incorporates this decision into training, jointly learning language model-ing and local–global attention allocation (Luo et al., 2025; Choudhary et al., 2026; Zhao et al., 2026; Pan et al., 2026). Our starting point is that the states a pretrained model forms during generation may already contain information about the benefit of extending attention beyond the local context. If this information can be read out, the same generation process can support both next-token prediction and attention allocation, enabling the model to invoke global attention on demand without changing its pretrained weights. Our analysis shows that the predictive benefit of global attention varies across generation steps: expanding the attention span does not always improve the current prediction. Readout experiments with a frozen backbone further show that the available decoding states contain signals predictive of this benefit relative to local attention, before global attention is computed for the current step (Figure 4). Together, these observations provide an empirical basis for using information already available during generation to assess the value of additional attention computation. Building on these findings, we introduce On-Demand Attention (ODA), which uses a lightweight recall head to turn the model’s existing decoding states into attention decisions. Figure 1 illustrates 1arXiv:2609.20734v1 [cs.CL] 17 Sep 2026 On-Demand Attention Full Local 
+
+Decoding steps Full attention 
+
+ODA 
+
+The The code code ORCHID will will Friday ..
+
+## …………
+
+Recall Recall 
+
+# ODA steps Frozen Trainable 
+
+# LLM backbone 
+
+1 Local attention 
+
+3 Full attention 
+
+# ℎ!"
+
+## ℎ!"# 
+
+## 𝐸(𝑥 !)
+
+2 Recall head 𝑞 !
+
+𝑞 ! ≤ 𝜃 
+
+𝑞 ! > 𝜃 
+
+# ℎ!#
+
+# ℎ!
+
+# LM head Next token 
+
+# 𝑥 $%& 
+
+# ❄
+
+🔥 
+
+# ❄
+
+# 🔥 
+
+❄
+
+> MAPLE
+> 𝑝 !"
+> ORCHID Friday Friday
+
+# 𝑂(𝑛) 𝑂(𝑛 !)
+
+…… 
+
+> Recall
+> 𝐾𝑉 !"𝐾𝑉 !#
+
+𝑞 ! ≤ 𝜃 
+
+𝑞 ! > 𝜃  
+
+> 𝑝 !$% "
+> 𝑝 !&𝑝 !$% &
+> 𝐾𝑉 '
+
+Figure 1: On-Demand Attention. Top: ODA performs Local at every step and selectively adds Full. Recall can change the top-ranked token (MAPLE to ORCHID) or change its probability while retaining it (Friday). Words, distributions, and the call schedule are schematic. Bottom: The recall head combines the preceding selected hidden state, current token embedding, and current Local hidden state. When qt > θ , Full recomputes the step from the same pre-step history. The selected 
+
+ht feeds the frozen LM head; the current-position KV t from the same branch is committed to the retained history. Both access views share this complete history. Only the recall head is trained. The 
+
+O(n) and O(n2) labels denote cumulative Local and Full attention costs across n causal positions, with fixed model dimensions and a fixed Local window. the resulting allocation: ODA first computes locally, then selectively recomputes the current step with global attention according to its predicted benefit. Only the recall head is trained; pretrained weights remain unchanged, and the complete historical KV cache remains available for future recall. Our RULER (Hsieh et al., 2024) and LongBench (Bai et al., 2024) evaluations on Qwen3-1.7B (Qwen Team, 2025) show that ODA recovers most of the performance lost under local at-tention while substantially reducing global-attention call frequency. For example, on RULER16K, ODA uses Full on 41.6% of routed steps while improving the score from 19.23 under local at-tention to 81.17, close to the full-attention score of 81.94 (Table 1). Complementary cost analy-sis and vLLM (Kwon et al., 2023) measurements further establish the efficiency gains: in a con-trolled experiment with 128K input tokens, 1K output tokens, and a 12.5% global-call rate, ODA reduces FLOPs for the main decoding operations by approximately 76% and achieves 1.98 × the single-request decoding throughput of native full attention. Moreover, on the hybrid Qwen3.5-2B backbone (Qwen Team, 2026), ODA reduces global-call frequency with little loss in task perfor-mance, showing that allocation across generation steps can complement architectural efficiency im-provements. The Qwen3-8B and Gemma-4-12B-it (Gemma Team, 2026) results further extend this quality–access trade-off to a larger Qwen backbone and a different model family, using separately trained recall heads. 2Our contributions are threefold: • Predicting the value of global attention. We identify signals in a frozen model’s decoding states that predict the relative benefit of global attention before it is computed, providing an empirical basis for allocating attention according to predicted benefit. • On-demand decoding for pretrained models. We introduce ODA, which makes global attention conditional on predicted benefit through a lightweight recall head, while keeping pretrained weights unchanged and preserving access to the complete historical KV cache. • Establishing quality and efficiency gains. We demonstrate selective recall across Qwen and Gemma models, spanning model scales and hybrid-attention backbones, and quantify computational savings and decoding acceleration on Qwen3-1.7B through FLOPs analysis and controlled vLLM measurements. 
+
+# 2 ON-D EMAND ATTENTION 
+
+On-Demand Attention (ODA) first performs a Local computation, then uses the model’s available decoding states to decide whether to recompute the current step with global attention (Figure 1, bottom). We first define the relative benefit underlying this decision (Section 2.1), then describe how the recall head learns to predict it before the current Full computation (Section 2.2). Finally, we explain how these predictions guide attention allocation during decoding, analyze the computational savings, and describe an efficient implementation (Section 2.3). 2.1 PROBLEM SETUP AND RECALL OBJECTIVE 
+
+During autoregressive decoding, attention aggregates contextual values according to their compat-ibility with the current query (Vaswani et al., 2017). Historical keys and values are stored in a KV cache and reused across steps (Kwon et al., 2023). For one attention head at position t, let 
+
+(K<t , V <t ) denote this cache, and let qt, kt, vt be the query, key, and value produced for the cur-rent input. Combining the cached history with the current key and value gives 
+
+eKt = [ K<t ; kt], eVt = [ V<t ; vt]. (1) For an access set St ⊆ { 1, . . . , t }, the attention output is 
+
+ot = softmax qt eKt[St]⊤
+
+√dk
+
+!eVt[St], (2) where dk is the key dimension and set indexing selects the corresponding positions. Layer and head indices are omitted for clarity. Thus, historical KV can remain fully retained while St determines which positions participate in the current attention computation. ODA uses this distinction to vary the attention span within the same pretrained model. Full attends to every available position, whereas Local attends to s initial positions and a recent window of width 
+
+w, following the initial-token-plus-window pattern of StreamingLLM (Xiao et al., 2024b). Our window includes the current token: 
+
+SFt = {1, . . . , t },
+
+SLt = {1, . . . , min( s, t )} ∪ { max(1 , t − w + 1) , . . . , t }. (3) At decoding position t, the model processes the known input token xt to predict the next token. Let 
+
+Ct−1 denote the historical state committed before this step. Starting from the same Ct−1, Local and Full process xt with the same pretrained parameters ϕ and produce next-token distributions pLt and 
+
+pFt , respectively. Their current states are computed separately under the corresponding access sets. To quantify the value of adding global attention at this step, we measure the reduction in negative log-likelihood (NLL) on the same reference next token xt+1 :
+
+gt = NLL L(xt+1 ) − NLL F (xt+1 )= log pFt (xt+1 ) − log pLt (xt+1 ). (4) 3Positive gain means that Full assigns greater probability to the reference token; negative gain favors Local. The gain therefore captures both the direction and magnitude of the change in predictive quality. It can be nonzero even when both branches make the same top-ranked prediction, as illus-trated by the schematic Friday example in Figure 1. At a fixed history and reference token, choosing the worse branch incurs an additional |gt| in NLL (Appendix A.1). Paired computations provide this gain during training, but online decoding has access to neither the reference next token nor the current Full prediction when the recall decision is made. The decision must therefore rely on states already available after the Local computation. We next describe how the recall head uses these states to predict a score associated with the relative gain. 2.2 LEARNING THE RECALL HEAD 
+
+To predict the benefit of Full before invoking it, the recall head produces a scalar score from three inputs available at the current step: 
+
+qt = Rψ
+
+ ht−1, E ϕ(xt), h Lt
+
+, (5) where Eϕ(xt) is the embedding of the known input token, hLt is the final normalized hidden state from the current Local computation, and ht−1 is the hidden state passed from the preceding position. During deployment, ht−1 comes from the Local or Full branch actually selected at the previous step and is updated after every step. Together, these inputs describe the preceding computation, the current input, and the current Local result. Only the head parameters ψ are trained; all pretrained parameters ϕ remain unchanged. The head architecture is specified in Appendix A.2. We obtain supervision from paired Local and Full computations over a shared Full history, with the backbone frozen. During training, the preceding hidden-state input is selected using the preceding position’s reference gain; during deployment, both this input and the history follow the actual branch decisions. Algorithm 1(a) summarizes how paired supervision and input states are constructed, alongside the decoding procedure in Algorithm 1(b). The complete construction and sequence-boundary handling are given in Appendices A.3 and A.3. Invoking Full adds computation beyond the Local attempt. To account for this cost when learning the decision, we introduce a penalty λ ≥ 0, expressed on the prediction-loss scale. Relative to accepting Local, the cost-adjusted gain is 
+
+dt = NLL L(xt+1 ) − NLL F (xt+1 ) + λ
+
+= gt − λ. (6) Thus, dt > 0 when the predictive improvement from Full exceeds its assigned cost. We treat λ as a cost hyperparameter, with configuration-specific values reported in Appendix A.4. To compress large gains while preserving their sign and ordering, we apply a signed logarithmic transform to the cost-adjusted target: 
+
+yt = T (dt), T (u) = sign( u) log(1 + |u|). (7) We then train the recall head with Huber regression (Huber, 1964): 
+
+L(ψ) = 1
+
+|E| 
+
+X
+
+> t∈E
+
+ℓHuber ,1(qt − yt), (8) where E contains eligible reference positions in a training batch. Eligibility requires a valid reference next token and different Local and Full access sets. We retain near-zero gains and use no gain-dependent token weights. The reduction across workers and accumulated batches is specified for each training configuration in Appendix A.4. The learned score is then used to decide whether to invoke Full. 2.3 ATTENTION ALLOCATION DURING DECODING 
+
+At inference time, ODA uses the recall score to decide whether to add global computation. Each step first runs Local. If qt > θ , the model recomputes the current step with Full from the same pre-step history; otherwise, it accepts the Local result. The decision threshold θ is set to zero by default. 4Algorithm 1 Training and inference of On-Demand Attention 
+
+Pretrained parameters ϕ are frozen; only Rψ is trained. 
+
+(a) One training update Require: Token batch X, λ, τhist 
+
+1: E ← ELIGIBLE (X)
+
+2: (CF , H tr ) ← FULL TRUNK (X)
+
+3: (HL, H F ) ← PAIR (X, C F )
+
+4: g ← ACCESS GAIN (HL, H F , X )
+
+5: Htrain ← SELECT (HL, H tr , g, τ hist )
+
+6: H− ← SHIFT (Htrain )
+
+7: for t ∈ E do 
+
+8: qt ← Rψ (H− 
+
+> t
+
+, E ϕ(xt), h Lt )
+
+9: yt ← T (gt − λ)
+
+10: end for 
+
+11: L ← HUBER REDUCE (q, y, E)
+
+12: Update ψ using ∇ψ L
+
+(b) One decoding step Require: xt, Ct−1, ht−1, θ
+
+1: (hLt , ∆CLt ) ← F Lϕ (xt; Ct−1)
+
+2: qt ← Rψ (ht−1, E ϕ(xt), h Lt )
+
+3: if qt > θ or qt is nonfinite then 
+
+4: (ht, ∆Ct) ← F Fϕ (xt; Ct−1)
+
+5: else 
+
+6: (ht, ∆Ct) ← (hLt , ∆CLt )
+
+7: end if 
+
+8: Ct ← Ct−1 ∥ ∆Ct
+
+9: pt ← softmax( WLM ht)
+
+10: xt+1 ← DECODE (pt)
+
+11: return xt+1 , C t, h t
+
+PAIR computes both candidates from the Full-trunk history. SELECT uses HL at eligible positions with 
+
+gt < τ hist , and Htr otherwise. S HIFT moves the selected states one position forward within each sequence, using zero at its start. H UBER REDUCE applies Equation 8, using the configuration-specific reduction in Ap-pendix A.4. Decoding begins after Full prefill; WLM is the frozen vocabulary projection and ∆Ct is the selected current-step state update. Details are in Appendix A. 
+
+The selected hidden state ht passes through the shared LM head and is carried to the next step; its corresponding current-position KV is appended to the retained history. The Local and Full views in Figure 1 access the same committed history, and recomputation changes only the current-step candidate. Every earlier position therefore remains accessible even after consecutive Local steps. Algorithm 1(b) gives the complete decoding procedure. For hybrid backbones, the same decision changes the access range of ordinary attention layers while preserving the model’s native recurrent computation. This execution scheme pays for a Local attempt at every step in exchange for opportunities to skip Full computation. To characterize this trade-off, at a given history length let FL and FF denote the backbone FLOPs of Local and Full, and let FR denote the recall-head FLOPs. If ρ is the fraction of steps invoking Full, counting the Local attempt and Full recomputation as separate forward passes gives the average per-step savings relative to always using Full: 
+
+∆F = (1 − ρ)FF
+
+| {z }
+
+> skipped Full computation
+
+− (FL + FR)
+
+| {z }
+
+> Local attempt and decision
+
+. (9) The final vocabulary projection is performed once in either method and therefore cancels from the difference. Savings arise when the avoided Full computation exceeds the cost of the Local attempt and recall decision. With fixed model dimensions and Local access parameters s and w, the per-step attention costs are O(1) for Local and O(n) for Full, where n is the history length. Accumulating these costs across a causal sequence of n positions gives O(n) for Local and O(n2) for Full, as labeled in Figure 1. These are branch attention costs; ODA’s savings also account for the Local attempt, head, and conditional Full recomputation through Equation 9. Consequently, at a fixed recall rate ρ < 1, longer contexts offer greater computational savings. To translate these savings into decoding acceleration, we implement GPU-side conditional execution in vLLM (Kwon et al., 2023), keeping the Local computation, recall decision, and conditional Full recomputation within a common execution flow to reduce routing-related synchronization overhead. Both branches share the subsequent output computation. Complete FLOPs and latency analyses, to-gether with state-management and implementation details, are provided in Appendices A.6 and A.5. 
+
+# 3 EXPERIMENTS 
+
+We evaluate whether selective global attention can preserve generation quality while reducing the cost of long-context decoding. We first compare quality and global access across models and tasks, 5Table 1: Long-context generation across model scales, families, and architectures. Scores are task macros ( ↑); parentheses report ODA’s actual Full-call rates ( ↓). Full uses each backbone’s native attention configuration. Each backbone has its own recall head. LongBench v1 denotes the 13-task subset specified in Appendix B.2. Dashes indicate measurements not yet available; checkpoint and backend details are in Appendix B.1.                                
+
+> RULER16K LongBench v1 Model Full Local ODA (Full%) Full Local ODA (Full%)
+> Qwen3-1.7B 81.94 19.23 81.17 (41.6%) 37.94 23.66 36.82 (70.6%) Qwen3-8B 92.59 25.43 91.07 (47.3%) 44.70 29.83 —Qwen3.5-2B 94.35 28.21 94.08 (44.3%) 39.47 25.31 —Gemma-4-12B-it 96.61 30.07 95.27 (57.8%) 41.88 35.71 —
+
+and test whether learned access timing matters (Section 3.2). We then measure computation and decoding speed (Section 3.3), before examining the states and benefits underlying recall decisions (Section 3.4). 3.1 EXPERIMENTAL SETUP 
+
+Our primary model is Qwen3-1.7B (Qwen Team, 2025), evaluated on RULER16K and LongBench v1 (Hsieh et al., 2024; Bai et al., 2024). RULER16K contains 13 tasks with 100 examples each; our LongBench v1 evaluation covers 13 tasks and 2,550 examples. Qwen3-8B tests a larger scale, Qwen3.5-2B (Qwen Team, 2026) hybrid compatibility, and Gemma-4-12B-it (Gemma Team, 2026) applicability beyond the Qwen family. We compare ODA with each backbone’s native attention configuration (Full) and a fixed Local policy. Local and ODA use four initial positions and a 2,048-token recent window, including the current token. In hybrid backbones, this restriction applies to attention layers that read the full history; the remaining layers retain their native computation. All quality evaluations use Full prefill followed by each policy’s own generated continuation. Each backbone has a separately trained recall head and unchanged pretrained weights. We report task-macro scores and actual decode-time Full-call rates; the latter are token-weighted unless specified otherwise. Efficiency measurements include the Local attempt, head, and conditional Full recomputation, and exclude prefill. Checkpoints, decoding settings, and metric definitions appear in Appendix B.1. 3.2 GENERATION QUALITY AND SELECTIVE GLOBAL ACCESS 
+
+Selective recall recovers most of the performance lost under local attention while substantially re-ducing global-call frequency (Table 1). On Qwen3-1.7B, ODA reaches 81.17 on RULER16K with 41.6% Full calls, compared with 81.94 for Full and 19.23 for Local. On LongBench v1, it reaches 36.82 against Full’s 37.94, using Full on 70.6% of routed steps. Thus, the same head recovers 98.8% and 92.2% of the respective Full–Local score gaps, while adapting its access frequency to the en-countered tasks. Recovery varies by task: English passage retrieval retains a 10.33-point deficit, whereas Chinese passage retrieval matches Full. Appendix B.2 provides the complete task break-down. This behavior extends to the larger Qwen3-8B, which achieves 91.07 with 47.3% Full calls, com-pared with Full’s 92.59 and Local’s 25.43 in the HF evaluations. ODA also complements the na-tive hybrid architecture of Qwen3.5-2B: limiting access in its six full-attention layers yields 94.08 against Full’s 94.35, with a Full-call rate of 44.3%. The other 18 layers retain their Gated DeltaNet computation (Yang et al., 2025). Gemma-4-12B-it further extends this result across model families: its step-1,024 head scores 95.27 with 57.8% Full calls, versus 96.61 for Full. Each model uses a separately trained head; these results do not test head transfer. 
+
+Choosing when to recall matters. To separate learned timing from access frequency, we com-pare ODA with random Full calls on five RULER16K tasks. For each task and ODA threshold, Random uses that task’s observed ODA call rate as its Bernoulli probability, and then follows its 685 87 89                   
+
+> 25 30 35 40 45 50 55 60
+> Full-call rate (%)
+> 28 32 36
+> 025 50 75 100
+> Selected positions (%)
+> 0.00 0.05 0.10 0.15 0.20 0.25 0.30
+> Net NLL gain (nats/token) RULER score
+> (a) Generation quality (b) Captured recall benefit
+> ODA Random Full Local ODA Random Oracle
+
+Figure 2: Selecting when to use global attention. (a) Qwen3-1.7B generation on five RULER16K tasks, with 100 examples per task. Both axes average tasks equally. Points represent eight ODA thresholds and their Random controls at actual call rates; Random error bars show the sample stan-dard deviation across three routing seeds on both axes. The ring marks ODA’s zero-threshold con-figuration. Dashed lines mark Full and Local score references. The horizontal range is 23–60%; the broken vertical axis displays 26–38 and 84–90 on separate linear scales. (b) Offline selection on 2,048 reference positions from 16 documents. Positions are ranked by head score (ODA), uniformly selected (Random expectation), or ranked by realized gain (Oracle). Signed gains are summed and divided by all 2,048 positions. Shading is a pointwise 95% document-bootstrap interval for ODA. This panel holds recorded histories fixed; it does not measure a generated Random or Oracle trajec-tory. own generated trajectory. Figure 2(a) plots the realized rates. At threshold zero, ODA scores 88.96 with a task-averaged Full rate of 41.33%; Random scores 32 .79 ± 0.95 at 40.99%, while the freshly evaluated Full baseline scores 88.63. The large quality gap persists across all eight tested budgets. Global-call frequency alone therefore does not explain ODA’s performance: allocating those calls according to the encountered states is consequential for generation. This five-task comparison uses its own common evaluation setup and baselines (Appendix B.3). 3.3 COMPUTATION AND DECODING EFFICIENCY 
+
+Fewer global calls reduce computation, but every recalled step also pays for its preceding Local attempt. We therefore account for both branches, the recall head, and the vocabulary projection, following Section 2.3. Figure 3(a) shows total major decoding FLOPs as a percentage of Full at each context length. For the 128K input and approximately 12.5% Full calls, ODA uses 24.26% of Full’s FLOPs, a 75.74% reduction and a 4.12 × computation ratio. The relative cost decreases with context length, while larger recall budgets leave more repeated computation. These savings translate into faster decoding in vLLM (Kwon et al., 2023) (Figure 3(b)). We run the complete Qwen3-1.7B model and generation loop on one A100-SXM4-80GB, with batch size one and CUDA Graphs enabled for both ODA and native Full. At the same 128K/12.5% operating point, median throughput rises from 75.54 to 149.52 tokens/s ( 1.98 ×). At 4K, however, ODA re-mains 15.8% slower: avoiding short global reads does not offset the Local and conditional-execution overhead. Thus, the speed benefit depends on both context length and recall frequency. These measurements use a fixed continuation and prescribed recall schedule to compare execution costs under identical work; the real head still runs at every step. They are separate from the learned-policy quality evaluations above. Appendix B.8 reports all 30 operating points, first-request costs, and the exact timing scope. For training, the Qwen3-1.7B head contains 28.3M parameters and uses a 196,608-example training pool. Complete resource accounting must also include frozen-backbone feature and label computation; the outstanding GPU-hour measurements are identified in Appendix B.9. 74K 16K 32K 64K 128K        
+
+> Input length (tokens)
+> 025 50 75 100 125
+> Total decode FLOPs (% of Full)
+> 24.3% 4K 16K 32K 64K 128K
+> Input length (tokens)
+> 0.75 1.00 1.25 1.50 1.75 2.00
+> Throughput / native Full  1.98x
+> (a) Decode computation (b) vLLM decoding speed
+> 12.5% Full 25% Full 50% Full
+
+Figure 3: Selective global attention reduces computation and accelerates long-context decod-ing. (a) Total major decoding FLOPs normalized to Full at each input length (100%), including the Local attempt, additional Full computation, head, and output projection. (b) Measured vLLM decode throughput relative to native Full on the same A100, using three-round warm medians. Each length uses one complete benchmark prompt and a fixed 1,024-token continuation; the actual input lengths are 4,139–128,852, shown as equally spaced categories in both panels. Legend rates are nominal: the three schedules execute 128, 256, or 512 Full calls in 1,023 routed steps. Prefill is excluded. These controlled schedules measure execution efficiency, not task quality. Table 2: Input composition changes the quality–access operating point. Qwen3-1.7B heads trained for 1,024 updates with a shared seed and the same 28,325,889-parameter architecture. Checkmarks identify distinct available inputs; missing streams are filled by a specified available input to preserve capacity. Every policy first computes Local. These are natural zero-threshold re-sults, not budget-matched comparisons; this training configuration is distinct from the primary head in Table 1. 
+
+H E L RULER16K Full (%) 
+
+✓ — — 76.84 83.20 — ✓ — 49.88 87.32 — — ✓ 81.60 89.25 
+
+✓ ✓ — 81.94 99.73 
+
+✓ — ✓ 67.96 21.86 — ✓ ✓ 81.53 97.51 
+
+✓ ✓ ✓ 81.57 76.22 
+
+3.4 UNDERSTANDING RECALL DECISIONS 
+
+The inputs shape the learned access policy. We train seven heads with different subsets of the preceding committed hidden state ( H), current token embedding ( E), and current Local hidden state ( L). All share the same initialization, capacity, data, and 1,024-update training budget; all perform Local computation before deciding. This ablation uses the cost-adjusted training target with λ = 0 .001 and evaluates each head at threshold zero (Appendix B.4). With H + E, the policy nearly always invokes Full (99.73%). Adding L yields 81.57 with 76.22% Full calls, compared with 81.94 for H + E (Table 2). Conversely, the embedding-only head uses 87.32% Full yet scores just 49.88. These differences show that input composition substantially changes the learned policy. Because the resulting budgets differ, they do not by themselves isolate input value at equal access frequency. The appendix details the evaluation protocol and the H + E + L training trajectory. 
+
+Head scores identify beneficial global access. We next evaluate the primary head on 2,048 external-reference positions, comparing Local and Full from the same recorded history. At 40% offline selection, ranking by head score captures 0.150 nats of net gain per position, compared with 0.053 for uniform selection (Figure 2(b)). The head thus prioritizes positions with greater mea-8All Local correct Local incorrect 0.4 0.5 0.6 0.7     
+
+> AUROC
+> All Local correct Local incorrect 0.0 0.2 0.4 0.6
+> Net NLL gain (nats/position)
+> (a) Benefit discrimination (b) Net benefit at 40% selection
+> Recall head Local entropy
+
+Figure 4: Access benefit and prediction uncertainty provide different rankings. The primary Qwen3-1.7B head and Local entropy are evaluated on the same 2,048 fixed-reference positions: 1,373 Local-correct and 675 Local-incorrect. (a) AUROC for positive signed gain, gt > 0. (b) Net signed gain when selecting 40% of positions within each population, divided by that population’s size. Error bars are 95% paired document-bootstrap intervals. Correctness defines diagnostic subsets after evaluation and is not an input to the policy. sured benefit, while accounting for the harm from selected negative gains. This complements the generation comparison by testing the decision target directly, without changing the saved histories. The signal also differs from simple uncertainty about the next token. Within the 675 positions where Local’s top-1 prediction is incorrect, the head achieves a benefit-sign AUROC of 0.643, versus 0.486 for Local entropy; the paired 95% interval for their difference is [0 .069 , 0.230] . Across all positions, the AUROC difference is unresolved, although head ranking yields greater net gain at 40% selection (Figure 4). These are diagnostics of the complete head, not a confidence-controlled attribution to L alone. The smaller Qwen3.5 independent test does not establish the same failure-subset discrimination advantage (Appendix B.6). 
+
+Recall predicts relative benefit, not Local errors. Both modes predict the correct top-1 token at 1,342 reference positions, yet Full increases its probability at 718 and decreases it at 437. Con-versely, Full provides positive NLL gain at 345 Local-incorrect positions but corrects only 60 of them. Correctness and access benefit are therefore distinct even at a single decoding step. A sep-arate paired analysis likewise finds that DKL (pF ∥pL) correlates much more strongly with absolute than signed reference gain (Spearman 0.937 versus 0.138; Appendix B.7). These observations moti-vate evaluating recall by its relative benefit rather than identifying every prediction change, or every Local error, with a useful global read. 
+
+# 4 RELATED WORK 
+
+Dynamic local–global attention. Conditional computation allocates expensive attention and feed-forward branches to selected tokens, as in CoLT5 (Ainslie et al., 2023). For autoregressive decoding, task-specific fine-tuning can teach models to select attention spans (Jin et al., 2024), while AHA learns per-token choices between global and sliding-window attention for each head (Luo et al., 2025). L2A uses local attention outputs to gate a global branch within each layer, adapting at-tention and normalization parameters while freezing feed-forward layers (Choudhary et al., 2026). Switch Attention learns token- and layer-dependent choices between full and sliding-window at-tention through continued pretraining (Zhao et al., 2026), while LoGo learns coupled local–global branches with a controller for the global-attention budget (Pan et al., 2026). ODA makes a single recall decision after a complete Local forward pass. It learns this decision from paired prediction gains, using the existing states of a pretrained model whose weights remain unchanged. Concurrent Declarative Attention also explores model-directed control of context access (Ho et al., 2026). 9Selective context access. Another approach reduces the history participating in each attention op-eration. StreamingLLM retains initial and recent tokens, while H 2O and SnapKV use attention statistics to select compact KV caches (Xiao et al., 2024b; Zhang et al., 2023; Li et al., 2024b). Re-freshKV alternates full-context and subset attention, refreshing its compact cache after full-attention steps (Xu et al., 2025). QUEST, InfLLM, and RetrievalAttention select relevant pages, memory units, or indexed KV vectors from a larger retained history (Tang et al., 2024; Xiao et al., 2024a; Liu et al., 2025). Learned selectors such as SeerAttention-R and SpotAttention also preserve pre-trained weights, using attention supervision to select context blocks (Gao et al., 2025; Ahmad & Yun, 2026). ODA addresses the value of extending attention at a given decoding step: the recall head predicts whether Full improves on the current Local computation. Complete KV retention allows information skipped at one step to become accessible again at a later recall. 
+
+Hybrid architectures and efficient attention execution. Attention costs can also be reduced through head specialization and architectural choices. DuoAttention assigns full-history access to retrieval heads and bounded caches to streaming heads (Xiao et al., 2025). At the layer level, NLL-guided selection uses calibration-time changes in answer-token loss to choose which layers retain full attention (Tang et al., 2026). Hybrid models combine recurrent computation with attention, as in Gated DeltaNet hybrids and Qwen3.5 (Yang et al., 2025; Qwen Team, 2026). ODA adds decisions across decoding steps to an existing architecture; the Qwen3.5 experiments demonstrate compatibility with its native hybrid design. At the implementation level, FlashAttention reduces memory traffic for exact attention (Dao et al., 2022). ODA’s conditional execution addresses how often global computation is performed, making the cost of both attention branches relevant to its realized speedup. 
+
+Model-guided information acquisition. The model’s own predictions and representations can guide requests for additional information. FLARE uses low-confidence tokens in a draft sentence to trigger retrieval and regeneration (Jiang et al., 2023); Self-RAG learns reflection tokens for re-trieval and critique (Asai et al., 2024); and Probing-RAG reads hidden states to decide whether further document retrieval is needed (Baek et al., 2025). Latent sufficiency probes predict when input processing can stop (Xie et al., 2025), and retrieval-benefit predictors assess whether external evidence improves an answer (Dado et al., 2026). LongPPL uses long–short context comparisons to identify tokens that are informative for evaluating long-context ability (Fang et al., 2025). ODA brings benefit prediction to access within the retained sequence: its supervision measures the signed improvement of Full over Local at a shared history, and its readout predicts that benefit before exe-cuting the current global computation. 
+
+Adaptive execution and speculative decoding. CALM uses confidence to adapt decoding depth (Schuster et al., 2022), while language model cascades learn when to defer to a more ex-pensive model (Gupta et al., 2024). Speculative decoding verifies inexpensive proposals with a tar-get model, preserving its sampling distribution through an acceptance correction (Leviathan et al., 2023). Speculative cascades combine deferral with speculative execution (Narasimhan et al., 2025). ODA applies adaptive execution to two attention ranges of the same pretrained model. Its learned benefit estimate determines whether to accept the Local result or recompute the current step with Full, so global computation is incurred only when recall is selected. This mechanism yields an empirical quality–cost trade-off rather than a distribution-preserving verification rule. 
+
+# 5 CONCLUSION 
+
+On-Demand Attention makes global attention conditional on its predicted benefit to the next predic-tion. A lightweight recall head reads the model’s available decoding states to guide this decision, leaving pretrained weights unchanged and the complete historical KV cache accessible. Across the evaluated Qwen and Gemma models, including hybrid backbones, selective recall recovers most of the quality lost under local attention while substantially reducing global-call frequency. Random-routing controls establish the importance of choosing when to recall, while FLOPs analysis and controlled vLLM measurements demonstrate computational savings and faster long-context decod-ing. Together, these findings show that pretrained decoding states can support both generation and attention allocation, enabling models to consult the information they retain according to its predicted value. 10 AI U SE STATEMENT 
+
+Generative AI assistance (OpenAI Codex) was used to refine the research framing and hypotheses, discuss experimental controls and cost models, interpret supplied results, review related literature, translate and edit the manuscript, and write plotting and record-checking scripts. AI-assisted lo-cal checks recomputed selected statistics from archived records and compiled and inspected the manuscript. They did not rerun the reported model training or benchmark evaluations. The authors are responsible for verifying the claims, citations, and artifacts in the submitted manuscript. 
+
+# REPRODUCIBILITY STATEMENT 
+
+Algorithm 1 specifies the training update and decoding order; Appendix A details supervision, state handling, and cost assumptions. Appendix B records evaluation protocols, per-task scores, reference diagnostics, and the controlled runtime matrix. The manuscript repository contains archived diag-nostic records, 170 task-level Random/ODA control runs, 16 input-ablation checkpoint summaries, and 260 runtime trials. The script scripts/build_experiment_assets.py checks their aggregates and rebuilds the experiment figures and tables from the archived inputs; source hashes and verification results accompany it. Additional aggregate results are stored separately and re-produced at their reported precision until task-level records are available. These checks reproduce statistics from recorded experiments, rather than rerunning model training or generation. Training-resource and runtime limitations are stated in Appendices B.9 and B.8. A complete anonymous implementation release remains pending. 
+
+# REFERENCES 
+
+Huzama Ahmad and Se-Young Yun. SpotAttention: Plug-in block-sparse routing for pretrained long-context transformers. arXiv preprint arXiv:2606.22874 , 2026. URL https://arxiv. org/abs/2606.22874 .Joshua Ainslie, Tao Lei, Michiel de Jong, Santiago Onta˜ n´ on, Siddhartha Brahma, Yury Zemlyan-skiy, David Uthus, Mandy Guo, James Lee-Thorp, Yi Tay, Yun-Hsuan Sung, and Sumit Sanghai. CoLT5: Faster long-range transformers with conditional computation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pp. 5085–5100. As-sociation for Computational Linguistics, 2023. doi: 10.18653/v1/2023.emnlp-main.309. URL 
+
+https://aclanthology.org/2023.emnlp-main.309/ .Anthropic. Anthropic Economic Index report: Cadences, June 2026. URL https: //www.anthropic.com/research/economic-index-june-2026-report . June 26, 2026. Akari Asai, Zeqiu Wu, Yizhong Wang, Avi Sil, and Hannaneh Hajishirzi. Self-RAG: Learning to retrieve, generate, and critique through self-reflection. In In-ternational Conference on Learning Representations , pp. 9112–9141, 2024. URL 
+
+https://proceedings.iclr.cc/paper_files/paper/2024/hash/ 25f7be9694d7b32d5cc670927b8091e1-Abstract-Conference.html .Ingeol Baek, Hwan Chang, ByeongJeong Kim, Jimin Lee, and Hwanhee Lee. Probing-RAG: Self-probing to guide language models in selective document retrieval. In Findings of the As-sociation for Computational Linguistics: NAACL 2025 , pp. 3287–3304. Association for Com-putational Linguistics, 2025. doi: 10.18653/v1/2025.findings-naacl.181. URL https:// aclanthology.org/2025.findings-naacl.181/ .Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. LongBench: A bilingual, multitask benchmark for long context understanding. In Proceedings of the 62nd Annual Meet-ing of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 3119–3137. Association for Computational Linguistics, 2024. doi: 10.18653/v1/2024.acl-long.172. URL 
+
+https://aclanthology.org/2024.acl-long.172/ .11 Yushi Bai, Shangqing Tu, Jiajie Zhang, Hao Peng, Xiaozhi Wang, Xin Lv, Shulin Cao, Jiazheng Xu, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. LongBench v2: Towards deeper understanding and reasoning on realistic long-context multitasks. In Proceedings of the 63rd Annual Meet-ing of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 3639–3664. Association for Computational Linguistics, 2025. doi: 10.18653/v1/2025.acl-long.183. URL 
+
+https://aclanthology.org/2025.acl-long.183/ .Sakshi Choudhary, Aditya Chattopadhyay, Luca Zancato, Elvis Nunez, Matthew Trager, Wei Xia, and Stefano Soatto. Learning when to attend: Conditional memory access for long-context LLMs. 
+
+arXiv preprint arXiv:2603.17484 , 2026. URL https://arxiv.org/abs/2603.17484 .Or Dado, David Carmel, and Oren Kurland. Predicting the benefit of retrieval augmentation in open-domain question answering. In Proceedings of the 35th ACM International Conference on Information and Knowledge Management , 2026. doi: 10.1145/3799682.3840689. URL https: //arxiv.org/abs/2604.07985 .Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R´ e. FlashAttention: Fast and memory-efficient exact attention with IO-awareness. In Advances in Neural Information Processing Systems , volume 35, 2022. URL https://proceedings.neurips.cc/paper/2022/ hash/67d57c32e20fd0a7a302cb81d36e40d5-Abstract-Conference.html .Lizhe Fang, Yifei Wang, Zhaoyang Liu, Chenheng Zhang, Stefanie Jegelka, Jinyang Gao, Bolin Ding, and Yisen Wang. What is wrong with perplexity for long-context language modeling? In International Conference on Learning Representations , pp. 94541–94563, 2025. URL https://proceedings.iclr.cc/paper_files/paper/2025/hash/ ebd6641c32ed633c2a3addc689d39896-Abstract-Conference.html .Yizhao Gao, Shuming Guo, Shijie Cao, Yuqing Xia, Yu Cheng, Lei Wang, Lingxiao Ma, Yu-tao Sun, Tianzhu Ye, Li Dong, Hayden Kwok-Hay So, Yu Hua, Ting Cao, Fan Yang, and Mao Yang. SeerAttention-R: Sparse attention adaptation for long reasoning. arXiv preprint arXiv:2506.08889 , 2025. URL https://arxiv.org/abs/2506.08889 .Gemma Team. Gemma 4 technical report. arXiv preprint arXiv:2607.02770 , 2026. URL https: //arxiv.org/abs/2607.02770 .Neha Gupta, Harikrishna Narasimhan, Wittawat Jitkrittum, Ankit Singh Rawat, Aditya Kr-ishna Menon, and Sanjiv Kumar. Language model cascades: Token-level uncertainty and beyond. In International Conference on Learning Representations , pp. 4147–4180, 2024. URL https://proceedings.iclr.cc/paper_files/paper/2024/hash/ 11f5520daf9132775e8604e89f53925a-Abstract-Conference.html .Namgyu Ho, Huzama Ahmad, Woosung Koh, Se-Young Yun, Tal Schuster, and Cicero Nogueira dos Santos. Language models can control their own attention. arXiv preprint arXiv:2609.02737 ,2026. URL https://arxiv.org/abs/2609.02737 .Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. RULER: What’s the real context size of your long-context language models? In First Conference on Language Modeling , 2024. URL https://arxiv.org/ abs/2404.06654 .Peter J. Huber. Robust estimation of a location parameter. The Annals of Mathematical Statistics ,35(1):73–101, 1964. doi: 10.1214/aoms/1177703732. URL https://doi.org/10.1214/ aoms/1177703732 .Zhengbao Jiang, Frank Xu, Luyu Gao, Zhiqing Sun, Qian Liu, Jane Dwivedi-Yu, Yiming Yang, Jamie Callan, and Graham Neubig. Active retrieval augmented generation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pp. 7969–7992. Association for Computational Linguistics, 2023. doi: 10.18653/v1/2023.emnlp-main.495. URL 
+
+https://aclanthology.org/2023.emnlp-main.495/ .Tian Jin, Wanzin Yazar, Zifei Xu, Sayeh Sharify, and Xin Wang. Self-selected attention span for accelerating large language model inference. arXiv preprint arXiv:2404.09336 , 2024. URL 
+
+https://arxiv.org/abs/2404.09336 .12 Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with PagedAttention. In Proceedings of the 29th Symposium on Operating Systems Princi-ples , pp. 611–626. Association for Computing Machinery, 2023. doi: 10.1145/3600006.3613165. URL https://arxiv.org/abs/2309.06180 .Yaniv Leviathan, Matan Kalman, and Yossi Matias. Fast inference from transformers via speculative decoding. In Proceedings of the 40th International Conference on Machine Learning , volume 202 of Proceedings of Machine Learning Research , pp. 19274–19286. PMLR, 2023. URL https: //proceedings.mlr.press/v202/leviathan23a.html .Jiaqi Li, Mengmeng Wang, Zilong Zheng, and Muhan Zhang. LooGLE: Can long-context lan-guage models understand long contexts? In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 16304–16333. As-sociation for Computational Linguistics, 2024a. doi: 10.18653/v1/2024.acl-long.859. URL 
+
+https://aclanthology.org/2024.acl-long.859/ .Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. SnapKV: LLM knows what you are looking for before generation. In Advances in Neural Information Processing Systems , volume 37, pp. 22947–22970, 2024b. URL https://proceedings.neurips.cc/paper_files/paper/2024/ hash/28ab418242603e0f7323e54185d19bde-Abstract-Conference.html .Di Liu, Meng Chen, Baotong Lu, Huiqiang Jiang, Zhenhua Han, Qianxi Zhang, Qi Chen, Chengruidong Zhang, Bailu Ding, Kai Zhang, Chen Chen, Fan Yang, Yuqing Yang, and Lili Qiu. RetrievalAttention: Accelerating long-context LLM inference via vector re-trieval. In Advances in Neural Information Processing Systems , volume 38, pp. 54358–54385, 2025. URL https://proceedings.neurips.cc/paper_files/paper/2025/ hash/4e36d4049fb0fea195a8267c8dcd0824-Abstract-Conference.html .Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Confer-ence on Learning Representations , 2019. URL https://arxiv.org/abs/1711.05101 .Xuan Luo, Kailai Zhang, and Xifeng Yan. Learning when not to attend globally. arXiv preprint arXiv:2512.22562 , 2025. URL https://arxiv.org/abs/2512.22562 .Harikrishna Narasimhan, Wittawat Jitkrittum, Ankit Singh Rawat, Seungyeon Kim, Neha Gupta, Aditya Krishna Menon, and Sanjiv Kumar. Faster cascades via speculative de-coding. In International Conference on Learning Representations , pp. 44949–44987, 2025. URL https://proceedings.iclr.cc/paper_files/paper/2025/hash/ 6f43166f50f26e8d8f3edc5545b0749f-Abstract-Conference.html .Yuqi Pan, Zheng Li, Bohao Tang, Zhen Qin, and Guoqi Li. LoGo: Token-level dynamic local-global attention. arXiv preprint arXiv:2608.29539 , 2026. URL https://arxiv.org/abs/2608. 29539 .Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and Enrico Shippole. YaRN: Efficient context window extension of large language models. In International Conference on Learning Representations ,2024. URL https://arxiv.org/abs/2309.00071 .Qwen Team. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. URL https: //arxiv.org/abs/2505.09388 .Qwen Team. Qwen3.5-2B. Hugging Face model card, 2026. URL https://huggingface. co/Qwen/Qwen3.5-2B .Tal Schuster, Adam Fisch, Jai Gupta, Mostafa Dehghani, Dara Bahri, Vinh Tran, Yi Tay, and Donald Metzler. Confident adaptive language modeling. In Advances in Neu-ral Information Processing Systems , volume 35, pp. 17456–17472, 2022. URL 
+
+https://proceedings.neurips.cc/paper_files/paper/2022/file/ 6fac9e316a4ae75ea244ddcef1982c71-Paper-Conference.pdf .13 Uri Shaham, Maor Ivgi, Avia Efrat, Jonathan Berant, and Omer Levy. ZeroSCROLLS: A zero-shot benchmark for long text understanding. In Findings of the Association for Computational Linguistics: EMNLP 2023 , pp. 7977–7989. Association for Computational Linguistics, 2023. doi: 10.18653/v1/2023.findings-emnlp.536. URL https://aclanthology.org/2023. findings-emnlp.536/ .Noam Shazeer. GLU variants improve transformer. arXiv preprint arXiv:2002.05202 , 2020. URL 
+
+https://arxiv.org/abs/2002.05202 .StepFun. Step-3.5-Flash-SFT. Hugging Face dataset, 2026. URL https://huggingface. co/datasets/stepfun-ai/Step-3.5-Flash-SFT .Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. QUEST: Query-aware sparsity for efficient long-context LLM inference. In Proceedings of the 41st In-ternational Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pp. 47901–47911. PMLR, 2024. URL https://proceedings.mlr.press/ v235/tang24l.html .Qiong Tang, Xiangkun Hu, Xiangyang Liu, Yiran Chen, and Yunfan Shao. NLL-guided full-attention layer selection for training-free sliding-window adaptation. arXiv preprint arXiv:2606.27791 , 2026. URL https://arxiv.org/abs/2606.27791 .Vala Vakilian, Zimeng Wang, Ankit Singh Rawat, and Christos Thrampoulidis. Short-context dominance: How much local context natural language actually needs? arXiv preprint arXiv:2512.08082 , 2026. URL https://arxiv.org/abs/2512.08082 .Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems , volume 30, 2017. URL https://arxiv.org/abs/1706.03762 .Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin Lhoest, and Alexander Rush. Transformers: State-of-the-art natural language processing. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations , pp. 38–45. Association for Computational Lin-guistics, 2020. doi: 10.18653/v1/2020.emnlp-demos.6. URL https://aclanthology. org/2020.emnlp-demos.6/ .Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu, and Maosong Sun. InfLLM: Training-free long-context ex-trapolation for LLMs with an efficient context memory. In Advances in Neu-ral Information Processing Systems , volume 37, pp. 119638–119661, 2024a. URL 
+
+https://proceedings.neurips.cc/paper_files/paper/2024/hash/ d842425e4bf79ba039352da0f658a906-Abstract-Conference.html .Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming lan-guage models with attention sinks. In International Conference on Learning Representations , pp. 21875–21895, 2024b. URL https://proceedings.iclr.cc/paper_files/paper/ 2024/hash/5e5fd18f863cbe6d8ae392a93fd271c9-Abstract-Conference. html .Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian Guo, Shang Yang, Haotian Tang, Yao Fu, and Song Han. DuoAttention: Efficient long-context LLM inference with retrieval and stream-ing heads. In International Conference on Learning Representations , 2025. URL https: //openreview.net/pdf?id=cFu7ze7xUm .Roy Xie, Junlin Wang, Paul Rosu, Chunyuan Deng, Bolun Sun, Zihao Lin, and Bhuwan Dhingra. Knowing when to stop: Efficient context processing via latent sufficiency signals. In Advances in Neural Information Processing Systems , volume 38, pp. 41213–41240. Curran Associates, Inc., 2025. doi: 10.52202/085713-1376. URL 
+
+https://proceedings.neurips.cc/paper_files/paper/2025/hash/ 3afa7f9b7ac8da474b3d915570d58291-Abstract-Conference.html .14 Fangyuan Xu, Tanya Goyal, and Eunsol Choi. RefreshKV: Updating small KV cache during long-form generation. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 24878–24893. Association for Computational Linguis-tics, 2025. doi: 10.18653/v1/2025.acl-long.1211. URL https://aclanthology.org/ 2025.acl-long.1211/ .Penghui Yang, Cunxiao Du, Fengzhuo Zhang, Haonan Wang, Tianyu Pang, Chao Du, and Bo An. LongSpec: Long-context lossless speculative decoding with efficient drafting and verification. In Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 1826–1844. Association for Computational Linguistics, 2026. doi: 10.18653/v1/2026.acl-long.83. URL https://aclanthology.org/2026.acl-long. 83/ .Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving Mamba2 with delta rule. In International Conference on Learning Representations ,2025. URL https://proceedings.iclr.cc/paper_files/paper/2025/hash/ 4904fad153f6434a7bcf04465d4be2cc-Abstract-Conference.html .Biao Zhang and Rico Sennrich. Root mean square layer normalization. In Advances in Neural Information Processing Systems , volume 32, 2019. URL https://arxiv.org/abs/1910. 07467 .Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher R´ e, Clark Barrett, Zhangyang Wang, and Beidi Chen. H2O: Heavy-hitter oracle for efficient generative inference of large lan-guage models. In Advances in Neural Information Processing Systems , volume 36, 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/ hash/6ceefa7b15572587b78ecfcebb2827f8-Abstract-Conference.html .Yusheng Zhao, Hourun Li, Bohan Wu, Yichun Yin, Lifeng Shang, Jingyang Yuan, Meng Zhang, and Ming Zhang. Switch attention: Towards dynamic and fine-grained hybrid transformers. arXiv preprint arXiv:2603.26380 , 2026. URL https://arxiv.org/abs/2603.26380 .15 A ADDITIONAL METHOD DETAILS 
+
+A.1 ACCESS GAIN AND THE COST OF ROUTING ERRORS 
+
+At a fixed history and reference token, write ℓbt = − log pbt (xt+1 ) for b ∈ { L, F } and gt = ℓLt − ℓFt .Let at ∈ { 0, 1} indicate whether Full is selected. The excess loss relative to the better current branch is 
+
+(1 − at)ℓLt + atℓFt − min( ℓLt , ℓ Ft ) = (1 − at)[ gt]+ + at[−gt]+, (10) where [u]+ = max( u, 0) . Selecting the worse branch costs |gt|, so routing-error counts alone do not measure the resulting NLL penalty. With the Full-call penalty λ, the same identity holds for penalized losses after replacing gt by gt − λ. This is a comparison on fixed states: summing it does not give the loss of an alternative generated trajectory. Huber regression is a surrogate and does not directly minimize this excess loss. A.2 RECALL -HEAD ARCHITECTURE 
+
+For Qwen3-1.7B, each of the three 2,048-dimensional inputs passes through an independent RM-SNorm (Zhang & Sennrich, 2019), a biased 2048 → 1024 projection, and SiLU. For tower outputs 
+
+a, b, c ∈ R1024 , the interaction vector is 
+
+u = [ a; b; c; a ⊙ b; |a − b|; a ⊙ c; |a − c|; b ⊙ c; |b − c|] ∈ R9216 . (11) A biased fusion projection gives 
+
+z0 = 12
+
+a + b + c + SiLU( Wf u + bf ), (12) with Wf ∈ R1024 ×9216 . Two pre-RMSNorm residual SwiGLU blocks (Shazeer, 2020) follow, each with bias-free 1024 → 2048 gate and up projections and a 2048 → 1024 down projection. A final RMSNorm and biased scalar projection produce qt. The head has 28,325,889 parameters and uses FP32 weights and arithmetic. The backbone, embedding, and vocabulary projection remain frozen. Head training uses neither dropout nor weight decay. A.3 PAIRED SUPERVISION AND HISTORICAL INPUTS 
+
+Branch computation. The access sets are defined in Equation 3, with s = 4 and w = 2048 .They coincide through position 2,052; eligible supervision begins at position 2,053. Padding and packed-sequence boundaries prevent cross-sequence attention. For either branch, 
+
+(hbt , ∆Cbt ) = F bϕ(xt; Ct−1), b ∈ { L, F }, (13) where hbt is the final normalized hidden state. The candidate update ∆Cbt contains current-position KV at every attention layer and, for hybrid backbones, the native recurrent-state updates. Training computes a Full trunk and two current-position counterfactuals. Both counterfactuals read the trunk’s historical state, while propagating their own current-position activations through the layers. Past attention uses j < t ; each candidate’s current KV contribution is merged separately by online softmax. Neither counterfactual changes the trunk history used at later positions. The Full counterfactual and trunk are mathematically equivalent in exact arithmetic, but their different BF16 reduction paths can change small gain signs. The reported implementation therefore uses the separate Full counterfactual for the Full NLL target. The frozen vocabulary projection supplies both reference-token NLLs. Vocabulary log-sum-exp is evaluated in chunks of 16 positions to avoid storing a sequence-by-vocabulary tensor. Eligibility requires valid current and next tokens, an unmasked reference label, consecutive position IDs within the same segment, and context length greater than 2,052. Backbone features and labels are computed without gradients. 
+
+Previous hidden state during training. With eligibility indicator mt, the preceding-state input is constructed from the selected training states 
+
+htrain  
+
+> t
+
+=
+
+(
+
+hL, cf  
+
+> t
+
+, mt = 1 and gt < τ hist ,hF, trunk  
+
+> t
+
+, otherwise . (14) 16 These states are detached and shifted within each sequence, so the head at t receives htrain  
+
+> t−1
+
+, corre-sponding to H− 
+
+> t
+
+in Algorithm 1(a). The input is zero at each segment start. The Full branch of this feature uses the trunk hidden state; the Full counterfactual is used for the gain target. This selection does not alter training KV. Because gt−1 is measured on the already observed xt, it does not depend on the current reference target xt+1 . It nevertheless requires both preceding predictions, whereas deployment uses the branch actually selected by the head. Training and deployment therefore differ in both historical-state construction and preceding-state selection. 
+
+Prefill handoff. For prompt x1: m, Full prefill commits Cm, sets hm = hFm, and produces the first output xm+1 . The first routed step consumes this token with (Cm, h m) and produces xm+2 .Consequently, N generated outputs contain N − 1 routed steps. All reported routing counts exclude the output supplied directly by prefill. A.4 REGRESSION TARGET AND REDUCTION 
+
+For residual e = qt − yt, the loss is 
+
+ℓHuber ,1(e) = 
+
+ 12 e2, |e| ≤ 1,
+
+|e| − 12 , |e| > 1. (15) There is no gain-dependent weighting or auxiliary sign-classification loss. The primary Qwen3 configuration averages the distributed eligible-token means of its accumulated microbatches. The later input ablations and the primary Qwen3.5 configuration instead divide the summed losses by the total eligible-token count over the entire optimizer update. For accumulated microbatch sets Ej
+
+pooled across data-parallel workers, these reductions are, respectively, 
+
+Lmicro = 1
+
+M
+
+> M
+
+X
+
+> j=1
+
+P 
+
+> t∈E j
+
+ℓt
+
+|E j | ,
+
+Lstep =
+
+PMj=1 
+
+P 
+
+> t∈E j
+
+ℓt
+
+PMj=1 |E j | ,
+
+(16) shown for nonempty microbatches. They need not agree when eligible-token counts differ. In the step-normalized implementation, empty microbatches contribute zero and an entirely empty update is skipped. The training configurations are recorded in Appendix B.1. The primary Qwen3 head uses λ = 0 and τhist = 0 .001 ; the primary Qwen3.5 head and input ablations use λ = 0 .001 and τhist = 0 . The Full-call penalty is expressed on the NLL scale and is not a measured hardware cost. The history threshold and deployment score threshold are separate parameters. Although the signed-log transform is invertible, Huber regression on a transformed target does not make its inverse an estimate of the conditional mean raw gain. We use qt as a regression score, without interpreting it as a probability or calibrated NLL benefit. A.5 SELECTED -STATE EXECUTION 
+
+Let bt = F when qt > θ and bt = L otherwise; nonfinite scores fall back to Full. The selected branch determines all committed outputs: 
+
+ht = hbt 
+
+> t
+
+, pt = softmax( WLM ht),Ct = Ct−1 ∥ ∆Cbt 
+
+> t
+
+. (17) The operator ∥ appends the selected current KV and applies any recurrent-state updates. The same 
+
+ht becomes the preceding hidden input at the next step; it is updated after Local as well as Full selections. Candidate state remains uncommitted until the action is final. Only the selected hidden passes through the vocabulary projection at deployment. Full recall reads the history produced by ODA’s actual actions, without reconstructing an Always-Full trajectory. The optimized Qwen3 runtime maintains a paged complete KV cache and a compact Local view of the same selected history. With the window including the current token, Local holds at most 2,051 historical positions plus a current-candidate slot. Selection commits the same candidate to both 17 views. A persistent workspace and fused all-layer commitment avoid copying the complete history. Local, the FP32 head, and conditional Full execute through CUDA Graphs with the decision kept on the GPU; the common engine output path projects and samples once. When Local and Full have identical access sets, the Transformers implementation can reuse the Local result for a logical Full action. The distinct-range cost model assumes n > s + w.For Qwen3.5-2B, Local restricts only the six ordinary attention layers, at zero-based indices 3, 7, 11, 15, 19, and 23. The remaining 18 Gated DeltaNet layers retain their native computation. Before Local, the runtime saves convolution and recurrent states; before a Full retry, it restores the pre-step state. Only the selected updates are committed. Native precision uses BF16 backbone, KV, and convolution state, with FP32 recurrent state. These state transactions are necessary for recomputation from the same history; the Qwen3 timing results do not establish a speedup for this hybrid implementation. A.6 COST OF CONDITIONAL RECOMPUTATION 
+
+Let B be history-independent backbone cost, A(n) attention cost at history length n, R recall-head cost, and O the shared output cost. Let DF and DODA denote execution overheads. For a fixed Local range ℓ = s + w and recall rate ρ, an additive timing model is 
+
+TF (n) = B + A(n) + O + DF , (18) 
+
+TODA (n, ρ ) = B + A(ℓ) + R + ρ[B + A(n)] + O + DODA . (19) The Local attempt is paid at every step, including recalled steps, while the output projection is paid only once. This model assumes no reused backbone prefix and comparable branch kernels; measured branch times can replace the shared B, A approximation. Writing H = R + DODA − DF , acceleration requires 
+
+ρ < A(n) − A(ℓ) − HB + A(n) . (20) For A(n) = an , a > 0, and ρ < 1, this becomes n > [ρB + aℓ + H]/[(1 − ρ)a]. The ratio approaches 1/ρ only when global-attention cost dominates all other terms. Thus, a 12.5% recall rate does not imply an 8× finite-context speedup, and a fixed positive recall rate retains O(n) expected attention cost per decoding step. For an actual continuation, costs must be summed over its history lengths nt and recall indicators 
+
+at:
+
+TODA = X
+
+> t
+
+Bt + A(ℓt) + Rt + at(Bt + A(nt)) + Ot + DODA ,t 
+
+. (21) The timing of recall matters through the lengths nt, not only its frequency. Similarly, total attended positions count both Local reads and any additional Full reads. Neither total traffic nor throughput can be inferred from 1 − ρ alone. The FLOPs measurements in Appendix B.8 use the actual model shapes and call schedules. 
+
+# B ADDITIONAL EXPERIMENTS AND EVALUATION PROTOCOLS 
+
+B.1 TRAINING AND EVALUATION SETTINGS 
+
+Data and optimization. Qwen recall heads are trained on model-tokenized versions of a content-deduplicated long-context SFT corpus derived from Step-3.5-Flash-SFT (StepFun, 2026). The train-ing pool contains 196,608 examples with maximum length 16,384; the corresponding development and test splits each contain 8,192 examples. Pool size is not the number of distinct examples con-sumed at a particular checkpoint. The runs in Table 3 use a frozen BF16 backbone, an FP32 head, eight-way data parallelism, global batch size 64, AdamW (Loshchilov & Hutter, 2019), peak learn-ing rate 3 × 10 −4, and gradient clipping at 1.0. Head dropout and weight decay are zero. Table 3 records differences between the primary runs and the input ablation. The primary Qwen3 run uses a 6,144-update warm-up/plateau/cosine schedule and stops at update 3,072. The Qwen3.5 and input-ablation schedules warm up for 102 updates and decay to 3 × 10 −5
+
+18 Table 3: Training configurations used in the main results and input ablation. The primary Qwen3 schedule has 102 warm-up updates followed by a plateau through update 3,072; the later schedules decay immediately after warm-up. The history threshold is separate from the Full-call penalty.                             
+
+> Qwen3-1.7B main Qwen3.5-2B main Qwen3 input ablation Reported update 1,024 2,048 1,024 Microbatch / device 281Accumulation steps 418Seed 20260827 20260827 42 Full-call penalty λ00.001 0.001 History threshold τhist 0.001 00Loss reduction Microbatch mean Step-token mean Step-token mean LR schedule Warm-up / plateau Warm-up / cosine Warm-up / cosine
+
+at update 3,072. The Qwen3-8B and Gemma-4-12B-it results each use a separately trained step-1,024 head. These reported checkpoints are not claimed to have been chosen by an independent validation-based selection rule; later checkpoints are included below. 
+
+Generation protocol. RULER16K uses 13 tasks with 100 examples each. LongBench v1 denotes the 13-task, 2,550-example subset listed in Table 5. It uses the archived 40,960-token-budget pro-tocol, rather than the full LongBench task collection. Scores follow each task’s official metric and are macro-averaged within a benchmark. The primary Qwen3-1.7B and Qwen3.5-2B configurations use greedy decoding with thinking disabled, Full prefill, a 512-token output cap, and four sinks plus a 2,048-token Local window including the current position. Each policy advances its own generated continuation and selected cache. Qwen3.5 applies Local only to its six ordinary attention layers and commits the selected hybrid state. Gemma-4-12B-it uses the same 13 × 100 RULER16K population and Full prefill. Its Local restriction uses four initial positions and a 2,048-token window only in native global-attention layers; its existing local-attention layers retain their native computation. The main table uses Hugging Face Transformers (Wolf et al., 2020) quality results. Qwen3-1.7B, Qwen3.5-2B, and Gemma-4-12B-it use score threshold zero; the archived Qwen3-8B operating point uses 0.001. The Qwen3-8B HF scores are 92.59 for Full, 25.43 for Local, and 91.07 for ODA at 47.32% Full. Its separate vLLM evaluation is not used to estimate speedup. Main-table Full rates pool executed Full calls and routed steps across examples and tasks, excluding the first output produced by prefill. Reducing this frequency does not by itself establish the same percentage reduction in cumulative reads when output lengths differ. Gemma’s RULER16K scores are 96.61 for Full, 30.07 for Local, and 95.27 for ODA at 57.8% Full. Its LongBench v1 Full and Local scores are 41.88 and 35.71; the corresponding Qwen3-8B baselines are 44.70 and 29.83. LongBench ODA results for these two models and Qwen3.5-2B are not yet available. These newly supplied scores are aggregate measurements; their task-level breakdowns and Gemma’s detailed training configuration are not included in the current appendix. B.2 PER -TASK GENERATION RESULTS 
+
+The following tables retain the available task-level records for the main comparisons. Their aggre-gate scores use the archived task macros, rather than reaveraging rounded displayed values. The Qwen3-1.7B LongBench macros are 37.9385 for Full, 23.6554 for Local, and 36.8185 for ODA. The results are point estimates; sample-level confidence intervals were not supplied. B.3 RANDOM AND LEARNED GLOBAL ACCESS 
+
+Common evaluation. The original Qwen3-1.7B step-1,024 head is evaluated on NIAH Single, NIAH Multikey, variable tracking, frequent-word extraction, and QA SQuAD, with the same 100 examples per task across policies. This is a separate NPU evaluation with batch size one, a BF16 backbone, an FP32 head, greedy decoding, and thinking disabled. Full prefill, the Local range, and selected-state commitment are shared. Full and Local are reevaluated under this setup, scoring 88.626 and 27.214 on the five-task macro. 19 Table 4: Complete RULER16K task scores for the primary reported configurations. Qwen3 uses step 1,024; Qwen3.5 uses the globally normalized run’s step 2,048. All use their actual generated histories and the same 13 × 100 task population. Local denotes each model’s fixed restricted-access policy. 
+
+Qwen3-1.7B Qwen3.5-2B Task Full Local ODA Full Local ODA cwe 12.00 25.80 14.90 97.60 84.10 97.70 fwe 84.00 70.33 84.00 100.00 91.67 99.33 niah multikey 1 99.00 17.00 100.00 100.00 17.00 100.00 niah multikey 2 89.00 10.00 88.00 100.00 13.00 100.00 niah multikey 3 90.00 2.00 82.00 100.00 5.00 99.00 niah multiquery 98.25 14.75 97.25 100.00 14.50 100.00 niah multivalue 97.00 14.75 94.50 100.00 15.00 98.00 niah single 1 100.00 12.00 100.00 100.00 16.00 100.00 niah single 2 100.00 18.00 100.00 100.00 18.00 100.00 niah single 3 100.00 11.00 100.00 100.00 13.00 100.00 qa hotpotqa 37.00 18.00 34.00 51.00 24.00 51.00 qa squad 60.00 21.00 61.00 78.00 31.00 78.00 vt 99.00 15.40 99.60 100.00 24.40 100.00 
+
+Table 5: Complete Qwen3-1.7B LongBench v1 task scores under the archived 40,960-token-budget protocol. ODA is the primary step-1,024 checkpoint at threshold zero. The English passage-retrieval decrease accounts for a substantial part of the aggregate gap. 
+
+Task Full Local ODA 2wikimqa 34.59 28.96 34.24 dureader 26.27 14.27 23.87 hotpotqa 39.21 30.44 39.37 multi news 15.16 15.13 15.06 multifieldqa en 47.65 29.85 45.80 multifieldqa zh 55.40 39.42 54.96 musique 16.41 9.03 16.78 passage count 0.09 0.26 0.78 passage retrieval en 94.50 31.25 84.17 passage retrieval zh 95.50 48.00 95.50 qasper 36.34 30.37 35.68 qmsum 17.23 16.71 17.50 vcsum 14.85 13.83 14.93 
+
+Table 6: Qwen3-8B RULER16K task scores from the HF evaluations used in Table 1. ODA uses its step-1,024 head and score threshold 0.001. 
+
+Task Full Local ODA cwe 91.60 48.70 89.70 fwe 94.33 85.67 94.00 niah multikey 1 99.00 17.00 99.00 niah multikey 2 98.00 10.00 97.00 niah multikey 3 98.00 5.00 84.00 niah multiquery 100.00 14.25 99.50 niah multivalue 100.00 12.75 97.25 niah single 1 100.00 12.00 100.00 niah single 2 100.00 18.00 100.00 niah single 3 100.00 12.00 100.00 qa hotpotqa 52.00 38.00 51.00 qa squad 78.00 41.00 78.00 vt 92.80 16.20 94.40 
+
+20 Random control. ODA uses thresholds −0.01 , −0.005 , −0.001 , 0, 0.001 , 0.005 , 0.01 , 0.05 . For each threshold and task d, Random uses the unrounded observed ODA Full rate ρODA  
+
+> d
+
+as its Bernoulli probability at each routed step, with seeds 42, 43, and 44. Both policies then follow their own generated trajectories. This controls the task-specific target frequency, without guaranteeing identical realized rates. No reference answer selects Random’s individual actions. Both plotted coordinates average the five tasks equally. Each Random seed first supplies a five-task score and Full-rate macro; error bars are their sample standard deviations over the three seeds. They do not measure prompt or training-seed uncertainty. By contrast, the main table uses token-weighted Full rates. At threshold zero, token-weighted rates are 36.86% for ODA and 36.06% for Random, whereas the corresponding task-averaged coordinates are 41.33% and 40.99%. Table 7: All eight learned-versus-random access comparisons. Random entries are means ± sample standard deviations across three routing seeds. Full rates are realized, task-averaged percentages. The threshold identifies the ODA configuration; Random uses the corresponding per-task Bernoulli probability rather than thresholding a learned score.                                                                     
+
+> Threshold ODA score ODA Full (%) Random score Random Full (%) -0.01 89.05 58.29 35 .75 ±0.86 58 .03 ±0.33
+> -0.005 88.95 47.09 33 .56 ±0.65 46 .61 ±0.14
+> -0.001 89.32 42.12 32 .90 ±1.03 41 .72 ±0.21
+> 088.96 41.33 32 .79 ±0.95 40 .99 ±0.09
+> 0.001 89.09 40.57 32 .64 ±0.81 40 .28 ±0.19
+> 0.005 88.99 37.82 32 .34 ±0.29 37 .47 ±0.13
+> 0.01 88.88 36.13 32 .32 ±0.19 35 .88 ±0.17
+> 0.05 85.17 24.85 30 .25 ±0.95 24 .81 ±0.55
+
+Table 8: Per-task scores at ODA threshold zero. Parentheses report actual Full-call percentages; Random entries average its three routing seeds. Full and Local use 100% and 0% Full, respectively.                         
+
+> Task Full Local ODA (Full%) Random (Full%) NIAH Single 100.00 12.00 100.00 (31.04%) 12.00 (30.92%) NIAH Multikey 98.00 17.00 99.00 (38.26%) 17.67 (38.32%) Variable tracking 98.80 15.40 99.80 (33.62%) 16.60 (33.60%) Frequent words 84.33 70.67 83.00 (42.58%) 76.67 (42.20%) QA SQuAD 62.00 21.00 63.00 (61.15%) 41.00 (59.89%)
+
+All 170 task runs are retained: 40 ODA, 120 Random, and ten Full/Local runs, covering 17,000 generations. Eight Random task runs depart from the target rate by more than two percentage points, all on QA SQuAD; the maximum is 3.71 points. Output-cap hits are 9/4,000 for ODA, 75/12,000 for Random, 1/500 for Full, and 2/500 for Local. Thus, the observed score gap includes the effects of routing on generation length and termination. Runner elapsed times are not used as optimized-vLLM measurements. B.4 INPUT COMPOSITION AND TRAINING BEHAVIOR 
+
+Input subsets. Seven heads use subsets of the preceding selected hidden state ( H), current token embedding ( E), and current Local hidden state ( L). All start from the same seed-42 initialization and retain the same 28,325,889-parameter architecture. Missing streams are filled by the first available input in H, E, L order: H 7 → (H, H, H ), E 7 → (E, E, E ), L 7 → (L, L, L ), HE 7 → (H, E, H ),
+
+HL 7 → (H, H, L ), EL 7 → (E, E, L ), and HEL 7 → (H, E, L ). Each head is trained separately and every policy computes Local before routing. In particular, the L-only head can request Full and is distinct from the fixed Local baseline. The settings in Table 3 apply to all seven runs. Evaluation uses Transformers SDPA, batch size two, greedy decoding, Full prefill, and at most 512 outputs on the same 13 RULER16K tasks. Every checkpoint uses threshold zero. Since the resulting Full rates differ, these comparisons measure the learned policies’ natural operating points; they do not isolate an input’s contribution at equal access frequency. 21 94 97 100                
+
+> 25 30 35 40
+> Full-call rate (%)
+> 11 12 13
+> 92 96 100
+> 20 30 40 50
+> Full-call rate (%)
+> 16 18 20
+> 97 98.5 100
+> 20 30 40 50
+> Full-call rate (%)
+> 15 20 25
+> 20 40 60
+> Full-call rate (%)
+> 70 75 80 85
+> 60 62 64
+> 35 45 55 65 75
+> Full-call rate (%)
+> 20 30 40
+> 100 examples per task Eight ODA thresholds Random: 3 routing seeds Error bars: sample SD
+> ODA Random Full Local Score
+
+NIAH Single 
+
+> Score
+
+NIAH Multikey 
+
+> Score
+
+Variable tracking 
+
+> Score
+
+Frequent words 
+
+> Score
+
+QA SQuAD Figure 5: Learned and random access across individual tasks. Curves retain all eight measured operating points. Random error bars show sample standard deviations over three seeds on both axes. Full and Local scores are dashed references. Each task has its own score scale and restricted horizontal range. Broken vertical axes separate the high- and low-score ranges except for frequent words, which uses a continuous scale; each visible segment is linear. Table 9: Input ablations after 1,024 training updates. Each head is evaluated on 13 tasks with 100 examples each. These are seven training trajectories with one initialization seed, not independent training repeats. 
+
+1,024 updates Inputs Score Full (%) H 76.84 83.20 E 49.88 87.32 L 81.60 89.25 H+E 81.94 99.73 H+L 67.96 21.86 E+L 81.53 97.51 H+E+L 81.57 76.22 
+
+22 The complete H + E + L run continues with the same optimizer, schedule, random state, and data order. Its Full rate falls from 76.22% at update 1,024 to 50.11% at 2,048, then rises to 71.43% at 3,072, while its scores remain between 81.33 and 81.57. Longer training does not monotonically improve this run’s quality–access trade-off. Table 10: Training duration for the complete H + E + L head. These checkpoints are separate from the seven-way, equal-update input comparison.                 
+
+> Updates RULER16K Full (%) Full calls Routed steps 1,024 81.57 76.22 60,848 79,829 2,048 81.33 50.11 40,634 81,083 3,072 81.36 71.43 59,098 82,739
+
+Primary checkpoints and alternative supervision. The primary Qwen3 head is a different train-ing run from the input ablation. Its later checkpoints also change call frequency substantially without a consistent quality improvement (Table 11). The Qwen3.5 series varies target, normalization, mi-crobatch size, and checkpoint; Table 12 retains all reported settings, including the lower-scoring ones. The main hybrid result is the step-2,048 checkpoint of the globally normalized run. Its parameter-averaged head is a separate configuration, not a validation-selected optimum. Table 11: All evaluated checkpoints from the same Qwen3-1.7B v4 run, using selected-cache de-coding and score threshold zero. These points describe training evolution, not a threshold sweep. RULER16K LongBench v1 Step Score ↑ ρ ↓ Score ↑ ρ ↓
+
+1,024 81.17 41.6415% 36.8185 70.5621% 2,048 79.71 40.4300% 34.9885 57.0925% 3,072 80.86 91.2309% 35.3654 96.3914% The Qwen3 supervision controls in Table 13 keep the three-stream features and history-selection rule but change the training loss. Weighted BCE uses more Full calls; class balancing reduces calls and quality. Because the objectives have different score semantics, their natural thresholds do not define an equal-budget comparison. B.5 FIXED -REFERENCE QWEN 3 DIAGNOSTICS 
+
+Collection. The primary Qwen3-1.7B step-1,024 head is evaluated with CPU FP32/SDPA. Six-teen test sequences are chosen by fixed content-hash order, four in each length bucket with edges 4,096, 6,144, 8,192, 10,240, and 16,385. Each contributes one contiguous block of 128 supervised reference positions beyond the Local window. Selection does not use predictions or gains; the sup-plied content audit finds none of these sequences in train or dev. After Full prefill, reference tokens advance ODA’s selected history. Both current candidates start from the same saved state, and only the branch chosen by the head is committed. The reference token is fixed independently of that action. Observer-disabled replay matches the actions, selected top-1 tokens, and final KV digests on all 16 sequences. 
+
+Benefit ranking. Positive benefit is gt > 0. Local-correct and Local-incorrect subsets are deter-mined after evaluation from the Local top-1 prediction. They are not available to the policy. Table 14 compares the head with Local entropy. On the 675 Local-incorrect positions, the other scalar confi-dence rankings—negative maximum probability, negative probability margin, and negative top-two log-probability ratio— also have AUROCs between 0.486 and 0.491. Directions are fixed to rank lower-confidence positions first. For offline budget b, each method selects its top K = ⌊b|S|⌋ positions within population S. Net gain is |S| −1 P 
+
+> t∈A
+
+gt, including negative gains. Random’s expectation is (K/ |S| ) times the population mean gain; Oracle ranks by realized gain and uses information unavailable online. At 40% of all 23 Table 12: Qwen3.5-2B on RULER16K, using Transformers SDPA, the same 13 × 100 population, and score threshold zero. The cost-adjusted target subtracts 0.001 from the gain. The globally normalized run also changes micro-batch size. Its merge averages head parameters from steps 1,024, 2,048, and 3,072. Rows represent separately trained checkpoints, not matched-budget comparisons. 
+
+∆ is the score difference from Full. Method Score ↑ ρ ↓ ∆ vs. Full Original Full 94.35 100% 0.00 Always-Local 28.21 0% −66 .14 
+
+ODA, v4-like, step 1,024 93.41 54.6455% −0.94 
+
+Cost-adjusted, step 1,024 92.08 25.6016% −2.27 
+
+Cost-adjusted, step 2,048 90.91 19.1125% −3.44 
+
+Cost-adjusted, step 3,072 93.87 39.9988% −0.48 
+
+Global normalization, step 1,024 92.15 21.7714% −2.20 
+
+Global normalization, step 2,048 94.08 44.3265% −0.27 
+
+Global normalization, step 3,072 93.48 34.5649% −0.87 
+
+Global normalization, uniform merge 93.47 30.2275% −0.88 
+
+Table 13: Qwen3-1.7B supervision controls on RULER16K at step 1,024. The table reports each objective’s natural operating point. The operating points are not matched in access frequency. Objective Score ↑ ρ ↓
+
+Signed-log Huber 81.17 41.6415% 
+
+|g|-weighted BCE 81.44 88.6223% Class-balanced weighted BCE 74.61 45.4603% 2,048 positions, K = 819 : ODA, Random, and Oracle capture 0.149978, 0.053385, and 0.227453 nats per position. The ODA–Random interval is [0 .045747 , 0.160134] . Intervals use 2,000 paired document-bootstrap resamples with seed 20260910, repeating selection within each resample. Table 15 separates positive gains from negative costs. Across all positions, the head exceeds entropy in 40%-budget net gain, with difference interval [0 .0315 , 0.1388] , although their AUROC and AP differences remain unresolved. Within Local-incorrect positions, the AUROC difference interval is [0 .069 , 0.230] and the net-gain difference interval is [0 .1516 , 0.5010] . Within Local-correct posi-tions, both rankings have negative net gain. These are complete-head comparisons on fixed histories, rather than a confidence-controlled attribution to input L.
+
+Benefit is distinct from correctness. Of 2,048 positions, 1,342 are top-1 correct under both branches, 31 only under Local, 60 only under Full, and 615 under neither. Among the 1,342 both-correct positions, Full increases the reference probability at 718 and decreases it at 437; the remaining 187 gains are zero. Among the 675 Local-incorrect positions, 345 have positive gain but only 60 become top-1 correct under Full. Local can therefore have a better immediate prediction even though Full has lower aggregate NLL. Table 16 reports sign counts at several magnitude cutoffs. The cutoffs are descriptive, not validated numerical-noise bounds. Changing the positive label from gt > 0 to gt > 0.001 leaves the Local-incorrect AUROC and AP unchanged because that subset contains no gains in (0 , 0.001] . The CPU precision and fixed-reference protocol are separate from the GPU free-generation evaluations. B.6 INDEPENDENT -REFERENCE QWEN 3.5 PILOT 
+
+This CPU FP32 pilot uses the earlier Qwen3.5-2B micro8 step-3,072 head, which is distinct from the primary globally normalized step-2,048 head. Eight test sequences, two per length bucket, are cho-sen by a fixed content hash and contribute 64 reference positions each. The report records train/dev disjointness. Following Full prefill, the head advances the selected KV, convolution, and recurrent 24 Table 14: Primary Qwen3-1.7B router on fixed reference tokens, with positive benefit defined by 
+
+gt > 0. Intervals use 2,000 paired sequence-bootstrap replicates. Entropy ranks higher-uncertainty positions first. These diagnostics evaluate the complete existing router, not the incremental contri-bution of its Local hidden input.                   
+
+> Subset Positions gt>0Router AUROC [95% CI] Entropy AUROC [95% CI] All 2,048 52.0% 0.556 [0.502, 0.610] 0.534 [0.455, 0.618] Local correct 1,373 52.4% 0.503 [0.445, 0.564] 0.593 [0.483, 0.689] Local incorrect 675 51.1% 0.643 [0.577, 0.707] 0.486 [0.442, 0.526]
+
+Table 15: Primary Qwen3 checkpoint at a 40% offline access budget. Positive gain and negative cost are sums in nats; net gain is per eligible reference position. Each subset is ranked independently, so its selected positions are not obtained by partitioning the all-position selection.                                        
+
+> Subset Ranking Calls Positive gain Negative cost Mean net gain [95% CI] All Router 819 378.486 71.331 0.1500 [0.0679, 0.2497] All Entropy 819 283.170 149.730 0.0652 [0.0114, 0.1265] Local correct Router 549 10.253 23.822 −0.0099 [−0.0186 ,−0.0026 ]Local correct Entropy 549 19.336 40.529 −0.0154 [−0.0284 ,−0.0046 ]Local incorrect Router 270 378.419 50.544 0.4857 [0.2503, 0.7118] Local incorrect Entropy 270 163.380 52.520 0.1642 [0.0663, 0.2647]
+
+states under the reference tokens. Both candidates start from the same pre-step state. Observer-disabled replay matches actions, selected top-1 tokens, and final state digests. The available archive contains aggregate statistics; the original per-position tensors are not included. Positive labels, confidence directions, budget selection, and normalization follow the Qwen3 defini-tions above. Intervals use 2,000 paired sequence resamples, with only eight independent sequence clusters. Table 17 reports the independent test, rather than the older development panel collected under Full-trunk history. On Local-incorrect positions, the head–entropy AUROC difference interval is [−0.0597 , 0.2662] :the pilot does not establish a discrimination advantage. At the prespecified 40% budget (49 of 123 positions), head and entropy net gains are 0.2788 and 0.0730 nats per position, with difference interval [0 .0156 , 0.4392] . Across all 512 positions, the corresponding gains are 0.0596 and 0.0584, with a difference interval spanning zero. Within Local-correct positions, both are negative ( −0.0148 
+
+and −0.0154 ). Thus, the favorable budgeted result on Local failures does not imply an overall or cross-model discrimination advantage. B.7 ACCESS BENEFIT AND DISTRIBUTION DISAGREEMENT 
+
+A separate teacher-forced analysis compares Full and Local on Full-trunk histories over 2,048 Qwen3-1.7B sequences and 9,246,287 eligible assistant tokens. Targets are reference next to-kens, independent of either branch’s prediction. Using natural logarithms over the full vocabulary, 
+
+DKL (pFt ∥pLt ) has pooled token-level Spearman correlations 0.937029 with |gt| and 0.137651 with Table 16: Signed-gain sensitivity on the same 2,048 Qwen3 reference positions. Each row partitions the entire sample at the stated cutoff in nats. These counts describe magnitude and sign; they are not top-1 corrections or a rerun under another precision. 
+
+ϵ gt < −ϵ |gt| ≤ ϵ gt > ϵ 
+
+0 797 187 1,064 0.0001 649 632 767 0.001 594 788 666 0.01 503 1,012 533 0.1 313 1,419 316 25 Table 17: Independent-reference Qwen3.5 pilot. Positive benefit is gt > 0. Intervals are 95% paired sequence-bootstrap intervals.               
+
+> Subset Positions gt>0Head AUROC [95% CI] Entropy AUROC [95% CI] All 512 48.2% 0.612 [0.560, 0.652] 0.548 [0.479, 0.610] Local incorrect 123 58.5% 0.503 [0.380, 0.632] 0.411 [0.318, 0.503]
+
+gt. This population is distinct from the 2,048-position head diagnostic. The observation concerns prediction-change magnitude versus signed reference benefit; weak signed rank correlation neither excludes nonlinear dependence nor measures gain-sign classification accuracy. For a fixed position, write gt(y) = log pFt (y) − log pLt (y). Then 
+
+EY ∼pFt [gt(Y )] = DKL (pFt ∥pLt ), (22) 
+
+EY ∼pLt [gt(Y )] = −DKL (pLt ∥pFt ). (23) The target distribution therefore matters: KL can equal expected benefit under model-generated targets even when its relationship to reference-token gain differs. Exact current-step KL also requires executing Full, so it is an offline statistic, rather than a free online input when measuring avoided Full calls. B.8 RUNTIME PROTOCOL AND COMPLETE RESULTS 
+
+Environment and workload. The principal matrix uses vLLM 0.18, one A100-SXM4-80GB, CPU affinity 8–11, batch size one, and tensor/pipeline parallelism one. Backbone and KV are BF16; the recall head is FP32. All policies run on the same physical GPU. YaRN (Peng et al., 2024) with factor five extends the capacity to 139,264 tokens for timing; these measurements do not establish model quality at those lengths. Each length uses one complete benchmark prompt, without repetition or concatenation: 4,139 tokens from ZeroSCROLLS Qasper (Shaham et al., 2023), 15,918 from LongBench v2 (Bai et al., 2025), 31,400 from LongBench v1 NarrativeQA (Bai et al., 2024), 63,852 from ZeroSCROLLS Narra-tiveQA, and 128,852 from LooGLE long-dependency summarization (Li et al., 2024a). Within each bucket, all policies share the prompt and fixed 1,024-token continuation. The real head runs after every Local attempt, but a prescribed schedule controls 0, 64, 128, 256, 512, or 1,023 Full calls over 1,023 routed steps. ODA at 100% still pays for Local and the head; native Full performs neither and retains its own compilation and CUDA Graphs. 
+
+Timing. Throughput is 1, 023 /(t1024 − t1), with device synchronization at the first and last output boundaries. It includes all layers, the head, conditional Full, state commitment, output projection, sampling, and the engine loop. It excludes loading, tokenization, prefill and its first output, deto-kenization, and HTTP transport. Numerical observers are off. Warm values are medians of three requests after warm-up and graph capture. First-request values use one request per arm in a fresh process and include graph captures encountered during decoding. The reported comparison uses the optimized device-execution arm; earlier implementation arms are retained in the source archive but not mixed into these results. 
+
+Major-operation FLOPs. Using the notation of Appendix A.6, with costs now counted in FLOPs, the ledger is 
+
+FFull = X
+
+> t
+
+[B + A(nt) + O], (24) 
+
+FODA = X
+
+> t
+
+[(1 + at)B + A(ℓt) + atA(nt) + R + O]. (25) The count includes MLP and QKV/output projections, both attention branches, the recall head, and one vocabulary projection. It uses actual model shapes, history lengths, and schedules. Attention FLOPs scale with query heads; KV bytes scale with KV heads. This is an analytical count of major 26 Table 18: Warm and first-request decoding at 128/1,023 Full calls. TPS denotes tokens/s. Warm values are three-round medians; first-request values are single measurements including decode graph capture. Prefill is excluded in both cases.                                      
+
+> Warm decode First-request decode Input tokens Full TPS ODA TPS Speedup Full TPS ODA TPS Speedup 4,139 211.50 178.13 0.842 ×210.68 130.26 0.618 ×
+> 15,918 181.87 176.07 0.968 ×180.66 129.18 0.715 ×
+> 31,400 152.21 172.84 1.136 ×152.16 127.98 0.841 ×
+> 63,852 113.47 165.32 1.457 ×113.47 121.80 1.073 ×
+> 128,852 75.54 149.52 1.979 ×75.57 108.58 1.437 ×
+
+operations, not measured hardware FLOPs or a latency prediction. At 128,852 input tokens and 128 Full calls, the computation ratio is 4.122 and the measured warm throughput ratio is 1.979. The full matrix retains slowdowns at short contexts and large recall budgets. 
+
+Numerical checks and scope. Implementation checks compare the optimized path against a ref-erence executing the same routing policy, including selected logits, actions, and state commitment. They do not test equivalence to the Always-Full output distribution. The measurements here isolate execution cost at controlled call schedules. Joint task quality and speed for the same learned policy, prefill-inclusive latency, peak memory, and multi-request batch scaling have not been measured. B.9 TRAINING RESOURCES 
+
+The Qwen3-1.7B recall head has 28,325,889 parameters, approximately 1.7% of the backbone’s nominal parameter count. This measures trainable capacity, not total training cost: the frozen Full trunk and both counterfactuals must still compute features and labels. Their online computation belongs in the checkpoint’s total training time and must not be counted again as a separate offline cost. Complete GPU-hours, peak memory, and the exact number of unique consumed examples and eligible targets are not yet available. We therefore do not claim a measured total-training-cost advantage over other methods. 
+
+# C DISCUSSION AND LIMITATIONS 
+
+ODA predicts an immediate reference-token benefit, whereas each selected state also affects future predictions. Its training histories come from a Full trunk, while deployment follows the policy’s own choices. Evaluation under actual cache evolution is therefore essential to assessing this supervision. Complete KV retention preserves access to those states, but requires linear storage and does not reconstruct an Always-Full trajectory. Moreover, fewer global calls improve latency only when avoided computation offsets local computation, repeated backbone work, and control overhead. A broader direction is to learn a compact working set containing useful recent and distant informa-tion, and request additional history when its expected benefit justifies the cost. Stronger working sets could reduce recall frequency; lower-precision attention and tiered KV storage could reduce the cost of recall. Their value depends on selection, maintenance, transfer, and dequantization overheads as well as prediction quality. Joint training of representations and access policies may further improve these decisions. These extensions would move from deciding when to recall toward learning which information to keep readily accessible. 27 Table 19: Complete 30-cell vLLM runtime and major-FLOPs matrix. Native Full is shared across the six schedules for each prompt. Warm TPS values are three-round medians; displayed Full rates are realized percentages. The 0% and 100% ODA schedules still execute Local and the recall head. 
+
+Input tokens Full (%) Full TPS ODA TPS Speedup FLOPs saved (%) 4,139 0.00 211.50 194.43 0.919 × 11.97 4,139 6.26 211.50 185.75 0.878 × 6.58 4,139 12.51 211.50 178.13 0.842 × 1.19 4,139 25.02 211.50 164.28 0.777 × -9.59 4,139 50.05 211.50 142.05 0.672 × -31.16 4,139 100.00 211.50 111.90 0.529 × -74.23 15,918 0.00 181.87 196.01 1.078 × 44.96 15,918 6.26 181.87 185.32 1.019 × 39.24 15,918 12.51 181.87 176.07 0.968 × 33.53 15,918 25.02 181.87 159.71 0.878 × 22.10 15,918 50.05 181.87 135.17 0.743 × -0.76 15,918 100.00 181.87 102.70 0.565 × -46.41 31,400 0.00 152.21 197.18 1.295 × 63.12 31,400 6.26 152.21 184.49 1.212 × 57.23 31,400 12.51 152.21 172.84 1.136 × 51.34 31,400 25.02 152.21 153.93 1.011 × 39.55 31,400 50.05 152.21 126.62 0.832 × 15.97 31,400 100.00 152.21 93.11 0.612 × -31.09 63,852 0.00 113.47 196.86 1.735 × 78.20 63,852 6.26 113.47 180.25 1.589 × 72.16 63,852 12.51 113.47 165.32 1.457 × 66.12 63,852 25.02 113.47 141.78 1.249 × 54.03 63,852 50.05 113.47 110.64 0.975 × 29.87 63,852 100.00 113.47 77.06 0.679 × -18.38 128,852 0.00 75.54 193.85 2.566 × 88.02 128,852 6.26 75.54 168.59 2.232 × 81.88 128,852 12.51 75.54 149.52 1.979 × 75.74 128,852 25.02 75.54 121.61 1.610 × 63.46 128,852 50.05 75.54 88.38 1.170 × 38.91 128,852 100.00 75.54 57.29 0.758 × -10.10 
+
+28

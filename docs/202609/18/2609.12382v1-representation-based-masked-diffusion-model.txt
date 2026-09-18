@@ -1,0 +1,1068 @@
+Title: Representation-based Masked Diffusion Model
+
+URL Source: https://arxiv.org/pdf/2609.12382v1
+
+Published Time: Mon, 14 Sep 2026 00:27:59 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# Representation-based Masked Diffusion Model 
+
+Yangrong Hu 1, Ding Huang 2,‡ , Xueyu Zhou 1, and Jian Huang 1,2,† 
+
+> 1
+
+Department of Data Science and Artificial Intelligence 
+
+> 2
+
+Department of Applied Mathematics The Hong Kong Polytechnic University, Hong Kong SAR, China 
+
+> {yangrong.hu,ding.huang,xueyu.zhou}@connect.polyu.hk j.huang@polyu.edu.hk
+
+Abstract 
+
+Masked Diffusion Models (MDMs) have emerged as a compelling paradigm for lan-guage modeling, offering the capability for ef-ficient parallel text generation. However, exist-ing parallel sampling methods typically update multiple masked tokens independently and ig-nore the complex mutual dependencies among the masked tokens. This independent updat-ing mechanism lacks global coordination and might lead to incoherent outputs. To address this limitation, we propose Representation-based Masked Diffusion Model (RMDM), a framework that leverages the text representa-tion to explicitly encode global semantics and help to parallel update tokens more precisely. Specifically, we first encode text into a con-tinuous semantic space using a pretrained en-coder and learn an invertible transformation that normalizes the representation distribution to a Gaussian prior, facilitating efficient sam-pling during generation. Conditioned on this la-tent semantic representation, we train a masked diffusion model to learn the conditional text distribution, where the representation serves as global semantic guidance to coordinate parallel token updates and faithfully approximate the target distribution. Empirical results demon-strate that RMDM significantly improves gen-eration quality, particularly in aggressive few-step sampling regimes. 
+
+1 Introduction 
+
+Large Language Models (LLMs) have achieved huge success for modeling text data (Brown et al., 2020; Radford et al., 2019; Achiam et al., 2023; Liu et al., 2024), primarily through the autore-gressive (AR) paradigm. While AR models excel at capturing complex dependencies by generating 
+
+> †Corresponding author: Jian Huang.
+> ‡Present address: ByteDance Seed, Beijing, China. Email:
+> huanhgding@bytedance.com .
+
+tokens sequentially, their inference speed is fun-damentally constrained by their O(L) sequential complexity for a sequence of length L. This la-tency bottleneck has spurred significant interest in non-autoregressive or parallel generation frame-works (Gu et al., 2018). Masked Diffusion Models (MDMs) (Austin et al., 2021; Sahoo et al., 2024; Lou et al., 2024; Ou et al., 2025) have recently emerged as a compelling alternative that enables parallel token generation via iterative denoising. Compared to continuous diffusion models, MDMs utilize a discrete diffusion process, where the for-ward process progressively adds noise to a clean se-quence by replacing its subset with special [MASK] 
+
+tokens instead of gaussian noise and yields a par-tially observed context. A denoiser is then trained to invert this corruption by predicting the original tokens from the context. In the backward process, MDMs utilize the denoiser to generate the whole sequence by repeatedly refining a sentence that consists entirely of masked tokens. In practical deployment, MDMs are required to efficiently update multiple masked tokens in a sin-gle iteration. Most parallel methods (Nie et al., 2025; Zhu et al., 2025; Ye et al., 2025; Chang et al., 2022; Wu et al., 2025) sample each masked po-sition independently conditioned on the currently observed context, while ignoring the dependency between masked tokens. Such independent sam-pling approximates the joint distribution over the masked positions with a product of token-wise marginal distributions. However, the factorized approximation is generally misaligned with natu-ral language, where masked tokens often exhibit strong residual dependencies induced by syntac-tic agreement, long-range constraints, multi-word expressions, and entity consistency. As a result, ag-gressive parallelization can produce sequences that are locally plausible at each position yet globally inconsistent under the true joint distribution. We formalize and quantify this Conditional Depen-arXiv:2609.12382v1 [cs.CL] 11 Sep 2026 Stage I: Representation Mapping Stage II: Generative Modeling                      
+
+> Encoder
+> gψ
+> z1MeanFlow
+> uϕ
+> z0∼ N (0,I)
+> x0Mask xtRMDM
+> pθ(x0|xt,z0)ˆx0
+> Figure 1: Stage I aligns the latent space z0, derived from a pretrained encoder gψ(x0), with a Gaussian prior via MeanFlow uϕ. Stage II trains the RMDM pθto reconstruct original data x0from corrupted data xtguided by the latent representation z0.
+
+dency Gap in Section 3.1, and build our method around mitigating it without sacrificing parallelism and efficiency. 
+
+Our approach. To mitigate this inconsistency, we introduce a global latent representation z that encodes the semantic information of the whole se-quence. This representation captures shared global factors, such as topic and intent, which largely ex-plain the remaining dependence among masked tokens. Therefore, conditioning on z reduces resid-ual cross-token dependence and makes parallel pre-diction closer to the true joint conditional distribu-tion. We formalize this intuition as a reduction of the Conditional Dependency Gap in Section 3.1. To make the latent variable z operational, we use pretrained encoders, such as BERT models (De-vlin et al., 2019; Warner et al., 2024) and modern large-scale embedding models (Zhang et al., 2025), to extract contextual representations of the input text. The representation encodes global attributes of the underlying sequence and captures high-level semantic factors that are difficult to infer from a partially revealed context. By providing this miss-ing global information, the representation serves as a natural candidate for z and helps reduce the Conditional Dependency Gap during parallel up-dates. A key complication is that these represen-tations are readily available from the ground-truth text during training but are unobserved at infer-ence time. Directly conditioning on such embed-dings would therefore introduce a train–test mis-match unless z can be sampled from a well-defined prior during generation. To resolve the training– inference mismatch, we employ MeanFlow (Geng et al., 2025) to map the empirical distribution of pretrained sequence representations to a Gaussian prior. This transport allows us to directly sample a global latent z ∼ N (0 , I ) at generation time, which serves as a global condition for the RMDM to ensure coherent parallel updates. Although vari-ational inference (Kingma and Welling, 2014; Xie et al., 2025) is a classical approach to Gaussian latents, its reconstruction and KL objectives often conflict in high-capacity language models, lead-ing to unstable optimization or posterior collapse. Approaches such as CCDD (Zhou et al., 2025) co-evolve continuous and discrete diffusions, whereas RMDM samples a fixed latent once and reuses it throughout discrete denoising. The pretrained encoder and MeanFlow network are used to con-struct training latents but are not invoked during generation. Experimental results demonstrate that RMDM consistently outperforms standard MDMs in sample quality for a fixed number of sampling steps and achieves approximately 3.6× higher mea-sured throughput at matched generation quality in our A800 evaluation. We provide a more detailed discussion of related discrete diffusion language models, continuous diffusion language models, and latent-augmented masked diffusion methods in Ap-pendix A. 
+
+2 Preliminaries 
+
+2.1 Continuous Diffusion and MeanFlow 
+
+Continuous diffusion models (Ho et al., 2020; Song et al., 2021) are built on the principle of a for-ward process that gradually corrupts data z0 ∈ Rd
+
+into Gaussian noise z1 ∼ N (0, I) over a contin-uous time t ∈ [0 , 1] . The generative process is then defined by learning to reverse this corrup-tion—essentially "denoising" the latent—by fol-lowing a velocity field that guides the noise back to the data manifold. Flow matching (Lipman et al., 2023) simplifies this by training a model vθto match the conditional velocity field: 
+
+LCFM (θ) = Et, z0,z1
+
+∥vθ(zt, t ) − (z1 − z0)∥2 ,
+
+where zt = (1 − t)z0 + tz1 represents the lin-ear interpolation between data and noise. While standard flow matching requires numerical ODE integration over multiple steps, MeanFlow (Geng et al., 2025) enables efficient one-step generation by modeling the average velocity u(zt, r, t ) ≜
+
+> 1
+> t−r
+
+R tr v(zτ , τ )dτ . The model uθ is trained via the MeanFlow identity:             
+
+> LMF (θ) = Euθ(zt, r, t )−sg vt−(t−r)ddt uθ(zt, r, t )2
+
+Where sg is the stop gradient operator. Once op-timized, z0 can be recovered from noise z1 in a single step as z0 = z1 − uθ(z1, 0, 1) .
+
+2.2 Masked Diffusion Models 
+
+While continuous diffusion is well-suited for con-tinuous distributions, language modeling requires a principled approach to handle discrete categori-cal variables. Masked diffusion models (MDMs) (Austin et al., 2021; Lou et al., 2024) extend the dif-fusion framework to discrete state spaces by defin-ing a corruption process that gradually replaces tokens x0 with an absorbing [MASK] while a se-quence with full [MASK] is denoted as state m.Similar to the continuous case, the forward pro-cess q(xt|x0) = Cat (xt; αtx0 + (1 − αt)m) inter-polates between clean data and the masked prior, where αt ∈ [0 , 1] is a decreasing noise schedule. The generative model pθ(xs|xt) learns to invert this masking process by approximating the closed-form posterior:              
+
+> q(xs|xt,x0) =
+> (δxtif xt̸=m,
+> Cat
+> 
+> xs;αs−αt
+> 1−αtx0+1−αs
+> 1−αtm
+> 
+> if xt=m
+
+By training a denoising model pθ(x0|xt), MDMs can be optimized via an objective derived from the data log-likelihood log pθ(x0):
+
+L(θ) = 
+
+Z 10
+
+1
+
+t Eq(xt|x0)
+
+"X
+
+> i∈I t
+
+− log pθ(xi
+
+> 0
+
+|xt)
+
+#
+
+dt 
+
+(1) where It = {i : xit = [MASK] }. This loss allows the model to predict the categorical distribution of original tokens at each masked position, providing a discrete analogue to the continuous denoising flow described above. 
+
+Figure 2: Causal graph. The global latent z acts as a common cause for masked tokens. Conditioning on 
+
+z explains away the correlation between x1 
+
+> M
+
+and 
+
+x2 
+
+> M
+
+.
+
+zxUx1 
+
+> M
+
+x2
+
+> M
+
+3 Methodology 
+
+3.1 The Conditional Dependency Gap 
+
+In this section, we denote xM as the masked data, and xU as the unmasked data in time t of the diffu-sion process. A fundamental challenge in Masked Diffusion Models (MDMs) arises from the discrep-ancy between their training objective and the paral-lel sampling strategy required for efficiency. While the standard objective Equation 1 optimizes the reconstruction of individual tokens pθ(xi | xU ) in-dependently, fast generation typically necessitates sampling all masked tokens xM simultaneously. Existing parallel samplers implicitly approximate the joint posterior via factorization: 
+
+pθ(xM | xU ) ≜ Y
+
+> i∈M
+
+pθ(xi | xU )
+
+≈ Y
+
+> i∈M
+
+pdata (xi | xU )̸ = pdata (xM | xU ),
+
+where M and U denote the sets of masked and unmasked indices, respectively. This factorization assumes that masked tokens are conditionally in-dependent given the context xU . However, for structured data, this assumption is often violated, leading to a Conditional Dependency Gap . We quantify this gap using the conditional total corre-lation               
+
+> T(xM|xU)≜DKL
+>  pdata (xM|xU)Q
+> i∈Mpdata (xi|xU)
+
+which measures the intrinsic dependence among masked tokens that is not explained by the observed context. To bridge this gap, we introduce a latent variable 
+
+z that encodes global information about x, thereby capturing shared factors that induce dependencies among the masked tokens.                 
+
+> T(xM|xU,z) = DKL
+>  pdata (xM|xU,z)Q
+> i∈Mpdata (xi|xU,z)
+
+Conditioning on z is able to reduce the indepen-dence gap, as formalized below. Contextualized embeddings z1 Gaussian representations z0
+
+Figure 3: MeanFlow-based Representation Align-ment. We visualize the 3D UMAP projections of the contextualized embeddings e from the pretrained en-coder, which exhibit complex structured manifolds, and the aligned representations z0 obtained via MeanFlow, which follow a standard Gaussian distribution while pre-serving semantic relations. 
+
+Proposition 3.1 (Relation between Conditional Independence and Conditional Dependency Gap) .
+
+The residual dependency gap T (xM | xU , z) van-ishes if and only if the masked tokens xM are con-ditionally independent given the context xU and the latent variable z:
+
+T (xM | xU , z) = 0 
+
+⇐⇒ xm1 ⊥⊥ xm2 ⊥⊥ · · · ⊥ ⊥ xm|M | | (xU , z)
+
+Furthermore, the introduction of z changes the dependency gap by: 
+
+∆T ≜ T (xM | xU ) − T (xM | xU , z)= X
+
+> i∈M
+
+I(xi; z | xU ) − I(xM ; z | xU )
+
+We refer T (xM | xU , z) as the residual gap. When T (xM | xU , z) = 0 , the conditional joint distribution factorizes, so sampling each xi ∼
+
+p(xi | xU , z) independently is equivalent to sam-pling the entire block xM ∼ p(xM | xU , z), en-abling exact parallel sampling. The proof is pro-vided in Appendix B.1. Figure 2 shows an example of the casual graph for xM , xU and z. More de-tailed numerical calculation examples are shown in Appendix G.1. 
+
+3.2 Representation-based Masked Diffusion Model 
+
+In this subsection, we introduce the Representation-based Masked Diffusion Model (RMDM). The training process includes two stages. First, we obtain the representation z
+
+from data x through a pretrained encoder and transform its distribution to a standard Gaussian 
+
+Algorithm 1 Two-stage training of RMDM 
+
+Require: Dataset D, pretrained encoder gψ,RMDM pθ, MeanFlow network uϕ 
+
+> 1:
+
+Stage I: Train MeanFlow in representation space.  
+
+> 2:
+
+for each minibatch x0 ∼ D do  
+
+> 3:
+
+z1 ← gψ(x0) {contextualized embeddings as target}  
+
+> 4:
+
+Sample z0 ∼ N (0, I) and (r, t ) {noise as prior}  
+
+> 5:
+
+zt ← (1 − t)z0 + tz1, vt ← z1 − z0 
+
+> 6:
+
+Compute (uϕ(zt, r, t ), ddt uϕ(zt, r, t )) via JVP  
+
+> 7:
+
+Update ϕ by minimizing L(ϕ) in Equation 2  
+
+> 8:
+
+end for  
+
+> 9:
+
+Freeze ϕ (and freeze g).  
+
+> 10:
+
+Stage II: Train RMDM conditioned on rep-resentations.  
+
+> 11:
+
+for each minibatch x0 ∼ D do  
+
+> 12:
+
+e ← gψ(x0) 
+
+> 13:
+
+z0 ← e − uϕ(e, 0, 1) {map embedding to noise space}  
+
+> 14:
+
+Sample t and construct a masked input xt
+
+by the MDM corruption process  
+
+> 15:
+
+Update θ by minimizing L(θ) in Equation 3  
+
+> 16:
+
+end for 
+
+distribution by training a MeanFlow model. Then, we use this representation z as a condition to train the MDM. To operationalize the latent variable 
+
+z and bridge the conditional dependency gap discussed in Section 3.1, we leverage the rich semantic representations provided by pretrained encoder models. Encoder-only architectures, ranging from the seminal BERT (Devlin et al., 2019) to modern large-scale embedding models such as Qwen3 (Zhang et al., 2025), map a discrete sequence x to a contextualized continuous embedding z1 = gψ(x) ∈ RL×Dz , where gψ is the encoder model. These contextualized embeddings capture high-level semantic structures and provide a smoother, more informative representation, making them ideal candidates for the global latent. However, a direct utilization of this embedding introduces a fundamental discrepancy between training and inference: while z1 is readily com-putable from the ground-truth sequence x during training, it remains unobserved during inference. To resolve this, in stage I, we push the embed-ding distribution to a prior distribution which is easier to sample from while keeping the seman-tic structure of the embedding. In particular, we adopt the MeanFlow framework (Geng et al., 2025) to learn a mapping between the data embedding 
+
+z1 and a standard Gaussian prior z0 ∼ N (0, I).MeanFlow builds on the linear interpolation path 
+
+zt = (1 − t)z0 + tz1 like flow matching (Lipman et al., 2023), but replaces the instantaneous veloc-ity field with an average velocity field u(zt, r, t )
+
+defined over an interval [r, t ]:
+
+u(zt, r, t ) ≜ 1
+
+t − r
+
+Z tr
+
+v(zτ , τ )d τ. 
+
+We parameterize uϕ(zt, r, t ) with a neural network and train it using the MeanFlow identity, which relates average velocity and instantaneous velocity. Concretely, letting vt ≜ z1 − z0 denote the condi-tional velocity associated with the linear path, the MeanFlow objective regresses uϕ to the effective target induced by the identity:             
+
+> L(ϕ)≜E
+> h
+> uϕ(zt, r, t )−sg  vt−(t−r)ddtuϕ(zt, r, t )2i
+
+(2) where sg denotes the stop-gradient operator and the total derivative ddt is computed efficiently via Jacobian-vector products (as summarized in Sec-tion 2.1). Once trained, MeanFlow enables efficient one-step transport: given a data embedding z1, we re-cover its corresponding representation z0 in the Gaussian space by inverting the flow over the full interval [0 , 1] :
+
+z0 = z1 − uϕ(z1, 0, 1) .
+
+Figure 3 shows the UMAP (McInnes et al., 2018) visualization of embeddings z1 ≜ e and z0 ob-tained via MeanFlow, where e has its complex intrinsic geometric structure while the distribu-tion of z0 is stable and easy to sample from. We then use this Gaussian representation to condition the masked diffusion language model. Specifi-cally, during Stage II training we compute the data-dependent latent z0 = gψ(x0) − uϕ(gψ(x0), 0, 1) 
+
+using the frozen pretrained encoder gψ and the trained MeanFlow network uϕ. We then train the RMDM pθ(xi 
+
+> 0
+
+| xt, z0) to reconstruct masked to-kens. Using the standard MDM training objective in Equation 1, we optimize:          
+
+> L(θ)≜Et, x0,xt,z0
+> "
+> 1
+> t
+> X
+> i∈I t
+> −log pθ(xi
+> 0|xt,z0)
+> #
+> .(3)
+
+where It = {i : xit = [MASK] }. At inference time, since we have aligned the representation space with 
+
+Algorithm 2 Sampling with RMDM 
+
+Require: RMDM pθ, number of denoising steps 
+
+K 
+
+> 1:
+
+Sample z ∼ N (0, I) 
+
+> 2:
+
+Initialize x(0) as all [MASK]  
+
+> 3:
+
+for k = 0 , 1, . . . , K − 1 do  
+
+> 4:
+
+Select a subset of masked positions to up-date (parallel schedule)  
+
+> 5:
+
+Sample tokens in parallel: x(k+1) ∼ pθ(· | 
+
+x(k), z) on selected positions  
+
+> 6:
+
+end for  
+
+> 7:
+
+return x(K)
+
+a Gaussian prior, we simply sample z directly from the prior N (0, I), which yields a global represen-tation used to guide parallel token generation. In addition, during the training in stage two and infer-ence, the integration of z0 will not lead to additional huge computation costs. 
+
+3.3 Theoretical Analysis: Decomposing the Generation Gap 
+
+In this section, we provide a rigorous decomposi-tion of the error associated with parallel decoding in RMDM. 
+
+Proposition 3.2 (Tri-part Decomposition of the Joint KL) . Let pϕ(z) be the distribution of latents derived from the MeanFlow transport (approximat-ing the posterior), and define the induced joint               
+
+> pdata (xM,xU,z)≜pϕ(z)pdata (xU|z)pdata (xM|xU,z),
+
+RMDM generative samples factorized as                
+
+> pθ(xM,xU,z) = p(z)Q
+> i∈Upθ(xi|z)Q
+> i∈Mpθ(xi|xU,z).
+
+where p(z) is the prior distribution. Then the joint divergence between the data distribution and the model admits the following tri-part decompo-sition. Throughout the statement, a conditional KL such as DKL (p(y | x)∥q(y | x)) denotes the averaged quantity Ep(x)DKL (p(y | x)∥q(y | x)) ;total-correlation terms are averaged over their con-ditioning variables in the same way: 
+
+DKL (pdata (xM , xU , z) ∥ pθ(xM , xU , z)) = DKL (pϕ(z) ∥ p(z)) +T (xU | z) + T (xM | xU , z)+ X
+
+> i∈U
+
+DKL (pdata (xi | z) ∥ pθ(xi | z)) + X
+
+> i∈M
+
+DKL (pdata (xi | xU , z) ∥ pθ(xi | xU , z)) .
+
+(4) The four lines after the equality correspond to (I) MeanFlow–prior mismatch, (II) remaining depen-dency, and the two parts of (III) RMDM prediction error. 
+
+The proof is provided in Appendix B.2. 
+
+Derivation and Analysis. We analyze each term in the decomposition to demonstrate how our framework systematically addresses the challenges of parallel generation in masked diffusion models. 
+
+(I) MeanFlow–Prior Mismatch. The first term 
+
+DKL (pϕ(z)∥p(z)) quantifies the discrepancy be-tween the aggregated posterior pϕ(z) (induced by MeanFlow transport from encoder embeddings) and the prior p(z) = N (0, I) used during genera-tion. This mismatch is critical because the decom-position in Proposition 3.2 assumes that the ground truth statistical modeling is based on the posterior 
+
+pϕ(z), while inference samples from pθ(z). Mean-Flow implicitly minimizes this term by learning a transport map that aligns the encoder-derived latent distribution with the Gaussian prior at the population level. Unlike standard variational au-toencoders that enforce per-sample posterior con-straints, MeanFlow’s population-level alignment ensures that latents sampled from the prior during inference closely match the distribution of latents seen during training, thereby preserving the validity of the decomposition. 
+
+(II) Remaining Dependency. The second term 
+
+T (xU | z) + T (xM | xU , z) captures the con-ditional dependencies among tokens that remain after conditioning on the latent z. These terms mea-sure the irreducible error of the factorization model: even with perfect token-wise modeling, dependen-cies not explained by z will cause the factorized ap-proximation to deviate from the true joint distribu-tion. By leveraging a powerful pretrained encoder like Qwen3 (Zhang et al., 2025) to extract rich global semantics z, we minimize these dependency terms (Proposition 3.1), making the factorized as-sumption p(xM | xU , z) = Q 
+
+> i∈M
+
+p(xi | xU , z)
+
+approximately valid. The quality of this term is thus determined by the representational capacity of the pretrained encoder gψ.
+
+(III) RMDM Prediction Error. The third term P  
+
+> i∈U∪M
+
+DKL (pdata (xi | · )∥pθ(xi | · )) measures the token-wise prediction error of pθ given the latent z. This term corresponds directly to the RMDM training objective Equation 3, which opti-mizes the model to reconstruct individual tokens conditioned on the masked context xU and the Model Iterations PPL ( ↓)
+
+> AR
+
+Transformer-X Base - 23.5 OmniNet T - 21.5 
+
+> Diffusion
+
+D3PM (absorb) 1M ≤76.90 Diffusion-LM 1M ≤118.62 DiffusionBert 1M ≤63.78 SEDD 1M ≤ 32.79 MDLM 10M ≤23.00 MDLM † 1M ≤27.60 
+
+RMDM (ours) 1M ≤17.00     
+
+> Table 1: Test perplexities (PPL ↓) on LM1B. †denotes our retrained models, other results are reported in He et al. (2023) and Sahoo et al. (2024). Best value is bolded.
+
+global latent z. By training a powerful diffusion model pθ to minimize the ELBO, we implicitly re-duce the prediction error. The quality of this term depends on the capacity and training of the RMDM 
+
+pθ.
+
+Summary. Proposition 3.2 provides a unified the-oretical justification for our two-stage framework: • We minimize (I) by aligning the latent space via MeanFlow transport, ensuring inference-time la-tents match training-time distributions. • We minimize (II) by extracting rich global se-mantics z from a powerful pretrained encoder, reducing residual dependencies among tokens. • We minimize (III) by training a powerful masked diffusion model pθ to accurately model token distributions conditioned on z.
+
+3.4 Model Architecture Backbone and Conditioning Mechanism. We employ a Diffusion Transformer (DiT) architec-ture (Vaswani et al., 2017; Peebles and Xie, 2023) for both the MeanFlow network uϕ and the RMDM 
+
+pθ. The model operates on a sequence of hidden states h ∈ RL×D, derived from discrete token in-puts x ∈ { 1, . . . , V }L via a learned embedding table. To incorporate the global semantic context, we inject the latent variable z ∈ RL×Dz into every transformer block using Adaptive Layer Normal-ization (AdaLN) (Xu et al., 2019; Peebles and Xie, 2023). Specifically, the layer input h is modulated as:           
+
+> fAdaLN (h;z)≜f(γ(z)⊙LN( h) + β(z)) ⊙α(z) + h.
+
+Model Metric 1024 512 256 128 64 32 16 MDLM GenPPL ↓ 49.68 59.71 72.85 84.89 105.33 138.19 213.44 Judge ↑ 2.36 2.29 2.12 2.06 2.04 1.95 1.73 SEDD GenPPL ↓ 52.00 60.79 75.52 88.77 108.88 142.31 226.39 Judge ↑ 2.29 2.23 2.17 2.07 1.93 1.93 1.72 
+
+RMDM GenPPL ↓ 34.58 40.48 45.08 52.06 61.54 85.84 126.58 
+
+Judge ↑ 2.41 2.44 2.34 2.29 2.17 2.12 1.87 
+
+> Table 2: Generation quality on OpenWebText. GenPPL is evaluated by GPT-2; Judge is the average LLM-judge overall-quality score.
+
+where γ(·), β(·), α (·) are parameters predicted from z by a shallow MLP, f (·) is a multiplication-like operation that can be implemented as an atten-tion or MLP. Unlike standard diffusion models that primarily condition on the timestep t, we ensure the denoising process is consistently guided by the global semantic representation z across all layers. 
+
+Latent Stabilization. Conditioning on high-dimensional latents from large pretrained encoders presents a challenge: the model may overfit to the training latents, leading to poor generalization on samples drawn from the prior N (0, I) during in-ference. We mitigate this via a two-step stabiliza-tion strategy. First, we project z channel-wise to a lower-dimensional space RL×dz (where dz < D z )via an orthogonal linear map and then upsample it to the original channel dimension. This bottleneck keeps the model from focusing on robust semantic features and reduces the complexity of the condi-tioning signal, while the simplicity of the prior is well preserved. Second, during training, we inject isotropic Gaussian noise ϵ ∼ N (0, σ 2I) into the projected latent, which acts as a smoothing regular-izer and encourages the model to be robust to local perturbations in the latent space. Empirically, these strategies improve the generalizability. 
+
+4 Experiments 
+
+4.1 Experimental Setup Tasks and Datasets. We study unconditional text generation following the standard evaluation pro-tocol for diffusion language models (Lou et al., 2024; Sahoo et al., 2024). We evaluate on One Bil-lion Word (LM1B) (Chelba et al., 2013) and Open-WebText (OWT) (Gokaslan and Cohen, 2019). For LM1B, we report test perplexity derived from Equa-tion 3. For OWT, we report zero-shot perplexity AR MDLM RMDM WikiText 25.75 46.78 36.70 LM1B 51.25 77.91 48.57 
+
+LAMBADA 51.28 116.30 70.71 AG News 52.09 96.20 61.24 Pubmed 49.01 71.65 51.45 Arxiv 41.73 58.82 45.51 
+
+> Table 3: Zero-shot perplexities ( ↓) of models trained on OpenWebText (OWT). All perplexities for diffusion models are upper bounds. Best is in bold and the second best is underlined.
+
+on WikiText (Merity et al., 2017), LM1B, LAM-BADA (Paperno et al., 2016), AG News (Zhang et al., 2015), and Scientific Papers (Cohan et al., 2018). For generation quality, we evaluate 256 gen-erated samples with GPT-2 GenPPL (Radford et al., 2019). Since GenPPL is an evaluator-perplexity proxy and may not fully reflect human-perceived generation quality (Shi et al., 2024), we addition-ally evaluate overall quality with two independent LLM judges. Implementation details, including tokenization, latent encoders, model sizes, and op-timization settings, are provided in Appendix C; training and inference costs are reported in Appen-dices F and E; and the LLM-judge protocol and confidence intervals are provided in Appendix D. RMDM and our retrained baselines use the same tokenizer, DiT backbone, data preprocessing, and optimization schedule. RMDM additionally uses representations from a pretrained encoder during training; the baselines do not receive equivalent external representation knowledge. 
+
+4.2 Main Results GenPPL improvements are the strongest when steps are scarce. On OpenWebText, Table 2 Target GenPPL MDLM RMDM Gain 
+
+≤ 50 80 tok/s 287 tok/s 3.6×≤ 75 318 tok/s 1142 tok/s 3.6×≤ 130 1269 tok/s 4442 tok/s 3.5×  
+
+> Table 4: Matched-quality throughput on one A800 GPU (batch size 8, L= 1024 ).
+
+shows that RMDM consistently improves GenPPL over MDM-style baselines like MDLM (Sahoo et al., 2024) and SEDD (Lou et al., 2024), and the gap widens as the sampling budget decreases. With only a few parallel refinement steps, masked diffusion often loses global coherence due to lim-ited shared context; in contrast, RMDM injects a sequence-level representation at each denois-ing step to coordinate simultaneous token updates. RMDM also obtains the strongest primary-judge scores across all sampling budgets, and an indepen-dent second judge yields the same overall ranking trend. This agreement suggests that the GenPPL gains are accompanied by improvements in the qualities targeted by the evaluation rubric rather than being specific to one evaluator. 
+
+Inference efficiency. Table 4 reports measured throughput at representative matched-quality oper-ating points. Although latent conditioning makes RMDM about 10% slower than MDLM at the same number of steps, RMDM reaches the same GenPPL with substantially fewer steps, yielding approxi-mately 3.6× higher throughput. Peak sampling memory increases only from 18.64 GB to 18.93 GB. The pretrained encoder and MeanFlow net-work are not run at inference; generation draws the latent once from the prior. Full measurements are reported in Appendix E. 
+
+Validation and zero-shot perplexity. Beyond sample quality, RMDM does not degrade likelihood-based evaluation on LM1B (Table 1). We speculate that its strong LM1B performance even against AR baselines is partly due to the large fraction of [PAD] tokens in LM1B sequences: the sequence-level representation can identify padding structure and provide a shared global signal dur-ing denoising. After scaling on OpenWebText, it also improves zero-shot perplexity over diffusion baselines across diverse test sets (Table 3), sug-gesting that the learned representation distribution generalizes beyond training data. GenPPL ↓ Judge ↑
+
+Step RMDM Indep. z RMDM Indep. z
+
+1024 34.58 50.45 2.41 2.25 512 40.48 59.15 2.44 2.23 256 45.08 70.69 2.34 2.20 128 52.06 81.41 2.29 2.09 64 61.54 98.83 2.17 2.02 32 85.84 126.67 2.12 1.93 16 126.58 176.86 1.87 1.80   
+
+> Table 5: Ablation study on OpenWebText. Indep. z
+> denotes a variant trained with Gaussian conditioning latents sampled independently of the target sequence x.
+
+4.3 Ablation Study Source of the continuous latent z. Table 5 isolates whether the gain comes from the data-dependent representation or merely from adding a Gaussian conditioning variable. We replace the encoded latent with an independent sample 
+
+z ∼ N (0 , I ) during the training process, while keeping RMDM interface, conditioning mecha-nism, and sampling schedule unchanged. This control has a similar marginal distribution to the aligned latent prior, but removes the sequence-level information that RMDM is designed to provide. It is consistently worse than RMDM across all sam-pling budgets, with particularly clear degradation under few-step sampling. This pattern shows that the extra conditioning pathway alone is not suffi-cient: a random Gaussian vector may match the prior distribution, but it cannot explain residual de-pendencies among simultaneously masked tokens. The useful signal is instead the data-dependent rep-resentation carried by z, which acts as a global plan and gives masked positions shared information for coordinating parallel token updates. 
+
+5 Conclusion 
+
+In this paper, we present Representation-based Masked Diffusion Model (RMDM), which ex-tends masked diffusion language models with a global continuous latent variable to explicitly model sequence-level semantics and restore inter-token dependencies. This advantage of RMDM makes it possible to correctly generate multiple masked tokens simultaneously and is especially powerful with a small number of sampling steps, where standard parallel sampling methods are most prone to losing global coherence. The MeanFlow-based representation learning mechanism aligns pretrained encoder embeddings with a Gaussian prior, allowing the latent to be sampled once at inference without running the encoder or Mean-Flow network. By conditioning the masked dif-fusion model on these latent representations, we couple the updating of all masked tokens through shared global semantic information, reducing the Conditional Dependency Gap in parallel genera-tion. Experiments on LM1B and OpenWebText demonstrate that RMDM consistently improves generation quality, especially in aggressive few-step regimes, and achieves approximately 3.6×
+
+higher measured throughput at matched quality in our A800 evaluation. Our approach demonstrates the importance of global semantic coordination in non-autoregressive generation and provides a prin-cipled framework for addressing the conditional dependency gap. 
+
+Limitations 
+
+The experiments mainly focus on unconditional generation at model scales and computational bud-gets comparable to GPT-2-level. While the results provide evidence for the effectiveness of the ap-proach in this setting, its transferability to substan-tially larger-scale models and conditional genera-tion tasks remains to be examined. We leave these extensions for future work. 
+
+Ethics Statement 
+
+This work focuses on the statistical modeling prob-lem of masked diffusion language models, specif-ically the conditional independence assumption used in parallel masked-token updates. It does not involve human subjects, new data collection, or additional model training beyond the experimental setup described in the paper. All experiments are conducted on publicly available benchmarks. The proposed method does not introduce new ethical risks beyond those inherent to the underlying lan-guage models and the benchmark data on which they are evaluated. 
+
+Acknowledgments 
+
+The authors acknowledge support from The Hong Kong Polytechnic University (Research Grant P0046811). 
+
+References 
+
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, and 1 others. 2023. GPT-4 techni-cal report. arXiv preprint arXiv:2303.08774 .Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg. 2021. Structured denoising diffusion models in discrete state-spaces. In Advances in Neural Information Processing Sys-tems , volume 34, pages 17981–17993. Samuel R Bowman, Luke Vilnis, Oriol Vinyals, An-drew M Dai, Rafal Jozefowicz, and Samy Bengio. 2016. Generating sentences from a continuous space. In Proceedings of the 20th SIGNLL Conference on Computational Natural Language Learning , pages 10–21. Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Girish Shyam, Girish Sastry, Amanda Askell, and 1 others. 2020. Language models are few-shot learners. Advances in neural information processing systems , 33:1877–1901. Andrew Campbell, Joe Benton, Valentin De Bortoli, Thomas Rainforth, George Deligiannidis, and Ar-naud Doucet. 2022. A continuous time framework for discrete denoising models. Advances in Neural Information Processing Systems , 35:28266–28279. Andrew Campbell, Jason Yim, Regina Barzilay, Tom Rainforth, and Tommi Jaakkola. 2024. Generative flows on discrete state-spaces: Enabling multimodal flows with applications to protein co-design. In Pro-ceedings of the 41st International Conference on Ma-chine Learning , volume 235 of Proceedings of Ma-chine Learning Research , pages 5453–5512. PMLR. Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T Freeman. 2022. Maskgit: Masked gen-erative image transformer. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pat-tern Recognition , pages 11315–11325. Ciprian Chelba, Tomas Mikolov, Mike Schuster, Qi Ge, Thorsten Brants, Phillipp Koehn, and Tony Robin-son. 2013. One billion word benchmark for measur-ing progress in statistical language modeling. arXiv preprint arXiv:1312.3005 .Arman Cohan, Franck Dernoncourt, Doo Soon Kim, Trung Bui, Seokhwan Kim, Walter Chang, and Nazli Goharian. 2018. A discourse-aware attention model for abstractive summarization of long documents. In 
+
+Proceedings of the 2018 Conference of the North American Chapter of the Association for Computa-tional Linguistics: Human Language Technologies, Volume 2 (Short Papers) , pages 615–621. Association for Computational Linguistics. DeepSeek-AI. 2026. DeepSeek-V4-Flash. DeepSeek API documentation. Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT: Pre-training of deep bidirectional transformers for language under-standing. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies , pages 4171–4186. Sander Dieleman, Laurent Sartran, Arman Roshan-nai, Nikolay Savinov, Yaroslav Ganin, Pierre H Richemond, Arnaud Doucet, Robin Strudel, Chris Dyer, Conor Durkan, and 1 others. 2022. Contin-uous diffusion for categorical data. arXiv preprint arXiv:2211.15089 .Yilun Du, Jiayuan Mao, and Joshua B. Tenenbaum. 2024. Learning iterative reasoning through energy diffusion. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of 
+
+Proceedings of Machine Learning Research , pages 11764–11776. PMLR. Itai Gat, Tal Remez, Neta Shaul, Felix Kreuk, Ricky TQ Chen, Gabriel Synnaeve, Yossi Adi, and Yaron Lip-man. 2024. Discrete flow matching. Advances in Neural Information Processing Systems , 37:133345– 133385. Zhengyang Geng, Mingyang Deng, Xingjian Bai, J. Zico Kolter, and Kaiming He. 2025. Mean flows for one-step generative modeling. Preprint ,arXiv:2505.13447. Aaron Gokaslan and Vanya Cohen. 2019. Openwebtext corpus. GitHub repository. Shansan Gong, Mukai Li, Jiangtao Feng, Zhiyong Wu, and Lingpeng Kong. 2023. DiffuSeq: Sequence to sequence text generation with diffusion models. In 
+
+The Eleventh International Conference on Learning Representations .Google. 2026. Gemini 3.1 Flash-Lite. Gemini API documentation. Jiatao Gu, James Bradbury, Caiming Xiong, Victor OK Li, and Richard Socher. 2018. Non-autoregressive neural machine translation. In International Confer-ence on Learning Representations .Ishaan Gulrajani and Tatsunori B Hashimoto. 2023. Likelihood-based diffusion language models. Ad-vances in Neural Information Processing Systems ,36:16693–16715. Xiaochuang Han, Sachin Kumar, and Yulia Tsvetkov. 2023. SSD-LM: Semi-autoregressive simplex-based diffusion language model for text generation and modular control. In Proceedings of the 61st An-nual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 11575– 11596. Association for Computational Linguistics. Satoshi Hayakawa, Yuhta Takida, Masaaki Imaizumi, Hiromi Wakaki, and Yuki Mitsufuji. 2025. Distilla-tion of discrete diffusion through dimensional cor-relations. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of 
+
+Proceedings of Machine Learning Research , pages 22259–22297. PMLR. Zhengfu He, Tianxiang Sun, Qiong Tang, Kuanning Wang, Xuanjing Huang, and Xipeng Qiu. 2023. Dif-fusionBERT: Improving generative masked language models with diffusion models. In Proceedings of the 61st Annual Meeting of the Association for Compu-tational Linguistics (Volume 1: Long Papers) , pages 4521–4534. Association for Computational Linguis-tics. Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. Denoising diffusion probabilistic models. In Ad-vances in Neural Information Processing Systems ,volume 33, pages 6840–6851. Lukasz Kaiser, Samy Bengio, Aurko Roy, Ashish Vaswani, Niki Parmar, Jakob Uszkoreit, and Noam Shazeer. 2018. Fast decoding in sequence mod-els using discrete latent variables. In International Conference on Machine Learning , pages 2390–2399. PMLR. D. P. Kingma and M. Welling. 2014. Auto-encoding variational bayes. In ICLR .Deqian Kong, Minglu Zhao, Dehong Xu, Bo Pang, Shu Wang, Edouardo Honig, Zhangzhang Si, Chuan Li, Jianwen Xie, Sirui Xie, and Ying Nian Wu. 2025. La-tent thought models with variational Bayes inference-time computation. In Proceedings of the 42nd Inter-national Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research ,pages 31419–31436. PMLR. Xiang Li, John Thickstun, Ishaan Gulrajani, Percy S Liang, and Tatsunori B Hashimoto. 2022. Diffusion-lm improves controllable text generation. Advances in neural information processing systems , 35:4328– 4343. Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Max-imilian Nickel, and Matt Le. 2023. Flow matching for generative modeling. In International Conference on Learning Representations .Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, and 1 others. 2024. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 .Aaron Lou, Chenlin Meng, and Stefano Ermon. 2024. Discrete diffusion modeling by estimating the ratios of the data distribution. In Proceedings of the 41st International Conference on Machine Learning , vol-ume 235 of Proceedings of Machine Learning Re-search , pages 32819–32848. PMLR. Rabeeh Karimi Mahabadi, Hamish Ivison, Jaesung Tae, James Henderson, Iz Beltagy, Matthew E. Peters, and Arman Cohan. 2024. TESS: Text-to-text self-conditioned simplex diffusion. In Proceedings of the 18th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 2347–2361. Association for Computational Linguistics. Leland McInnes, John Healy, and James Melville. 2018. Umap: Uniform manifold approximation and pro-jection for dimension reduction. arXiv preprint arXiv:1802.03426 .Chenlin Meng, Kristy Choi, Jiaming Song, and Stefano Ermon. 2022. Concrete score matching: Generalized score matching for discrete data. Advances in Neural Information Processing Systems , 35:34532–34545. Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. 2017. Pointer sentinel mixture mod-els. In International Conference on Learning Repre-sentations .Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. 2025. Large language dif-fusion models. arXiv preprint arXiv:2502.09992 .Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Ji-acheng Sun, Zhenguo Li, and Chongxuan Li. 2025. Your absorbing discrete diffusion secretly models the conditional distributions of clean data. In The Thir-teenth International Conference on Learning Repre-sentations .Denis Paperno, Germán Kruszewski, Angeliki Lazari-dou, Ngoc Quan Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. 2016. The LAMBADA dataset: Word prediction requiring a broad discourse context. In 
+
+Proceedings of the 54th Annual Meeting of the As-sociation for Computational Linguistics (Volume 1: Long Papers) , pages 1525–1534, Berlin, Germany. Association for Computational Linguistics. William Peebles and Saining Xie. 2023. Scalable diffu-sion models with transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 4195–4205. Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. 2019. Language models are unsupervised multitask learners. OpenAI technical report .Kevin Rojas, Yuchen Zhu, Sichen Zhu, Felix X-F Ye, and Molei Tao. 2025. Diffuse everything: Multi-modal diffusion models on arbitrary state spaces. 
+
+arXiv preprint arXiv:2506.07903 .Subham Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin Chiu, Alexan-der Rush, and Volodymyr Kuleshov. 2024. Simple and effective masked diffusion language models. Ad-vances in Neural Information Processing Systems ,37:130136–130184. Subham Sekhar Sahoo, Justin Deschenaux, Aaron Gokaslan, Guanghan Wang, Justin T. Chiu, and Volodymyr Kuleshov. 2025. The diffusion duality. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research , pages 52584–52619. PMLR. Neta Shaul, Itai Gat, Marton Havasi, Daniel Severo, Anuroop Sriram, Peter Holderrieth, Brian Karrer, Yaron Lipman, and Ricky TQ Chen. 2024. Flow matching with general discrete paths: A kinetic-optimal perspective. arXiv preprint arXiv:2412.03487 .Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis Titsias. 2024. Simplified and general-ized masked diffusion for discrete data. Advances in neural information processing systems , 37:103131– 103167. Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. 2021. Score-based generative modeling through stochastic differential equations. In Interna-tional Conference on Learning Representations .ArXiv:2011.13456. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. Advances in neural information processing systems , 30. Dimitri von Rütte, Janis Fluri, Yuhui Ding, Antonio Orvieto, Bernhard Schölkopf, and Thomas Hofmann. 2025. Generalized interpolating discrete diffusion. 
+
+arXiv preprint arXiv:2503.04482 .Benjamin Warner, Antoine Chaffin, Benjamin Clavié, Orion Weller, Oskar Hallström, Said Taghadouini, Alexis Gallagher, Raja Biswas, Faisal Ladhak, Tom Aarsen, Nathan Cooper, Griffin Adams, Jeremy Howard, and Iacopo Poli. 2024. Smarter, better, faster, longer: A modern bidirectional encoder for fast, memory efficient, and long context finetuning and inference. Preprint , arXiv:2412.13663. Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. 2025. Fast-dllm: Training-free accelera-tion of diffusion llm by enabling kv cache and parallel decoding. arXiv preprint arXiv:2505.22618 .Tianyu Xie, Shuchen Xue, Zijin Feng, Tianyang Hu, Jiacheng Sun, Zhenguo Li, and Cheng Zhang. 2025. Variational autoencoding discrete diffusion with en-hanced dimensional correlations modeling. Preprint ,arXiv:2505.17384. Jingjing Xu, Xu Sun, Zhiyuan Zhang, Guangxiang Zhao, and Junyang Lin. 2019. Understanding and improv-ing layer normalization. Advances in neural informa-tion processing systems , 32. Jiacheng Ye, Shansan Gong, Liheng Chen, Lin Zheng, Jiahui Gao, Han Shi, Chuan Wu, Xin Jiang, Zhen-guo Li, Wei Bi, and 1 others. 2024. Diffusion of thought: Chain-of-thought reasoning in diffusion lan-guage models. Advances in Neural Information Pro-cessing Systems , 37:105345–105374. Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. 2025. Dream 7b: Diffusion large language models. 
+
+arXiv preprint arXiv:2508.15487 .Xiang Zhang, Junbo Zhao, and Yann LeCun. 2015. Character-level convolutional networks for text classi-fication. Advances in neural information processing systems , 28. Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang, Pengjun Xie, An Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou. 2025. Qwen3 embedding: Advancing text embedding and reranking through foundation models. 
+
+arXiv preprint arXiv:2506.05176 .Cai Zhou, Chenxiao Yang, Yi Hu, Chenyu Wang, Chu-bin Zhang, Muhan Zhang, Lester Mackey, Tommi Jaakkola, Stephen Bates, and Dinghuai Zhang. 2025. Coevolutionary continuous discrete diffusion: Make your diffusion language model a latent reasoner. 
+
+Preprint , arXiv:2510.03206. Fengqi Zhu, Rongzhen Wang, Shen Nie, Xiaolu Zhang, Chunwei Wu, Jun Hu, Jun Zhou, Jianfei Chen, Yankai Lin, Ji-Rong Wen, and 1 others. 2025. Llada 1.5: Variance-reduced preference optimization for large language diffusion models. arXiv preprint arXiv:2505.19223 .A Related Works 
+
+Discrete Diffusion Language Models. Discrete diffusion models generate text by reversing a cor-ruption process defined directly on the discrete token space. Early research generally falls into two paradigms: transition-based frameworks and score-based methods. D3PM (Austin et al., 2021) pioneered the adaptation of continuous diffusion concepts to discrete spaces via transition matrices, which was later extended to continuous time using Markov chains (Campbell et al., 2022). Alternatively, inspired by score matching (Song et al., 2021), several works proposed discrete counterparts to the Stein score for modeling data distributions (Meng et al., 2022; Lou et al., 2024). A dominant subclass within this domain is Masked Diffusion Models (MDMs), which treat the corruption process as token masking, starting from a masked sequence and refining tokens simultaneously using bidirectional context. Subsequent studies (Ou et al., 2025; Sahoo et al., 2024; Shi et al., 2024) demonstrated that simplified masking mechanisms can signifi-cantly enhance performance, effectively bridging the gap between diffusion and autoregressive models. The iterative unmasking process inherent in MDMs supports sophisticated reasoning capabilities, such as iterative refinement (Du et al., 2024) and reverse-order reasoning (Nie et al., 2025). The framework has also been integrated with chain-of-thought reasoning (Ye et al., 2024), demonstrating strong performance in tasks requiring parallel context and systematic refinement. Similar algorithms are proposed from the flow matching perspective (Gat et al., 2024). In addition to masking noise, some works attempt to leverage uniform noise, though these tend to yield inferior performance (von Rütte et al., 2025; Shaul et al., 2024). Recently, MDMs have been scaled to large language models; for instance, LLaDA (Nie et al., 2025) scales up to 8 billion parameters, showcasing reasoning capabilities previously unseen in non-autoregressive models. Furthermore, Dream (Ye et al., 2025) introduces a training paradigm that initializes diffusion models with pretrained autoregressive weights, combining the strengths of both approaches. 
+
+Continuous Diffusion Language Models. Continuous diffusion models (CDMs) reformulate text generation by performing diffusion in a continuous space, typically on word embeddings or logits. Embedding-based Diffusion Models (EDMs), such as Diffusion-LM (Li et al., 2022), apply Gaussian diffusion to the continuous embeddings of discrete tokens. This formulation naturally supports controllable generation and sequence-to-sequence tasks (Dieleman et al., 2022; Mahabadi et al., 2024; Gong et al., 2023). Although early EDMs faced performance gaps compared to autoregressive models, Plaid (Gulrajani and Hashimoto, 2023) established empirical scaling laws that significantly narrowed the efficiency gap with autoregressive models. This framework was further extended by DoT-Plaid (Ye et al., 2024) to support chain-of-thought reasoning by leveraging iterative latent refinement. Apart from embedding-based methods, some approaches operate on the logit space (Han et al., 2023; Sahoo et al., 2025) or explore multimodal integration (Rojas et al., 2025; Campbell et al., 2024). DUO (Sahoo et al., 2025) attempts to connect two types of diffusion models via marginal matching and applies distillation tricks for continuous diffusion to discrete text diffusion. While CDMs benefit from the well-established theory of continuous diffusion, mapping the continuous latents back to discrete text remains a non-trivial challenge that often requires specific regularization or rounding strategies. 
+
+Latent-Augmented Masked Diffusion. To enhance the expressivity of discrete diffusion, a growing body of work investigates integrating continuous latent variables or auxiliary processes into the discrete generation framework. Several works have explored utilizing latent variable models to improve text modeling (Bowman et al., 2016; Kaiser et al., 2018). Recently, Kong et al. (2025) used a latent variable structure for next-token prediction in autoregressive models, optimized with variational Bayes. In the context of diffusion, Hayakawa et al. (2025) considered distilling pretrained MDMs with latent variables as the backward transition by optimizing consistency loss. A complementary direction introduces continuous variables to capture joint structure along the diffusion path. VADD (Xie et al., 2025) associates a continuous latent with each reverse transition and trains a VAE-style model to obtain non-factorized posteriors. Concurrent to our work, CCDD (Zhou et al., 2025) jointly evolves continuous representations and discrete tokens during diffusion. RMDM instead samples an aligned latent once and keeps it fixed while denoising the discrete sequence. Thus, both methods use continuous representations to augment discrete diffusion, but assign them different roles in the sampling process. B Theoretical Justifications 
+
+B.1 Proof of Proposition 3.1 
+
+For a set of indices M , write xM = {xi : i ∈ M }. For any conditioning variable C, define the conditional dependency gap 
+
+T (xM | C) = DKL p(xM | C) Y
+
+> i∈M
+
+p(xi | C)
+
+!
+
+, (5) where the conditional KL is averaged over C when C is random: 
+
+DKL (p(Y | C) ∥ q(Y | C)) ≜ Ep(C)Ep(Y |C)
+
+
+
+log p(Y | C)
+
+q(Y | C)
+
+
+
+. (6) Equivalently, 
+
+T (xM | C) = X
+
+> i∈M
+
+H(xi | C) − H(xM | C). (7) 
+
+Restatement of Proposition 3.1. The residual gap T (xM | xU , z) is zero if and only if 
+
+p(xM | xU , z) = Y
+
+> i∈M
+
+p(xi | xU , z) a.s. (8) Moreover, 
+
+∆T ≜ T (xM | xU ) − T (xM | xU , z) = X
+
+> i∈M
+
+I(xi; z | xU ) − I(xM ; z | xU ). (9) 
+
+Proof. The first claim follows directly from the non-negativity of KL divergence: T (xM | xU , z) = 0 
+
+holds exactly when the two conditional distributions in its definition are equal almost surely, which is the factorization in (8). For the second claim, apply (7) twice: 
+
+∆T =
+
+"X
+
+> i∈M
+
+H(xi | xU ) − H(xM | xU )
+
+#
+
+−
+
+"X
+
+> i∈M
+
+H(xi | xU , z) − H(xM | xU , z)
+
+#
+
+= X
+
+> i∈M
+
+[H(xi | xU ) − H(xi | xU , z)] − [H(xM | xU ) − H(xM | xU , z)] = X
+
+> i∈M
+
+I(xi; z | xU ) − I(xM ; z | xU ). (10) 
+
+B.2 Proof of Proposition 3.2 
+
+We use the following factorization for the joint distribution induced by the encoder-side latent variable: 
+
+pdata (xM , xU , z) = pϕ(z) pdata (xU | z) pdata (xM | xU , z), (11) 
+
+pθ(xM , xU , z) = p(z) Y
+
+> i∈U
+
+pθ(xi | z) Y
+
+> i∈M
+
+pθ(xi | xU , z). (12) 
+
+Restatement of Proposition 3.2. Under (11)–(12), the joint KL decomposes as 
+
+DKL (pdata (xM , xU , z) ∥ pθ(xM , xU , z)) (13) 
+
+= DKL (pϕ(z) ∥ p(z)) 
+
+| {z }
+
+> (I) MeanFlow–prior mismatch
+
++ T (xU | z) + T (xM | xU , z)
+
+| {z }
+
+> (II) residual conditional dependence
+
++ X
+
+> i∈U
+
+DKL (pdata (xi | z) ∥ pθ(xi | z)) + X
+
+> i∈M
+
+DKL (pdata (xi | xU , z) ∥ pθ(xi | xU , z)) 
+
+| {z }
+
+> (III) token-wise prediction error
+
+,
+
+where the conditional KL terms are averaged over their conditioning variables. Proof. First, substituting the factorizations in (11)–(12) into the joint KL gives 
+
+DKL (pdata (xM , xU , z) ∥ pθ(xM , xU , z)) = Epdata (xM ,xU ,z)
+
+
+
+log pϕ(z)pdata (xU | z)pdata (xM | xU , z)
+
+p(z) Q 
+
+> i∈U
+
+pθ(xi | z) Q 
+
+> i∈M
+
+pθ(xi | xU , z)
+
+
+
+. (14) Separating the three log-ratio terms yields 
+
+DKL (pdata (xM , xU , z) ∥ pθ(xM , xU , z)) = DKL (pϕ(z) ∥ p(z)) + DKL pdata (xU | z) Y
+
+> i∈U
+
+pθ(xi | z)
+
+!
+
++ DKL pdata (xM | xU , z) Y
+
+> i∈M
+
+pθ(xi | xU , z)
+
+!
+
+. (15) We next use the following identity to separate each conditional KL into a dependency term and token-wise prediction terms. For any index set A and conditioning variable C, all conditional KLs below follow the averaged definition in (6): 
+
+DKL pdata (xA | C) Y
+
+> i∈A
+
+pθ(xi | C)
+
+!
+
+= DKL pdata (xA | C) Y
+
+> i∈A
+
+pdata (xi | C)
+
+!
+
++ X
+
+> i∈A
+
+DKL (pdata (xi | C) ∥ pθ(xi | C)) . (16) To see this, start from the definition of KL and add and subtract P 
+
+> i∈A
+
+log pdata (xi | C) inside the expectation: 
+
+Ep(C)Epdata (xA|C)
+
+
+
+log pdata (xA | C)
+
+Q 
+
+> i∈A
+
+pθ(xi | C)
+
+
+
+= Ep(C)Epdata (xA|C)
+
+
+
+log pdata (xA | C)
+
+Q 
+
+> i∈A
+
+pdata (xi | C)
+
+
+
++ Ep(C)Epdata (xA|C)
+
+
+
+log 
+
+Q 
+
+> i∈A
+
+pdata (xi | C)
+
+Q 
+
+> i∈A
+
+pθ(xi | C)
+
+
+
+= T (xA | C) + X
+
+> i∈A
+
+DKL (pdata (xi | C) ∥ pθ(xi | C)) . (17) The last equality uses the definition of conditional total correlation for the first term and marginalizes 
+
+pdata (xA | C) to pdata (xi | C) in each token-wise term. Applying (16) with (A, C ) = ( U, z) gives 
+
+DKL pdata (xU | z) Y
+
+> i∈U
+
+pθ(xi | z)
+
+!
+
+= T (xU | z) + X
+
+> i∈U
+
+DKL (pdata (xi | z) ∥ pθ(xi | z)) , (18) where the right-hand side is averaged over z ∼ pϕ(z). Applying the same identity with (A, C ) = (M, (xU , z)) gives 
+
+DKL pdata (xM | xU , z) Y
+
+> i∈M
+
+pθ(xi | xU , z)
+
+!
+
+= T (xM | xU , z) + X
+
+> i∈M
+
+DKL (pdata (xi | xU , z) ∥ pθ(xi | xU , z)) , (19) where the right-hand side is averaged over (xU , z) ∼ pdata (xU , z).Finally, substituting (18) and (19) into (15) yields 
+
+DKL (pdata (xM , xU , z) ∥ pθ(xM , xU , z)) = DKL (pϕ(z) ∥ p(z)) 
+
+| {z }
+
+> (I) MeanFlow–prior mismatch
+
++ T (xU | z) + T (xM | xU , z)
+
+| {z }
+
+> (II) residual conditional dependence
+
++ X
+
+> i∈U
+
+DKL (pdata (xi | z) ∥ pθ(xi | z)) + X
+
+> i∈M
+
+DKL (pdata (xi | xU , z) ∥ pθ(xi | xU , z)) 
+
+| {z }
+
+> (III) token-wise prediction error
+
+,
+
+which is Equation (13). 
+
+C Experimental Details 
+
+Data preprocessing. For LM1B, following He et al. (2023); Lou et al. (2024), we use the standard train/test split and tokenize the corpus with the BERT tokenizer (Devlin et al., 2019). We pad and truncate sequences to a fixed length of N = 128 . For OWT, following Lou et al. (2024); Sahoo et al. (2024), we reserve the last 100K documents as a held-out evaluation set. To match the encoder used for OWT, we tokenize with the Qwen2 tokenizer and form sequences of length N = 1024 .
+
+Embedding models for the continuous latent. We instantiate the pretrained embedding model gϕ
+
+differently across datasets to match their tokenization and domain. On LM1B, we use BERT-Base (Devlin et al., 2019). Because the BERT embedding is high-dimensional, we split each 128-token sequence into four groups, average embeddings within each group, and apply PCA whitening to obtain a compact 128-dimensional representation from the original 768-dimensional embeddings. On OWT, we use Qwen3-Embedding-0.6B (Zhang et al., 2025); because it supports flexible output dimensionality, we use the last-layer embedding with dimension 32. 
+
+Models and optimization. As described in Section 3.4, both the discrete denoising backbone and the MeanFlow backbone are parameterized by a Diffusion Transformer (DiT) (Peebles and Xie, 2023), following the architecture used in Lou et al. (2024). We use 12 layers, hidden dimension 768, 12 attention heads, and σ = 1 . The latent dimensions are Dz = 128 , d z = 32 for LM1B and Dz = 32 , d z = 16 
+
+for OWT. We follow the common diffusion-LM training recipe (Sahoo et al., 2024): AdamW with a constant learning rate of 3 × 10 −4 after 2.5K warm-up iterations, together with exponential moving average (EMA) decay 0.9999. For LM1B, we train for 1M iterations with batch size 512. For OWT, we train for 50K iterations with batch size 512. The MDLM and SEDD results reported on OWT are from our own retrained baselines, using the same Qwen2 tokenizer, data preprocessing, model size, batch size, optimizer, learning-rate schedule, EMA setting, and 50K-step training budget as RMDM. 
+
+Encoder sensitivity. We replace Qwen3-Embedding-0.6B with ModernBERT-large (Warner et al., 2024) while keeping the downstream architecture and latent interface fixed. ModernBERT supports the full OWT sequence length, and we reduce its 1024-dimensional outputs to 32 dimensions with PCA. Because this variant converges more slowly, we compare it with an MDLM baseline trained for the same approximately 60K-step budget; the Qwen3 results use the 50K-step models from the main experiment. Tables 6 and 7 show that both encoder variants outperform their matched baselines across sampling budgets in terms of GenPPL and LLM-judge scores, although the improvement is smaller with ModernBERT. This result suggests that the benefit is not specific to one encoder family, while its magnitude depends on the representation source. 
+
+D LLM-judge Evaluation 
+
+We use an LLM judge to complement GenPPL because evaluator perplexity is only a proxy for generation quality and can miss aspects such as discourse coherence, degenerate repetition, and natural readability. Following this motivation, each generated passage is judged as a standalone sample. We use DeepSeek-V4-Flash (DeepSeek-AI, 2026) as the primary judge model and report the average overall score in the Model 1024 512 256 128 64 32 16 MDLM (50K) 49.68 59.71 72.85 84.89 105.33 138.19 213.44 RMDM–Qwen3 (50K) 34.58 40.48 45.08 52.06 61.54 85.84 126.58 
+
+MDLM (60K) 48.17 55.61 67.06 81.20 103.66 134.82 218.39 RMDM–ModernBERT (60K) 46.07 51.09 61.33 74.59 89.71 124.86 191.71 
+
+Table 6: Encoder sensitivity on OWT measured by GenPPL ( ↓). Each RMDM variant is compared with the MDLM baseline at the corresponding training budget.                                    
+
+> Model 1024 512 256 128 64 32 16 MDLM (50K) 2.359 ±.078 2.285 ±.072 2.121 ±.064 2.059 ±.070 2.035 ±.063 1.953 ±.056 1.730 ±.059
+> RMDM–Qwen3 (50K) 2.406 ±.084 2.441 ±.085 2.340 ±.075 2.289 ±.069 2.168 ±.063 2.117 ±.055 1.867 ±.057
+> MDLM (60K) 2.348 ±.079 2.246 ±.077 2.227 ±.070 2.125 ±.070 1.992 ±.063 1.879 ±.055 1.762 ±.056
+> RMDM–ModernBERT (60K) 2.391 ±.083 2.402 ±.085 2.277 ±.075 2.211 ±.072 2.102 ±.064 1.945 ±.055 1.832 ±.057
+
+Table 7: Encoder sensitivity on OWT measured by LLM-judge overall-quality score ( ↑; mean ± 95% confidence-interval half-width). Each RMDM variant is compared with the MDLM baseline at the corresponding training budget. 
+
+main tables. We additionally evaluate the same samples with Gemini-3.1-Flash-Lite (Google, 2026) as an independent judge. For each method and sampling budget, both judges evaluate all 256 generated passages. Tables 8 and 9 report mean scores with 95% confidence intervals. The agreement in relative rankings indicates that the main trend is not specific to a single judge. The judge is asked to return minified JSON with five 1–10 scores: fluency , coherence , repetition , readability , and overall .                            
+
+> Model 1024 512 256 128 64 32 16 MDLM 2.359 ±.078 2.285 ±.072 2.121 ±.064 2.059 ±.070 2.035 ±.063 1.953 ±.056 1.730 ±.059
+> SEDD 2.293 ±.083 2.227 ±.075 2.172 ±.064 2.074 ±.066 1.930 ±.058 1.926 ±.063 1.719 ±.059
+> RMDM 2.406 ±.084 2.441 ±.085 2.340 ±.075 2.289 ±.069 2.168 ±.063 2.117 ±.055 1.867 ±.057
+
+Table 8: DeepSeek-V4-Flash overall-quality scores (mean ± 95% confidence-interval half-width; n = 256 per cell). 
+
+Prompt. 
+
+Please act as an impartial judge and evaluate the quality of the generated text displayed below... Scoring rubric, each from 1 to 10: - fluency: grammar, phrasing, and local readability - coherence: logical flow, topic consistency, and sentence-to-sentence continuity - repetition: avoidance of loops, duplicate ideas, and degenerate repetition - readability: how natural and human-readable the passage feels overall - overall: your final holistic judgment Instructions: - Judge the text as a standalone passage. - Do not assume hidden context beyond the text itself. - Penalize malformed special tokens, obvious hallucinated structure, or text that reads like corrupted sampling. - Do not reward verbosity. Return ONLY valid minified JSON... Generated text: «<TEXT {text} TEXT»> Model 1024 512 256 128 64 32 16 MDLM 1.594 ±.061 1.434 ±.061 1.297 ±.056 1.240 ±.053 1.113 ±.039 1.020 ±.017 1.000 ±.000               
+
+> SEDD 1.625 ±.060 1.473 ±.062 1.371 ±.060 1.277 ±.055 1.156 ±.045 1.055 ±.028 1.008 ±.011
+> RMDM 1.781 ±.051 1.801 ±.049 1.637 ±.059 1.590 ±.061 1.408 ±.061 1.184 ±.048 1.027 ±.020
+
+Table 9: Gemini-3.1-Flash-Lite overall-quality scores (mean ± 95% confidence-interval half-width; n = 256 per cell). 
+
+E Inference Efficiency 
+
+We measure sampling efficiency on one NVIDIA A800 80GB GPU with the DDPM sampler, batch size 8, and sequence length 1024, after warm-up. RMDM and MDLM share the same DiT backbone; RMDM additionally conditions each block on a latent sampled once from the prior. The pretrained encoder and MeanFlow network are not invoked during inference. RMDM uses 2.72 GB of weight memory and 18.93 GB peak sampling memory, compared with 2.43 GB and 18.64 GB for MDLM. Steps MDLM GenPPL MDLM tok/s RMDM GenPPL RMDM tok/s 1024 49.68 80 34.58 72 512 59.71 159 40.48 144 256 72.85 318 45.08 287 128 84.89 636 52.06 573 64 105.33 1269 61.54 1142 32 138.19 2520 85.84 2263 16 213.44 4951 126.58 4442 
+
+Table 10: Generation quality and measured throughput at matched sampling-step budgets. 
+
+At the same step count, RMDM retains approximately 90% of MDLM’s throughput. At matched quality, however, RMDM requires roughly one quarter as many steps: for example, GenPPL ≤ 50 is reached by MDLM at 1024 steps (80 tok/s) and by RMDM at 256 steps (287 tok/s), corresponding to a 3.6× throughput improvement. Similar comparisons give 3.5–3.6× improvements across the quality range reported in Table 4. 
+
+F Training Cost 
+
+Wall-clock training time. We trained the models on 4 NVIDIA A800 GPUs. In our current imple-mentation, the MDLM baseline requires approximately 3 days and 5 hours for 50K training steps, while the RMDM decoder training stage requires approximately 5 days for the same number of steps. This measured overhead mainly comes from our uncached implementation: at each training step, we compute the pretrained encoder representation online and then map it through the MeanFlow-aligned latent module before conditioning the decoder. Since the training corpus is fixed, these encoder representations can in principle be precomputed and cached, which would remove most of this repeated computation. We did not use such caching in our reported runs due to storage constraints. 
+
+MeanFlow alignment stage. The additional latent-alignment stage is comparatively lightweight. It is trained for 10K steps and takes approximately 1 day and 15 hours under the same hardware setting. This number should also be interpreted as the cost of the uncached implementation, since online encoder representation extraction contributes to the measured time. Overall, the wall-clock times above report our implementation cost rather than an inherent training-time lower bound of RMDM. 
+
+G Examples 
+
+G.1 Detailed Numerical Example with Gaussian Distribution 
+
+We provide a concrete analytical example using Gaussian distributions that strictly follows the causal graph in Figure 2. This example demonstrates how the latent variable z explains correlations between masked tokens that the partial context xU cannot capture. 
+
+Model Setup. Consider a linear Gaussian structural equation model where the global latent z, the observed context xU , and the masked tokens x1 
+
+> M
+
+, x 2 
+
+> M
+
+are scalar random variables: 
+
+z ∼ N (0 , 1) , (20) 
+
+xU = z + ϵU , (21) 
+
+x1 
+
+> M
+
+= z + αxU + ϵ1, (22) 
+
+x2 
+
+> M
+
+= z + βxU + ϵ2, (23) where ϵU , ϵ 1, ϵ 2 ∼ N (0 , σ 2) are independent noise terms. This structure matches the causal graph where 
+
+z acts as a confounder influencing all variables, while xU has direct edges (controlled by α and β) to the masked tokens. 
+
+Conditional Dependency Without Latent. When z is unobserved (standard non-latent modeling), we condition only on xU . Although xU provides partial information about z, it does not fully recover it. The posterior distribution is: 
+
+p(z | xU ) = N (μz|u, σ 2
+
+> z|u
+
+), where σ2 
+
+> z|u
+
+= Var (z | xU ) = σ2
+
+1 + σ2 . (24) Since z remains uncertain (variance σ2 
+
+> z|u
+
+> 0), it acts as a common noise source inducing correlation between x1 
+
+> M
+
+and x2 
+
+> M
+
+. Given xU , the terms αxU and βxU are constant, so the conditional covariance is: Cov (x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU ) = Var (z | xU ) = σ2
+
+1 + σ2 . (25) Setting σ = 1 for concreteness, we compute: Var (z | xU ) = 12 , (26) Cov (x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU ) = 12 , (27) Var (xiM | xU ) = Var (z | xU ) + Var (ϵi) = 12 + 1 = 32 , (28) 
+
+ρ = Cov (x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU )
+
+q
+
+Var (x1 
+
+> M
+
+| xU )Var (x2 
+
+> M
+
+| xU )= 1/23/2 = 13 . (29) For Gaussian variables, the dependency gap (mutual information) is: 
+
+T (x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU ) = − 12 ln(1 − ρ2) = − 12 ln 
+
+
+
+1 − 19
+
+
+
+> 0. (30) This positive value quantifies the information loss incurred by assuming independence in parallel sampling. 
+
+Conditional Independence With Latent. In our RMDM framework, we condition on both xU and the sampled latent z. When z is fixed, the only remaining randomness comes from the independent noise terms ϵ1, ϵ 2. Therefore: Cov (x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU , z) = E[ϵ1ϵ2] = 0 . (31) The masked tokens become conditionally independent: p(x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU , z) = p(x1 
+
+> M
+
+| xU , z)p(x2 
+
+> M
+
+|
+
+xU , z), and the conditional dependency gap vanishes: T (x1 
+
+> M
+
+, x 2 
+
+> M
+
+| xU , z) = 0 .
+
+Summary. By introducing z, we reduce the residual correlation from σ2/(1 + σ2) to 0. The latent variable “explains away” the common fluctuation caused by the unobserved global context, making the independence assumption valid for parallel generation. G.2 Generated Samples on OpenWebText 
+
+We provide generated samples on OpenWebText at four sampling budgets. 
+
+G.2.1 1024 Sampling Steps 
+
+<|im_end|> interest rates. He said that overall, not including employment, they show lower interest rates than inflation in comparison to a higher level for older people. While many people are indebted, many have been given a credit line unsupported on home ownership as the UK rose. It is crucial to look at in real terms. In 2008 the pound hit back on the economy’s growth, which was more than it was in 2007. Back in 2008 was £204,000 with the average adjusted pay rate of 62%. It is important to bear to recognise, that much of the rise in the debt level was mainly due to a tightness of inflation, which came through deflation. However, as a result, we saw an increase in real value. Inflation dragged the pound to a broader level. He was forecasting the Federal Reserve Bank’s strength in April. More than a month earlier, for the same period in April, the real debt level was about 20% — approaching 27% while the UK Government had experienced 28%. The implication, seems the government will raise debt levels less than a month earlier. However, while rates were only 23.04 in the UK on 19 July it reflects a reduction in mortgages for technical contracts, which it would expect between November and November. An additional element of confidence level will start to be added to in new contracts, including requiring more purchases of a property to sell as an asset. Mr Cherry said: "For the most recent year we experienced a rapid depreciation." Stability of interest He said that the higher rates are likely due to a slightly higher interest level, but leaves the possibility of employment over a wider period of the government’s debt policy, without the potential for economic growth. "Given the urgency level of the UK Government to start action on the other side to affect economic activity, given this context, I think there is a temporary start of more widespread economic activity." The latest quarterly report suggests interest rates between 5.3% and 4.1%, though that the current "stable" funding status means, when interest rates continued to fall, the level of wages, which was large of the economy at this time and how much real pay kept falling. This sector is subject to a high level of joblessness, with real interest rates relating to real asset holders. Mr Cherry added that the UK economy has become almost certain, and with the coming boom with conditions hitting hard when it came to accelerating economic growth, the UK Government’s overall impact on employment continued to be constrained by the nominal interest rate of 5 per cent, in 2011 and an estimated rate of wage increases in 1978, 1991, 1904 and 1978, to the current January levels for February 2015. Real employment keeps falling While the UK Government’s nominal interest rate of 12 per cent fell in two years at 5.1 and down 4.8%, there was a stand-off in the late 2000s when the biggest drag on employment was lower employment worldwide. Yehy: "As compared with surveys of low employment, in large parts, that is understood that debt levels, or interest rates, steadily declined in 2007." He said from the figures "the average real interest rate in 2014 was 7.4 and up 5 percent, indicating that most of us now have a higher level of employment." He also said the higher balance sheets may have helped force students into spending more on student loans, thus increasing their income. Recent figures are particularly worrying as the UK ranks 36pc of students. ADAPT "A lot of young people are under this state who are losing employment - a number that is for the next parliament, I must say, yet. "It has been devastating - who is living here with little hope or peace." Yehy said that despite the overall rise in employment activity, between the first nine months last year the UK government was by 11 per cent, compared with 42 among four months over in a decade, then up by three or four years. "This has been encouraging for lots of people in England and Ireland, in terms of employment, for the foreseeable future." Yehy is concerned because of 27 unemployment extensions under which led to further job increases and surveys showing UK government alone experienced rising unemployment. Unemployment is responsible for individual jobs-related economic losses as employment is a small part of people losing employment," he said. "Sometimes when I hear people talk about unemployment extension cuts, they see - I can say, ’The cuts worked!" ’I don’t think they’re the best alternative to long-term unemployment’ "So I think people are a little unhappy. Some may sometimes have less savings than others. "I think in terms of benefits, maybe it doesn’t produce results, but I am told they will <|im_end|> 
+
+G.2.2 512 Sampling Steps 
+
+<|im_end|> . He had one of the last systematic trips to the Rocky Mountains and Hollywood. Two years later, one of the first to be America’s reporter was to be on Arizona’s Ellulia Island, Hawaii. He brings us three stories from Camp Everest, when The Post introduced him as a reporter in January. He had no plans for hosting the program. Frank Marousy, we arrived in La Mesa, on the Rocky Mountain, from the Grand Canyon. And I’m twenty years old and camped in La Mesa. In high school, I started to have a child, and got a job. And I thought I was fun. Authorities wanted me to know your story. I wondered why you’re in the news when you had an interview with one former Indonesian journalist, the role of scientists on the changing carbon chain. Simon found it hard to dig up a series of problems that she needed us to continue her activities as she told The Guardian on where her job and priorities came up at the time. “Could you explain a little bit about the challenges that have been in the laboratory for years? Well, this is what the IPCC was focusing on. Energy, and they had identified these problems, were the only challenges,” Mr. Pauler asked two former editors of The Guardian and The Guardian. We detailed on discussion of the available water resources on climate change. The Prime Minister reported to Malta and asked Mr. Simon as he followed up on climate negotiations, and asked what information he learned on the issues of climate change, he did ask about broader insights into seeing press releases on sites: “I have seen your interviews. has there was anything controversial? “ Mr. Pauler said, “There was information about climate change. Facebook, we were doing the research. I’m an ecologist at Stanford University. I’m on tour. So I only got the information when I was overseas. Catching news drew me on there; which, consequently, allowed me to learn about climate changes more slowly and more widely. And I see the addresses of some very prominent working leaders and others about how much it has influenced her because around the globe it inspired me. I had to support the prime minister, to support the national crisis in Cambodia, ... to Beijing’s climate policies, Frank Marousy,” told The Guardian. We also spoke with Mr. Pauler about the new climate plan. They both agreed last week that they would hold meetings with Mr. Simon after a special session. Mr. Pauler taped a long video clip on Wednesday in the reporters’ office when he and fellow reporters discussed climate change on the scientists panel that is now organising his annual retreat. Mr. Simon sat in a room with Mr. Pauler and she talked about addressing the financial difficulties focused on reducing emissions or helping their farmers defend themselves to frictions higher than their European ones. He also said, “It’s important to make sacrifices to be made from American food stocks, as well as our environment, from American food corporations — that they would protect themselves from food hazards and also have financial protection against food tariffs, because American farmers would be supported by their compensation for [security].” Mr. Simon said, “To me, something that you say is consistent with my understanding of going to the energy policy being on how we should be reducing carbon pollution, she said. I think many of the kind of priorities that we need, there — we need to prioritize.” He also added, “I would say we’re going to be so vulnerable because of the fact that there are already climate change and economic impacts out there mentioned. But that’s what my answer: Let’s make this country look better, so the health of our planet, not just the carbon-neutral environment but the health of people, and where the climate change is, that we need to start that change of climate change for everybody,” Mr. Simon told us. “At global levels, when we added carbon emissions in the way that we’re pushing for than climate change, the science and energy policy is being de-recorded and used. We have released some numbers for the last two years, Mr. Simon said. And the results of the new MGH report show that Australia is planning to reduce greenhouse gas emissions by a global level of 22.5 percent by 2050 from the 2010 current levels. They are also trying to limit emissions from the order of two percent in 2060 to zero by 2070, according to this aim of the UN report. If the global economy was going to achieve the least 8.2 percent of 2050 in the amount of CO2 emissions to nations, doing so instead is immoral and immoral. I don’t think it should — even if it’s federal policy — ” he said. “That is impossible.” I like to think people say that we’re not getting to ourselves right now. “The success of this international study is that there are very specific, measurable differences between these countries,” Mr. Simon said, referring to the provincial government carbon <|im_end|> 
+
+G.2.3 256 Sampling Steps 
+
+<|im_end|> people who knew the TV footage provided by the deputies. About 20 police officers took the show of a water truck photographed, and saw television crews right the other side of the fire and fire cars. One of it later came from Philadelphia fire departments. “That would be a deputy chief officer, and then he got to his car,” said Philadelphia Police Sarah at the television station. Afterward, once he got closer, he looked at the “area of the Sheriff’s works, and it happened.” “He said, What do you want to happen, John?” “We have four trucks. We have five ones. I’m concerned about that because it’s different. And part of the plan was that they wanted the drivers to look at cars.” Now with most firefighters, deputies responded, “You can’t identify any anybody.” Instead, local reporters tweeted out stories about a picture that sparked outrage. With local reporters like CNN and CBS broadcast wires to display their images depicting a Philadelphia flag as their own trucks, social media consolidated. 200 of the Philadelphia residents were angry that BPD officers were trying to plot the images into firefighters. “There have been a lot of reactions from those guys who know that in these things, it seems more sinister,” said Abby Yates from Berryessa. Talking about it, “It’s convincing that they have something that they want because you’re there to see what’s being captured and that you will be right to go.” On Facebook, Yates observed that there was a big quick reaction from the Philadelphia fire. It wasn’t a typical Philadelphia response. The Telegraph reported some local concussion video snippets from the Harrisburg interview of the fire cars. The following link came from AT&T: “We you saw is that fire car customers have to pay for rent for immediate repairs,” Yates said. Here is what the statement was: “If you see the same thing in a lot of a firefighter’s cars, would be some of them will have a life” to recease. Cornell 71’s Thomas Miller said that he was one of the journalists in Philadelphia to work the panoramic video. “All reporters are also interviewed by the Hall of Justice,” he said. “Look at technology and better, look at the cameras and then it’s different.” Miller also said that he was willing and determined to make such a video. Jokes describing a toic reporter as well as a YouTube climber, Miller described to CNN, “it was really cool, this is really a way to get this video to happen to first responders of Division 5/6 of Philadelphia.” "How did you make the video happen? Why this stuff?" Phillips asked. “Do you think there was responsible equipment with equipment and people,” he answered. "Do you support the America Foundation for Change and donate so much and have your support and help?" <|im_end|> Most of the races got started in Emanuel’s campaign for assistant Mayor Ped Pederson (where here are Philadelphia’s 18 editors) and last year was Eric Leverdehan, the owner of the newspaper, the owner of the Press and the owner of Wilson, who paid him huge amounts of money to help fund. But in November, it started in earnest and went ahead. And it wasn’t for single parent’s children where the figure started growing in in the midly-1950s and ’70s suburban side; it was the four other children of Debbie Leverdehan, who allegedly expressed a love for Ryan Schultz, in much of Sandy’s warding. The story happened shortly Debbie was 69 when her mother and her brother died recently in battling cancer from her family at the Center section of events. Sandy’s aunt Kyle Schultz was visiting Rhode Island for a weekend before Sandy’s dad died aged 61. Two of his sisters, Julia Owens, and Wayne Owens, had passed years from, and Lee, and Christine, Kelly. They first came here last Saturday from First Avenue in the Mapleland, and now four others in Cyslewood, Long Beach, when she was young five. And as soon as last was Debbie’s trip, Debbie said of her son Sandy’s getting to know she loved having Tim, Lee Schultz. She was a little beautiful. How was it? Debbie didn’t even know how much. It was a heroic move because it was a beautiful moment. "A big family had really cried for the mayor and Christine when she came on going. And this has happened from Kyle’s dad to come the whole other way. In fact, it was actually on Debbie’s end." Sandy’s daughter, Johanna Schultz and the Julia Owens family, was again turned blue Friday by her father Dick, who predicted won again be running like her mother thought they were. "I’ve got situations like this on here. There’s a candidate that doesn’t allow racial discrimination, I wouldn’t say they’ll get to this point," Debbie. Other kids will be rallying against the plan, for the night of Sunday’s quarter and a half season. Photo: AP Sunday 17-28 <|im_end|> 
+
+G.2.4 128 Sampling Steps 
+
+<|im_end|> We also expect about two or 10 volunteers who will introduce Bitcoin to our community. As the first of those who write about Bitcoin there, the Canadian Bitcoin Foundation is an example — it is actually a bit of a silver roof to keep the money flowing in. . . Bitcoin “root” represents an army of households that will feed them electricity and help us convert their income into urban and military — we will spread wealth all over the network. Ensure that, check out a way to use Bitcoin.info and a blog post. Create a Bitcoin cant repository and have a regular Bitcoin account. Morgan’s Bricket Update Before any new Bitcoin software is built in accordance with the initial materials we are going to start our for this purpose. Every Bitcoin node is measured on a character propagation and, eventually, we will happen a few things before it is all rolled on to the user. Bitcoin blocks is a fundamental specification with many types and multiple days., when you design the protocol, with this example, we would recommend that the Bitcoin block finish over time to do so. Then, that at the beginning of your BTC block development from Bitcoin Blocks is not interrupted by a 3rd fork. Bitcoin blocks can then be used as interrupters, even if the type has a format or to develop them as a way to ...read; the propagation of the Bitcoin blocks was not the way to handle transactions, and would be used by a miner. Based on what last in the above description, we still also recommend putting one or two spikes of a few thousand times throughout all of your BTC block. Try timed the “bittleneck” of the following block before the next transaction and change to 30 minutes a time if you want to get down to these transactions – 10 minutes – 30 as a BTC block. Design of these updates will be presented in the ends – use of the timestamp for Bitcoin Blocks for a broadcast at the end of the/block, resulting in a reverting process until the block is to complete in the preceding months. We argue a lot against this structure, Bitcoin Bitcoinism, which mentioned that a certain type of Bitcoin enthusiast is likely to actively participate in Bitcoin developments. However, we believe these types of projects should be more of the same as before: to allow the community to understand the hard forks that may occur in the current Bitcoin code, and expect to be frequently replaced with more forks in the future. It makes sense that the Bitcoin developers and the Bitcoin community would like to make our development easier, and we will try and not released them just so that it gets more sense. Before proceeding by saying that without a hard fork you may want to add another version or another version of Bitcoin, we caution you not to recognize the prominence of changes, it can take some time. The Bitcoin patchending has been updated and in the last 6 days, and our community will be working on this extension closely with the Bitcoin project. But as the fact of this, note of the state of the Bitcoin concept will help to change as to how Bitcoin should go about functions. For those who reach the Bitcoin community, this extension will help the Bitcoin community understand the future of Bitcoin, and their own future. Although it will take into account details of the current standard of development Bitcoin Vision. In the Bitcoin community, as well as the Light Architecture’s development and the community expertise in Bitcoin Bitcoin development, we recognize that this is a high priority for the Bitcoin community, and hence, it is more important to provide support for others in our community. Therefore, as a result of the Light Architecture’s development, we organize the Bitcoin Community workshop for conversations about the standard of development Bitcoin Vision. By the way, The early developers of the Bitcoin Society also received informal feedback from a moderator on our subreddit, called btc, that preceded the discussions. Participants received various changes in their project, some changes were random, and so often came from the design and implementation of the current Bitcoin development software, the Bitcoin Developers posted a thread to explain how they proposal it rather than tell us that there are currently no added versions. Coin Editions on the Internet You are select the first set from the basic process to use the Bitcoin project: on the page of the Bitcoin development website, you will select the version to send back to you on the Bitcoin publication. This page contains relevant information from the Bitcoin Republic, with links to draft papers, papers which will be gathered in the format below: Select the current version of their foundation; for those who submitted their project, they can click you to download a PDF copy, and they will select the complete version of the foundation. If you downloading a copy agreed to pay a fee, strip the rest with it and then pay for their work. Once the Bitcoin development is in the run, you will click on our website to download a stock picture, you will find one of the four sets: either one will the development project use on hand for the infrastructure, the other set for the distribution, you will also know a digital supply unit and you will add one other code to the <|im_end|>

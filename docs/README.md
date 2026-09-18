@@ -18,35 +18,41 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-09-17
-- 运行时间：2026-09-17 22:33:08 UTC
+- 最新运行日期：2026-09-18
+- 运行时间：2026-09-18 21:52:40 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：3
+- 本次总论文数：6
+- 精读区：4
 - 速读区：2
 
 ### 今日简报（AI）
-今日精读3篇、速读2篇，重点聚焦扩散模型加速与高效生成。最值得看的是两篇9分精读：Early-Bird Decoding用可学习块大小与并行采样加速扩散LLM，以及自适应步长控制器提升文生图效率。普通读者可先读这两篇精读，再按兴趣浏览BEV 3D检测与扩散逆问题速读。
-- 详情：[/202609/17/README](/202609/17/README)
+- 今日共生成 6 篇推荐（精读 4 篇，速读 2 篇）
+- 精读：《Understanding and Exploiting Diagonal Attention Sparsity in Autoregressive Image Generation》（9.0/10）, 《FASA: Feedback-Aware Sampling Adaptation for Efficient Diffusion-Based VLA Models》（8.0/10）
+- 速读：《Representation-based Masked Diffusion Model》（6.0/10）, 《On-Demand Attention: Language Models Know When to Recall》（6.0/10）
+- 这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。
+- 详情：[/202609/18/README](/202609/18/README)
 
 ### 精读区论文标签
-1. [Early-Bird Decoding: Accelerating Diffusion LLMs with Learnable Block Sizes and Parallel Sampling](/202609/17/2609.16450v1-early-bird-decoding-accelerating-diffusion-llms-with-learnable-block-sizes-and-parallel-sampling)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：通过提前并行解码加速扩散大语言模型推理
-2. [Efficient Text-to-Image Generation: An Adaptive Step Schedule Controller for Diffusion Models](/202609/17/2609.16572v1-efficient-text-to-image-generation-an-adaptive-step-schedule-controller-for-diffusion-models)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：免训练的自适应步数调度降低文本到图像扩散推理时间
-3. [Accelerating Diffusion Sampling via Speculative Draft Trees](/202609/17/2609.17691v1-accelerating-diffusion-sampling-via-speculative-draft-trees)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：通过投机草稿树加速扩散采样
+1. [Understanding and Exploiting Diagonal Attention Sparsity in Autoregressive Image Generation](/202609/18/2609.19702v1-understanding-and-exploiting-diagonal-attention-sparsity-in-autoregressive-image-generation)  
+   标签：评分：9.0/10、query:sparse-attn
+   evidence：面向自回归图像生成的稀疏注意力
+2. [FASA: Feedback-Aware Sampling Adaptation for Efficient Diffusion-Based VLA Models](/202609/18/2609.19475v1-fasa-feedback-aware-sampling-adaptation-for-efficient-diffusion-based-vla-models)  
+   标签：评分：8.0/10、query:diff-accel
+   evidence：免训练的扩散采样加速运行时框架
+3. [DART: Distillation-Aware Reparameterization for Training-Free LoRA Reuse in Few-Step Video Diffusion Models](/202609/18/2609.20051v1-dart-distillation-aware-reparameterization-for-training-free-lora-reuse-in-few-step-video-diffusion-models)  
+   标签：评分：8.0/10、query:diff-accel
+   evidence：面向少步视频扩散模型的免训练 LoRA 复用
+4. [Video DeltaNet: A Video-Native Hybrid Attention for Livestream Video Generation](/202609/18/2609.20744v1-video-deltanet-a-video-native-hybrid-attention-for-livestream-video-generation)  
+   标签：评分：8.0/10、query:sparse-attn
+   evidence：混合局部softmax与线性注意力降低视频扩散注意力开销
 
 ### 速读区论文标签
-1. [Bi-Level Routing and Sparse Spatial Attention based Multi-View BEV 3D Object Detection for Autonomous Driving](/202609/17/2609.14185v1-bi-level-routing-and-sparse-spatial-attention-based-multi-view-bev-3d-object-detection-for-autonomous-driving)  
-   标签：评分：6.0/10、query:sparse-attn
-   evidence：稀疏注意力机制降低检测骨干网络计算开销
-2. [Direct Conditional Transition Sampling for Diffusion Inverse Problems](/202609/17/2609.14596v1-direct-conditional-transition-sampling-for-diffusion-inverse-problems)  
+1. [Representation-based Masked Diffusion Model](/202609/18/2609.12382v1-representation-based-masked-diffusion-model)  
    标签：评分：6.0/10、query:diff-accel
-   evidence：免训练扩散采样器，避免昂贵的 ODE 积分与 MCMC
+   evidence：改进掩码扩散模型的并行文本生成效率
+2. [On-Demand Attention: Language Models Know When to Recall](/202609/18/2609.20734v1-on-demand-attention-language-models-know-when-to-recall)  
+   标签：评分：6.0/10、query:sparse-attn
+   evidence：局部优先解码配合选择性全局注意力实现高效长上下文推理
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
