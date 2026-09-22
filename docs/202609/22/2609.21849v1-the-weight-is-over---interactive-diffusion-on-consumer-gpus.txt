@@ -1,0 +1,127 @@
+Title: The Weight Is Over - Interactive Diffusion on Consumer GPUs
+
+URL Source: https://arxiv.org/pdf/2609.21849v1
+
+Published Time: Mon, 21 Sep 2026 01:04:46 GMT
+
+Number of Pages: 4
+
+Markdown Content:
+# The Weight Is Over — Interactive Diffusion on Consumer GPUs 
+
+## Frieder Ganz 
+
+Adobe Hamburg, Germany ganz@adobe.com 
+
+## Maximilian Müller 
+
+NVIDIA Würselen, Germany maximilianm@nvidia.com 
+
+Figure 1: FLUX.2-klein with its 4B text encoder replaced by Qwen3-0.6B plus a 187M-parameter translator (trained post-hoc; transformer and VAE frozen). Prompts: a horned owl at golden hour; an erupting volcano at night; Jupiter; a sumi-e ink-wash raccoon. 
+
+## Abstract 
+
+On-device inference is booming, but the momentum is almost all in language models. Deploying image generators on consumer hard-ware in production remains hard: diffusion pipelines are memory-hungry, latency-sensitive, and require orchestrating an embedder, a transformer, a decoder, and often further postprocessing that is not as standardized as LLM inference loops are. We navigate the trade-off between performance, quality, and model footprint to reach as many client devices in the wild as possible. Central is low-bit quan-tization (FP8/NVFP4), which yields two separable effects: weight quantization gives a significant reduction in memory footprint, while activation quantization adds a speedup on compute-bound stages. For multi-model pipelines whose weights exceed VRAM, a carefully designed GPU-memory offloading scheme is required across text encoders, VAE, and auxiliary conditioning models. The result is an interactive on-device diffusion image generation editor with a time-to-first-image-iteration (TTFI) under one second on recent GPUs, and maintained quality of service across a much wider set of hardware. We make three contributions: (1) an embedding translator that maps a small text encoder into a large encoder’s space to cut weight and latency; (2) a reproducible sweep recipe for navigating the speed/quality/memory triangle in diffusion pipelines; and (3) an interactive on-device image generation editor achieving sub-second TTFI on recent GPUs. 
+
+## CCS Concepts 
+
+• Computing methodologies → Image manipulation ; Machine learning .
+
+> This work is licensed under a Creative Commons Attribution 4.0 International License.
+> SA Technical Communications ’26, Kuala Lumpur, Malaysia
+> © 2026 Copyright held by the owner/author(s). ACM ISBN 979-8-4007-2841-9/2026/12 https://doi.org/10.1145/3829339.3847852
+
+## Keywords 
+
+diffusion models, on-device inference, text encoders, quantization, weight streaming 
+
+ACM Reference Format: 
+
+Frieder Ganz and Maximilian Müller. 2026. The Weight Is Over — In-teractive Diffusion on Consumer GPUs. In SIGGRAPH Asia 2026 Tech-nical Communications (SA Technical Communications ’26), December 01– 04, 2026, Kuala Lumpur, Malaysia. ACM, New York, NY, USA, 4 pages. https://doi.org/10.1145/3829339.3847852 
+
+## 1 Introduction 
+
+Diffusion image generation on consumer hardware requires re-implementation of the research code in a hardware-agnostic manner for large-scale deployment on client devices. Debugging precision and pipeline flow across text encoder, denoising transformer, de-coder, and auxiliary conditioning has many difficulties. All models must fit in limited video memory and run within an interactive latency budget. This ideally works on a substantial fraction of client devices, and not just on the largest GPU. We treat this as a speed/quality/memory triangle and attack it on three fronts. We focus on the first contribution, the embedding translator (Section 3); the quantization and offloading recipe (Section 4) and the interac-tive image generation editor (Section 5) are summarized. 
+
+## 2 State of the Art 
+
+Text-to-image diffusion has moved from U-Net latent models [Rom-bach et al. 2022] to rectified-flow transformers [Esser et al. 2024], while sampling has been compressed to a few steps and deploy-ment pushed onto mobile and consumer GPUs [Li et al. 2023; Zhao et al. 2024b]. These systems still condition on large pretrained text encoders; we instead ask how small that encoder can be, aligning a compact encoder to a large one’s features in the spirit of knowl-edge distillation [Hinton et al. 2015]; concurrent work likewise scales down diffusion text encoders [Wang et al. 2025]. Closest to us are adapter bridges that connect a frozen text encoder to a frozen arXiv:2609.21849v1 [cs.LG] 18 Sep 2026 SA Technical Communications ’26, December 01–04, 2026, Kuala Lumpur, Malaysia Ganz and Müller 
+
+diffusion model: ELLA attaches a large LLM through a timestep-aware connector [Hu et al. 2024], and LaVi-Bridge couples arbitrary language and vision backbones via LoRA plus an adapter [Zhao et al. 2024a]. Both add capacity to improve prompt following; our translator instead runs this mapping in reverse, aligning a much 
+
+smaller encoder to the large one’s exact conditioning space while leaving the diffusion model untouched, trading a little quality for large memory and latency savings on-device. 
+
+## 3 Embedding Translator 
+
+Diffusion models are usually trained with large text embedders taken from language models such as Qwen. We argue that for simple prompts, much smaller embeddings are enough. We propose a translator network that sits between a small text embedder and the diffusion model and maps the small embedder’s features into the conditioning the original large embedder produced. It is trained after the main pipeline is done—the diffusion model and VAE are left frozen—so it is a small, post-hoc add-on rather than a retraining step. Beyond just swapping in a smaller embedder, this lets us reuse an embedder that is already on the device : for instance, the text features of an OS-shipped foundation model such as Apple’s on-device LLM, so the image model ships no text encoder of its own. Translator networks can be of varying size (see our ablation, Table 1), but are in general far smaller than the original embedder. Each translator is trained post-hoc to regress the 0.6B encoder’s per-token features onto the frozen 4B conditioning under a feature-regression loss (the diffusion transformer and VAE stay frozen); variants are named by hidden width and depth—e.g., d3072 is a single 3072-wide MLP and d2048 ×8 eight 2048-wide blocks, while attn rows use attention blocks. We study this on FLUX.2-klein [Black Forest Labs 2024], replac-ing its 4B Qwen3 [Qwen Team 2025] encoder with Qwen3-0.6B plus a translator. Because all Qwen3 models share a tokenizer, the tokens line up and the translator can act token by token. We swept translator sizes from 3.5M to 187M parameters and measured image quality end to end on PartiPrompts [Yu et al. 2022] (LPIPS [Zhang et al. 2018] and CLIPScore [Hessel et al. 2021] against 4B images at the same seed), all at 1024 × 1024 (1K) resolution. Since translator outputs are not spatially aligned to the 4B reference, we treat LPIPS as a secondary deviation measure and CLIPScore as the primary semantic signal. How closely the translator matches the 4B features turned out not to predict image quality—that similarity stays flat at 0.73–0.77 for every size, while LPIPS ranges from 0.514 to 0.717. What matters is capacity: bigger translators steadily give better images. The largest (187M) reaches an LPIPS of 0.514—below the 0.553 we get just from re-running the 4B with a different seed—and a CLIPScore of 0.306, close to the 4B’s 0.328; the smallest (3.5M) is clearly worse. The cost stays low and roughly the same at any translator size: the 0.6B pass takes 88 ms and the translator adds at most 19 ms, so encoding runs in about 90–107 ms versus 435 ms for the 4B (PyTorch/MPS on a Mac M3 Max, 48 GB; in the deployed TensorRT-RTX pipeline the encoder runs in 4–12 ms and is off the critical path (Table 3), so on-GPU the translator’s gain is chiefly memory). The encoder-path weight memory drops from 8 GB to 1.4– 1.8 GB (Table 1) and is dominated by the shared 0.6B base, not the translator, so translator size trades quality for negligible memory. 
+
+Figure 2: Same prompt and seed across encoders (columns): the 4B reference, and Qwen3-0.6B with a 187M, 29M, and 3.5M translator. The 187M translator tracks the 4B; the 29M drifts to plausible but wrong content; and the 3.5M collapses toward a single dominant style regardless of the prompt. Rows: a red fox in a snowy forest; a bowl of ramen; a lighthouse on a cliff at sunset. All images are 1024 × 1024 (1K). Table 1: Translator ablation on FLUX.2-klein (Qwen3-0.6B + translator vs. the 4B encoder). Mem = encoder-path bf16 weights (shared 0.6B base ≈1.4 GB + translator, params ×2 B); the 4B row is the 4B encoder alone. Encode = text-encode latency (0.6B + translator), PyTorch/MPS, bf16. LPIPS/CLIPScore: end-to-end on 24 PartiPrompts vs. 4B at matched seed. †seed-variance floor (4B at two seeds). Atten-tion rows timed on CPU (MPS SDPA fallback).                                                                                   
+
+> Translator Params Mem Encode LPIPS ↓CLIP ↑
+> 4B (reference) 4000 M 8.0 GB 435 ms 0.553 †0.328 d3072 (MLP) 187 M 1.77 GB 107 ms 0.514 0.306 d2048 ×8158 M 1.72 GB 105 ms 0.550 0.299 d2048 ×798 M 1.60 GB 99 ms 0.564 0.295 d2048 wide 91 M 1.58 GB 98 ms 0.580 0.298 d2048 91 M 1.58 GB 98 ms 0.578 0.295 d2048 last 85 M 1.57 GB 98 ms 0.610 0.265 d1024 29 M 1.46 GB 92 ms 0.661 0.238 d1024 ×116 M 1.43 GB 90 ms 0.660 0.238 d512 10 M 1.42 GB 90 ms 0.710 0.179 d512 ×28 M 1.42 GB 90 ms 0.709 0.180 d512 2-lin. 6 M 1.41 GB 89 ms 0.712 0.185 d256 3.5 M 1.41 GB 89 ms 0.717 0.166 attn d1536 112 M 1.63 GB 164 ms 0.707 0.184 attn d1024 75 M 1.55 GB 149 ms 0.714 0.171
+
+Attention translators did not beat a same-size MLP. Two caveats, both consistent with the “simple prompts” claim: the best translator still follows prompts slightly worse than the 4B (0.306 vs 0.328), and no configuration—the 4B included—renders readable text, which is the 4-step sampler’s doing, not the encoder’s. The Weight Is Over — Interactive Diffusion on Consumer GPUs SA Technical Communications ’26, December 01–04, 2026, Kuala Lumpur, Malaysia 
+
+Table 2: Transformer precision on RTX PRO 6000 Black-well, 1024 × 1024 , single step, 4B encoder. Weights/Act. = weight/peak-activation memory. Quality vs. BF16 on 24 Par-tiPrompts: CLIP image similarity and LPIPS [Zhang et al. 2018] (mean ± std).                                       
+
+> Prec. Step Weights Act. CLIP ↑LPIPS ↓
+> BF16 105 ms 7,9 GiB 510 MiB ref. FP16 108 ms 7,9 GiB 510 MiB 0.99 ±0.01 0.02 ±0.02 FP8 73 ms 4,3 GiB 462 MiB 0.96 ±0.05 0.10 ±0.07 NVFP4 57 ms 2,8 GiB 475 MiB 0.92 ±0.08 0.23 ±0.09
+
+## 4 Speed/Quality/Memory Recipe 
+
+We attack the speed/quality/memory triangle with two orthogonal tools applied to the denoising transformer, which dominates all three axes: it is the largest component by weight, the slowest by accumulative time, and the most sensitive to precision loss. 
+
+Quantization. We use post-training quantization (PTQ) exclu-sively, applied directly to any pretrained checkpoint—in contrast to quantization-aware training (QAT), which can recover accuracy at very low bit-widths but requires training data and a fine-tuning loop. Quantization affects all three axes simultaneously: lowering weight precision reduces VRAM; activation quantization on FP8 [Micikevi-cius et al. 2022]/NVFP4 [NVIDIA Corporation 2025a] tensor cores cuts compute time; and quality is slightly affected relative to BF16, as measured in Table 2. FP16 and FP8 remain close to BF16, while NVFP4 shows the largest visual distance (LPIPS 0.23, CLIP sim. 0.92) with the highest prompt-to-prompt variance, indicating that quality degradation at that precision is content-dependent; orthogonal 4-bit weight-quantization methods such as SVDQuant [Li et al. 2025] could compose with our pipeline. Visual comparisons are provided in the supplemental material. On the RTX PRO 6000 Blackwell (Ta-ble 2). Low-bit quantization cuts per-step latency from 105 ms to 57 ms (1 .84 ×), pushing TTFI below 150 ms. Independent of the ex-act GPU SKU, the quantized transformer engine reduces its VRAM requirement from 8.4 GiB (BF16) down to 3.3 GiB for NVFP4 on any Blackwell GPU, with the Ada generation reaching 4.8 GiB using FP8. Beyond FP8 and NVFP4, FP16 is a worthwhile precision to evalu-ate alongside BF16 on GeForce hardware, since tensor core through-put for BF16 or FP16 with FP32 accumulation is just half of the peak FP16 throughput [NVIDIA Corporation 2025b]. For a compute-bound stage such as the denoising transformer, this can translate to significant speedups. 
+
+Weight streaming. Weight streaming keeps only a resident subset of denoiser weights in VRAM and transfers the remainder from pinned RAM on demand, overlapping PCIe transfers with compute. Because only weight residency changes, outputs are bit-identical to a fully resident run and quality is untouched, unlike quantization. It also does not reduce overall memory pressure, since the host must still hold the full model in RAM; it is therefore a poor fit for unified-memory (UMA) systems where VRAM and RAM share one pool. On discrete GPUs it converts VRAM scarcity into a latency cost governed by the reservoir decay factor 𝜆 = 𝐿 · 𝑀 /𝑊 : 𝐿 the execution latency between successive matrix multiplies, 𝑀 the host–device PCIe rate, 𝑊 the layer weight size. When 𝜆 ≥ 1 every transfer hides behind computation (zero added latency); when 𝜆 < 1the reservoir drains faster than it refills and awaited weights add overhead Δ = (𝑁 −𝐾 ) · 𝑊 /𝑀 (𝑁 layers, 𝐾 ≤ 𝑁 fully overlapped). Crucially 𝑀 is fixed by the host platform—a high-end RTX 5090 and a mobile RTX 5070 share the same PCIe Gen 5 slot—while compute throughput varies by an order of magnitude, so 𝜆 is far closer to 1 on a slow, low-VRAM GPU than on a fast one: the device that needs streaming most is where it is cheapest. Weight streaming reduces the fixed memory occupied by model weights from 𝑁 · 𝑊 down toward a smaller set of resident weights in GPU memory, but it introduces additional scratch memory that must remain on device. Now not only activation tensors are re-quired as scratch space but weights for layer 𝑖 +1 and 𝑖 to overlap computation. The minimum viable device memory target is there-fore 𝑇 min = 2 · 𝑊 max + 𝐴 max , where 𝑊 max is the largest single-layer weight tensor in the network and 𝐴 max is the peak activation tensor that must coexist with the weights during the forward pass. Stream-ing cannot reduce 𝑇 below 𝑇 min regardless of how aggressively blocks are evicted. Figure 3 (left) sweeps all BF16 and FP16 configurations on the RTX 4070 Ti (12 GB); the full numerical breakdown is in the supple-mental material. With the 4B encoder, 75 % and full residency both page ( 𝜆 ≪ 1, ∼40 × slowdown) because the encoder alone consumes 
+
+≈8 GB, leaving too little headroom for system resources. Replac-ing it with the 0.6B+translator encoder opens up the budget: 25 % through 75 % residency all land in the 𝜆 ≈ 1 regime with latency within 3 % of each other; only disabling streaming entirely crosses the paging cliff. At 25 % residency with the translator path, peak VRAM drops to 6.7 GB—well under the 8 GB tier—at only a 3 % step-time cost. FP16 is consistently 23–25 % faster than BF16 at every streaming level, confirming the GeForce throughput advantage dis-cussed above. The right panel shows the RTX PRO 6000 Blackwell, where the full model fits in VRAM: here streaming at low budgets (ws25, ws40) is slower than full residency, because the fast Ada compute drains the reservoir faster than PCIe can refill it ( 𝜆 < 1), illustrating that streaming is only beneficial when the model would otherwise not fit. The two techniques compose freely: quantization compresses the weights that streaming moves, so applying both multiplies the VRAM reduction while accelerating step times significantly. Since PTQ engines ship as a single set of weights, different precision formats require no additional storage. 
+
+## 5 Interactive On-Device Image Generation Editor 
+
+We combine the translator, quantization, and offloading into an interactive image generation editor that runs entirely on-device, targeting sub-second TTFI on recent GPUs. The editor is a native C++ application on ONNX Runtime’s TensorRT-RTX provider; each component’s engine is compiled once and cached, so switching encoder, precision, or streaming budget at runtime needs no rebuild. In the editor, encoder, precision, and weight-streaming residency are live controls with per-stage timings and GPU memory; even SA Technical Communications ’26, December 01–04, 2026, Kuala Lumpur, Malaysia Ganz and Müller 6 7 8 9 10 11 12 
+
+> peak VRAM (GB)
+> 10 3
+> 10 4
+> per-step latency (ms, log)
+> 11.2 GB usable
+> host-paging (VRAM over budget → stream from host)
+> streaming mandatory — full-resident pages
+
+RTX 4070 Ti (consumer, 12 GB)               
+
+> 25% 40% 25% 40% 25% 40% 75% 25% 40% 75% 100% 46810 12 14 16
+> peak VRAM (GB)
+> 10 2
+> 6 × 10 1
+> 2 × 10 2
+> per-step latency (ms, log)  everything fits — full-resident fastest; precision drives the front
+
+RTX PRO 6000 Blackwell (workstation, 96 GB)        
+
+> 25% 40% 75% 100% 25% 40% 75% 100% 25% 40% 75% 100% 25% 40% 75% 100% 25% 40% 75% 100% 25% 40% 75% 100%
+> precision
+> BF16 FP16 FP8 NVFP4
+> precision
+> BF16 FP16 FP8 NVFP4
+> encoder
+> 0.6B+translator (ours) Qwen3-4B (reference)
+
+Figure 3: Cross-device sweep (4 steps, 1024 2): peak VRAM vs. per-step latency. Label = resident-weight budget (100% = full); line = one (encoder, precision) trajectory; filled = 0.6B+translator, open = 4B. RTX 4070 Ti (12 GB): above the ≈11 .2 GB budget the denoiser pages, latency jumps ∼40 × (shaded). RTX PRO 6000 (96 GB): all resident—full-resident is fastest and precision drives the front. BF16 exact, FP16 ≥0.99 vs BF16. Table 3: On-device timings, NVIDIA RTX PRO 6000 Blackwell Workstation Edition, TensorRT-RTX, 1024 ×1024 , 4 steps. TTFI = encode + one denoising step + VAE decode. VRAM = peak device memory across the full pipeline. 
+
+Encoder Prec. Encode Step Decode TTFI Total VRAM 4B BF16 12 ms 105 ms 41 ms 158 ms 0.47 s 15.1 GB 0.6B+tr BF16 4 ms 105 ms 40 ms 149 ms 0.47 s 10.6 GB 0.6B+tr FP8 4 ms 73 ms 41 ms 119 ms 0.34 s 7.2 GB 0.6B+tr NVFP4 4 ms 57 ms 40 ms 102 ms 0.27 s 5.7 GB 
+
+on a 12 GB RTX 4070 Ti the 0.6B+translator path at half-resident weights renders 1024 × 1024 in about 3 s with headroom to spare. 
+
+RTX PRO 6000 Blackwell measurements. Table 3 sweeps the four configurations on an NVIDIA RTX PRO 6000 Blackwell Workstation Edition using TensorRT-RTX, generating a 1024 ×1024 image in four distilled steps. Replacing the 4B encoder with the 0.6B+translator (enc1) cuts VRAM from 15.1 GB to 10.6 GB with no change in per-step latency, since the encoder runs in 4 ms versus 12 ms and is not on the critical path. Quantization then drives both axes: FP8 halves the VRAM footprint to 7.2 GB and reduces step time to 74 ms; NVFP4 reaches 5.7 GB and 57 ms per step, bringing the full four-step end-to-end time to 0.27 s and TTFI to ≈100 ms. 
+
+## 6 Conclusion 
+
+Text conditioning for diffusion does not require a large encoder as used in training and can rely on a small post-hoc translator recovering much of a 4B encoder’s quality, using an embedder the device already hosts. Combined with quantization and offloading, this brings interactive diffusion to a much wider set of consumer GPUs. 
+
+Data and licensing. FLUX.2-klein, both Qwen3 encoders, and PartiPrompts [Yu et al. 2022] are Apache-2.0; all inference runs on-device. Code: https://github.com/NVIDIA/din-deploy. 
+
+## References 
+
+Black Forest Labs. 2024. FLUX. https://github.com/black-forest-labs/flux. Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, et al. 2024. Scaling Rectified Flow Transformers for High-Resolution Image Synthesis. In International Conference on Machine Learning (ICML) .Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras, and Yejin Choi. 2021. CLIPScore: A Reference-free Evaluation Metric for Image Captioning. In Conference on Empirical Methods in Natural Language Processing (EMNLP) .Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. 2015. Distilling the Knowledge in a Neural Network. arXiv preprint arXiv:1503.02531 (2015). Xiwei Hu, Rui Wang, Yixiao Fang, Bin Fu, Pei Cheng, and Gang Yu. 2024. ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment. arXiv preprint arXiv:2403.05135 (2024). Muyang Li, Yujun Lin, Zhekai Zhang, Tianle Cai, Xiuyu Li, Junxian Guo, Enze Xie, Chenlin Meng, Jun-Yan Zhu, and Song Han. 2025. SVDQuant: Absorbing Outliers by Low-Rank Components for 4-Bit Diffusion Models. In International Conference on Learning Representations (ICLR) .Yanyu Li, Huan Wang, Qing Jin, Ju Hu, Pavlo Chemerys, Yun Fu, Yanzhi Wang, Sergey Tulyakov, and Jian Ren. 2023. SnapFusion: Text-to-Image Diffusion Model on Mobile Devices within Two Seconds. In Advances in Neural Information Processing Systems (NeurIPS) .Paulius Micikevicius, Dusan Stosic, Neil Burgess, Marius Cornea, Pradeep Dubey, Richard Grisenthwaite, Sangwon Ha, Alexander Heinecke, Patrick Judd, John Ka-malu, Naveen Mellempudi, Stuart Oberman, Mohammad Shoeybi, Michael Siu, and Hao Wu. 2022. FP8 Formats for Deep Learning. arXiv:2209.05433 [cs.LG] https://arxiv.org/abs/2209.05433 NVIDIA Corporation. 2025a. Introducing NVFP4 for Efficient and Accurate Low-Precision Inference. https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/. NVIDIA Corporation. 2025b. NVIDIA RTX Blackwell GPU Architecture . Technical Report. NVIDIA Corporation. https://images.nvidia.com/aem-dam/Solutions/ geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf Qwen Team. 2025. Qwen3 Technical Report. arXiv preprint arXiv:2505.09388 (2025). Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. 2022. High-Resolution Image Synthesis with Latent Diffusion Models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .Lifu Wang, Daqing Liu, Xinchen Liu, and Xiaodong He. 2025. Scaling Down Text Encoders of Text-to-Image Diffusion Models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .Jiahui Yu, Yuanzhong Xu, Jing Yu Koh, Thang Luong, Gunjan Baid, Zirui Wang, Vijay Vasudevan, Alexander Ku, Yinfei Yang, Burcu Karagol Ayan, et al. 2022. Scaling Autoregressive Models for Content-Rich Text-to-Image Generation. Transactions on Machine Learning Research (TMLR) (2022). Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, and Oliver Wang. 2018. The Unreasonable Effectiveness of Deep Features as a Perceptual Metric. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) .Shihao Zhao, Shaozhe Hao, Bojia Zi, Huaizhe Xu, and Kwan-Yee K. Wong. 2024a. Bridging Different Language Models and Generative Vision Models for Text-to-Image Generation. In European Conference on Computer Vision (ECCV) .Yang Zhao, Yanwu Xu, Zhisheng Xiao, Haolin Jia, and Tingbo Hou. 2024b. MobileD-iffusion: Instant Text-to-Image Generation on Mobile Devices. arXiv preprint arXiv:2311.16567 (2024).

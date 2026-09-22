@@ -1,0 +1,633 @@
+Title: RBS-Attention: Radius-Bounded Sparse Prefill for Long-Context Large Language Models
+
+URL Source: https://arxiv.org/pdf/2609.20971v1
+
+Published Time: Mon, 21 Sep 2026 00:07:12 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# RBS-Attention: Radius-Bounded Sparse Prefill for Long-Context Large Language Models 
+
+Chuxu Song 1 Jiuqi Wei 2 Zhencan Peng 1* 1Department of Computer Science, Rutgers University 
+
+> 2
+
+OceanBase, Ant Group 
+
+{chuxu.song, zhencan.peng}@rutgers.edu weijiuqi.wjq@antgroup.com 
+
+Abstract 
+
+Long-context large language model inference is increasingly limited by prefill, where dense self-attention processes the entire prompt before generation begins. Sparse block selection can reduce this cost, but a block centroid may hide a highly relevant token among many irrelevant ones. We call this failure mode mean dilution 
+
+and propose RBS-Attention, a training-free sparse-prefill method with two complementary selection branches. A centroid base branch captures average relevance, while a rescue branch uses the maximum key-block radius and its prompt-, layer-, and head-dependent distribution to identify blocks at risk of underestimation. Independently thresholding the two branches and combining their masks controls the contribution of rescue blocks while preserving regular block-sparse FlashAttention execution. On H100 GPUs, RBS-Attention achieves 20.65 × standalone prefill-attention speedup, 11.92 × vLLM prefill-attention speedup, and 5.97 ×
+
+end-to-end time-to-first-token speedup at 128K on Qwen3-30B-A3B-Instruct-2507-FP8. On the dense Qwen3-32B model, it obtains 88.65 overall RULER accuracy versus 89.52 for dense attention; LongBench-v2, InfiniteBench, and Video-MME provide additional quality evaluation. Supporting experiments measure actual retention, compare selectors at matched density, and characterize block-size, threshold, and memory behavior. Together, these results support radius-adaptive dual-branch selection as an effective approach to long-context prefill. 
+
+# 1 Introduction 
+
+Large language models (LLMs) increasingly process long contexts for repository-level code understanding (Liu et al., 2024b; Jimenez et al., 2024), multi-document question answering (Yang et al., 2018; Liu et al., 2024a), retrieval-augmented generation (Lewis et al., 2020; Izacard and Grave, 2021), and multimodal reasoning (Yue et al., 2024; Fu et al., 2024). These applications may ingest tens or hundreds of thousands of tokens before generating an answer. The resulting prefill stage is latency-critical: optimized dense-attention kernels improve memory access and hardware utilization (Dao et al., 2022; Dao, 2023), but still perform a quadratic number of query–key interactions. Sparse-prefill systems reduce this work by inferring attention patterns or selecting coarse key-value blocks before computing token-level attention (Jiang et al., 2024; Fan et al., 2026; Lai et al., 2025; Xu et al., 2025). Their effectiveness depends on selecting useful evidence with substantially less work than dense attention. This is difficult when the evidence consists of a few tokens embedded in a heterogeneous block: a cheap aggregate can assign that block a low score even when an individual token is highly relevant. 
+
+> *Corresponding author.
+
+1arXiv:2609.20971v1 [cs.AI] 17 Sep 2026 We study this failure mode, which we call mean dilution . A key-block centroid summarizes average alignment with a query. If one relevant key is surrounded by unrelated keys, its contribution to the mean is diluted and the selector may discard the entire block. Once pruned, the block cannot contribute to the sparse attention output. Our empirical analysis connects this underestimation to the maximum distance of a key from its block centroid. Centroid rank underestimation increases with block radius, and the highest-radius quintile contains 39.5% of the top-5% attention blocks in our diagnostic measurement (Figure 1). This motivates using radius to identify blocks that warrant additional selection capacity. We propose RBS-Attention, a training-free selector that combines centroid relevance and radius-adaptive rescue . The base branch scores the centroid, retaining blocks with strong average relevance. The rescue branch adds a radius contribution scaled by a coefficient computed from the current prompt’s radius distribution, separately for each layer and KV head. Compact blocks receive little rescue weight; highly dispersed blocks receive more. Each branch applies its own relative threshold, and their masks are combined with the forced sink, local-window, and recent blocks. The two thresholds control the amount of selection devoted to relevance and rescue, while the realized block density remains content-dependent. The geometry underlying rescue is a centroid-centered L2 bound. Its role is to motivate a risk signal: the actual radius contribution is attenuated, so it need not remain a strict upper bound. This distinction also clarifies the relation to query-aware page retrieval such as Quest (Tang et al., 2024), which ranks decode-time pages using coordinate-wise min/max bounds. RBS uses a continuous, distribution-adaptive rescue weight together with a separately selected base branch to construct a two-dimensional prefill mask. Section 6 discusses related approaches to query-aware and heterogeneous-block selection, and our supporting experiments compare the complete selector with centroid-only, Full-L2, and Quest-style alternatives. After selection, RBS executes attention on the retained block pairs through a block-sparse FlashAttention kernel. The contribution lies in the radius-adaptive selection and the coordination of its two branches; relative-threshold selection and the sparse kernel build on existing prefill systems. This design preserves regular GPU execution while reducing the risk that centroid scoring removes a localized piece of evidence. Our primary evaluation covers system performance on H100 GPUs and quality on dense, MoE, and multimodal Qwen models (Yang et al., 2025; Qwen Team, 2025). On Qwen3-30B-A3B-Instruct-2507-FP8 at 128K context length, RBS achieves 20.65 × standalone prefill-attention speedup, 11.92 × vLLM prefill-attention speedup, and 5.97 × end-to-end time-to-first-token (TTFT) speedup. On Qwen3-32B, it obtains 88.65 overall RULER accuracy compared with 89.52 for dense attention, and 0.376 on LongBench-v2 compared with 0.394 for dense attention. InfiniteBench and Video-MME extend the quality evaluation. Supplementary A100 experiments measure actual retention under the original quality configurations and examine matched-density accuracy, selection mechanisms, parameter sensitivity, and memory use. Our contributions are: • An empirical analysis of mean dilution that links centroid underestimation to key-block dispersion and motivates radius-conditioned rescue. • A radius-adaptive dual-branch selector that combines base relevance and selective rescue through separate thresholds and a mask union, integrated with regular block-sparse prefill execution. • An evaluation of long-context acceleration and quality across dense, MoE, and multimodal models, supported by measured-density comparisons and analyses of the selector, its parameters, and its memory costs. 22 Background and Motivation 
+
+2.1 Long-context prefill attention 
+
+Given query, key, and value matrices Q, K,V ∈ RN×d , causal self-attention computes 
+
+Oi = ∑
+
+> j≤i
+
+exp (q⊤ 
+
+> i
+
+k j/√d)
+
+∑ℓ≤i exp (q⊤ 
+
+> i
+
+kℓ/√d) v j. (1) During prefill, this operation is applied to all prompt tokens before generation begins. The cost is quadratic in the prompt length N, which becomes expensive for 64K–128K contexts and beyond. Unlike decode attention, where each new token attends to a fixed prefix, prefill attention must process a large triangular attention matrix in a single latency-critical stage. This makes prefill acceleration complementary to KV-cache optimization and decode-time sparse attention. Block-sparse prefill reduces this cost by partitioning the attention matrix into query and key blocks of size B.For a query block i, the algorithm selects a subset of key blocks Si and executes dense attention only inside the selected block pairs. This design is attractive because block-level sparsity preserves coalesced memory access and maps naturally to GPU kernels. The main challenge is how to select Si cheaply without discarding blocks that contain important evidence. 
+
+2.2 Pattern-based and block-scoring approaches 
+
+Existing sparse-prefill systems often rely on one of two strategies. Pattern-based methods first infer an attention structure from probe queries or partial attention computation, then extend that structure to the full prefill stage. This works well when attention maps exhibit regular patterns, such as local windows, vertical retrieval columns, or slash-like long-range dependencies. However, the pattern may vary substantially across layers, heads, tasks, and positions, especially in heterogeneous long-context prompts. Block-scoring methods instead summarize each key block and score it against query blocks. A common summary is the key-block centroid, which allows the algorithm to cheaply approximate query-key relevance at the block level. This design is simple and efficient, but it implicitly assumes that the centroid is representative of the tokens inside the block. As we discuss next, this assumption can fail in exactly the scenarios where long-context reasoning is most sensitive. 
+
+2.3 Mean dilution and empirical observation 
+
+Consider a key block Kb = {k1, . . . , kB} with centroid 
+
+cb = 1
+
+B
+
+> B
+
+# ∑
+
+> t=1
+
+kt . (2) A mean-only block selector estimates the relevance of the block using a score such as q⊤cb. This can be misleading when a block contains a small number of highly relevant tokens and many irrelevant tokens. If k⋆ is a critical token but the remaining keys point in unrelated directions, then cb may be far from k⋆. The block may therefore receive a low mean score even though q⊤k⋆ is large. We call this failure mode mean dilution .Figure 1 provides empirical evidence for this motivation. Figure 1a shows that, under the same selected-block ratio, RBS-Attention captures substantially more oracle attention mass than existing sparse-prefill baselines, especially in the high-sparsity regime. Figure 1b groups blocks by radius quintile, from compact blocks (Q1) to highly dispersed blocks (Q5), and measures rank underestimation. Mean-only rank underestimation grows with radius. RBS-Attention reduces it in Q4 and Q5, with a 25-percentage-point difference in Q5; it does not reduce 3(a) Block selection quality under varying budgets.          
+
+> (b) Mean-only scoring underestimates dis-persed blocks.
+> (c) Q5 contains 39.5% of top-5% blocks.
+> Figure 1: Empirical observations motivating RBS-Attention. (a) Attention-weight coverage at a given selected-block ratio is higher for RBS than for the displayed sparse-prefill baselines. The dashed green curve denotes the reference ceiling for this coverage diagnostic, distinct from the per-token logit bound in Eq. (3). (b) Blocks are grouped by radius quintile from compact (Q1) to dispersed (Q5). Mean-only rank underestimation increases with radius; RBS reduces underestimation in Q4 and Q5, with a 25-percentage-point difference in Q5. (c) Of the top-5% attention blocks, 39.5% fall in the highest-radius quintile, compared with a uniform reference of 20%.
+
+this diagnostic in the lower-radius quintiles. Figure 1c shows why this matters: the highest-radius quintile Q5 contains 39.5% of top-5% attention blocks, compared with 20% under a uniform distribution. Together, these observations motivate a selector that keeps the efficient centroid path for compact blocks, but allocates a dedicated rescue path to high-radius blocks where mean dilution is most severe. Mean dilution is particularly damaging in long-context evaluation. Many long-context benchmarks stress retrieval, multi-hop reasoning, and evidence aggregation, where the answer may depend on a small span buried inside a long prompt. Pruning the block containing that span removes its key and value tokens from the affected attention operation and can lead to a downstream error. This motivates a block selector that remains cheap, but is more conservative when a block contains large internal variation. 
+
+2.4 Geometric screening and selective rescue 
+
+A useful geometric objective is the largest token logit in a key block, sb(q) = max k∈Kb q⊤k. With centroid cb and radius rb = max k∈Kb ∥k − cb∥2, Cauchy–Schwarz gives 
+
+sb(q) ≤ q⊤cb + ∥q∥2rb = UL2  
+
+> b
+
+(q). (3) This bound explains why the radius is useful: it limits how much an individual key can exceed the centroid score. A related construction underlies Quest (Tang et al., 2024), which stores coordinate-wise minima and maxima for a KV-cache page. Its query-dependent page score is the upper bound of an axis-aligned box. The box and the centroid-centered ball capture different aspects of key geometry; neither bound is uniformly tighter than the other (Appendix E). A conservative bound alone does not determine an effective sparse selection policy. A large radius increases the full L2 bound even when the query is poorly aligned with the within-block deviations. Under a limited computation budget, such blocks can displace other useful candidates. RBS-Attention therefore uses the radius as a signal of possible mean dilution, modulates its contribution using the current radius distribution, and retains a separately thresholded centroid branch. The resulting selector balances ordinary relevance with selective rescue. Its quality is an empirical question about which blocks are retained, rather than a consequence of one geometric bound dominating another. 43 Method 
+
+RBS-Attention accelerates long-context prefill by selecting key blocks through a radius-adaptive dual-branch score and then executing block-sparse attention over the selected blocks. The design is guided by three requirements: (i) block scoring should be much cheaper than dense attention, (ii) it should reduce false-negative pruning caused by mean dilution, and (iii) it should preserve the regular block-sparse execution pattern needed for high GPU efficiency. 
+
+3.1 Block statistics and radius-adaptive coefficient 
+
+We partition the sequence into blocks of size B. For a key block Kb = {kb,1, . . . , kb,B}, RBS-Attention computes its centroid 
+
+cb = 1
+
+|Kb| ∑
+
+> k∈Kb
+
+k, (4) and its maximum radius 
+
+rb = max 
+
+> k∈Kb
+
+∥k − cb∥2. (5) The centroid captures the average direction of the block, while the radius captures the largest token-level deviation from that centroid. The radius is informative, but applying the full radius term to every block can be overly conservative. We therefore convert the radius into a block-wise rescue coefficient. For each layer and KV head, let rlow and rhigh be the median and 90-th percentile of the block radii: 
+
+rlow = quantile (r, 0.5), rhigh = quantile (r, 0.9). (6) For rhigh > rlow , we define 
+
+βb = clamp 
+
+ rb − rlow 
+
+rhigh − rlow 
+
+, 0, 1
+
+
+
+. (7) Compact blocks with radius below the median receive little or no rescue weight, while highly dispersed blocks near the top radius quantile receive the full rescue term. This normalization makes the method adaptive to the radius distribution of the current layer, head, and prompt. The quantiles are computed from the prompt’s block statistics; they do not require optimizing thresholds separately for each prompt. 
+
+3.2 Dual-branch block scoring and selection 
+
+RBS-Attention uses two complementary scoring branches. The base branch is a centroid score: 
+
+ℓbase (q, b) = q⊤cb. (8) This branch efficiently captures blocks whose centroid is a reliable summary. The rescue branch augments the centroid score with a radius-adaptive term derived from Eq. (3): 
+
+ℓrescue (q, b) = q⊤cb + ∥q∥2rbβb. (9) For βb = 1, the rescue logit equals the full L2 upper bound. For βb < 1, it is a risk score and need not upper-bound every token logit in the block. This attenuation is deliberate: compact blocks receive little radius uplift, while dispersed blocks receive more opportunity for rescue. Appendix E gives the bound and its precise relationship to the attenuated score. 5Query-block aggregation. Sparse prefill selects key blocks at the query-block level rather than per query token. Let Qi denote query block i, and let Ci contain its causal candidate key blocks. For each branch z ∈ { base , rescue },the block score is proportional to the sum of exponentiated token logits. One numerically stable expression is 
+
+mzi = max 
+
+> b∈Ci
+
+max  
+
+> qt∈Qi
+
+ℓz(qt , b)/√d, (10) 
+
+Szi,b = ∑ 
+
+> qt∈Qi
+
+exp 
+
+
+
+ℓz(qt , b)/√d − mzi
+
+
+
+. (11) The shift is shared across candidate key blocks within a branch and query block, so it cancels in relative-score comparisons. An equivalent implementation can use local log-sum-exp reductions and then restore their relative scales. 
+
+Independent thresholds and mask union. Following the relative-threshold selection strategy used in prior block-sparse prefill systems (Fan et al., 2026), we apply separate thresholds to the two branches: 
+
+M base  
+
+> i
+
+=
+
+
+
+b ∈ Ci : Sbase  
+
+> i,b
+
+≥ αbase max 
+
+> b′∈Ci
+
+Sbase 
+
+> i,b′
+
+
+
+, (12) 
+
+M rescue  
+
+> i
+
+=
+
+
+
+b ∈ Ci : Srescue  
+
+> i,b
+
+≥ αrescue max 
+
+> b′∈Ci
+
+Srescue 
+
+> i,b′
+
+
+
+. (13) The final selected set is the union 
+
+M final  
+
+> i
+
+= M base  
+
+> i
+
+∪ M rescue  
+
+> i
+
+∪ M sink /window /last  
+
+> i
+
+. (14) Here M sink /window /last  
+
+> i
+
+denotes forced preservation of causal attention-sink, local sliding-window, and recent blocks (Xiao et al., 2024; Beltagy et al., 2020). Forced blocks and overlap between branches are included once in the measured density of the final mask. The two thresholds control selection aggressiveness independently; they are not fixed Top-K budgets. For fixed thresholds, the number of retained blocks can vary with the prompt, layer, and head. We use budget allocation to refer to this control over the base and rescue paths, and report actual density when comparing operating points. A smaller threshold admits more blocks within that branch. Keeping both branches matters even though the unscaled rescue logits are at least as large as the base logits. Radius uplift changes scores by different amounts across key blocks and can also increase the maximum used by the rescue threshold. Consequently, rescue-only selection need not contain all blocks selected by the base branch. Taking the union preserves the original relevance path while admitting additional radius-supported candidates. This separation, together with the adaptive βb, distinguishes RBS-Attention from using the full L2 bound as a single ranking score. 
+
+3.3 Sparse execution and complexity 
+
+After block selection, RBS-Attention executes attention over the selected block pairs using a block-sparse FlashAttention kernel (Dao et al., 2022; Dao, 2023). The overall procedure is summarized in Algorithm 1. Retained tiles use token-level dot products, causal masking, and softmax normalization over the retained causal keys, up to the chosen arithmetic precision. The approximation is the omission of unselected blocks; the output is not claimed to equal dense attention. Let M = ⌈N/B⌉ denote the number of blocks. Centroid and radius computation costs O(Nd ), followed by quantile computation over M radii for each layer and KV head. With the token-query aggregation in Eq. (11), scoring all queries against key centroids costs O(NMd ) = O(N2d/B), ignoring causal constant factors. The two 6Algorithm 1: RBS-Attention sparse prefill 
+
+Input: Queries Q, keys K, values V , block size B, thresholds αbase , αrescue , sink/window/recent rules. 
+
+Output: Attention output O. 
+
+> 1
+
+Partition Q, K,V into blocks.  
+
+> 2
+
+foreach key block K b do  
+
+> 3
+
+cb ← 1 
+
+> |Kb|
+
+∑k∈Kb k 
+
+> 4
+
+rb ← max k∈Kb ∥k − cb∥2 
+
+> 5
+
+Compute rlow = quantile (r, 0.5) and rhigh = quantile (r, 0.9). 
+
+> 6
+
+foreach key block K b do  
+
+> 7
+
+Compute βb from Eq. (7)  
+
+> 8
+
+foreach query block Q i do  
+
+> 9
+
+foreach causal key block K b do  
+
+> 10
+
+Compute ℓbase (qt , b) = q⊤ 
+
+> t
+
+cb for qt ∈ Qi 
+
+> 11
+
+Compute ℓrescue (qt , b) = q⊤ 
+
+> t
+
+cb + ∥qt ∥2rbβb for qt ∈ Qi 
+
+> 12
+
+Aggregate logits into Sbase  
+
+> i,b
+
+and Srescue  
+
+> i,b
+
+with comparable scales across candidate blocks (Eq. (11))  
+
+> 13
+
+M base  
+
+> i
+
+← { b : Sbase  
+
+> i,b
+
+≥ αbase max b′ Sbase  
+
+> i,b′
+
+} 
+
+> 14
+
+M rescue  
+
+> i
+
+← { b : Srescue  
+
+> i,b
+
+≥ αrescue max b′ Srescue  
+
+> i,b′
+
+} 
+
+> 15
+
+M final  
+
+> i
+
+← M base  
+
+> i
+
+∪ M rescue  
+
+> i
+
+∪ M sink /window /last  
+
+> i
+> 16
+
+O ← BlockSparseFlashAttention (Q, K,V, {M final  
+
+> i
+
+}) 
+
+> 17
+
+return O
+
+branches share the centroid dot products; query norms cost O(Nd ) and the radius uplift and token aggregation add O(NM ) scalar operations. Relative thresholding and mask union operate on O(M2) block scores. Let Kavg be the average number of selected key blocks per query block. Sparse attention costs O(MK avg B2d).Thus, the method reduces the expensive token-to-token computation when Kavg ≪ M, while incurring an explicit selector cost. It does not remove quadratic dependence on N in the worst case. Persistent key summaries require O(Md ) storage per KV head: a centroid vector and two scalars, rb and 
+
+βb, per key block. The selected block-index list uses O(MK avg ) entries. Temporary selector workspace is separate from these summaries: materialized block scores or masks use O(M2) space, and materializing all token-to-centroid logits uses O(NM ) space; tiled reductions can reduce the latter. Consequently, summary size alone does not characterize peak GPU memory. We report measured workspace and end-to-end peak memory in the supplementary system analysis. 
+
+# 4 Experimental Setup 
+
+4.1 Models and evaluation protocols 
+
+Our primary evaluation uses NVIDIA H100 GPUs and Qwen3-30B-A3B-Instruct-2507-FP8 (Yang et al., 2025) for standalone and vLLM system measurements (Kwon et al., 2023). We additionally evaluate the dense model Qwen3-32B to test whether the quality results extend beyond mixture-of-experts (MoE) architectures. For multimodal evaluation, we use Qwen3-VL-30B-A3B-Thinking-FP8 (Qwen Team, 2025). Unless otherwise noted, the serving stack uses vLLM 0.10.0 and FlashAttention 2.8.3. Each speedup is normalized to dense execution with the same model, hardware, context length, and serving stack. We supplement these primary experiments with controlled accuracy and system measurements on A100 GPUs. 7In this protocol, Qwen3-30B-A3B-Instruct-2507-FP8 uses tensor parallelism of two (TP=2), and Qwen3-32B uses TP=4. The FP8 checkpoint loader used in our stack imposes a shard-size divisibility constraint that prevents TP=4 for the MoE model; all methods for that model therefore use the same two-GPU configuration. The A100 experiments examine actual-density matching, selector alternatives, sensitivity, calibration, throughput, and memory. They support the interpretation of the primary results; their latency values are not interchangeable with the H100 scaling measurements. 
+
+4.2 Baselines and selector comparisons 
+
+The primary sparse-prefill baselines are FlashPrefill (Fan et al., 2026), FlexPrefill (Lai et al., 2025), MInfer-ence (Jiang et al., 2024), and XAttn (Xu et al., 2025), together with dense attention. FlashPrefill is a close comparison because it also uses block-sparse prefill and relative-threshold selection, with mean-based block scor-ing. FlexPrefill, MInference, and XAttn provide alternative selection and execution strategies. The InfiniteBench comparison includes Dense, FlashPrefill, XAttn, and RBS-Attention. To examine the role of radius-adaptive selection, we also compare centroid-only scoring, the full L2 bound, and a Quest-style selector (Tang et al., 2024) in a shared prefill backend. The Quest-style adaptation uses per-dimension key minima/maxima and query-dependent block selection. This experiment compares selection policies under the same prefill execution conditions; it does not measure the official Quest decoding system. The full-L2 variant uses the unattenuated radius contribution, whereas RBS-Attention uses adaptive radius attenuation and a separately thresholded base/rescue union. The controlled selector comparison uses the same model, backend, and block size. 
+
+4.3 Benchmarks and quality metrics 
+
+RULER (Hsieh et al., 2024) and LongBench-v2 (Bai et al., 2025) are the main quality benchmarks. RULER tests long-context retrieval and reasoning across increasing context lengths. LongBench-v2 covers short, medium, and long tasks; the primary results use 503 samples for each model. We additionally report representative InfiniteBench (Zhang et al., 2024) tasks and Video-MME (Fu et al., 2024). The Video-MME evaluation uses 1,000 samples and 32 frames per video. The main tables report benchmark scores for the default and budget-sweep configurations. Additional selector diagnostics use the first ten examples from each of the 13 RULER-128K tasks, totaling 130 examples. This controlled subset has a different evaluation scope from the primary RULER benchmark, so its absolute scores are interpreted within the corresponding table. RULER and Video-MME scores are reported as percentages; LongBench-v2 and InfiniteBench scores use the benchmark’s unit-interval scale. 
+
+4.4 Actual density and hyperparameters 
+
+We define actual density as 
+
+ρ = #{selected valid causal block pairs }
+
+#{all valid causal block pairs } . (15) The numerator counts the final pairs entering the sparse-attention kernel, including the base/rescue union and any preserved sink, local-window, or recent blocks. We first compute density for each sample, then report its mean and, where available, its median (p50) and 90th percentile (p90). A target budget is a calibration target rather than a guarantee that different methods or prompts retain exactly the same fraction. We therefore report measured density beside quality scores and distinguish the fixed system-prompt density from the accuracy-set density. Unless stated otherwise, RBS and the controlled selector comparisons use query and key block size B = 128. Other baselines retain their native selection layouts. The radius-adaptive coefficient uses the median and 90th-percentile block radii, rlow = quantile (r, 0.5) and rhigh = quantile (r, 0.9). The default thresholds are αbase = 0.22 8and αrescue = 0.18. FlashPrefill uses its tuned α = 0.12 setting and XAttn uses stride = 16 in the primary quality experiments. Budget sweeps and sensitivity experiments recalibrate their selection parameters as specified in the respective tables. Thresholds are fixed after calibration; the prompt-dependent radius normalization is computed directly at runtime without a per-prompt parameter search. For the primary LongBench-v2 configurations, auxiliary density measurements use a fixed-seed selector-only sample of 20 examples from each length category. For the primary RULER configurations, density is measured on one example per task at each context length. These measurements estimate the budgets of the original configurations; they are not full-dataset density measurements. The accuracy scores themselves retain the full primary evaluation. 
+
+4.5 System metrics 
+
+The primary H100 measurements span 16K–256K context and report (i) standalone prefill-attention speedup, (ii) vLLM prefill-attention speedup, and (iii) end-to-end time-to-first-token (TTFT) speedup. TTFT measures elapsed time from request arrival until the first output token is available. These metrics respectively characterize standalone attention execution, the attention path in the serving stack, and user-visible latency. The supplementary A100 measurements additionally report selector time, sparse-attention time, prompt throughput, and memory. Selector time includes block statistics, normalization, score computation, thresholding or Top-K, mask union when applicable, and index compaction. Prompt throughput is the number of processed prompt tokens divided by batch wall-clock time, normalized to Dense at the same context and batch size. Peak allocated memory is the maximum of torch.cuda.max_memory_allocated over TP ranks. We report persistent block statistics and temporary workspace separately because neither alone characterizes the full-model memory peak. 
+
+# 5 Results 
+
+5.1 Long-context acceleration 
+
+Figure 2 reports the H100 system measurements on Qwen3-30B-A3B-Instruct-2507-FP8. At 128K context, RBS-Attention achieves 20.65 × standalone prefill-attention speedup, compared with 11.98 × for FlashPrefill, 4.78 × for FlexPrefill, 2.25 × for MInference, and 2.97 × for XAttn. Within vLLM, RBS-Attention reaches 11.92 × prefill-attention speedup and 5.97 × end-to-end TTFT speedup at 128K. The gains grow in the long-context regime, where the attention work avoided by block selection becomes large enough to amortize selector overhead. At shorter contexts, some sparse methods approach or fall below dense speed. This behavior motivates evaluating quality and retained density alongside speed: an effective prefill selector must avoid both excessive selection overhead and the loss of task-relevant blocks. The following quality experiments evaluate this trade-off, and the supplementary controlled experiments further examine differences in actual retained budget. 9Figure 2: long-context speedup measurements on Qwen3-30B-A3B-Instruct-2507-FP8 using H100 GPUs. (a) Standalone prefill-attention speedup. (b) vLLM prefill-attention speedup. (c) End-to-end vLLM TTFT speedup. Every speedup is normalized to Dense at the same context length and under the same execution setup. These are the default operating configurations; supplementary budget-calibrated comparisons with measured densities are reported in Appendix B. 
+
+5.2 Budget–accuracy trade-off on RULER 128K 
+
+Table 1 reports the budget sweep on RULER 128K with Qwen3-30B-A3B-Instruct-2507-FP8. Dense attention obtains 89.69% accuracy. RBS-Attention has the highest sparse accuracy at each of the four nominal target budgets, reaching 80.28% at 5.34% actual density and 88.36% at 11.03% actual density. The measured densities differ across methods, so the nominal-budget table alone does not establish an exactly matched-budget comparison.                                
+
+> Table 1: RULER-128K budget sweep on Qwen3-30B-A3B-Instruct-2507-FP8. Each cell reports actual density / accuracy ,both in percent. Dense obtains 89.69% accuracy at 100% density. Bold denotes the highest sparse accuracy within each nominal target row; actual densities are reported explicitly because the targets are not exact matches. Target FlashPrefill XAttn FlexPrefill MInference RBS-Attention 1% 1.77 / 56.65 1.02 / 44.51 1.17 / 31.64 1.01 / 50.83 1.80 / 60.36
+> 2% 1.91 / 63.32 1.71 / 50.28 2.25 / 41.41 1.82 / 68.58 2.03 / 70.51
+> 5% 4.69 / 75.36 3.81 / 60.47 3.59 / 50.72 5.90 / 76.41 5.34 / 80.28
+> 10% 10.19 / 85.01 7.63 / 71.01 6.69 / 65.87 11.45 / 87.18 11.03 / 88.36
+
+To check whether the observed advantage persists when budgets are aligned more tightly, we recalibrate baselines to the RBS density anchors (Appendix A). At the 5.34% anchor, with every method within 0.10 percentage point of the target, RBS obtains 80.28 accuracy, compared with 76.87 for MInference, 74.73 for FlashPrefill, 66.77 for XAttn, and 58.56 for FlexPrefill. This additional comparison supports the observation that the base/rescue allocation preserves useful blocks under a limited compute budget. 
+
+5.3 Main quality results: RULER and LongBench-v2 
+
+Table 2 reports LongBench-v2 quality and measured density estimates for the evaluated configurations. On Qwen3-32B, RBS obtains 0.376, matching the best sparse total score, with 9.719% estimated mean density. On Qwen3-30B-A3B-Instruct-2507-FP8, RBS obtains 0.370 with 7.912% estimated mean density, compared with Dense’s 0.388. The density estimates make the operating points more informative: for example, XAttn matches RBS’s dense-model total score while retaining an estimated 29.197% of block pairs, and MInference retains more than half of the pairs on average on both models. 10 Table 2: LongBench-v2 quality with supplementary density measurements. Accuracy uses 503 samples per model. Density (mean/p50/p90, in percent) is estimated using a fixed-seed selector-only sample of 20 short, 20 medium, and 20 long examples under the original configurations. It is not a full-503-sample density measurement. Bold denotes the best sparse accuracy in each column. Accuracy Estimated density (%) Method Short Medium Long Total Mean p50 p90 Qwen3-32B Dense 0.450 0.367 0.380 0.394 100 100 100 FlashPrefill 0.378 0.349 0.361 0.362 14.149 9.197 28.047 XAttn 0.439 0.340 0.370 0.376 29.197 26.711 43.858 FlexPrefill 0.422 0.293 0.352 0.352 11.397 10.203 16.260 MInference 0.417 0.335 0.315 0.360 55.763 44.204 87.840 RBS-Attention 0.411 0.353 0.361 0.376 9.719 5.515 20.172 Qwen3-30B-A3B-Instruct-2507-FP8 Dense 0.422 0.358 0.388 0.388 100 100 100 FlashPrefill 0.400 0.340 0.315 0.356 11.060 7.269 22.325 XAttn 0.383 0.316 0.352 0.348 26.129 24.297 37.965 FlexPrefill 0.328 0.350 0.343 0.340 16.544 15.863 23.124 MInference 0.406 0.302 0.352 0.348 51.851 40.397 81.776 RBS-Attention 0.406 0.340 0.370 0.370 7.912 4.638 16.367 
+
+Table 3: RULER accuracy on Qwen3-32B with supplementary actual-density estimates. Each method has an accuracy row followed by an italic density row; all values are percentages. Accuracy uses the benchmark evaluation. Density is measured on one example per task at each length, so it estimates the original configuration’s budget. Overall is the reported average across lengths. Bold denotes the highest sparse accuracy. Method 4K 8K 16K 32K 64K 128K Overall Dense 93.30 91.90 92.00 89.70 89.50 80.70 89.52 
+
+density 100 100 100 100 100 100 100 
+
+FlashPrefill 91.00 89.20 88.80 81.50 81.80 68.10 83.40 
+
+density 81.091 59.781 40.970 26.754 16.872 10.075 39.257 
+
+XAttn 92.40 91.30 90.90 86.80 87.20 79.20 87.97 
+
+density 69.518 59.482 51.776 43.645 36.201 29.196 48.303 
+
+FlexPrefill 72.30 75.10 78.30 79.00 77.70 73.60 76.00 
+
+density 30.000 23.689 20.140 16.915 14.999 11.719 19.577 
+
+MInference 92.61 91.24 90.41 87.59 88.96 80.96 88.63 
+
+density 100.000 99.990 97.353 86.940 70.251 47.968 83.750 
+
+RBS-Attention 91.10 89.90 91.20 89.50 89.60 80.57 88.65 
+
+density 73.030 48.465 30.185 18.224 10.720 6.028 31.109 
+
+11 Table 3 reports the RULER results on Qwen3-32B. RBS scores 88.65 overall, compared with 89.52 for Dense and 88.63 for MInference. At 128K, RBS reaches 80.57 versus Dense’s 80.70 while retaining an estimated 6.028% of causal block pairs. This result also demonstrates that the method’s quality preservation extends to a dense architecture. The density estimates decrease as context grows for these fixed-threshold configurations, highlighting why a threshold should not be interpreted as a fixed sparsity ratio. 
+
+5.4 Additional results: InfiniteBench and Video-MME 
+
+Table 4 extends the text evaluation to representative InfiniteBench tasks. RBS obtains a macro average of 0.362, compared with 0.338 for FlashPrefill and 0.352 for XAttn. Improvements over FlashPrefill are particularly apparent for key–value retrieval and long-dialogue question answering. These results provide additional evidence that radius-adaptive selection can preserve useful context across tasks beyond RULER and LongBench-v2.  
+
+> Table 4: InfiniteBench results on Qwen3-32B. Task names follow the benchmark abbreviations. Scores use the unit-interval scale; the last row is the reported macro average over the listed tasks. Bold denotes the best sparse score.
+
+Task Dense FlashPrefill XAttn RBS-Attention Ret.KV 0.244 0.148 0.194 0.204 
+
+Ret.PassKey 1.000 1.000 1.000 1.000 
+
+Ret.Num 1.000 1.000 1.000 0.998 En.Sum 0.289 0.291 0.272 0.296 
+
+En.MC 0.105 0.100 0.105 0.092 En.QA 0.087 0.075 0.084 0.083 Zh.QA 0.115 0.106 0.109 0.112 
+
+En.Dia 0.360 0.170 0.310 0.325 
+
+Math.Find 0.451 0.463 0.413 0.459 Code.Debug 0.066 0.028 0.030 0.053 
+
+Macro average 0.372 0.338 0.352 0.362 
+
+Table 5 reports the multimodal evaluation. RBS obtains 65.98 overall on Video-MME, compared with 66.16 for Dense, and has the highest total score among the sparse methods in this comparison. The long-video score is 62.1. This is supporting quality evidence for multimodal prefill; the H100 text-model speedups should not be read as measurements of this vision-language model.  
+
+> Table 5: Video-MME results on Qwen3-VL-30B-A3B-Thinking-FP8, using 1,000 samples and 32 frames per video. Scores are percentages. Bold denotes the best sparse score.
+
+Method Short Medium Long Total Dense 73.6 62.5 58.6 66.16 FlashPrefill 71.2 61.5 60.9 65.26 XAttn 72.8 61.0 61.2 65.76 FlexPrefill 71.0 57.9 56.3 62.82 MInference 71.4 60.5 59.8 64.72 RBS-Attention 72.7 61.2 62.1 65.98 
+
+12 5.5 Supporting evidence for adaptive rescue 
+
+Table 6 examines whether a full geometric bound alone reproduces the benefit of RBS. All four selectors use the same prefill backend, B = 128, the same 130 RULER-128K examples, and actual density within 0.10 percentage point of 5.34%. RBS has the highest point estimate at 76.67, compared with 73.63 for centroid-only, 72.41 for the unattenuated full-L2 selector, and 73.71 for Quest-style selection. This pattern is consistent with the role of adaptive base/rescue allocation: making every radius contribution maximally conservative is not necessarily the best use of a limited retained budget. However, the paired bootstrap difference intervals between RBS and each comparator include zero; this small diagnostic set does not establish statistical significance.     
+
+> Table 6: Supporting selector comparison on 130 RULER-128K examples with Qwen3-30B-A3B-Instruct-2507-FP8. All selectors share the prefill backend and B=128. Accuracy and density are percentages. Intervals are sample-bootstrap 95% confidence intervals for each accuracy estimate, not intervals for between-method differences. Quest-style denotes a controlled prefill adaptation.
+
+Selector Actual density Accuracy 95% CI Centroid-only 5.300 73.63 [68.00, 81.21] Full-L2 bound 5.295 72.41 [66.32, 79.79] Quest-style 5.334 73.71 [66.76, 80.47] RBS adaptive union 5.350 76.67 [69.01, 82.15] The supplementary experiments characterize the same design from several additional angles. The A100 system sweep reports 4.47 × TTFT speedup for RBS at the 5% target, with 4.792% density on the system prompt (Appendix B). Block-size and cross-model threshold sweeps expose the dependence of quality and actual density on configuration (Appendix C). Calibration, runtime adaptation, and memory measurements quantify deployment costs (Appendix D). These measurements complement the H100 scaling and benchmark results by isolating selection behavior and quantifying deployment costs. 
+
+# 6 Related Work 
+
+Efficient attention kernels. FlashAttention and FlashAttention-2 accelerate dense attention through tiling, reduced memory traffic, and improved GPU work partitioning (Dao et al., 2022; Dao, 2023). RBS-Attention combines block selection with this execution approach: it reduces the set of computed tiles and applies a FlashAttention-style kernel to the retained causal keys. Kernel acceleration and block selection address different parts of the attention cost. 
+
+Sparse prefill attention. Recent sparse-prefill systems infer attention structure from probe queries, sample the attention matrix, or construct coarse block scores (Jiang et al., 2024; Lai et al., 2025; Xu et al., 2025; Fan et al., 2026). These methods offer useful accuracy–latency trade-offs, but their selectors can respond differently to isolated evidence and heterogeneous blocks. Our focus is mean dilution in centroid summaries. RBS-Attention retains centroid relevance while adding a radius-conditioned rescue path, with independent relative thresholds and a union of the two masks. The relative-threshold operation follows prior prefill practice (Fan et al., 2026); the additional contribution is how radius-derived risk is incorporated into selection. 
+
+Query-aware KV-page selection. Quest (Tang et al., 2024) maintains coordinate-wise minimum and maximum keys per KV-cache page, scores pages using the current query, and loads the Top-K pages for decoding attention. RBS-Attention shares the principle of using query-aware geometry to avoid missing a high-scoring token. It 13 addresses prefill block pairs, however, and uses an attenuated radius score alongside a centroid branch. Its thresholds induce a variable selected density, whereas Quest uses a fixed page budget. The distinction is in the selection policy and execution stage as well as the geometric summary; we do not claim that the L2 bound is uniformly tighter than Quest’s box bound. Appendix E makes the geometric relationship explicit, and the controlled Quest-style experiment isolates page-scoring behavior within the prefill evaluation. 
+
+Heterogeneity-aware sparse attention. SpargeAttention (Zhang et al., 2025) also recognizes that mean compression can be unreliable for heterogeneous blocks. Its first stage uses self-similarity to decide which query and key blocks can be compressed for sparse prediction; blocks failing that test are protected from first-stage pruning. Its complete operator additionally uses an online softmax-aware filter and integrates quantized attention. RBS-Attention uses a continuous coefficient derived from key-block radius quantiles and a separately thresholded rescue branch. Thus, a dispersed block receives a larger rescue score but is not automatically retained solely because it is dispersed. These are distinct policies for handling unreliable block summaries, and our discussion concerns that algorithmic relationship rather than a comparison of the complete operators. 
+
+# 7 Limitations and Discussion 
+
+Execution regime. RBS targets long-context prefill, where reducing token-level attention work can amortize selection overhead. Its benefit is smaller at short contexts. The geometric statistics could inform decode-time retrieval, but our query-block selection and system results concern prefill. Decode has a different balance of query count, KV-cache traffic, and access overhead, and requires a separate implementation and evaluation. 
+
+Selection and parameter dependence. A large radius indicates potential mean dilution, but does not establish that a block contains evidence relevant to a particular query. Thresholds control both branches, and the final density varies with model, prompt, layer, and head. The block-size and threshold studies characterize the tested operating points; broader evaluation is needed to determine how well these settings transfer. The controlled selector comparison also has a limited sample size, and its uncertainty is discussed alongside the results. 
+
+Evaluation and memory scope. The main speed measurements use H100 GPUs; the supplementary deployment measurements use A100 GPUs with their stated tensor-parallel configurations. We do not infer speedups on the dense or multimodal models from the MoE timing results. Densities accompanying the original quality tables are estimates from a smaller selector-only sample, with the sampling protocol reported beside the tables. The Quest-style experiment isolates a selection policy in our prefill backend and is not a benchmark of the complete original decode system. RBS adds little persistent radius metadata, but its dual-branch implementation also requires temporary workspace; both are reported separately from the full-model memory peak. 
+
+# 8 Conclusion 
+
+We introduced RBS-Attention, a training-free method for sparse long-context prefill. It retains centroid-based selection while providing a separately thresholded rescue branch whose contribution adapts to the distribution of key-block radii. This design addresses mean dilution through selective use of block dispersion and preserves regular block-sparse attention execution. The primary H100 evaluation achieves 20.65 × standalone prefill-attention speedup and 5.97 × end-to-end TTFT speedup at 128K, alongside quality evaluation on RULER, LongBench-v2, InfiniteBench, and Video-MME. Supporting measurements clarify actual sparsity, the distinction from full-bound selection, and the costs of calibration and runtime adaptation. These results demonstrate the value of combining average relevance with radius-adaptive rescue for efficient long-context prefill. 14 References 
+
+Yushi Bai, Shangqing Tu, Jiajie Zhang, Hao Peng, Xiaozhi Wang, Xin Lv, Shulin Cao, Jiazheng Xu, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. LongBench v2: Towards deeper understanding and reasoning on realistic long-context multitasks. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pages 3639–3664, Vienna, Austria, 2025. Association for Computational Linguistics. doi: 10.18653/v1/2025.acl-long.183. URL https://aclanthology.org/2025.acl-long.183/ .Iz Beltagy, Matthew E. Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150 , 2020. URL https://arxiv.org/abs/2004.05150 .Tri Dao. FlashAttention-2: Faster attention with better parallelism and work partitioning. arXiv preprint arXiv:2307.08691 ,2023. URL https://arxiv.org/abs/2307.08691 .Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. FlashAttention: Fast and memory-efficient exact attention with IO-awareness. arXiv preprint arXiv:2205.14135 , 2022. URL https://arxiv.org/abs/2205.14135 .Qihang Fan, Huaibo Huang, Zhiying Wu, Juqiu Wang, Bingning Wang, and Ran He. FlashPrefill: Instantaneous pattern discovery and thresholding for ultra-fast long-context prefilling. arXiv preprint arXiv:2603.06199 , 2026. Chaoyou Fu, Yuhan Dai, Yongdong Luo, Lei Li, Shuhuai Ren, Renrui Zhang, Zihan Wang, Chenyu Zhou, Yunhang Shen, Mengdan Zhang, Peixian Chen, Yanwei Li, Shaohui Lin, Sirui Zhao, Ke Li, Tong Xu, Xiawu Zheng, Enhong Chen, Caifeng Shan, Ran He, and Xing Sun. Video-MME: The first-ever comprehensive evaluation benchmark of multi-modal LLMs in video analysis. arXiv preprint arXiv:2405.21075 , 2024. Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. RULER: What’s the real context size of your long-context language models? arXiv preprint arXiv:2404.06654 , 2024. Gautier Izacard and Edouard Grave. Leveraging passage retrieval with generative models for open domain question answering. In Proceedings of the 16th Conference of the European Chapter of the Association for Computational Linguistics , pages 874–880, 2021. doi: 10.18653/v1/2021.eacl-main.74. URL https://doi.org/10.18653/v1/2021.eacl-main.74 .Huiqiang Jiang, Yucheng Li, Chengruidong Zhang, Qianhui Wu, Xufang Luo, Surin Ahn, Zhenhua Han, Amir H. Abdi, Dongsheng Li, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. MInference 1.0: Accelerating pre-filling for long-context LLMs via dynamic sparse attention. arXiv preprint arXiv:2407.02490 , 2024. Carlos E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik Narasimhan. SWE-bench: Can language models resolve real-world GitHub issues? In International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=VTF8yNQM66 .Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with PagedAttention. In Proceedings of the 29th Symposium on Operating Systems Principles , pages 611–626. Association for Computing Machinery, 2023. doi: 10.1145/3600006.3613165. URL https://doi.org/10.1145/3600006.3613165 .Xunhao Lai, Jianqiao Lu, Yao Luo, Yiyuan Ma, and Xun Zhou. FlexPrefill: A context-aware sparse attention mechanism for efficient long-sequence inference. In The Thirteenth International Conference on Learning Representations , 2025. Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, et al. Retrieval-augmented generation for knowledge-intensive nlp tasks. Advances in neural information processing systems , 33:9459–9474, 2020. Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. Lost in the middle: How language models use long contexts. Transactions of the Association for Computational Linguistics , 12: 157–173, 2024a. doi: 10.1162/tacl_a_00638. URL https://doi.org/10.1162/tacl_a_00638 .Tianyang Liu, Canwen Xu, and Julian McAuley. RepoBench: Benchmarking repository-level code auto-completion systems. In International Conference on Learning Representations , 2024b. URL https://openreview.net/forum? id=pPjZIOuQuF .Qwen Team. Qwen3-VL technical report. arXiv preprint arXiv:2511.21631 , 2025. URL https://arxiv.org/abs/2511. 21631 .
+
+15 Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. QUEST: Query-aware sparsity for efficient long-context LLM inference. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 47901–47911. PMLR, 2024. URL https://proceedings. mlr.press/v235/tang24l.html .Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. In International Conference on Learning Representations , 2024. URL https://openreview.net/ forum?id=NG7sS51zVF .Ruyi Xu, Guangxuan Xiao, Haofeng Huang, Junxian Guo, and Song Han. XAttention: Block sparse attention with antidiagonal scoring. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of 
+
+Proceedings of Machine Learning Research , pages 69819–69831. PMLR, 2025. URL https://proceedings.mlr. press/v267/xu25ag.html .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William W. Cohen, Ruslan Salakhutdinov, and Christopher D. Manning. HotpotQA: A dataset for diverse, explainable multi-hop question answering. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing , pages 2369–2380, 2018. doi: 10.18653/v1/D18-1259. URL https://doi.org/10.18653/v1/D18-1259 .Xiang Yue, Yuansheng Ni, Kai Zhang, Tianyu Zheng, Ruoqi Liu, Ge Zhang, Samuel Stevens, Dongfu Jiang, Weiming Ren, Yuxuan Sun, Cong Wei, Botao Yu, Ruibin Yuan, Renliang Sun, Ming Yin, Boyuan Zheng, Zhenzhu Yang, Yibo Liu, Wenhao Huang, Huan Sun, Yu Su, and Wenhu Chen. MMMU: A massive multi-discipline multimodal understanding and reasoning benchmark for expert AGI. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 9556–9567, 2024. doi: 10.1109/CVPR52733.2024.00913. URL https://doi.org/10.1109/ CVPR52733.2024.00913 .Jintao Zhang, Chendong Xiang, Haofeng Huang, Jia Wei, Haocheng Xi, Jun Zhu, and Jianfei Chen. SpargeAttention: Accurate and training-free sparse attention accelerating any model inference. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research , pages 76397–76413. PMLR, 2025. URL https://proceedings.mlr.press/v267/zhang25ch.html .Xinrong Zhang, Yingfa Chen, Shengding Hu, Zihang Xu, Junhao Chen, Moo Hao, Xu Han, Zhen Thai, Shuo Wang, Zhiyuan Liu, and Maosong Sun. InfiniteBench: Extending long context evaluation beyond 100K tokens. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 15262–15277, Bangkok, Thailand, 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.814. URL 
+
+https://aclanthology.org/2024.acl-long.814/ .
+
+16 A Additional Accuracy and Budget Analysis 
+
+The supplementary experiments examine actual retention under nominal budgets, the effect of the selection policy, and deployment behavior. Unless otherwise specified, the model in these controlled experiments is Qwen3-30B-A3B-Instruct-2507-FP8. 
+
+A.1 Strict actual-density matching 
+
+Table 7 recalibrates competing methods to the actual RBS density anchors from the primary budget sweep. Every added point is within 0.10 percentage point of its anchor. RBS has the highest accuracy among the measured methods at each anchor. At 5.34%, the RBS advantage is 3.41 accuracy points over MInference and 5.55 points over FlashPrefill. This supports the interpretation of Table 1 at a more closely aligned retained budget. These are accuracy-only calibration points; they should not be paired with latency from a different threshold configuration.    
+
+> Table 7: Additional RULER-128K accuracy measurements with strict actual-density matching. Each cell gives actual density / accuracy in percent. A dash means that no additional point was measured at that anchor.
+
+Method 2.03% anchor 5.34% anchor 11.03% anchor FlashPrefill 2.038 / 67.13 5.300 / 74.73 11.035 / 79.62 MInference 1.944 / 68.40 5.286 / 76.87 10.950 / 83.44 XAttn — 5.311 / 66.77 —FlexPrefill — 5.352 / 58.56 —RBS-Attention 2.030 / 70.51 5.340 / 80.28 11.030 / 88.36 
+
+A.2 Selector diagnostics 
+
+The controlled selector comparison in Table 6 uses the first ten examples of each RULER-128K task, with the same model, backend, and B = 128. The centroid-only and full-L2 selectors use selection thresholds of 0.194 and 0.022, respectively, and Quest-style selection uses its density parameter 0.0405. Because the selection parameters have different meanings across policies, the comparison is aligned using measured density. The retrieval and multi-key breakdowns are provided in Table 8. Their point estimates agree with the aggregate trend, but the limited diagnostic sample warrants interpreting these differences descriptively. These accuracy experiments do not establish a universal ordering of the mathematical tightness of box and L2 bounds.  
+
+> Table 8: Task-group diagnostics for the same 130-example selector comparison as Table 6. Scores are percentages.
+
+Selector Retrieval accuracy Multi-key accuracy Centroid-only 88.75 90.00 Full-L2 bound 87.81 90.00 Quest-style 88.75 90.00 RBS adaptive union 90.00 93.33 17 B Additional A100 System Measurements 
+
+B.1 Complete 128K sweep 
+
+Table 9 reports the additional 128K system sweep on Qwen3-30B-A3B-Instruct-2507-FP8 using A100 GPUs and TP=2. The system measurements use a fixed prompt; the accuracy entries are companion evaluation results. Since the prompt distribution and selection configurations affect retention, the two measured densities are shown separately. These nominal-target companion points are distinct from the strict recalibrations in Table 7 and the 130-example selector ablation in Table 6. RBS reaches 5.29 ×, 4.47 ×, and 3.05 × TTFT speedup at the 2%, 5%, and 10% targets, respectively. The corresponding companion accuracy values are 70.51, 80.28, and 88.36. At the central target, the other measured TTFT speedups range from 2.84 × to 3.58 ×. This provides supporting system evidence at low measured density. Because actual densities and accuracy evaluation sets are reported separately, the table should not be interpreted as an exactly equal-density Pareto frontier. 
+
+Table 9: Supplementary A100 128K sweep on Qwen3-30B-A3B-Instruct-2507-FP8 (TP=2). Sys./acc. are actual densities on the system prompt and companion accuracy evaluation, respectively; densities and accuracy are percentages. Selector and sparse-attention shares sum to 100% of their reported combined path, not TTFT. Dense’s 86.31 is the controlled-subset reference, not the primary full-benchmark 89.69. Companion accuracies retain their source evaluation protocols; the additional 2%/10% points for XAttn, FlexPrefill, and Quest-style use 130 examples. Method Target Sys./acc. density Selector Sparse attn. TTFT gain Accuracy Dense 100 100 / 100 — 100.00 1.00 × 86.31 FlashPrefill 2 1.826 / 1.910 23.87 76.13 4.89 × 63.32 5 5.071 / 4.690 12.39 87.61 2.90 × 75.36 10 11.147 / 10.190 5.99 94.01 2.04 × 85.01 MInference 2 1.568 / 2.022 41.11 58.89 4.84 × 68.54 5 4.184 / 5.056 26.61 73.39 3.58 × 76.09 10 8.609 / 9.995 16.61 83.39 2.93 × 82.82 RBS-Attention 2 1.830 / 2.030 31.68 68.32 5.29 × 70.51 5 4.792 / 5.340 16.28 83.72 4.47 × 80.28 10 10.517 / 11.030 7.73 92.27 3.05 × 88.36 XAttn 2 1.957 / 1.971 72.14 27.86 5.01 × 52.62 5 4.105 / 3.810 53.07 46.93 3.55 × 60.47 10 10.588 / 10.970 33.38 66.62 1.74 × 76.51 FlexPrefill 2 2.908 / 2.041 45.12 54.88 4.51 × 41.95 5 5.269 / 3.590 29.00 71.00 3.21 × 50.72 10 10.762 / 11.065 19.87 80.13 2.32 × 77.90 Quest-style 2 1.851 / 1.972 52.38 47.62 4.22 × 62.32 5 4.653 / 4.807 34.73 65.27 2.84 × 70.56 10 10.953 / 11.098 20.64 79.36 2.06 × 78.63 
+
+B.2 Prompt throughput 
+
+Table 10 reports prompt throughput for the 5% target setting. Context denotes the nominal length bucket; the Dense column gives actual total prompt tokens and wall time. Throughput gains are computed against Dense 18 separately for every context and batch size. RBS reaches 4.47 × throughput at 128K with batch size one and 3.85 × at batch size four. Shorter contexts show smaller gains, consistent with the cost of computing a sparse mask and dispatching sparse kernels. The MInference and FlexPrefill kernels used in this experiment accept a single sequence. For batch size four, we invoke them sequentially on four independent causal sequences and include dispatch costs in batch wall time. Consequently, their batched results characterize this adaptation rather than an optimized native batching implementation. No requests are concatenated into one causal sequence.                                                                               
+
+> Table 10: Supplementary A100 prompt throughput at the 5% target, using Qwen3-30B-A3B-Instruct-2507-FP8 (TP=2). The upper panel provides absolute Dense measurements; the lower panel gives method tokens/s divided by Dense tokens/s for the same row. FP = FlashPrefill; MI = MInference; Flex = FlexPrefill. Quest denotes the controlled prefill adaptation. Context Batch Dense wall time (ms) Total prompt tokens Dense tokens/s 32K 11,920.68 31,286 16,289 64K 15,734.91 62,486 10,896 128K 119,709.12 125,486 6,367 32K 46,996.10 118,097 16,880 64K 421,265.25 239,377 11,257 128K 472,127.35 478,727 6,637 Context Batch FP MI RBS XAttn Flex Quest 32K 11.25 ×1.36 ×1.27 ×0.98 ×0.95 ×1.29 ×
+> 64K 12.05 ×2.24 ×2.06 ×1.49 ×1.69 ×2.12 ×
+> 128K 12.90 ×3.58 ×4.47 ×3.55 ×3.21 ×2.84 ×
+> 32K 41.35 ×0.68 ×1.36 ×0.96 ×0.99 ×0.99 ×
+> 64K 42.12 ×1.24 ×2.12 ×2.00 ×1.79 ×2.19 ×
+> 128K 42.83 ×2.05 ×3.85 ×2.39 ×3.57 ×3.18 ×
+
+# C Configuration Sensitivity 
+
+C.1 Block size 
+
+Table 11 compares B ∈ { 64 , 128 , 256 } after recalibrating each setting to approximately 5.34% actual density. At the reported operating points, B = 128 gives the highest RBS accuracy. Smaller blocks increase the number of block summaries and candidate pairs to process, while larger blocks coarsen the grouping of relevant and irrelevant tokens. The observed accuracy depends on the selector as well as the granularity: RBS is below centroid-only at 
+
+B = 64 and B = 256 in this sweep. Thus, the evidence supports B = 128 as the selected configuration rather than a claim of robustness to arbitrary block size. These sensitivity scores are separate from the 130-example selector comparison in Table 6. 
+
+C.2 Thresholds and model transfer 
+
+Table 12 applies the same three pairs of thresholds to the MoE and dense Qwen3 models. The conservative and 
+
+aggressive labels refer to observed retention, not guaranteed accuracy: the conservative setting retains more blocks, and the aggressive setting retains fewer. Fixed thresholds yield different actual densities across models. In particular, the default pair produces 4.997% mean density on Qwen3-30B-A3B and 6.029% on Qwen3-32B in 19 Table 11: Block-size sensitivity on RULER-128K with Qwen3-30B-A3B-Instruct-2507-FP8. Each setting is recalibrated to the 5.34% density anchor. Density and accuracy are percentages. The reference RBS B = 128 row is the primary budget-sweep operating point. 
+
+Selector Block size Calibration parameter Actual density Accuracy Centroid-only 64 0.100 5.302 74.17 128 0.194 5.300 74.73 256 0.400 5.276 72.15 RBS union 64 0.096 5.343 71.86 128 Reference 5.340 80.28 256 0.382 5.361 70.73 this diagnostic. This is expected for content-dependent selection and motivates reporting measured density with every configuration. Accuracy need not vary monotonically with density when both branch thresholds change: they alter which blocks are selected as well as how many. The cross-model diagnostic demonstrates this distinction and should be interpreted within its own evaluation rather than compared directly with the full primary benchmark scores. 
+
+Table 12: Supplementary cross-model threshold sensitivity on RULER-128K. Density and accuracy are percentages. The same threshold pairs are used for both models; the radius normalization adapts to each prompt at runtime. Model Setting αbase αrescue Mean density p90 density Accuracy Qwen3-30B-A3B Conservative 0.16 0.24 6.478 7.282 75.31 FP8 Default 0.22 0.18 4.997 5.441 71.86 Aggressive 0.24 0.16 4.676 5.048 75.12 Qwen3-32B Conservative 0.16 0.24 7.983 8.845 65.05 Default 0.22 0.18 6.029 6.561 63.90 Aggressive 0.24 0.16 5.600 6.078 61.74 
+
+# D Calibration, Runtime Adaptation, and Memory 
+
+D.1 Offline calibration and online selection 
+
+Table 13 quantifies calibration cost on 50 prompts of length 128K. RBS uses three configurations, taking 0.443 wall-clock hours and 0.885 GPU-hours with TP=2. The reported maximum error from its 5% target is 0.0078 percentage point. The median/90th-percentile choices for the radius normalization remain fixed throughout calibration. Calibration is an offline operating-point choice. At inference time, the thresholds are fixed and the prompt/layer/head-specific radius distribution directly determines βb. Table 14 reports total selector time at the 128K system operating point, including statistics, normalization, and selection. The RBS selector takes 694.81 ms, including its two-branch scoring and mask construction; this work is part of the measured execution path. Relative to centroid-only selection, the extra work implements the adaptive rescue policy evaluated in the quality experiments. 20 Table 13: Offline calibration on 50 prompts of length 128K using the A100 main-model setup (TP=2). GPU-hours are the reported aggregate device time; small rounding differences from twice the wall time are retained. Maximum density error is in percentage points (pp). RBS fixes the radius quantiles at 0.5/0.9 while calibrating its selection thresholds. Method Configurations Wall hours GPU-hours Target density Max. error (pp) RBS-Attention 3 0.443 0.885 5% 0.0078 FlashPrefill 3 0.418 0.837 5% 0.1625 MInference 3 0.232 0.464 2/5/10% 0.0913   
+
+> Table 14: Total per-request selector time at the 128K A100 system operating point. Times include block statistics, normalization, score computation, threshold/Top-K decisions, and index construction; RBS additionally unions its branch masks. There is no per-request threshold search.
+
+Selector Total selector time (ms) FlashPrefill 349.89 Full-L2 279.21 RBS-Attention 694.81 Quest-style 1,195.88 
+
+D.2 Persistent statistics, workspace, and model peak 
+
+Table 15 reports storage for block statistics and the temporary selector workspace. With the reported accounting dimensions of 1,024 blocks, head dimension 128, and four KV heads, centroid-only statistics occupy 1.000 MiB per layer. Adding a FP32 radius and a FP32 adaptive coefficient increases RBS’s statistics to 1.031 MiB per layer, whereas the two BF16 vectors used by Quest-style selection require 2.000 MiB. This is a comparison of block-statistic representations, not of total allocator usage. The temporary workspace is substantially larger than these statistics. RBS uses 1,155.601 MiB in the reported implementation, compared with 515.499 MiB for centroid-only and 428.231 MiB for Quest-style selection. Thus, the small persistent radius overhead does not imply an equally small total selector footprint. Table 16 measures the separate full-model quantity: at 128K, the RBS run peaks at 60.486 GiB allocated, compared with 61.552 GiB for Dense. These measurements include the complete serving configuration and depend on allocator and workspace lifetimes; they are not a claim that sparse prefill compresses or evicts the KV cache.   
+
+> Table 15: Selector storage under the reported accounting dimensions: 1,024 blocks, head dimension 128, four KV heads, and 48 active layers. Statistics are reported per layer; temporary workspace is reported separately and should not be multiplied by the layer count. Vectors use BF16 and the radius/ βscalars use FP32.
+
+Selector Statistics per block MiB/layer Workspace (MiB) Centroid-only 128-vector 1.000 515.499 Full-L2 128-vector + radius 1.016 515.324 RBS-Attention 128-vector + radius + β 1.031 1,155.601 Quest-style Two 128-vectors 2.000 428.231 21 Table 16: Full-model peak memory on A100 GPUs with Qwen3-30B-A3B-Instruct-2507-FP8 (TP=2). Each cell reports 
+
+max-rank allocated / reserved memory in GiB. The largest tested length in this supplementary memory experiment is 128K; it is not a measured hardware capacity limit. 
+
+Method 32K 64K 128K Dense 55.710 / 56.650 57.328 / 59.279 61.552 / 65.510 Centroid-only 55.248 / 57.010 56.865 / 58.918 61.090 / 63.441 RBS-Attention 54.644 / 56.357 56.262 / 58.266 60.486 / 64.016 Quest-style 59.894 / 61.541 61.512 / 63.449 61.330 / 63.496 
+
+# E Geometric Bounds and the Dual-Branch Selector 
+
+This appendix separates the geometric motivation for the radius from the selection policy that uses it. Throughout, 
+
+Kb is a finite set of key vectors, cb is its mean, rb = max k∈Kb ∥k − cb∥2, and q is a query. We omit the common attention scale 1 /√d because it does not affect the inequalities. 
+
+E.1 The full L2 bound and the attenuated score 
+
+For every k ∈ Kb,
+
+q⊤k = q⊤cb + q⊤(k − cb) (16) 
+
+≤ q⊤cb + ∥q∥2∥k − cb∥2 (17) 
+
+≤ q⊤cb + ∥q∥2rb. (18) Taking the maximum over k proves Eq. (3). Geometrically, this is the maximum linear score over a ball containing all keys in the block. The actual rescue score replaces rb by βbrb. When βb < 1, the smaller ball need not contain the keys. For example, take Kb = {− u, u} with ∥u∥2 = 1 and q = u. Then cb = 0, rb = 1, and the largest token logit is 1, whereas the rescue logit is βb. This provides a direct counterexample to interpreting the attenuated score as a universal upper bound. The radius supplies a geometric risk signal; quantile-based attenuation controls how strongly that signal influences selection. 
+
+E.2 Comparison with a coordinate-wise box 
+
+For coordinate j, let ab, j = min k∈Kb k j and ub, j = max k∈Kb k j. The page score used by Quest (Tang et al., 2024) is 
+
+Ubox  
+
+> b
+
+(q) = 
+
+> d
+
+# ∑
+
+> j=1
+
+max (q jab, j, q jub, j). (19) Each coordinate of every key lies in its corresponding interval, so max k∈Kb q⊤k ≤ Ubox  
+
+> b
+
+(q). Equivalently, if 
+
+hb = ( ub − ab)/2 and vb = ( ub + ab)/2, then Ubox  
+
+> b
+
+(q) = q⊤vb + |q|⊤hb. The box center vb need not equal the key mean cb.The two bounds have no uniform ordering. Two-dimensional examples make this explicit: • Let K = {e1, −e1, e2, −e2} and q = ( 1, 1)⊤. The centroid is zero and the radius is one, giving UL2 (q) = √2and Ubox (q) = 2. Here the L2 bound is tighter: the box contains the corner (1, 1) even though no key lies there. 22 • Let K = {e1, −e1, εe2, −εe2} for 0 < ε < 1, and let q = e2. The radius is again one, giving UL2 (q) = 1 and 
+
+Ubox (q) = ε. Here the box bound is tighter because it captures the narrow range in the second coordinate. These examples illustrate the trade-off between a coordinate-wise envelope and an isotropic one. Under a common orthogonal transformation of keys and queries, the centroid dot product and L2 radius are unchanged. A coordinate-wise box can change under the same transformation. Rotation invariance is a geometric property, not a guarantee that the L2 selector will have better accuracy or a tighter bound on a given input. 
+
+E.3 Why separate thresholds matter 
+
+An upper bound describes the possible score within one block. Selecting a fixed number of blocks by upper bound does not by itself guarantee recovery of the globally highest-scoring keys: a loose bound can rank an irrelevant block above a relevant one. Likewise, the radius-adaptive score does not imply a guarantee of preserving dense-attention mass. We evaluate these selection decisions empirically. RBS-Attention makes two distinct decisions for each query block: which candidates are sufficiently relevant by centroid score, and which candidates merit retention after radius-based uplift. With a single rescue score, the uplift of one candidate can raise the relative threshold and remove other candidates, even though none of their individual logits decreased. The independently computed base mask prevents that loss for candidates retained by the centroid rule. The final union can therefore differ from both centroid-only selection and a single full-L2 selector. The thresholds are controls on relative score, not exact cardinality constraints. If the same candidates and scores are held fixed, decreasing either threshold cannot shrink its branch’s mask. Across prompts and layers, however, the score distribution and branch overlap vary, so fixed thresholds need not yield the same density. This is why comparisons at a common nominal setting and comparisons after calibrating actual density answer different experimental questions. 23
