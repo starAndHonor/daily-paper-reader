@@ -1,0 +1,1649 @@
+Title: CompKV: Compensation-Aware KV Selection for Long-Context LLM Inference
+
+URL Source: https://arxiv.org/pdf/2609.26300v1
+
+Published Time: Wed, 23 Sep 2026 01:14:11 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+Preprint. Under review. 
+
+# COMP KV: COMPENSATION -A WARE KV SELECTION FOR LONG -C ONTEXT LLM I NFERENCE 
+
+Zhen Huang 1∗
+
+, Ruizhe Yao 2∗
+
+, Danyi Liu 1∗
+
+, Xinrui Chen 1, Shuwei Li 1, Siru Zhong 1,Zijian Cao 3, Yushan Lai 1, Mingming Guo 1, Weijie Zheng 2†
+
+, Haohuan Fu 1†
+
+> 1
+
+Tsinghua University 2Harbin Institute of Technology, Shenzhen 3Northeastern University 
+
+zhengweijie@hit.edu.cn haohuan@tsinghua.edu.cn 
+
+## ABSTRACT 
+
+Despite their strong performance, large language models (LLMs) are bottlenecked by KV cache memory traffic during long-context inference. Sparse attention is widely used to accelerate LLM inference by computing exact attention over a selected subset of tokens. To recover the contribution of tokens excluded from exact attention, recent methods apply coarse-grained compensation to the omitted attention tail. However, existing methods typically select tokens based on atten-tion mass and only then compensate for the unselected tokens. This decoupled design overlooks their interaction: selection should prioritize tokens that would leave the largest compensation error if omitted. To address this limitation, we in-troduce CompKV, the first compensation-aware sparse attention framework that divides tokens into blocks and explicitly optimizes selection for the downstream compensation mechanism. Our theoretical analysis shows that the residual left by block-level mean compensation is governed by both block attention mass and within-block logit variation. We approximate this residual using compact block-level statistics, yielding a deployable selection criterion. We further develop an efficient asynchronous implementation. Experiments on RULER and LongBench-Pro show that CompKV performs best among the evaluated sparse baselines while delivering up to a 6.85 × self-attention speedup over full attention. 
+
+## 1 INTRODUCTION 
+
+Large language models increasingly operate over long and evolving contexts for document under-standing, software engineering, and agentic reasoning (Grattafiori et al., 2024; Yang et al., 2025; Jimenez et al., 2024; Bai et al., 2024; Zhou et al., 2024). During autoregressive decoding, however, the KV cache grows with context length, and dense attention reads the entire cache at every step, making long-context inference increasingly bottlenecked by KV cache memory traffic. To alleviate this bottleneck, query-aware sparse attention reduces this traffic by reading only a small set of tokens selected for the current query (Xiao et al., 2024a; Ribar et al., 2024; Wang et al., 2026). More recent methods divide tokens into blocks (Tang et al., 2024; Liu et al., 2025; Deng et al., 2026) and further compensate for the attention contributions of omitted blocks using compact token summaries (Hooper et al., 2025; Yang et al., 2026; Fan et al., 2026). Despite recent progress in compensation, selection and reconstruction remain largely decoupled : blocks are ranked by pre-dicted relevance or attention mass before reconstruction is considered. This design overlooks how well each block can be reconstructed by the compensator. A high-mass block may be easy to recon-struct, whereas a lower-mass block with greater within-block logit variation may leave a larger error. Therefore, selection should prioritize the blocks that have a larger estimated reconstruction error. Motivated by this mismatch, we introduce CompKV, a training-free, compensation-aware KV se-lection method that prioritizes blocks that are difficult to reconstruct, as shown in Figure 1. To the best of our knowledge, CompKV is the first sparse attention framework to make block selection explicitly aware of the error induced by the downstream compensation mechanism. We formulate 
+
+> ∗
+
+Equal contribution. 
+
+> †
+
+Corresponding authors. 
+
+1arXiv:2609.26300v1 [cs.LG] 22 Sep 2026 Preprint. Under review. Full Attention CompKV (Ours)         
+
+> (a) Full Exact Reading
+> B1 High mass Low variance
+> BX Low mass High variance
+> q
+> Query
+> Read all blocks
+> B1 B2 ... BX
+> No reconstruction
+> Attention
+> Reconstruction error: NONE
+> (b) Attention-Mass Selection
+> B1 High mass Low variance
+> BX Low mass High variance
+> q
+> Query
+> Select by attention mass Choose B1
+> Exact: B1
+> Full values
+> Reconstruct: BX
+> LARGE error
+> Attention
+> Reconstruction error: LARGE
+> (c) Compensation-Aware
+> B1 High mass Low variance
+> BX Low mass High variance
+> q
+> Query
+> Select hard-to-reconstruct Choose BX
+> Exact: BX
+> Full values
+> Reconstruct: B1
+> SMALL error
+> Attention
+> Reconstruction error: SMALL
+> Existing Alternatives
+
+Figure 1: Comparison between full attention (a), attention-mass selection (b), and CompKV (c) on two illustrative blocks B1 and BX. Mass-based selection may spend exact reads on blocks already well approximated, whereas CompKV targets blocks with the largest estimated reconstruction error. full block attention and its summary-based approximation as distributions whose KL divergence reduces to a log-partition gap. For block-mean reconstruction, our analysis reveals that the residual contributed by an omitted block depends jointly on its attention mass and within-block logit variation. Based on this result, CompKV estimates the post-compensation residual and then converts compensation-aware selection into a query-dependent block-ranking problem. CompKV maintains compact mean and grouped-variance statistics for each KV block to estimate its post-compensation residual. For each query, these statistics approximate the block attention mass and within-block logit variation, which are combined into a selection score. Blocks with the largest scores receive exact attention, while the rest contribute through their mean summaries; both contributions are jointly normalized to produce the final output. For efficient long-context inference, we further develop an asynchronous CPU-offload implementation that overlaps summary transfer and compensation with block selection, CPU-side KV gathering, and selected-KV transfer. We evaluate CompKV in terms of both accuracy and efficiency. For accuracy, we benchmark CompKV on RULER and LongBench-Pro using Llama-3.1-8B-Instruct, Qwen3-8B, and Qwen3-32B. Across both benchmarks, CompKV achieves the highest average scores among the evaluated sparse methods for all three models. For efficiency, we benchmark the CPU-offload single-layer pipeline on an NVIDIA H100 GPU. CompKV achieves the lowest mean decoding-step latency among the evaluated methods for all nine combinations of 32K-128K context lengths and 512-2,048 token budgets, delivering up to 6.85 × speedups over full attention. Our contributions are: • We identify the mismatch between selection and compensation and present the first formulation that explicitly models selection with respect to compensation. Our analysis shows that the post-compensation residual is jointly governed by attention mass and within-block logit variation. • Based on this analysis, we introduce CompKV, the first training-free, compensation-aware KV selection method that constructs a query-dependent score from compact block statistics, along with an efficient asynchronous implementation to accelerate long-context inference. • We comprehensively evaluate the accuracy and efficiency of CompKV. Across three widely used models and two long-context benchmarks, CompKV achieves the highest average scores among the evaluated baselines while delivering up to 6.85 × self-attention speedups over full attention. 
+
+## 2 RELATED WORK 
+
+KV Cache Reduction for Long-Context Inference. To accelerate long-context inference, eviction methods bound the cache using recency, accumulated attention, heavy-hitter statistics, or prompt-side importance estimates (Xiao et al., 2024b; Liu et al., 2023; Zhang et al., 2023; Li et al., 2024; Cai et al., 2025; Feng et al., 2025). Complementary approaches reduce retained-state costs through low-rank compression (Saxena et al., 2024; Singhania et al., 2024; Chang et al., 2025), quantization (Liu et al., 2024; Hooper et al., 2024; Kang et al., 2024; Li et al., 2025), or memory management (Kwon 2Preprint. Under review. et al., 2023; Qu et al., 2025). These methods primarily reduce the amount or representation cost of retained KV states. In contrast, our work focuses on deciding which KV blocks should be read exactly for each query under a fixed per-step read budget. 
+
+Query-Aware and Block-Level Sparse Attention. Query-aware sparse attention saves all KVs and conditions exact KV reads on the current decoding query. For example, Quest (Tang et al., 2024) ranks pages with query-dependent upper bounds derived from compact key statistics, while Infini-Gen (Lee et al., 2024), ShadowKV (Sun et al., 2025), SpeCache (Jie et al., 2025) and RetrievalAtten-tion (Liu et al., 2025) retrieve candidate blocks using different scoring mechanisms. However, these methods primarily rank blocks according to their predicted attention mass for the current query. 
+
+Tail Compensation and Reconstruction. Tail-compensation methods approximate omitted KV states or their aggregate attention contribution. SparQ (Ribar et al., 2024) reallocates estimated omitted mass to a running mean value, RESA (Yang et al., 2026) reconstructs the tail from a low-rank logit prior, and ResKV (Zhan et al., 2026) retains compact moment or residual summaries for compressed caches. These methods partly reconstruct the tail without extra exact KV reads. Nevertheless, existing block selection and tail compensation are largely treated as separate stages, as mentioned in Section 1. In contrast, CompKV explicitly selects blocks according to their estimated post-compensation residual, rather than simply those with the largest predicted attention mass. 
+
+## 3 COMPENSATION -A WARE SELECTION FORMULATION 
+
+In this section, we formulate sparse attention selection and derive a compensation-aware selec-tion criterion. We define Mean compensation as replacing every logit in an unselected block by its block mean . We use Mean compensation because its compact summaries yield an exact log-partition identity, making the interaction between selection and compensation analytically tractable. The compensation-aware formulation itself is not restricted to Mean compensation. Based on this, we analyze the residual introduced by compensation and show that the optimal selection priority depends jointly on a block’s attention mass and the variation of its within-block attention logits. 3.1 MEAN COMPENSATION MODEL AND SELECTION OBJECTIVE 
+
+Attention and Mean Compensation. At each decoding step, we consider one KV head shared by G query heads under grouped-query attention (Ainslie et al., 2023). Let qg , kj ∈ Rd denote the query of head g ∈ { 1, . . . , G } and the key at token position j, respectively, where d is the head dimension. The corresponding attention logit is zg,j = qg k⊤ 
+
+> j
+
+/√d. Following Tang et al. (2024), we divide the KV cache into contiguous blocks of a fixed size, starting from the first token. Let B
+
+denote the set of nonempty blocks, where each block b ∈ B contains |b| tokens. Its unnormalized attention weight is Zg,b = P 
+
+> j∈b
+
+ezg,j , giving the full attention probability Pg = softmax j (zg,j ).Given a selected block set S ⊆ B shared by the G query heads, for each token position j ∈ b, the logit under Mean compensation is 
+
+ˆzg,j =
+
+zg,j , b ∈ S ,
+
+¯zg,b , b / ∈ S , (1) where ¯zg,b = |b|−1 P 
+
+> j∈b
+
+zg,j is the block-mean logit. Therefore, applying softmax jointly over all token positions defines the compensated distribution bPg (S) = softmax j (ˆ zg,j ).
+
+Optimization objective. For Mean compensation, we define the selection loss as L(S) =
+
+PGg=1 DKL 
+
+ bPg (S)∥Pg
+
+
+
+, summing over the query heads that share the selected set. With a bud-get of K ≤ |B| exact block reads, our objective is 
+
+min   
+
+> S⊆B ,|S| =K
+
+L(S). (2) 3Preprint. Under review. 3.2 DERIVING THE COMPENSATION -A WARE SELECTION CRITERION 
+
+For each query head g, define the attention mass and logit variance of block b as 
+
+pg,b = Zg,b 
+
+X
+
+> c∈B
+
+Zg,c 
+
+, σ2 
+
+> g,b
+
+= 1
+
+|b|
+
+X
+
+> j∈b
+
+(zg,j − ¯zg,b )2, (3) where c ranges over all available blocks and σg,b ≥ 0 denotes the corresponding standard deviation. To solve Equation 2, we expand the KL divergence defined in Section 3.1, yielding 
+
+L(S) = 
+
+> G
+
+X
+
+> g=1
+
+log 
+
+X
+
+> b∈B
+
+Zg,b 
+
+X
+
+> b∈S
+
+Zg,b + X
+
+> b / ∈S
+
+|b|e¯zg,b 
+
+= −
+
+> G
+
+X
+
+> g=1
+
+log 
+
+"
+
+1 − X
+
+> b / ∈S
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+#
+
+. (4) Appendix A.1 provides the derivation. The ratio |b|e¯zg,b /Z g,b measures the fraction of block b’s unnormalized attention weight recovered by Mean compensation. Appendix B.1 provides empirical support for this selection principle: ranking blocks by their exact compensation residuals reduces average attention KL and output error relative to ranking by exact attention mass. A second-order Taylor expansion around the block-mean logit yields 
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+
+
+= pg,b ( 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+)) . (5) Thus, the leading contribution of each block is proportional to its attention mass multiplied by its logit variance. Appendix A.2 derives this expansion and specifies the expansion regime. Let Rg (S) denote the inner sum in Equation 4. Applying − log(1 − Rg ) = Rg + O(R2 
+
+> g
+
+) to each head in Equation 4 then yields 
+
+L(S) = 12
+
+> G
+
+X
+
+> g=1
+
+X
+
+> b / ∈S
+
+pg,b (σ2 
+
+> g,b
+
++ O σ3
+
+> g,b
+
+). (6) The remainder collects the blockwise expansion errors and the outer-logarithm remainder, which is absorbed into the cubic term in the small-variance regime. Appendix A.3 provides the derivation. The second-order term is additive across unselected blocks. Since the sum over all blocks is inde-pendent of S, minimizing the second-order term of Equation 6 is equivalent to 
+
+max  
+
+> S⊆B ,|S| =K
+
+X
+
+> b∈S
+> G
+
+X
+
+> g=1
+
+pg,b σ2
+
+> g,b
+
+. (7) 
+
+Thus, selecting the K blocks with the largest PGg=1 pg,b σ2 
+
+> g,b
+
+minimizes the second-order objec-tive. The resulting score combines a block’s attention mass with the variation that Mean compen-sation leaves unreconstructed. A block with nearly constant logits contributes little to the loss, even when its attention mass is large. Appendix A.5 also proves that removing Mean compensation from our KL objective recovers the standard Top-K selection rule based on attention mass for a single query head. Section 4.1 estimates both factors from compact block statistics. 
+
+## 4 COMP KV 
+
+Building on the criterion derived in Section 3, CompKV turns the oracle selection rule into a prac-tical decoding pipeline. It first estimates block attention mass and logit variance from compact statistics, uses their product to allocate exact reads, and represents the remaining blocks with mean summaries under a shared normalization. To realize it efficiently, we develop an implementation that overlaps compensation with KV retrieval and exact attention. 4Preprint. Under review. Block 1 Block 2 Block X 
+
+... 
+
+GQA queries 
+
+> one GQA group mapped to one KV head
+
+Stage 1 -Score 
+
+Stage 2 - Sparse Attention with Mean Compensation    
+
+> Compensated [Top-K] Exact Compensated
+
+...   
+
+> mean key grouped var. mean key mean key grouped var. grouped var.
+> Select Top K blocks
+
+Figure 2: End-to-end CompKV decoding, where X = |B| is the number of available blocks. Stage 1 ranks blocks with Equation 10. Stage 2 evaluates selected blocks exactly, compensates the remaining blocks with their means, and normalizes all contributions jointly. 4.1 BLOCK SCORING FROM COMPACT STATISTICS 
+
+Grouped key-variance estimation. Computing the exact score in Equation 7 requires reading the keys of every candidate block. CompKV estimates this score from the mean key and grouped key variances stored for each block. The mean key ¯kb = |b|−1 P 
+
+> j∈b
+
+kj gives the block-mean logit 
+
+¯zg,b = qg ¯k⊤ 
+
+> b
+
+/√d defined in Section 3.1. We partition the d key coordinates into r disjoint groups 
+
+Gt, indexed by t = 0 , . . . , r − 1. The vector ¯Db ∈ Rr stores the average coordinate variance in each group. At each decoding step, query head g estimates the block’s logit variance as 
+
+bσ2 
+
+> g,b
+
+= 1
+
+d
+
+> r−1
+
+X
+
+> t=0
+
+X
+
+> i∈G t
+
+q2
+
+> g,i
+
+!
+
+( ¯Db)t, ( ¯Db)t = 1
+
+|b| |G t|
+
+X
+
+> j∈b
+
+X
+
+> i∈G t
+
+(kj,i − ¯kb,i )2. (8) Here, qg,i , kj,i , and ¯kb,i denote the ith coordinates of qg , kj , and ¯kb, respectively. The parameter r
+
+controls the granularity of the stored variances. Appendix A.4 specifies the coordinate groups and derives this estimate from the key covariance within a block along the query. 
+
+Attention-mass estimation. The log-partition expansion in Equation 23 gives log |b| + ¯ zg,b +
+
+σ2
+
+> g,b
+
+/2 as the second-order approximation to log Zg,b . Substituting bσ2 
+
+> g,b
+
+and normalizing the esti-mated block weights within each query head gives the attention-mass estimate bpg,b :
+
+bpg,b =
+
+|b| exp 
+
+
+
+¯zg,b + 12 bσ2
+
+> g,b
+
+X
+
+> c∈B
+
+|c| exp 
+
+
+
+¯zg,c + 12 bσ2
+
+> g,c
+
+ . (9) 5Preprint. Under review. 
+
+Figure 3: Implementation of CPU-offload CompKV. (a) Dataflow across the main stream, auxiliary stream, and CPU. (b) Asynchronous schedule: after mean values and selection are ready, Mean compensation runs on an auxiliary stream while the main path calculates the exact attention. The branches join at the final merge. Dashed arrows indicate dependencies; durations are schematic. The variance correction accounts for within-block logit variation when estimating the block’s un-normalized attention weight. A detailed derivation is provided in Appendix A.4. 
+
+Compensation-aware block scoring. Replacing the mass and variance in Equation 7 with these estimates defines the CompKV score Sb for block b:
+
+Sb =
+
+> G
+
+X
+
+> g=1
+
+bpg,b bσ2
+
+> g,b
+
+. (10) The two uses of bσ2 
+
+> g,b
+
+follow from the preceding derivations: the correction inside bpg,b estimates the block’s attention mass, and the outer variance factor captures the leading dependence of the compensation residual on logit variation. CompKV computes bσ2 
+
+> g,b
+
+only once and then reuses it. 
+
+To evaluate the effectiveness of the score, we measure how closely it follows exact residual selection using Spearman correlation and residual capture. The results are shown in Appendix B.2. 4.2 BLOCK SELECTION AND COMPENSATED DECODING 
+
+Figure 2 shows the end-to-end decoding workflow of CompKV. Mean compensation additionally stores ¯vb = |b|−1 P 
+
+> j∈b
+
+vj , where vj ∈ Rd. The complete summary {| b|, ¯kb, ¯Db, ¯vb} contains 
+
+2d + r + 1 scalars per block and is updated incrementally as new K/V states enter the active block. The mandatory set F contains the first sink block and the two most recent blocks, counting any overlap once. These blocks count toward the total budget, and Equation 10 ranks the other blocks: 
+
+S = F ∪ TopK K−|F| {Sb : b ∈ B \ F} , |S| = K. (11) Here, TopK returns the blocks with the highest scores. Selected blocks use their original K/V states, while unselected blocks use their mean summaries. Both contributions are normalized together: 
+
+bog =
+
+X
+
+> b∈S
+
+X
+
+> j∈b
+
+ezg,j vj + X
+
+> b / ∈S
+
+|b|e¯zg,b ¯vb
+
+X
+
+> b∈S
+
+Zg,b + X
+
+> b / ∈S
+
+|b|e¯zg,b 
+
+. (12) 4.3 EFFICIENT IMPLEMENTATION OF COMP KV In practical LLM deployments, the KV cache may need to be stored outside GPU memory. There-fore, CompKV keeps the complete BF16 KV cache and FP32 block summaries in pinned CPU 6Preprint. Under review. memory. Each step uses a fused GPU kernel to update the current block’s statistics and pack the new K/V, followed by one device-to-host (D2H) transfer and CPU writeback. The summary buffer separates selection statistics from mean values. The main CUDA stream transfers the selection re-gion and runs two kernels for block statistics and normalized Top-K scoring, while an auxiliary stream independently transfers mean values. The selector reuses grouped variance projection in both factors of Equation 10 to estimate both block mass and residual magnitude. After selection, the CPU gathers the selected K/V into a contiguous pinned buffer for one host-to-device (H2D) transfer and FlashInfer exact attention. Meanwhile, the auxiliary stream computes Mean compensation once the mean values and selected-block mask are ready, overlapping this com-putation with CPU gathering, selected-KV transfer, and exact attention. The main stream waits for compensation immediately before merging both contributions under the shared normalization in Equation 12. Figure 3 shows the schedule; Appendix E.1 details implementation and measurement. Table 1: RULER accuracy (%). Bold values mark the best sparse result per model and column, including ties. AVG annotations show drops ( ↓) from Full in percentage points.                                                                                                                                                                                          
+
+> Method SG1 SG2 SG3 MK1 MK2 MK3 MV MQ VT CWE FWE QA1 QA2 AVG
+> Llama-3.1-8B-Instruct
+> Full 100.0 100.0 100.0 100.0 99.8 99.2 94.9 99.1 99.1 9.9 93.3 81.4 54.4 87.0 Quest 100.0 99.6 99.6 99.8 92.0 22.4 86.9 96.8 94.4 1.7 80.7 76.2 50.8 77.0 ↓10.0
+> InfLLM 100.0 95.4 78.2 91.0 92.0 38.0 64.0 83.0 90.6 2.7 84.4 80.0 51.4 73.1 ↓13.9
+> Quest+RESA 100.0 99.4 99.6 99.8 93.8 29.4 91.8 97.2 97.1 0.1 82.5 75.4 50.6 78.2 ↓8.8
+> CompKV 100.0 99.6 99.8 98.6 97.8 73.0 91.2 97.1 97.2 0.5 91.7 80.8 54.0 83.2 ↓3.8
+> Qwen3-8B
+> Full 100.0 100.0 100.0 98.6 97.4 98.8 96.2 97.5 100.0 82.7 92.3 71.8 54.0 91.5 Quest 100.0 100.0 97.6 98.2 77.8 3.4 82.0 95.3 99.7 34.8 93.3 64.0 49.0 76.5 ↓15.0
+> InfLLM 100.0 94.0 76.0 94.0 89.6 42.8 81.9 85.9 99.8 20.0 88.4 70.6 52.6 76.6 ↓14.9
+> Quest+RESA 100.0 100.0 97.2 97.6 75.8 4.8 85.6 95.7 99.6 21.1 93.9 65.2 48.6 75.8 ↓15.7
+> CompKV 100.0 100.0 100.0 98.6 96.4 75.0 95.7 97.2 99.8 35.2 94.9 71.8 53.4 86.0 ↓5.5
+> Qwen3-32B
+> Full 100.0 98.4 100.0 99.8 99.8 100.0 99.4 100.0 99.7 87.5 93.3 80.0 60.4 93.7 Quest 100.0 99.2 94.4 100.0 35.2 2.4 95.8 99.8 98.4 35.5 93.1 74.8 55.8 75.7 ↓18.0
+> InfLLM 100.0 95.8 82.4 93.4 91.6 68.0 85.3 90.1 99.4 34.9 93.3 81.0 57.0 82.5 ↓11.2
+> Quest+RESA 97.6 98.0 93.0 100.0 38.2 3.2 94.8 99.4 98.1 39.5 91.3 74.6 55.4 75.6 ↓18.1
+> CompKV 100.0 99.2 100.0 99.8 99.4 93.0 98.5 99.6 99.2 56.0 96.7 81.4 60.2 91.0 ↓2.7
+
+## 5 EXPERIMENTS 
+
+5.1 SETUP 
+
+Models. To comprehensively evaluate our proposed CompKV, we consider three models that are widely used in sparse attention studies: Llama-3.1-8B-Instruct (Grattafiori et al., 2024), Qwen3-8B, and Qwen3-32B (Yang et al., 2025). Qwen3-8B and Qwen3-32B are used to assess generalization across model scales, while Llama-3.1-8B-Instruct is included to further examine whether CompKV generalizes across different model families and architectural designs. 
+
+Methods. To verify the effectiveness of CompKV, we compare it against Quest (Tang et al., 2024), InfLLM (Xiao et al., 2024a), and Quest+RESA with λ = 0 .25 (Yang et al., 2026). Quest and In-fLLM are state-of-the-art training-free, query-aware baselines for block selection. CompKV differs from these methods in two aspects: how blocks are selected for exact attention computation and how the unselected blocks are handled. RESA is a plug-in compensation method that can be integrated with different sparse-attention methods; following its original evaluation setup, we use Quest+RESA 7Preprint. Under review. as the RESA baseline. As defined in Section 4.1, r denotes the number of variance groups, and we set r = 4 for all main CompKV results. Full attention is included as the dense reference. 
+
+Benchmarks and metrics. RULER (Hsieh et al., 2024) provides controlled retrieval, tracing, and aggregation tasks to test whether CompKV preserves long-context capabilities under tight exact-read budgets. LongBench-Pro (Chen et al., 2026) assesses whether these gains extend to more realistic tasks requiring either localized evidence retrieval or global context integration. We evaluate RULER at 32K and LongBench-Pro at context lengths up to 128K using their respective official scorers. 
+
+Additional configuration. All evaluations are conducted on NVIDIA H100 80GB HBM3 GPUs with a batch size of one. For a consistent comparison, all four sparse methods partition consecutive tokens into blocks of size 16 and retain the first block as an attention sink together with the two most recent blocks as a local attention window. These mandatory blocks are always included in the selected set and count toward the same per-step exact-read budget. Appendix C provides further details on the complete experimental setup and evaluation configurations. Table 2: LongBench-Pro scores. Mod. and Extr. abbreviate Moderate and Extreme. Bold marks the best sparse result per model and column. AVG arrows show point drops from Full. 
+
+Method Difficulty Context length AVG Easy Mod. Hard Extr. 8k 16k 32k 64k 128k 
+
+Llama-3.1-8B-Instruct 
+
+Full 28.30 18.88 25.61 25.72 30.46 25.55 25.73 22.59 21.98 25.26 Quest 28.30 17.71 22.66 24.75 28.09 25.54 24.47 21.55 21.75 24.28 ↓ 0.98 
+
+InfLLM 27.56 17.69 21.84 23.72 28.31 24.53 24.07 20.72 20.35 23.60 ↓ 1.66 
+
+Quest+RESA 27.51 18.09 24.38 24.54 27.95 24.34 25.94 21.73 21.54 24.30 ↓ 0.96 
+
+CompKV 27.91 18.05 23.94 24.83 28.63 25.36 25.30 21.50 21.39 24.44 ↓ 0.82 
+
+Qwen3-8B 
+
+Full 39.63 29.36 32.36 31.62 38.68 35.86 34.88 29.53 32.21 34.23 Quest 34.54 27.14 28.68 28.89 33.83 29.54 30.50 27.84 31.19 30.58 ↓ 3.65 
+
+InfLLM 36.18 29.09 29.82 28.83 35.01 30.87 33.43 27.13 32.31 31.75 ↓ 2.48 
+
+Quest+RESA 34.54 27.82 28.63 28.46 33.90 29.96 31.37 27.25 30.50 30.60 ↓ 3.63 
+
+CompKV 37.17 30.09 30.68 29.89 35.74 32.82 33.77 28.17 33.19 32.74 ↓ 1.49 
+
+Qwen3-32B 
+
+Full 50.88 39.11 39.17 33.63 48.20 44.45 41.56 38.72 37.09 42.00 Quest 44.93 33.93 35.76 31.43 41.67 35.15 39.00 36.22 36.06 37.62 ↓ 4.38 
+
+InfLLM 48.07 36.44 37.18 31.80 44.63 38.75 42.02 36.54 36.15 39.62 ↓ 2.38 
+
+Quest+RESA 43.61 31.93 35.11 29.69 41.87 35.24 38.35 35.07 30.28 36.16 ↓ 5.84 
+
+CompKV 49.56 35.23 38.62 32.36 45.49 39.52 41.09 38.28 37.15 40.30 ↓ 1.70 
+
+5.2 ACCURACY RESULTS 
+
+We evaluate how well CompKV preserves task quality by comparing overall scores, task-level be-havior, and sensitivity to the KV budget. With r = 4 , CompKV achieves the highest AVG for all three models on RULER at a 32K length and a 512-token budget (Table 1), as well as on LongBench-Pro (Table 2). It also obtains the best or tied-best sparse scores in most task-level comparisons. The gains are particularly pronounced on MK3, where the accuracy of CompKV is significantly higher than that of other baselines. This improvement suggests that compensation-aware selection helps preserve the information needed for difficult retrieval tasks. However, on Llama-3.1, Full attention scores only 9.9% on CWE, and all evaluated sparse methods remain low, which means the aggregate improvements coexist with tasks that remain challenging even for the dense model. 8Preprint. Under review. The advantage persists as the exact-read budget varies. We further evaluate CompKV with token budgets ranging from 128 to 1024 for both 8B models on RULER. Results are shown in Appendix D. The curves show that several baselines approach Full as the budget increases, but CompKV remains the best across most budgets, tasks and models. 5.3 EFFICIENCY EVALUATION 
+
+To further evaluate the efficiency of our CompKV implementation, we follow the profiling setup of Quest (Tang et al., 2024) and measure the complete CPU-offload attention step on a single NVIDIA H100 GPU with a batch size of one. We benchmark Full, Quest, InfLLM, and CompKV with 
+
+r ∈ { 4, 128 } under the same evaluation setting. We do not include Quest+RESA in the latency eval-uation because its original paper reports higher latency than Quest. The evaluation covers endpoint lengths of 32K, 64K, and 128K and selected-token budgets of 512, 1,024, and 2,048. CompKV (r = 4 ) achieves the lowest mean latency in all nine settings, with up to 6.85 × speedups over Full. Figure 4 shows the 512-token budget; Appendix E.2 gives the full protocol and results. 0 0.5 1 1.5 2 2.5           
+
+> Latency (ms)
+> CompKV
+> Quest InfLLM Full 32K
+> 4.81 ×
+> 012345
+> Latency (ms) 64K
+> 5.95 ×
+> 0246810
+> Latency (ms) 128K
+> 6.85 ×
+
+Figure 4: CPU-offload attention latency. Mean host wall time per single-layer attention step at a 512-token budget. Lengths denote the endpoints of the 256-step decode windows. 5.4 ABLATION STUDIES 
+
+Table 3: Factor ablations on RULER. Val-ues are 13-task AVG (%) for Llama-3.1-8B-Instruct and Qwen3-8B with r = 4 . Column labels denote selected-token budgets. 
+
+Variant Llama Qwen 256 512 256 512 CompKV 78.6 83.2 80.9 86.0 
+
+bp(2) only 75.6 81.8 79.2 83.5 
+
+bp(2) + Mean 78.1 82.8 79.7 85.1 
+
+bp(1) bσ2 + Mean 76.1 81.2 77.5 83.8 1 2 4 8 16 32 64 128 Variance groups r    
+
+> 78 80 82 84 RULER AVG (%)
+> default r=d
+> Budget 256 Budget 512
+
+Figure 5: Variance-group granularity on RULER. Curves show the 13-task AVG for Llama-3.1-8B-Instruct at selected-token budgets of 256 and 512. 
+
+Ablation objectives. We examine Mean compen-sation, the outer variance factor, and the second-order mass correction to determine how tail recon-struction and residual-aware scoring contribute to the final task quality. We also vary the number of variance groups r to assess how compact block statistics affect accuracy and metadata cost. 
+
+Factor ablations. Table 3 compares four config-urations with r = 4 . Here, bp(2) includes the vari-ance correction in Equation 9, while bp(1) uses mean-key logits alone. Adding Mean compensation im-proves AVG by 0.48–2.47 points, while the outer variance factor provides a further 0.35–1.19 points. The second-order mass correction contributes an ad-ditional 1.96–3.39 points over its first-order counter-part. Overall, the results indicate that compensation, residual-aware selection, and second-order mass es-timation all contribute consistently, with CompKV achieving the highest AVG in all four settings. 
+
+Variance-group granularity. Figure 5 shows that accuracy generally improves with finer variance groups, with r = 128 achieving the highest AVG at both budgets. Our default r = 4 trails this endpoint by 1.87 and 1.08 points at budgets 256 and 512, re-spectively, while requiring only 1/32 of its variance 9Preprint. Under review. metadata. This trade-off motivates the use of com-pact grouped statistics in the main experiments. 
+
+## 6 CONCLUSION 
+
+In this paper, we identify the mismatch between KV block selection and downstream compensation and introduce CompKV, a compensation-aware method that selects blocks according to their esti-mated post-compensation residual. Our analysis shows that, under Mean compensation, this resid-ual is jointly governed by block attention mass and within-block logit variation, which CompKV estimates from compact block statistics. Across three models and two long-context benchmarks, CompKV achieves the highest average scores among the evaluated sparse methods, while its asyn-chronous implementation delivers up to 6.85 × self-attention speedups over full attention. 
+
+## REFERENCES 
+
+Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebron, and Sumit Sanghai. GQA: Training generalized multi-query transformer models from multi-head check-points. In The 2023 Conference on Empirical Methods in Natural Language Processing , 2023. URL https://openreview.net/forum?id=hmOwOZWzYE .Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. LongBench: A bilin-gual, multitask benchmark for long context understanding. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar (eds.), Proceedings of the 62nd Annual Meeting of the Association for Com-putational Linguistics (Volume 1: Long Papers) , pp. 3119–3137, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.172. URL 
+
+https://aclanthology.org/2024.acl-long.172/ .Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu, Yucheng Li, Tianyu Liu, Keming Lu, Wayne Xiong, Yue Dong, Junjie Hu, and Wen Xiao. PyramidKV: Dynamic KV cache compression based on pyramidal information funneling. In Second Conference on Language Modeling , 2025. URL https://openreview.net/forum?id=ayi7qezU87 .Chi-Chih Chang, Wei-Cheng Lin, Chien-Yu Lin, Chong-Yan Chen, Yu-Fang Hu, Pei-Shuo Wang, Ning-Chi Huang, Luis Ceze, Mohamed S. Abdelfattah, and Kai-Chiang Wu. Palu: KV-cache compression with low-rank projection. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=LWMS4pk2vK .Ziyang Chen, Xing Wu, Junlong Jia, Chaochen Gao, Qi Fu, Debing Zhang, and Songlin Hu. Long-bench pro: A more realistic and comprehensive bilingual long-context evaluation benchmark, 2026. URL https://arxiv.org/abs/2601.02872 .Keqi Deng, Shaoshi Ling, Ruchao Fan, and Jinyu Li. Unique: Universal top-k sparse attention for training-free inference and sparsity-aware training, 2026. URL https://arxiv.org/abs/ 2605.27740 .Qihang Fan, Huaibo Huang, Zhiying Wu, Bingning Wang, and Ran He. Flashprefill v2: Block-sparse prefill attention for long-context llm serving, 2026. URL https://arxiv.org/abs/ 2608.19758 .Yuan Feng, Junlin Lv, Yukun Cao, Xike Xie, and S Kevin Zhou. Ada-KV: Optimizing KV cache eviction by adaptive budget allocation for efficient LLM inference. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview. net/forum?id=tcisuhGsQZ .Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783 .10 Preprint. Under review. Coleman Hooper, Sehoon Kim, Hiva Mohammadzadeh, Michael W. Mahoney, Yakun Sophia Shao, Kurt Keutzer, and Amir Gholami. Kvquant: Towards 10 million context length llm inference with kv cache quantization. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang (eds.), Advances in Neural Information Process-ing Systems , volume 37, pp. 1270–1303. Curran Associates, Inc., 2024. doi: 10.52202/ 079017-0040. URL https://proceedings.neurips.cc/paper_files/paper/ 2024/file/028fcbcf85435d39a40c4d61b42c99a4-Paper-Conference.pdf .Coleman Richard Charles Hooper, Sebastian Zhao, Luca Manolache, Sehoon Kim, Michael W. Mahoney, Sophia Shao, Kurt Keutzer, and Amir Gholami. Multipole attention for efficient long context reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum?id=5Qe7AGO3Eq .Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, and Boris Ginsburg. RULER: What’s the real context size of your long-context language models? In 
+
+First Conference on Language Modeling , 2024. URL https://openreview.net/forum? id=kIoBbc76Sy .Shibo Jie, Yehui Tang, Kai Han, Zhi-Hong Deng, and Jing Han. Specache: Speculative key-value caching for efficient generation of LLMs. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id=PQIrsaIQdn .Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik R Narasimhan. SWE-bench: Can language models resolve real-world github issues? In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview. net/forum?id=VTF8yNQM66 .Hao Kang, Qingru Zhang, Souvik Kundu, Geonhwa Jeong, Zaoxing Liu, Tushar Krishna, and Tuo Zhao. Gear: An efficient kv cache compression recipe for near-lossless generative inference of llm, 2024. URL https://arxiv.org/abs/2403.05527 .Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th Symposium on Operating Sys-tems Principles , SOSP ’23, pp. 611–626, New York, NY, USA, 2023. Association for Com-puting Machinery. ISBN 9798400702297. doi: 10.1145/3600006.3613165. URL https: //doi.org/10.1145/3600006.3613165 .Wonbeom Lee, Jungi Lee, Junghwan Seo, and Jaewoong Sim. Infinigen: efficient generative infer-ence of large language models with dynamic kv cache management. In Proceedings of the 18th USENIX Conference on Operating Systems Design and Implementation , OSDI’24, USA, 2024. USENIX Association. ISBN 978-1-939133-40-3. Xing Li, Zeyu XING, Yiming Li, Linping Qu, Hui-Ling Zhen, Yiwu Yao, Wulong Liu, Sinno Jialin Pan, and Mingxuan Yuan. KVTuner: Sensitivity-aware layer-wise mixed-precision KV cache quantization for efficient and nearly lossless LLM inference. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id= zDwipF6h06 .Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. SnapKV: LLM knows what you are looking for before generation. In The Thirty-eighth Annual Conference on Neural Information Processing Systems ,2024. URL https://openreview.net/forum?id=poE54GOq2l .Di Liu, Meng Chen, Baotong Lu, Huiqiang Jiang, Zhenhua Han, Qianxi Zhang, Qi Chen, Chen-gruidong Zhang, Bailu Ding, Kai Zhang, Chen Chen, Fan Yang, Yuqing Yang, and Lili Qiu. Retrievalattention: Accelerating long-context LLM inference via vector retrieval. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https: //openreview.net/forum?id=8z3cOVER4z .Zichang Liu, Aditya Desai, Fangshuo Liao, Weitao Wang, Victor Xie, Zhaozhuo Xu, Anastasios Kyrillidis, and Anshumali Shrivastava. Scissorhands: Exploiting the persistence of importance 11 Preprint. Under review. hypothesis for LLM KV cache compression at test time. In Thirty-seventh Conference on Neu-ral Information Processing Systems , 2023. URL https://openreview.net/forum?id= JZfg6wGi6g .Zirui Liu, Jiayi Yuan, Hongye Jin, Shaochen Zhong, Zhaozhuo Xu, Vladimir Braverman, Beidi Chen, and Xia Hu. KIVI: A tuning-free asymmetric 2bit quantization for KV cache. In Ruslan Salakhutdinov, Zico Kolter, Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix Berkenkamp (eds.), Proceedings of the 41st International Conference on Machine Learning ,volume 235 of Proceedings of Machine Learning Research , pp. 32332–32344. PMLR, 21–27 Jul 2024. URL https://proceedings.mlr.press/v235/liu24bz.html .Guanqiao Qu, Qiyuan Chen, Wei Wei, Zheng Lin, Xianhao Chen, and Kaibin Huang. Mobile edge intelligence for large language models: A contemporary survey. IEEE Communications Surveys & Tutorials , 27(6):3820–3860, 2025. Luka Ribar, Ivan Chelombiev, Luke Hudlass-Galley, Charlie Blake, Carlo Luschi, and Douglas Orr. SparQ attention: Bandwidth-efficient LLM inference. In Ruslan Salakhutdinov, Zico Kolter, Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix Berkenkamp (eds.), Proceedings of the 41st International Conference on Machine Learning , volume 235 of 
+
+Proceedings of Machine Learning Research , pp. 42558–42583. PMLR, 21–27 Jul 2024. URL 
+
+https://proceedings.mlr.press/v235/ribar24a.html .Utkarsh Saxena, Gobinda Saha, Sakshi Choudhary, and Kaushik Roy. Eigen attention: Attention in low-rank space for KV cache compression. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.), Findings of the Association for Computational Linguistics: EMNLP 2024 ,pp. 15332–15344, Miami, Florida, USA, November 2024. Association for Computational Lin-guistics. doi: 10.18653/v1/2024.findings-emnlp.899. URL https://aclanthology.org/ 2024.findings-emnlp.899/ .Prajwal Singhania, Siddharth Singh, Shwai He, Soheil Feizi, and Abhinav Bhatele. Loki: Low-rank keys for efficient sparse attention. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview.net/forum?id=raABeiV71j .Hanshi Sun, Li-Wen Chang, Wenlei Bao, Size Zheng, Ningxin Zheng, Xin Liu, Harry Dong, Yuejie Chi, and Beidi Chen. ShadowKV: KV cache in shadows for high-throughput long-context LLM inference. In Forty-second International Conference on Machine Learning , 2025. URL https: //openreview.net/forum?id=oa7MYAO6h6 .Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. Quest: query-aware sparsity for efficient long-context llm inference. In Proceedings of the 41st International Conference on Machine Learning , ICML’24. JMLR.org, 2024. Georgios Tzachristas, Lei Deng, Ioannis Tzachristas, Gong Zhang, and Renhai Chen. A mathe-matical theory of top-k sparse attention via total variation distance. In 2026 IEEE International Symposium on Information Theory (ISIT) , pp. 1–6. IEEE, 2026. Yifei Wang, Yueqi Wang, Zhenrui Yue, Huimin Zeng, Yong Wang, Ismini Lourentzou, Zhengzhong Tu, Xiangxiang Chu, and Julian McAuley. FASA: FREQUENCY-AWARE SPARSE ATTEN-TION. In The Fourteenth International Conference on Learning Representations , 2026. URL 
+
+https://openreview.net/forum?id=FnSgecCEwg .Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu, and Maosong Sun. InfLLM: Training-free long-context extrapolation for LLMs with an effi-cient context memory. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024a. URL https://openreview.net/forum?id=bTHFrqhASY .Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. In The Twelfth International Conference on Learning Rep-resentations , 2024b. URL https://openreview.net/forum?id=NG7sS51zVF .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report, 2025. URL https://arxiv. org/abs/2505.09388 .12 Preprint. Under review. Weihao Yang, Hao Huang, Ningke Li, Shihao Wang, Darong Yang, Yanqi Pan, Wen Xia, Shiyi Li, and Xiangyu Zou. RESA: Bringing back what sparse attention ignores with residual estimation. In The Fourteenth International Conference on Learning Representations , 2026. URL https: //openreview.net/forum?id=ktcq26hMCH .Yuhang Zhan, Lisi Chen, and Shuo Shang. Reskv: Reconstructing omitted attention contribu-tions for fixed-budget kv cache compression, 2026. URL https://arxiv.org/abs/2607. 29591 .Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Re, Clark Barrett, Zhangyang Wang, and Beidi Chen. H2o: Heavy-hitter oracle for efficient generative inference of large language models. In Thirty-seventh Confer-ence on Neural Information Processing Systems , 2023. URL https://openreview.net/ forum?id=RkRrPp7GKO .Shuyan Zhou, Frank F Xu, Hao Zhu, Xuhui Zhou, Robert Lo, Abishek Sridhar, Xi-anyi Cheng, Tianyue Ou, Yonatan Bisk, Daniel Fried, Uri Alon, and Graham Neu-big. Webarena: A realistic web environment for building autonomous agents. In B. Kim, Y. Yue, S. Chaudhuri, K. Fragkiadaki, M. Khan, and Y. Sun (eds.), In-ternational Conference on Learning Representations , volume 2024, pp. 15585–15606, 2024. URL https://proceedings.iclr.cc/paper_files/paper/2024/file/ 4410c0711e9154a7a2d26f9b3816d1ef-Paper-Conference.pdf .
+
+## A DETAILED COMP KV D ERIVATIONS 
+
+A.1 KL I DENTITY FOR MEAN COMPENSATION 
+
+Mean compensation replaces the exact weight of each unselected block with its mean-based weight. Consequently, the selection loss admits both a log-partition form and a form that isolates the unre-constructed weight of each omitted block (Equation 4): 
+
+L(S) = 
+
+> G
+
+X
+
+> g=1
+
+log 
+
+X
+
+> b∈B
+
+Zg,b 
+
+X
+
+> b∈S
+
+Zg,b + X
+
+> b / ∈S
+
+|b|e¯zg,b 
+
+= −
+
+> G
+
+X
+
+> g=1
+
+log 
+
+"
+
+1 − X
+
+> b / ∈S
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+#
+
+.
+
+To establish this identity, fix a query head g and a selected block set S. Write the full and compen-sated normalization constants as 
+
+Dg = X
+
+> b∈B
+
+Zg,b , bDg (S) = X
+
+> b∈S
+
+Zg,b + X
+
+> b / ∈S
+
+|b|e¯zg,b . (13) The token probabilities are Pg (j) = ezg,j /D g and bPg (j; S) = eˆzg,j / bDg (S). Substituting them into the KL divergence gives 
+
+DKL 
+
+ bPg (S)∥Pg
+
+
+
+= X
+
+> b∈B
+
+X
+
+> j∈b
+
+bPg (j; S)
+
+"
+
+ˆzg,j − zg,j + log Dg
+
+bDg (S)
+
+#
+
+= log Dg
+
+bDg (S) + X
+
+> b / ∈S
+
+X
+
+> j∈b
+
+bPg (j; S) (¯ zg,b − zg,j ) .
+
+(14) The second equality follows from ˆzg,j = zg,j in selected blocks and normalized probabilities. Within each unselected block, every token has the same compensated probability. The remaining term therefore vanishes: 
+
+X
+
+> b / ∈S
+
+X
+
+> j∈b
+
+bPg (j; S) (¯ zg,b − zg,j ) = 1
+
+bDg (S)
+
+X
+
+> b / ∈S
+
+e¯zg,b 
+
+X
+
+> j∈b
+
+(¯ zg,b − zg,j ) = 0 , (15) 13 Preprint. Under review. because ¯zg,b is the arithmetic mean of the original logits in block b. Summing the resulting log-partition ratio over the G query heads yields 
+
+L(S) = 
+
+> G
+
+X
+
+> g=1
+
+log Dg
+
+bDg (S) =
+
+> G
+
+X
+
+> g=1
+
+log 
+
+X
+
+> b∈B
+
+Zg,b 
+
+X
+
+> b∈S
+
+Zg,b + X
+
+> b / ∈S
+
+|b|e¯zg,b 
+
+. (16) To obtain the residual form, write the compensated normalization constant as the full weight minus the unreconstructed weight: 
+
+bDg (S) = Dg − X
+
+> b / ∈S
+
+ Zg,b − | b|e¯zg,b 
+
+ . (17) Dividing by Dg and using pg,b = Zg,b /D g gives 
+
+bDg (S)
+
+Dg
+
+= 1 − X
+
+> b / ∈S
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+
+
+. (18) Substitution into the log-partition ratio establishes 
+
+L(S) = −
+
+> G
+
+X
+
+> g=1
+
+log 
+
+"
+
+1 − X
+
+> b / ∈S
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+#
+
+, (19) which is the second equality in Equation 4. A.2 EXPANSION OF THE BLOCKWISE COMPENSATION RESIDUAL 
+
+The residual form above shows that an omitted block contributes to the loss only through the weight that Mean compensation fails to recover. In the small-variance regime, this unreconstructed fraction has the expansion in Equation 5: 
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+
+
+= pg,b 
+
+ 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+)
+
+
+
+.
+
+To establish this expansion, we hold the maximum block size fixed and let max g,b σg,b → 0, where 
+
+σg,b is the standard deviation of the logits within block b for query head g. We start from the block’s exact weight relative to its mean-based weight. Averaging the second-order Taylor expansion of the exponential over a block gives 
+
+Zg,b 
+
+|b|e¯zg,b = 1
+
+|b|
+
+X
+
+> j∈b
+
+ezg,j −¯zg,b = 1 + 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+). (20) The linear term vanishes because P
+
+> j∈b
+
+(zg,j − ¯zg,b ) = 0 , and the quadratic term averages to σ2
+
+> g,b
+
+/2.The fixed maximum block size makes the averaged third-order remainder O(σ3
+
+> g,b
+
+).The deviation of this ratio from one is O(σ2
+
+> g,b
+
+), so taking its reciprocal gives 
+
+|b|e¯zg,b 
+
+Zg,b 
+
+= 11 + 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+) = 1 − 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+). (21) The reciprocal expansion introduces a quadratic remainder of order O(σ4
+
+> g,b
+
+), which combines with the existing cubic remainder. Subtracting the reciprocal from one and multiplying by pg,b yields 
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+
+
+= pg,b ( 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+)) . (22) Taking the logarithm of Equation 20 also gives the log-partition expansion used for attention-mass estimation: 
+
+log Zg,b = log |b| + ¯ zg,b + 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+). (23) 14 Preprint. Under review. A.3 SECOND -O RDER EXPANSION OF THE SELECTION LOSS 
+
+The preceding subsection expands the residual of a single omitted block. We now combine these residuals within each query head and account for the outer logarithm in the exact selection loss. This gives the second-order approximation in Equation 6: 
+
+L(S) = 12
+
+> G
+
+X
+
+> g=1
+
+X
+
+> b / ∈S
+
+pg,b 
+
+ σ2 
+
+> g,b
+
++ O σ3
+
+> g,b
+
+ .
+
+To derive this expression, hold the maximum block size fixed and set ε = max g,b σg,b → 0. Define the total normalized residual for head g as 
+
+Rg (S) = X
+
+> b / ∈S
+
+pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+
+
+. (24) Summing the blockwise expansion from Appendix A.2 gives 
+
+Rg (S) = 12
+
+X
+
+> b / ∈S
+
+pg,b σ2 
+
+> g,b
+
++ O X
+
+> b / ∈S
+
+pg,b σ3
+
+> g,b
+
+!
+
+. (25) Since P 
+
+> b / ∈S
+
+pg,b σ3 
+
+> g,b
+
+≤ ε P 
+
+> b / ∈S
+
+pg,b σ2
+
+> g,b
+
+, we have Rg = O(P 
+
+> b / ∈S
+
+pg,b σ2
+
+> g,b
+
+). Moreover, 
+
+P 
+
+> b / ∈S
+
+pg,b ≤ 1 implies Rg → 0. Expanding the outer logarithm therefore yields 
+
+− log(1 − Rg ) = 12
+
+X
+
+> b / ∈S
+
+pg,b σ2
+
+> g,b
+
++ O
+
+X
+
+> b / ∈S
+
+pg,b σ3 
+
+> g,b
+
++
+
+"X
+
+> b / ∈S
+
+pg,b σ2
+
+> g,b
+
+#2 .
+
+(26) The quadratic remainder can be absorbed into the cubic term. By the Cauchy–Schwarz inequality, 
+
+"X
+
+> b / ∈S
+
+pg,b σ2
+
+> g,b
+
+#2
+
+≤ X
+
+> b / ∈S
+
+pg,b 
+
+! X
+
+> b / ∈S
+
+pg,b σ4
+
+> g,b
+
+!
+
+≤ ε X
+
+> b / ∈S
+
+pg,b σ3
+
+> g,b
+
+.
+
+(27) Substituting this bound and summing over the query heads gives 
+
+L(S) = 12
+
+> G
+
+X
+
+> g=1
+
+X
+
+> b / ∈S
+
+pg,b σ2 
+
+> g,b
+
++ O
+
+> G
+
+X
+
+> g=1
+
+X
+
+> b / ∈S
+
+pg,b σ3
+
+> g,b
+
+!
+
+= 12
+
+> G
+
+X
+
+> g=1
+
+X
+
+> b / ∈S
+
+pg,b 
+
+ σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+) ,
+
+(28) which establishes Equation 6. The remainder bounds hold uniformly over the selected sets through-out the stated small-variance regime with a fixed maximum block size. The leading term depends on S only through the unselected blocks. Because its sum over all blocks is independent of S, minimizing the unselected contribution under a budget of K exact block reads is equivalent to 
+
+max  
+
+> S⊆B ,|S| =K
+
+X
+
+> b∈S
+> G
+
+X
+
+> g=1
+
+pg,b σ2
+
+> g,b
+
+.
+
+Thus, the second-order objective selects the K blocks with the largest PGg=1 pg,b σ2
+
+> g,b
+
+, as stated in Equation 7. 15 Preprint. Under review. A.4 GROUPED VARIANCE AND ATTENTION -M ASS ESTIMATION 
+
+The oracle selection rule above requires each block’s exact attention mass and logit variance, which would require reading its keys. CompKV instead estimates the variance from grouped key statistics. The first quantity to derive is Equation 8: 
+
+bσ2 
+
+> g,b
+
+= 1
+
+d
+
+> r−1
+
+X
+
+> t=0
+
+X
+
+> i∈G t
+
+q2
+
+> g,i
+
+!
+
+( ¯Db)t, ( ¯Db)t = 1
+
+|b| |G t|
+
+X
+
+> j∈b
+
+X
+
+> i∈G t
+
+(kj,i − ¯kb,i )2.
+
+To obtain this estimate, let Σk,b ∈ Rd×d denote the key covariance within block b. Its definition and projection along the query give 
+
+Σk,b = 1
+
+|b|
+
+X
+
+> j∈b
+
+(kj − ¯kb)⊤(kj − ¯kb), σ2 
+
+> g,b
+
+= 1
+
+d qg Σk,b q⊤ 
+
+> g
+
+. (29) The projection follows from zg,j − ¯zg,b = qg (kj − ¯kb)⊤/√d.For the settings where r divides d/ 2, we divide the ordered RoPE frequency pairs into r equal, consecutive groups, keeping both coordinates of each pair together. Each group Gt contains d/r 
+
+coordinates. At r = d, each group contains one coordinate. The statistic stored for each group is the average of its diagonal covariance entries: 
+
+( ¯Db)t = 1
+
+|G t|
+
+X
+
+> i∈G t
+
+(Σk,b )ii = 1
+
+|b| |G t|
+
+X
+
+> j∈b
+
+X
+
+> i∈G t
+
+(kj,i − ¯kb,i )2. (30) We approximate Σk,b by a diagonal matrix, assigning ( ¯Db)t to every diagonal entry whose coordi-nate belongs to Gt. Projecting this approximation along the query yields 
+
+bσ2 
+
+> g,b
+
+= 1
+
+d
+
+> r−1
+
+X
+
+> t=0
+
+X
+
+> i∈G t
+
+q2
+
+> g,i
+
+( ¯Db)t = 1
+
+d
+
+> r−1
+
+X
+
+> t=0
+
+X
+
+> i∈G t
+
+q2
+
+> g,i
+
+!
+
+( ¯Db)t. (31) Together, these expressions recover both parts of Equation 8. Each group’s average key variance is weighted by the sum of squared query coordinates in that group, with attention scaling 1/d .The same variance estimate also determines the attention-mass estimate in Equation 9. Exponenti-ating the log-partition expansion in Equation 23 gives 
+
+Zg,b = |b| exp 
+
+
+
+¯zg,b + 12 σ2 
+
+> g,b
+
++ O(σ3
+
+> g,b
+
+)
+
+
+
+. (32) Retaining the second-order terms and replacing σ2 
+
+> g,b
+
+with bσ2 
+
+> g,b
+
+gives the estimated block weight 
+
+|b| exp(¯ zg,b + bσ2
+
+> g,b
+
+/2) . Since the full attention mass is pg,b = Zg,b / P 
+
+> c∈B
+
+Zg,c , normalizing these estimated weights over all available blocks yields 
+
+bpg,b =
+
+|b| exp 
+
+
+
+¯zg,b + 12 bσ2
+
+> g,b
+
+X
+
+> c∈B
+
+|c| exp 
+
+
+
+¯zg,c + 12 bσ2
+
+> g,c
+
+ . (33) This recovers Equation 9, with normalization performed separately for each query head. A.5 COMPARISON WITH UNCOMPENSATED SPARSE ATTENTION 
+
+For comparison, Drop removes unselected blocks and renormalizes over the tokens in a nonempty selected set S, giving P Drop  
+
+> g
+
+(S). Unselected positions in the original token space receive zero prob-ability. The ratio between the approximate and full probabilities is constant on selected positions: 
+
+DKL 
+
+ P Drop  
+
+> g
+
+(S)∥Pg
+
+ = log 
+
+X
+
+> c∈B
+
+Zg,c 
+
+X
+
+> b∈S
+
+Zg,b 
+
+= − log X
+
+> b∈S
+
+pg,b 
+
+!
+
+. (34) 16 Preprint. Under review. This identity agrees with the KL analysis of Top-k sparse attention (Tzachristas et al., 2026). For one head and a fixed block budget, retaining the blocks with the largest attention mass exactly minimizes this KL divergence. With a shared selected set across heads, the objective sums the headwise logarithmic terms. When the omitted attention mass is small for each head, its first-order additive score is P 
+
+> g
+
+pg,b .For the same nonempty selected set, adding positive mean-compensation weights increases the nor-malization constant. The inequality |b|e¯zg,b ≤ Zg,b also ensures that this constant does not exceed that of full attention. Consequently, 
+
+0 ≤ DKL 
+
+ bPg (S)∥Pg
+
+
+
+≤ DKL 
+
+ P Drop  
+
+> g
+
+(S)∥Pg
+
+ . (35) The second inequality is strict whenever an unselected block exists. The first is also strict if at least one unselected block has nonconstant logits. This comparison holds for a fixed selected set; the two operators can induce different optimal block sets under the same exact-read budget. 
+
+## B ATTENTION FIDELITY OF RESIDUAL -A WARE SELECTION 
+
+B.1 EXACT RESIDUAL VERSUS ATTENTION MASS 
+
+We compare exact mass-based and residual-based selection on Llama-3.1-8B-Instruct across all 13 RULER tasks, randomly sampling 64 prompts per task with seed 42 (832 total). We collect full-attention states under greedy decoding with batch size one at some layers. Both selectors use identical Q/K/V states, Mean compensation, and a 512-token budget with 16-token blocks; the first block and two most recent blocks are mandatory and included in the budget. The selectors rank blocks by P 
+
+> g
+
+pg,b or P 
+
+> g
+
+ρg,b , sharing each selected set across heads, where 
+
+ρg,b = pg,b 
+
+
+
+1 − |b|e¯zg,b 
+
+Zg,b 
+
+
+
+(36) is the exact compensation residual in Equation 4. For each head h, we measure 
+
+EKL ,h = DKL ( bPh∥Ph), Eout ,h = ∥ bPhVh − PhVh∥2
+
+∥PhVh∥2
+
+. (37) KL compares post-softmax probabilities; relative L2 compares outputs after multiplication by Vh.We plot ∆Eh = E(mass)  
+
+> h
+
+− E(res)  
+
+> h
+
+, so positive values favor residual-based selection . Each point averages positions within prompts, prompts within tasks, and then all 13 tasks equally. Averaged over the eight layers and 32 query heads, residual-based selection reduces KL by 0.660% and relative L2 by 0.582%. Both metrics improve in every layer-level mean, with improvements in most layer–head pairs. Thus, prioritizing the contribution left unreconstructed by Mean compensa-tion lowers average attention and output error relative to mass-based selection. Although the local gains are modest, attention-output errors propagate through subsequent layers and decoding steps and may be amplified, while reducing them may help limit accumulated deviations. B.2 FIDELITY OF PRACTICAL COMP KV S CORES 
+
+On the same states and budget, we compare CompKV ( r ∈ { 4, 128 }) with estimated-mass selection, P 
+
+> g
+
+bpg,b , using the r = 4 mass estimate in Equation 9. This baseline retains the second-order mass correction and removes the external variance factor in Equation 10. For each KV group, let Tb = P 
+
+> g
+
+ρg,b , with ρg,b defined in Equation 36. Spearman correlation compares scores with Tb over non-mandatory blocks. Let Sm and Sρ contain the 29 non-mandatory blocks selected by method m and exact residual ranking. Residual capture is 
+
+Capture( m) = 
+
+P 
+
+> b∈S m
+
+Tb
+
+P 
+
+> b∈S ρ
+
+Tb
+
+. (38) 17 Preprint. Under review. 0 8 16 24 31 015 30                                                                     
+
+> ΔDKL
+> 0816 24 31 020 40 60
+> Δ relative L2
+> 0816 24 31 0.0 1.5 3.0
+> ΔDKL
+> 0816 24 31 048
+> Δ relative L2
+> 0816 24 31 024
+> ΔDKL
+> 0816 24 31 036
+> Δ relative L2
+> 0816 24 31 0.0 1.5 3.0
+> ΔDKL
+> 0816 24 31 0.0 1.5 3.0
+> Δ relative L2
+> 0816 24 31 −0.8 0.0 0.8 1.6
+> ΔDKL
+> 0816 24 31 −1.5 0.0 1.5 3.0
+> Δ relative L2
+> 0816 24 31 0.0 0.5 1.0
+> ΔDKL
+> 0816 24 31 04812
+> Δ relative L2
+> 0816 24 31 0.0 0.8 1.6 2.4
+> ΔDKL
+> 0816 24 31 0.0 2.5 5.0
+> Δ relative L2
+> 0816 24 31 −2 024
+> ΔDKL
+> 0816 24 31 −4 048
+> Δ relative L2
+
+(a) Layer 0 (b) Layer 4 (c) Layer 8 (d) Layer 13 (e) Layer 17 (f) Layer 22 (g) Layer 26 (h) Layer 31  
+
+> All y-axes: ×10 −3
+
+Query head 
+
+> Budget 512
+
+Figure 6: Per-head error reduction from residual-based selection. Mass-minus-residual differ-ences in attention KL (left) and relative output L2 (right), using the same Mean compensator. We use the averaging in Appendix B.1. Layer curves additionally average KV heads, and overall results also average layers. Figure 7 reports both metrics. Overall Spearman correlations are 0.8511, 0.8604, and 0.8782 for estimated mass, CompKV ( r = 4 ), and CompKV ( r = 128 ), respectively, with capture rates of 81.17%, 81.53%, and 85.61%. CompKV ( r = 4 ) improves residual capture over estimated-mass selection in seven of eight layer means. Spearman correlations were saved as online scalars. These results show that highly compressed block summaries preserve much of the residual-selection signal. With only four grouped-variance statistics per block, CompKV achieves strong ranking agreement and captures over 81% of the residual removable by the exact reference. Its modest improvements over estimated-mass selection use the same summary statistics, showing the benefit of compensation-aware scoring within a fixed metadata budget. Although a gap to exact selection remains, this provides a practical balance between summary compactness and selection fidelity. 18 Preprint. Under review. 0 4 8 13 17 22 26 31 
+
+> Layer
+> 60% 70% 80% 90% 100%
+> Residual capture
+
+(a) Residual capture, budget 512                                                                   
+
+> Estimated ̂ p
+> CompKV ( r= 4) CompKV ( r= 128) Exact residual reference
+> 01234567
+> KV head
+> 04813 17 22 26 31
+> Layer
+> 0.96 0.97 0.94 0.92 0.92 0.88 0.96 0.55 0.92 0.97 0.93 0.97 0.82 0.90 0.97 0.88 0.81 0.92 0.80 0.87 0.87 0.96 0.85 0.81 0.82 0.80 0.84 0.82 0.83 0.84 0.84 0.81 0.80 0.84 0.85 0.81 0.88 0.83 0.85 0.83 0.84 0.88 0.86 0.87 0.89 0.87 0.83 0.85 0.85 0.83 0.85 0.84 0.80 0.88 0.75 0.80 0.89 0.84 0.90 0.91 0.83 0.81 0.91 0.86
+
+(b) Spearman, CompKV ( r = 4) 
+
+> 0.00 0.25 0.50 0.75 1.00
+
+Figure 7: Fidelity of practical CompKV scores. (a) residual capture at budget 512, normalized by exact residual selection. (b) CompKV ( r = 4 ) Spearman correlations by layer and KV head. Mandatory blocks are excluded from both metrics. 
+
+## C EVALUATION CONFIGURATION 
+
+C.1 MODEL CONFIGURATIONS 
+
+• Llama-3.1-8B-Instruct has 32 Transformer layers, 32 query heads, 8 key–value (KV) heads, a head dimension of 128, and a native context length of 131,072 tokens. • Qwen3-8B has 36 Transformer layers, 32 query heads, 8 KV heads, a head dimension of 128, and a native context length of 32,768 tokens. • Qwen3-32B has 64 Transformer layers, 64 query heads, 8 KV heads, a head dimension of 128, and a native context length of 32,768 tokens. C.2 EVALUATION BENCHMARKS 
+
+RULER. RULER (Hsieh et al., 2024) is a synthetic long-context benchmark organized around retrieval, multi-hop tracing, aggregation, and question answering. We evaluate all 13 tasks in its 32K configuration, using 500 samples per task and 6,500 samples in total. Retrieval is mea-sured by eight Needle-in-a-Haystack tasks: niah single 1/2/3 , niah multikey 1/2/3 ,
+
+niah multivalue , and niah multiquery . vt evaluates variable tracking, cwe and fwe 
+
+evaluate common- and frequent-word aggregation, and qa 1 and qa 2 evaluate question answering over the SQuAD and HotpotQA documents provided for these two tasks, respectively. 
+
+LongBench-Pro. LongBench-Pro (Chen et al., 2026) is constructed from natural long documents and contains 1,500 bilingual samples across 11 primary tasks and 25 secondary tasks. Its primary tasks are Retrieval & Ranking, Sequencing & Structure Reconstruction, Evidence-Grounded QA, Summarization & Synthesis, Attribution & Citation Alignment, Aggregation & Clustering, Consis-tency & Compliance Checking, Structured & Numeric Reasoning, Version & Code Diff Analysis, Rule Induction & In-Context Learning, and Dialogue Memory & Long-Horizon Tracking. We use the 625 English samples in the 8k, 16k, 32k, 64k, and 128k buckets, with 125 samples in each bucket. The selected samples cover both Full (global integration) and Partial (localized retrieval) context requirements and retain the Easy, Moderate, Hard, and Extreme difficulty labels. 19 Preprint. Under review. C.3 EVALUATION DETAILS 
+
+InfLLM configuration. We adapt InfLLM to 16-token blocks and grouped-query attention. Each query head accumulates causal attention probabilities and represents each block by the FP32 mean of its four highest-weight post-RoPE keys. Representatives are frozen when blocks leave the recent window, before selection. Query–representative scores are summed within each KV group to obtain a shared selected set. We retain the model’s positional encoding, including YaRN for Qwen3 on LongBench-Pro, to compare KV selection and compensation under the positional semantics of the same Full attention reference. InfLLM’s distant-position remapping changes both retrieval scores and attention logits. Retaining the configured positions keeps this factor consistent across methods and between dense prefill and decoding, allowing us to evaluate its representative-based selection within our common decode setting. Original Q/K/V states are BF16; representatives, accumulated weights, scores, and attention accumulation use FP32. 
+
+Prompt formatting. Llama-3.1-8B-Instruct uses the official raw RULER prompt, in which the input is followed directly by the answer prefix. For Qwen3-8B and Qwen3-32B, the RULER input is placed in a user message and the answer prefix in the final assistant message, with generation continuing from that prefix by setting continue final message=true . For LongBench-Pro, we concatenate each context with the official question nonthinking field using four newline characters and then render the model-native chat template. Llama uses its instruct template, while both Qwen3 models use their assistant-prefill template with the generation prompt enabled. 
+
+No-thinking policy. We evaluate both Qwen3 checkpoints in their supported non-thinking mode on RULER and LongBench-Pro, setting enable thinking=False in the chat template and 
+
+add special tokens=False during tokenization. This establishes a direct-answer setting for comparing KV-selection methods under fixed output budgets. In preliminary runs, some methods still generated thinking markers despite this configuration. We therefore additionally suppress the 
+
+<think> and </think> token IDs, 151667 and 151668, at every decoding step before token selection. This policy applies identically to Full attention, all sparse baselines, and CompKV. 
+
+Context handling. RULER prompts are left-truncated only after reserving the task-specific com-pletion length. On LongBench-Pro, both Qwen3 models use YaRN with a factor of 4 and an original maximum position of 32,768, giving an effective context length of 131,072 tokens, while Llama uses its native context window. If a rendered prompt plus 1,024 completion tokens exceeds the model context, we retain equal-length prefix and suffix segments through middle truncation. 
+
+Sampling and stopping. RULER uses deterministic greedy decoding without sampling filters. Its official generation limits are 128 tokens for the retrieval tasks, 30 for vt , 120 for cwe , 50 for 
+
+fwe , and 32 for each question-answering task. LongBench-Pro uses stochastic decoding: both Qwen3 models set (temperature , top p , top k , min p ) = (0 .7, 0.8, 20 , 0) , while Llama uses 
+
+(0 .6, 0.9, 0, None ). All three models use max new tokens=1024 , one beam, repetition penalty 1.0, and EOS-only stopping. RULER uses seed 42 for its single deterministic decode. Each LongBench-Pro case is decoded for three rounds with seeds 42, 43, and 44. 
+
+LongBench-Pro budgets. The two token budgets are (256 , 512) for 8k and 16k, (512 , 1024) for 32k, (1024 , 2048) for 64k, and (2048 , 4096) for 128k. For all sparse methods, these values cap the exact KV tokens read per decoding step, including the sink and recent blocks. 
+
+Scoring metrics. The official RULER scorer applies all-reference substring matching to the re-trieval, tracing, and aggregation tasks and any-reference substring matching to the two question-answering tasks. The LongBench-Pro scorer selects the metric associated with each secondary task, including NDCG, Pairwise Accuracy, Accuracy, Summary, F1, and SubEM. Summary uses Qwen3-Embedding-8B as specified by the benchmark. 
+
+Score aggregation. For RULER, we first average over the 500 samples within each task and then report the unweighted mean of the 13 task scores. For LongBench-Pro, we average the scores from the three rounds for each sample and budget tier, average the two tiers with equal weight, and then 20 Preprint. Under review. take the arithmetic mean over all 625 samples to obtain the AVG score reported in Table 2. Difficulty and length-bucket scores apply the same aggregation to their corresponding sample subsets. 
+
+## D ACCURACY ACROSS KV B UDGETS 
+
+Figure 8 compares per-step exact-read budgets of 128–1,024 tokens. On MK3, CompKV reaches 73.0% for Llama and 75.0% for Qwen with 512 tokens, exceeding the strongest baselines at 1,024 tokens (70.4% and 62.4%, respectively). At 128 tokens, Qwen’s MV and MQ scores exceed the strongest baseline by 37.2 and 31.0 percentage points, respectively. Several baselines approach Full on FWE, MV, and MQ as budgets increase, narrowing the gaps between methods. 128 256 512 1024 020 40 60 80 100 Score (%)                           
+
+> Llama-3.1-8B-Instruct
+> (a) MK3
+> 128 256 512 1024
+> Llama-3.1-8B-Instruct
+> (b) MV
+> 128 256 512 1024
+> Llama-3.1-8B-Instruct
+> (c) FWE
+> 128 256 512 1024
+> Qwen3-8B
+> (d) MK2
+> 128 256 512 1024 020 40 60 80 100 Score (%)
+> Qwen3-8B
+> (e) MK3
+> 128 256 512 1024
+> Qwen3-8B
+> (f) MV
+> 128 256 512 1024
+> Qwen3-8B
+> (g) MQ
+> 128 256 512 1024
+> Qwen3-8B
+> (h) FWE
+> KV budget (tokens)
+> Full Quest InfLLM Quest+RESA (0.25) CompKV ( r= 4)
+
+Figure 8: Accuracy across KV budgets on selected RULER tasks: (a–c) Llama-3.1-8B-Instruct and (d–h) Qwen3-8B. CompKV uses r = 4 . Dashed gray lines denote Full attention. 
+
+## E CPU-O FFLOAD IMPLEMENTATION AND DETAILED LATENCY RESULTS 
+
+E.1 IMPLEMENTATION DETAILS 
+
+The CPU-offload adapter stores BF16 KV states and FP32 summaries in pinned CPU memory, while retaining a 16-token active block and reusable workspaces on the GPU. Each append updates the active block’s mean keys, mean values, and grouped population variances on the GPU, then copies the current KV states and updated summary to the CPU. Completed blocks’ summaries re-main unchanged. GPU scoring reuses projected variances for mass estimation and residual scoring, aggregating scores across query heads sharing a KV head. Stable Top-K selection includes one sink block and two recent blocks within the budget and returns block IDs in position order. The CPU gathers selected KV blocks into a contiguous pinned buffer for one H2D transfer and exact attention with FlashInfer, passing the valid token count explicitly for a partial final block. An auxiliary stream transfers mean values and computes Mean compensation once the selected-block mask is ready, independently of the selected-KV retrieval and exact-attention path. CUDA events synchronize the two branches before merging their contributions under the shared normalization in Equation 12. Intermediate computations use FP32, and the final output is BF16. 21 Preprint. Under review. E.2 DETAILED LATENCY RESULTS 
+
+Each case runs the pretrained Llama-3.1-8B-Instruct on one NVIDIA H100 80GB HBM3 GPU with four NUMA-local CPU threads and batch size one. Q/K/V and outputs use BF16; summaries and scores use FP32. Following the input construction and collection schedule in Quest’s official profiling implementation (Tang et al., 2024), we use standard-normal random embeddings matched across methods by a saved RNG state. We prefill L − 256 tokens and decode 256 steps, defining L
+
+as the window endpoint. Steps 193–208 and layers 3–32 yield 480 calls per case. Sparse methods use 16-token blocks with one sink and two recent blocks included in the budget. Full transfers all valid CPU-resident KV at each step. Results are shown in Table 4. A synchronized host timer starts after Q/K/V are ready and stops after the attention output and all state updates complete. It includes KV/summary updates, transfers, selection, CPU gathering, exact attention, compensation, merging, and InfLLM probability maintenance. Input generation, prefill, compilation, projections, RoPE, and MLP are excluded. Primary timing runs without a profiler. We report the mean and sample SD of all 480 calls. Speedups are ratios of reported means. Table 4: CPU-offload attention-step latency, reported as mean ± sample SD (ms) over 480 calls per case. Lengths denote decode-window endpoints. Full is shared across the three budget rows at each length. Bold marks the lowest mean in each row. Endpoint Budget Full Quest InfLLM CompKV (r=4) CompKV (r=128) 32K 512 2.536 ± 0.008 0.595 ± 0.013 0.919 ± 0.079 0.527 ± 0.007 0.675 ± 0.006 1024 0.750 ± 0.013 1.084 ± 0.596 0.665 ± 0.017 0.806 ± 0.016 2048 0.972 ± 0.025 1.293 ± 0.051 0.891 ± 0.024 1.038 ± 0.015 64K 512 4.995 ± 0.007 0.944 ± 0.018 1.556 ± 0.041 0.840 ± 0.006 1.134 ± 0.010 1024 1.099 ± 0.016 1.706 ± 0.034 0.916 ± 0.007 1.206 ± 0.019 2048 1.331 ± 0.020 1.935 ± 0.056 1.112 ± 0.021 1.391 ± 0.013 128K 512 9.966 ± 0.015 1.625 ± 0.024 2.877 ± 0.043 1.456 ± 0.007 2.048 ± 0.033 1024 1.795 ± 0.020 2.996 ± 0.020 1.536 ± 0.010 2.119 ± 0.011 2048 2.035 ± 0.029 3.269 ± 0.056 1.618 ± 0.018 2.200 ± 0.021 22

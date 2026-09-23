@@ -1,0 +1,783 @@
+Title: Limits of Confidence in Diffusion
+
+URL Source: https://arxiv.org/pdf/2609.20581v1
+
+Published Time: Fri, 18 Sep 2026 01:31:27 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# Limits of Confidence in Diffusion 
+
+Russ Webb , Amitis Shidani , Alice Bizeul , Dan Busbridge 
+
+Apple Discrete diffusion, including remasking and uniform-state samplers, generate a sequence by writing multiple token po-sitions per step, drawing each from a per-position distribution and choosing which positions to write from those same distributions. For domains of general interest (pixels, phonemes, or words) there are inherent dependencies between tokens. We show that a step matches the training distribution only when the positions it writes are conditionally indepen-dent given the tokens already fixed, that no product of per-position distributions can match a dependent group, and that per-position distributions do not determine whether a group is dependent: two joint distributions can have identical per-position marginals while differing in which combinations of values occur. On ScanAndAdd, a synthetic task whose joint distribution is available in closed form, we verify that every group of two or more undetermined positions a confidence ranking writes is dependent, and measure the generated distribution to be 29 × the sampling-noise floor total variation while per-sample metrics are 1.0.   
+
+> Code: https://github.com/apple/ml-YOURREPONAME
+> Correspondence: {rwebb, dbusbridge, amitis_shidani, abizeul}@apple.com
+> Date: September 18, 2026
+
+# 1 Introduction 
+
+A discrete diffusion model builds a sequence in a fixed number of steps, writing several token positions at each one and choosing which positions to write from the model’s own per-position predictions (Austin et al., 2021; Chang et al., 2022; Sahoo et al., 2024; Wang et al., 2025). Writing several positions per step is the reason these models are of interest, in order to produce a sample in fewer steps. We show that the decision of what to write simultaneously cannot be made from the per-position distributions common approaches read: a step that writes two dependent positions produces the wrong distribution by at least the total correlation (TC) of the group it writes, and this distribution shift exists in fully converged models. This distribution shift is not visible via single sample metrics like correctness, so we work on a task whose joint distribution is available in closed form, where a distortion in density can be distinguished from sample diversity. A model trained on ScanAndAdd reaches 1.00 well-formedness, correctness, and uniqueness early in training. Figure 1 shows the total variation of tokens (TVT) from one trained model. When the positions written at each step are chosen from the model’s own confidences, the generated distribution stays far from the training distribution; although the model reaches 1.0 correctness it sits 29 times the sampling-noise floor away in TVT. Driven instead by a hand-specified write order, the same model produces a token distribution that TVT cannot separate from the training data, at correctness 0.987 to 0.996 . Section 5 gives further explanation and details. 
+
+Roadmap. Section 2 states the claim as one definition of a step covering three common diffusion families and four results about it; the rest of the paper validates these claims with ScanAndAdd, a synthetic task whose conditionals, entropies, and support are all computable. 1arXiv:2609.20581v1 [cs.AI] 17 Sep 2026 0.00 0.02 0.04 0.06 0.08 0.10 0.12 0.14 0.16 Token TV distance (train vs. generated) 0.2 0.4 0.6 0.8 1.0 Correct accuracy  
+
+> A. Free group used B. Free group destroyed C. Free group unused others remasking (steps); T=0.5 remasking (steps); T=0.75 remasking (steps); T=1.0 remasking (steps); T=1.25 remasking (steps); T=1.5 Figure 1
+
+Correctness and token TV distance for fixed write orders (scatter) and confidence-ordered remasking (lines), from the same converged model with 2k samples per point. The scatter is grouped by what each ordering does with the sample values (the free group) that may be written together when no answer digit has been written (Section 4). Group A uses the free group: values in parallel, commands one position at a time, answer last. Group B destroys 
+
+the free group by making it entangled: the answer is written before the values, which couples the two the head reads. Group C samples the free group sequentially: values and commands one position at a time, answer last. Only group A reaches the noise floor, TV ≈ 0.0054 at the left edge; groups B and C stay correct at roughly 22 and 29 times the sampling floor. Each line sweeps step count T ∈ { 5, 10 , 15 , 20 , 25 , 30 } at one temperature, τ ∈ { 0.5, 0.75 , 1.0, 1.25 , 1.5};squares are at T = 5 and diamonds at T = 30 .
+
+# 2 When Matching the Training Distribution is Impossible 
+
+A step that writes two positions which are dependent given the tokens already fixed produces the wrong distribution. The divergence is at least the total correlation of the group the step writes and persists even when every per-position prediction by the model is exact. Nothing about the data is assumed beyond the dependence between positions (Theorem 3). No collection of per-position distributions determines which groups are independent , so a sampler reading them cannot certify any group of two or more undetermined positions (Theorem 4). The states a dependent step produces are ones at which the training objective leaves the conditionals undetermined (Theorem 5), and under hard constraints a sampler that writes one position at a time cannot change a position the rest of the sequence pins, so the valid sequences that differ there are unreachable (Proposition 6). Let p be a distribution on VL, and a position is one of the L token positions of the sequence. 
+
+Definition 1 (Independent-update step and sampler) . A sampler has a state, which assigns to each position either a token of V or the mask symbol, and repeatedly applies the following step. First the network supplies one distribution πi over V at every position the step is allowed to write, computed from the information 
+
+xgiven that the algorithm gives it, which is specified per family below. The scheduler then selects the set R of positions to write, which we call a group , and the step draws the new value at each i ∈ R independently from 
+
+πi, leaving every other position unchanged, written x−R and called the frozen tokens. The step’s law on xR
+
+is therefore the product Q 
+
+> i∈R
+
+πi(xi), and the step is parallel if |R| ≥ 2.The only assumption made about the scheduler is that its choice of R depend on p only through per-position distributions of this kind, whether from the current pass or an earlier one: it may rank positions by them, or by the probability of a token drawn from them, or use any randomization independent of p. We call a sampler whose every step has this form an independent-update sampler .
+
+The three common diffusion methods differ only in xgiven :• Absorbing-state masked diffusion (Austin et al., 2021; Chang et al., 2022; Sahoo et al., 2024). R is a set of masked positions, written once and never revisited. Here xgiven is the complement of the currently masked set. Mask symbols carry no information. 2• Remasking (Ghazvininejad et al., 2019; Wang et al., 2025). The same, except that R may contain posi-tions that already hold tokens. In practice, the step returns those positions to the mask symbol rather than drawing replacement values in place, and a later step fills them; the results below cover whichever step draws the values, since returning a position to the mask symbol commits to no distribution over V.Both the distributions the sampler uses to determine R and those (possibly different) used to determine the values written there are per-position distributions computed from the state, which is all the results below require. • Uniform-state diffusion (Austin et al., 2021; Lou et al., 2024). There is no mask token, so every position always holds a token and xgiven is the entire current sequence. For this family, we read the claims below at the terminal phase of the trajectory. We assume each πi to be as good as training can make it, the exact conditional from xgiven , which for the first two families is the population minimizer of the per-position masked cross-entropy loss these models are trained with (Devlin et al., 2019; Austin et al., 2021; Sahoo et al., 2024). The per-step results below do not depend on how the scheduler ranks positions: Definition 1 admits any rule computed from the πi, from tokens drawn from them, or from randomness independent of p — entropy or margin as much as confidence — and the proof of Theorem 4 uses only the distribution of such a quantity, not how it is computed. What the rule affects is how those per-step costs accumulate over a run (Appendix E). Confidence is the quantity ranked in practice, where two forms are common: max v πi(v), the largest probability the distribution at position i
+
+assigns to any token, and πi(ti), the probability of the token ti the sampler has just drawn there, which is what MaskGIT-style and remasking implementations rank. Table 1 and Section 4 use the first, since at the all-masked state no token has yet been drawn. 
+
+Definition 2 (Entangled set) . The set R is entangled at x−R if there is some combination of tokens that the positions of R can each take separately but not together: there is an assignment xR with p(xi | x−R) > 0
+
+for every i ∈ R, while p(xR | x−R) = 0 . In the two-position case, both a at i and b at j occur in the data given x−R, but not in the same sequence. Entanglement implies dependence — independence would give 
+
+p(xR | x−R) = Q 
+
+> i∈R
+
+p(xi | x−R) > 0 — but not conversely, since a dependent set can have full support. A 
+
+free set is one that is not entangled. 
+
+Theorem 3 (No product matches a dependent group) . If the positions of R are not mutually independent under p(· | x−R), then no product Q 
+
+> i∈R
+
+πi equals p(xR | x−R), whatever the πi are and whatever xgiven they were computed from. Quantitatively, 
+
+DKL 
+
+
+
+p(xR | x−R) Y
+
+> i∈R
+
+πi
+
+
+
+= TC( XR | x−R)
+
+| {z }
+
+> grouping
+
++ X
+
+> i∈R
+
+DKL 
+
+ p(xi | x−R) πi
+
+| {z } 
+
+> per-position error at i
+
+,
+
+TC( XR | x−R) = X
+
+> i∈R
+
+H(Xi | x−R) − H(XR | x−R),
+
+so the divergence is at least TC( XR | x−R) > 0, with equality exactly when every πi is the true marginal 
+
+p(xi | x−R). If in that best case R is entangled at x−R, the step assigns positive probability to a state outside 
+
+supp( p).Proof. Expanding the divergence and using that P 
+
+> xR
+
+p(xR | x−R) log πi(xi) depends on p(· | x−R) only through its ith marginal gives the displayed decomposition; both terms are non-negative and the first is zero only under mutual independence (Watanabe, 1960; Cover and Thomas, 2006). For the support claim, take 
+
+xR coordinatewise admissible with p(xR | x−R) = 0 ; the step assigns it Q 
+
+> i
+
+p(xi | x−R) > 0, and (x−R, x R)
+
+has probability zero under p.Better training shrinks the per-position terms only, so the grouping term cannot be reduced by training — a floor Zhang et al. (2026) establish independently for exact marginals, and which the decomposition above separates from per-position error. The floor exists for uniform-state diffusion too, even though its πi are not marginals. There xgiven is the entire current sequence, including the tokens the step is about to overwrite at the positions of R, so πi is a conditional given those stale tokens rather than the marginal of p(· | x−R). That gap is a per-position error, and the per-position terms are non-negative, so the divergence between the step’s 3law and p(· | x−R) can only increase. Exactness therefore requires the sampler to write only groups whose positions are conditionally independent given the frozen tokens. Whether a group has that property is a fact about the joint law of the group. What the sampler reads is one distribution per position, and no collection of per-position distributions records how two positions co-vary. For a sampler that writes each position once, these per-step costs add and cannot cancel (Appendix E). 
+
+Theorem 4 (No collection of per-position distributions can certify a group) . Let the scheduler read the distributions supplied at the positions the step may write and select a set R containing at least two positions 
+
+i, j at which πi, π j are not point masses. Then there are two distributions on VL whose per-position marginals are equal at all L positions: one under which the positions of R are mutually independent given x−R, and one under which R is entangled at x−R. Everything the scheduler reads has the same law under both, including tokens drawn from those distributions, so it selects the same R with the same probability, and the step over that R is exact under one and inexact under the other. Proof. Let p make the positions of R mutually independent with the marginals the scheduler observed, and make XR independent of the positions outside R; the reveal of R is then exact. Choose a̸ = b in supp( πi)
+
+and c̸ = d in supp( πj ), write pij for the joint law of (Xi, X j ) under p, and let ε = min {pij (a, d ), p ij (b, c )} > 0.Let p′ replace pij by 
+
+p′ 
+
+> ij
+
+(a, c ) = pij (a, c ) + ε, p′ 
+
+> ij
+
+(b, d ) = pij (b, d ) + ε, p′ 
+
+> ij
+
+(a, d ) = pij (a, d ) − ε, p′ 
+
+> ij
+
+(b, c ) = pij (b, c ) − ε, 
+
+unchanged on the other value pairs, and leave the rest of p as it is. Row and column sums are preserved, so every per-position marginal is unchanged. One of p′ 
+
+> ij
+
+(a, d ), p′ 
+
+> ij
+
+(b, c ) is zero while its two values remain individually admissible, so R is entangled under p′. Since the πi coincide under p and p′, so does the law of any quantity the scheduler computes from them or from tokens drawn from them, including the confidence of a drawn token; and XR is independent of the other positions under both, so those distributions coincide in every context at which the scheduler could still select an R containing both. The choice of R therefore has the same law under both, and by Theorem 3 the step over R is exact under p and not under p′.A sampler that can revisit a position it has already written — a remasking or uniform-state sampler — may try to repair a step that left the support. In either family, the decision is made at a state to which p assigns probability zero: which positions to remask in the first case, what to write in the second. 
+
+Theorem 5 (After an error, the conditionals are either revealing or undefined) . Let x satisfy p(x) = 0 . Since 
+
+p(x) = p(x−i) p(xi | x−i), at each position i at least one factor vanishes, so either (a) p(x−i) > 0 and p(xi | x−i) = 0 : position i reports probability zero for its current token, so any confidence-based rewrite rule selects i; or (b) p(x−i) = 0 : the tokens outside i are themselves impossible, and p defines no conditional distribution 
+
+p(· | x−i).If (b) holds at every position, nothing the sampler reads at this state is determined by p.
+
+Branch (b) is the direct result of writing an entangled group: the surrounding tokens at every position of the group are themselves impossible. The masked cross-entropy objective trains only on contexts that arise from corrupting valid samples; probability-zero contexts do not arise that way. Training with token-substitution corruption reaches some such states, but fixes the corruption posterior, not a conditional of p. A single wrong position falls under (a): the surrounding tokens are valid and the network reports zero for i’s current token and a low-probability rewrite rule selects it. The correlated multi-position errors an entangled group produces all fall under (b) at every position. Repair in branch (a) is also imperfect. Rewriting one member of an entangled pair reduces parallelism, and the redraw is exact only if the surviving member was already drawn from the correct conditional, which fails after any prior parallel step. When a remasking or uniform-state sampler reaches a valid sequence with steps remaining, changing the distribution over valid sequences requires exchanging it for another. Where the data pins a position, writing that position alone leaves the support, and any group that could change it is entangled (Proposition 6): no such exchange is exact. 4Proposition 6 (Writing a pinned position either leaves the support or writes an entangled group) . Call position i pinned at x if p(· | x−i) is a point mass at xi, that is, if the current tokens elsewhere admit no other value there. Let x ∈ supp( p) and let i be pinned at x.(a) Every state that differs from x only at i lies outside supp( p), since p(y) = p(x−i) p(yi | x−i) = 0 .(b) Let a step write a set R ∋ i. With the exact conditionals of Definition 1, the step can put a value other than xi at i only if p(· | x−R) is non-degenerate there, and in that case R is entangled at x−R: changing 
+
+i and leaving the other positions of R as they are is admissible at every coordinate and impossible jointly, by (a). Theorem 3 bounds the step’s divergence, and it puts mass outside supp( p).An independent-update sampler therefore reaches a valid sequence differing from x at a pinned position only by leaving the support, where Theorem 5 governs what it reads next, or by writing an entangled group, where Theorem 3 applies. Drawing xR from the joint conditional p(xR | x−R) would move the state exactly, but that is not a product and so not one of its steps. This argument is about p alone, so it holds whatever xgiven 
+
+the family supplies to the network, uniform-state diffusion included: conditioning on more of the current sequence, its own token at i among it, cannot make a determined position undetermined. 
+
+Corollary 7 (Exactness requires independence the sampler cannot verify) . An independent-update sampler reproduces p only if every group of two or more positions it writes is conditionally independent given the frozen tokens; Appendix E shows when that follows from Theorem 3 step by step. Conditional independence is a property of the particular p the model was trained on, and the sampler cannot verify it: by Theorem 4 any group with two positions at which the distributions are non-degenerate is entangled under some distribution with exactly the per-position marginals the scheduler observed, and by Theorem 3 writing an entangled group puts mass outside the support. 
+
+Corollary 8 (Overwriting does not recover the distribution) . At the off-support states a parallel step produces, 
+
+p either reports probability zero for a single wrong token, which any low-probability rewrite rule locates, or determines nothing at all, which is what the correlated multi-position errors of an entangled group produce (Theorem 5). And where p carries hard constraints, changing a position the rest of the sequence pins takes the sampler outside the support unless it writes an entangled group, which Theorem 3 then applies (Proposition 6). On such a p, writing one position at a time cannot reach a different valid sequence, and writing multiple positions distorts the distribution. 
+
+# 3 Experimental Verification 
+
+Section 2 holds over any p. Checking it against one needs a distribution whose conditionals, entropies, and support are all computable. That distribution comes from a synthetic task, ScanAndAdd: a read head sweeps once, left to right, over n values v0, . . . , v n−1 ∼ Uniform {0, . . . , V }, following A + ( n − 1) commands: an add 
+
+adds the value under the head to an accumulator, a right moves the head one position right. Each sample holds exactly A add and exactly n − 1 right commands in uniformly random order, and the answer is the final accumulator. A sample is serialized into three marked fields, 
+
+VALS v0 · · · vn−1 ANS a2 a1 a0 OPS o0 · · · oA+n−2,
+
+with the answer in three base-10 digits. All experiments use n = 9 , V = 9 , A = 2 , giving L = 25 over a 
+
+15 -token vocabulary; commands are read by parity from token ids {0, . . . , M }, so M = 1 gives one id per command and M = 9 gives five interchangeable ids for each (Appendix A). VALS and OPS are independent roots and ANS is a deterministic function of both. The distribution p is uniform on its support of |S| =(V + 1) n A+n−1
+
+> A
+
+ = 4 .5 × 10 10 sequences at M = 1 , so H(p) = 35 .39 bits. Because p is known, the per-position distributions a perfectly trained model reports at the all-masked state are available in closed form. Table 1 lists them, derived in Appendix B. Figure 2 shows the generative process and its non-distributional metrics, all of which the task passes. 50 10000 20000 30000 40000 50000 60000 Training step 0.0 0.2 0.4 0.6 0.8 1.0 Fraction 
+
+> Generation accuracy & diversity vs. training step (remasking)
+> Correct (answer checks out) Well-formed (parses) Unique (distinct samples)
+
+add_ops = arange(0, M+1, 2) right_ops = arange(1, M+1, 2) vals = choice(arange(0, V+1), n) ops = concatenate([ choice(add_ops, A), choice(right_ops, n-1)]) shuffle(ops) total, head = 0, 0 for op in ops: if op in right_ops: head = (head + 1) % n else: total += vals[head] % m 
+
+Figure 2 Left: well-formedness, correctness, and uniqueness for the training ( T = 24 , τ = 0 .40 , 200 samples). All three saturate at 1.0 early in training. Right: the ScanAndAdd process, for n values in [0 , V ], A add commands, command token ids {0, . . . , M }, and value modulus m. The values are drawn i.i.d.; the command list is a shuffle of A
+
+add and n − 1 right ids, so positions are coupled; total is a deterministic function of the other two fields. 
+
+Table 1 Maximum per-position probability max v p(v | ∅) at the all-masked state, in closed form ( n = 9 , V = 9 , A = 2 ). A rank-based scheduler writes positions top to bottom. Among content positions only a2 is determined, yet a1 and, at M = 1 , the commands outrank every value position. 
+
+Position Support max v p(v | ∅) H(· | ∅) (bits) 
+
+a2 (ANS hundreds) {0} 1.00 0.00 
+
+OPS position, M = 1 {0, 1} 0.80 0.72 
+
+a1 (ANS tens) {0, 1} 0.54 0.995 
+
+OPS position, M = 9 {0, . . . , 9} 0.16 3.04 
+
+a0 (ANS units) {0, . . . , 9} 0.12 3.29 
+
+vi (VALS position) {0, . . . , 9} 0.10 3.32 
+
+# 4 Applicability to ScanAndAdd 
+
+Corollary 7 requires the positions of every group a sampler writes to be mutually independent given the frozen tokens. This section shows that on ScanAndAdd no confidence ranking meets that requirement. Confidence at the all-masked state orders the positions as in Table 1, lowest are the value positions and highest the field markers and a2.
+
+The command positions are dependent , since exactly two of the ten are add : TC = 0 .0099 bits for a pair and 
+
+1.727 bits for the set. Three or more are also entangled, because each of three positions can hold add on its own while all three cannot; drawing all ten independently gives a block with an add count other than two with probability 0.698 . Both non-degenerate answer digits are dependent at TC = 0 .189 bits and entangled, since a1 = 1 and a0 = 9 each occur but never together: that would record 19 , which is above the largest attainable answer of 18 . An answer digit together with a value or command position it affects are entangled ,because the recorded answer is a deterministic function of values and commands, so most combinations that are separately possible are jointly impossible. All value positions are mutually independent as long as no answer digit has been written . The value positions (the free group) are the only undetermined ones in the task that a step may write together. 
+
+How each diffusion family fails. The failure of each family follows from one of the dependencies above; details are in Appendix C. • Masked reveal (Appendix C.1). The free group carries the lowest confidence in the sequence, so a ranking reaches it last — after the recorded answer has made two of its positions dependent. On 72% 
+
+of samples those two then outrank the seven that remain free, so they are what the next parallel step writes. Until then, every group of two or more undetermined positions is drawn from the command 6block and the answer digits, and those have non-zero cost. • Remasking (Appendix C.2). Overwriting requires a per-position conditional, which exists only where the surrounding tokens are themselves producible. A parallel write of the command block fails that condition at every position at once with probability 0.228 , which puts the sampler in branch (b) of Theorem 5: the ranking that selects what to overwrite is then not determined by p.• Uniform-state diffusion (Appendix C.3). For valid sequences, every position except the value positions the head does not read is pinned by the others, so by Proposition 6 changing the command arrangement either leaves the support or writes an entangled group. Its terminal phase has no exact route from one arrangement to another. Every step of a confidence-ordered sampler on ScanAndAdd that writes two or more undetermined positions is therefore inexact: the three markers and a2 are the only positions it may write together at no cost. The steps that write three or more command positions, both answer digits, or the summed pair leave the support. What Corollary 7 leaves open is a p on which the groups a sampler happens to write are conditionally independent. ScanAndAdd has one, the free group, but a confidence ranking reaches it last, so the exception is unavailable to any confidence ranking in the three families. A masked sampler that writes one position per step in an order fixed in advance is outside the claim: it is a chain-rule factorization of p, and exact, at 
+
+L steps, but does not achieve diffusion’s key promise of generation with fewer steps. Appendix D confirms that a trained model orders its writes as Table 1 predicts, and Appendix F works out how much parallelism the one exception permits here. 
+
+# 5 Measuring Distortion on a Trained Model 
+
+The model is a 6-layer bidirectional Transformer encoder (Vaswani et al., 2017), dmodel = 256 , trained 60 k
+
+steps on the 9 × 10 6 training sequences of a 10 7-sample dataset with a masked-language-modeling objective that draws a fresh corruption ratio per example. The training with batch size 128 gives 0.85 epochs. Every point in Figure 1 uses the same fully-trained model and 2k generated samples. We report the total variation distance between the pooled tokens (TVT) of generated and training samples, versus the TVT of a perfect sampler, 0.0054 computed from independent draws of training data. The scatter of fixed write orders uses τ = 1 .0; the overlaid lines sweep step count at five temperatures. With 2k samples the standard error of a correctness estimate is at most 0.011 .Group A in Figure 1 is hand-specified orders sampling values (the free group) in parallel, commands one at a time, and answers last, to reach TVT 0 .0050 to 0.0066 at correctness 0.987 to 0.996 with bootstrap p-values from 0.18 to 0.57 : at this sample size a test cannot separate their token distributions from a fresh draw of training data. These orders are not available to a confidence-ordered sampler, which by Table 1 writes the values last; they measure an achievable frontier, not a decoding rule.  
+
+> Confidence-ordered remasking with the same model is imperfect.
+
+The best TV at each temperature is 0.129 ,
+
+0.115 , 0.0851 , 0.0536 and 0.0352 for τ = 0 .5 through τ = 1 .5, reached at correctness 0.124 , 0.154 , 0.973 ,
+
+0.914 and 0.770 respectively. The setting that comes closest to the training distribution is not solving the task. At correctness 0.987 or above — the range the hand-specified orders occupy — no setting does better than TV = 0 .129 , which is 24 × the floor. The two settings that reach correctness 1.000 and 0.9995 both sit at TV ≈ 0.157 . At that first setting ( τ = 0 .5, T = 30 ) the model is 100% well-formed, 100% correct and 
+
+100% unique on 2k samples, and all those samples are inside the support of the training distribution, while their pooled token distribution is 29 × TV noise floor. The distance between the best-TV fixed order and the best-correctness confidence setting is 1.3 points of correctness and 32 × in TV: correctness does not order these samplers.  
+
+> Moving one field, with everything else identical, changes correctness by up to
+
+8.4×. To isolate the effect of where the recorded answer is written, take pairs of orders that treat the value and command positions identically, with the same grouping and the same parallelism, and differ only in where the three answer digits fall (Table 2). Writing the answer before the values makes the summed value pair dependent: knowing the answer removes 73.61 of the 5.49 bits of entropy in the command block. Under an answer-last order every partial state can be completed, so an error yields a valid sequence from the wrong part of the distribution; under an answer-first order a partial state can admit no valid completion. Which branch of Theorem 5 such a state falls in depends on how much of the command block is wrong; Appendix C.2 works out the case that falls in branch (b).                               
+
+> Table 2 Matched pairs of write orders. The value and command positions are treated the same within rows; only the answer digits move. Brackets mark positions written in one step; unbracketed fields are written one position per step chosen by confidence.
+> ANS last acc. ANS in the middle acc. ratio
+> [VOA][v ×9]o ×10[ht1] 0.987 [VOA][v ×9][ht1]o ×10 0.118 8.4×
+> [VOA][v ×9]o ×10ht1 0.996 [VOA][v ×9]ht1o ×10 0.157 6.3×
+> [VOA]v ×9o ×10ht1 0.989 [VOA]v ×9ht1o ×10 0.209 4.7×
+> [VOA]v ×9o ×10[ht1] 0.987 [VOA]v ×9[ht1]o ×10 0.142 7.0×
+> [VOA][v ×9][o ×10][ht1] 0.330 [VOA][v ×9][ht1][o ×10] 0.052 6.4×
+> [VOA]v ×9[o ×10][ht1] 0.345 [VOA]v ×9[ht1][o ×10] 0.057 6.0×
+> Mass outside the support is measured directly.
+
+Manual sampling order is notated: markers by VOA , values by v,commands by o, and answer digits by ht1 (for hundreds, tens, and ones); brackets show parallel sampling. For orders [VOA][v ×9][o ×10][ht1] and [VOA][v ×9][ht1][o ×10] , which write the ten command positions in one step, the fraction of generated samples whose command block has an add count other than two is 0.703 
+
+and 0.707 , against the 0.698 that Section 4 predicts. Those samples have probability zero under p, while being well-formed and correct. 
+
+# 6 Limitations 
+
+Theorem 3 bounds one step’s divergence, and the argument from there to the output distribution is complete for the absorbing family and open for the others. Appendix E closes it whenever the set written at each step is a function of the tokens already written — a schedule fixed in advance, or any ranking computed from the per-position distributions themselves: the per-step divergences then add, none can be negative, and the run is at least as wrong as its worst step. What it does not cover is a dependent group formed at a later step of a ranking, where the group and the context are both random — conditional on reaching a context, which positions are selected and which values are drawn into them are dependent random variables, and we do not rule out cancellation across reveal paths. For remasking and uniform-state samplers, where a position can be written more than once, we show that the decision to overwrite is unfounded (Theorem 5) and that changing a pinned position costs either the support or a dependent group (Proposition 6), which Corollary 8 combines; we do not derive a quantitative gap between their output law and p.
+
+Theorem 4 rules out certification, not correctness on a particular distribution. It says that no sampler reading per-position distributions can establish that a group is safe. A given p may still be one on which the groups a sampler happens to write are independent. Section 4 closes that gap for ScanAndAdd by exhibiting the dependencies directly, and we do not close it for any natural corpus. 
+
+The uniform-state claims are read at the terminal phase and are not measured. We analyze the phase in which the frozen tokens are clean, because that is where p(xi | x−i) is the quantity a perfect denoiser supplies. We do not analyze the high-noise phase, so the statement that the emitted OPS distribution is whatever that phase left is a conjecture and not a result. No uniform-state model is trained here: every measurement in Section 5 is an absorbing-state or remasking sampler, and all of them are the M = 1 condition. 
+
+The size of the distortion is measured on one synthetic task. ScanAndAdd was built so that every quantity is computable. What does transfer is the hypothesis of Theorem 3, a group holding a dependent pair, and the one measurement that needs no access to the joint: counting generated samples that violate a hard constraint known to hold in the data. While findings in the community make compatible observations at large scale (Ni et al., 2026; Zhang et al., 2026) and propose methods for independence in parallel sampling (Azangulov et 8al., 2025; Ringel et al., 2026), this work uses synthetic data and research models that do not duplicate the architectures, decoding strategies, or deployment of any product model. 
+
+A scheduler trained on the domain is not ruled out, and is a plausible response to these results. Theorem 4 assumes the choice of R depends on p only through the πi. A learned scheduler breaks that assumption, because its parameters carry information about p that those distributions do not. It still faces Theorem 3: its steps are products, so it must avoid dependent groups, and it cannot exceed the parallelism the data itself permits. On ScanAndAdd, any exact schedule must write the undetermined command positions one per step, since any two of them are dependent, and by exchangeability the number of command positions still undetermined when written has the same law under any order that does not read the drawn tokens: 
+
+64 /9 ≈ 7.1 on average and 9 at worst. No exact schedule for this task therefore averages fewer than about 8
+
+steps against L = 25 . The expected speedup is capped near 3×, against the 1.31 × that the marginal-reading rule of Appendix F attains. Such a scheduler would also have to be trained for distributional match, which is computable here and only a proxy on a corpus. 
+
+# 7 Related Work 
+
+The failure has a direct precedent in non-autoregressive translation. Gu et al. (2018) named the multimodality problem: a model emitting tokens independently cannot represent a multimodal output distribution, and produces token-level blends of distinct valid outputs. Mask-Predict (Ghazvininejad et al., 2019) introduced the confidence-ordered refinement that masked diffusion samplers inherit. Theorem 3 is that observation stated as an impossibility, under exact per-position predictions rather than as a symptom of imperfect training, and Theorems 4 and 5 extend it to the choice of what to write and what to overwrite. 
+
+The diffusion objective has been refined repeatedly; the grouping rule has not. D3PM (Austin et al., 2021) set out the framework, MaskGIT (Chang et al., 2022) introduced confidence-based parallel unmasking, simplified masked diffusion language models (Sahoo et al., 2024) and score-entropy formulations (Lou et al., 2024) sharpened the objective, and ReMDM (Wang et al., 2025) added inference-time remasking. Evaluation in this line relies on perplexity, sample quality, and downstream metrics. Theorem 3 applies to all of these samplers at once, since each draws the positions it writes independently from per-position distributions, and Definition 1 is what makes that one statement rather than three. Zhang et al. (2026) give an information-theoretic account of the same grouping cost and its aggregation across blocks; our contribution is Theorem 4, that no scheduler reading per-position distributions can determine whether the positions it selects are conditionally independent. 
+
+An independent measurement of the ordering effect on language models. Ni et al. (2026) com-pare confidence-ordered decoding against a fixed left-to-right order on three diffusion language models and four reasoning benchmarks, and find the confidence order covers a smaller subset of the solution space: on HumanEval (LLaDA-Instruct, Pass@ 1024 ) 21 .3% of problems are solved only under the fixed order against 
+
+0.6% only under the confidence order. Their ordering experiments decode one token per step, so the cost of Theorem 3 is not active there and what they measure is premature commitment rather than grouping. 
+
+The method follows work on checkable algorithmic tasks used to probe transformer computation (Lee et al., 2023; Zhou et al., 2022). 
+
+# 8 Conclusion 
+
+Parallel decoding requires choosing which token positions to write together, and that choice is exact only when the chosen positions are conditionally independent given what is already fixed. Independence is a property of the joint distribution, while what a sampler reads is one distribution per position, so a sampler that chooses its groups from those distributions can certify none beyond the positions its context has already determined. Remasking and uniform-state samplers inherit that limit rather than lifting it: they must either overwrite at states where the training objective stops constraining the network, or leave pinned positions unchanged, making the valid sequences that differ there unreachable. 9Two consequences are notable: 1) sample validity is not evidence of distribution matching. Where the joint is computable, measure against it with a stated noise floor and a p-value; where it is not, the same distortion should be expected and is going unmeasured. One part of it can be measured without knowing the joint at all: a step that writes an entangled group leaves the support, so counting the generated samples that violate a hard constraint known to hold in the data — a fixed count, a checksum, a bracket match — measures the effect directly, as Section 5 does here. 2) the grouping decision needs the data’s dependency structure, which no collection of per-position distributions supplies. Beyond the positions its context has already determined, a sampler’s parallelism has to be justified by the format the data is written in rather than by the model’s confidence at any position. The grouping decision is not the only departure from exact sampling, and Theorem 3 bounds the others in the same terms. Appendix G places other diffusion interventions (such as temperature, top-k, min-p, and search) in context and points out that many common techniques also shift the generated distribution away from the training distribution. 
+
+# References 
+
+J. Austin, D. D. Johnson, J. Ho, D. Tarlow, and R. van den Berg. Structured denoising diffusion models in discrete state-spaces. In Advances in Neural Information Processing Systems (NeurIPS) , 2021. Iskander Azangulov and Teodora Pandeva and Niranjani Prasad and Javier Zazo and Sushrut Karmalkar. Parallel Sampling from Masked Diffusion Models via Conditional Independence Testing. arXiv preprint arXiv:2510.21961 ,2025. H. Chang, H. Zhang, L. Jiang, C. Liu, and W. T. Freeman. MaskGIT: Masked generative image transformer. In 
+
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2022. T. M. Cover and J. A. Thomas. Elements of Information Theory , 2nd edition. Wiley-Interscience, 2006. J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova. BERT: Pre-training of deep bidirectional transformers for language understanding. In Proceedings of NAACL-HLT , 2019. M. Ghazvininejad, O. Levy, Y. Liu, and L. Zettlemoyer. Mask-Predict: Parallel decoding of conditional masked language models. In Proceedings of EMNLP-IJCNLP , 2019. J. Gu, J. Bradbury, C. Xiong, V. O. K. Li, and R. Socher. Non-autoregressive neural machine translation. In 
+
+International Conference on Learning Representations (ICLR) , 2018. N. Lee, K. Sreenivasan, J. D. Lee, K. Lee, and D. Papailiopoulos. Teaching arithmetic to small transformers. arXiv preprint arXiv:2307.03381 , 2023. I. Loshchilov and F. Hutter. SGDR: Stochastic gradient descent with warm restarts. In International Conference on Learning Representations (ICLR) , 2017. I. Loshchilov and F. Hutter. Decoupled weight decay regularization. In International Conference on Learning Repre-sentations (ICLR) , 2019. A. Lou, C. Meng, and S. Ermon. Discrete diffusion modeling by estimating the ratios of the data distribution. In 
+
+International Conference on Machine Learning (ICML) , 2024. Z. Ni, S. Wang, Y. Yue, T. Yu, W. Zhao, Y. Hua, T. Chen, J. Song, C. Yu, B. Zheng, and G. Huang. The flexibility trap: Rethinking the value of arbitrary order in diffusion language models. arXiv preprint arXiv:2601.15165 , 2026. L. Ringel, A. Ali, and Y. Romano. Dependency-Guided Parallel Decoding in Discrete Diffusion Language Models. 
+
+arXiv preprint arXiv:2604.02560 , 2026. S. S. Sahoo, M. Arriola, Y. Schiff, A. Gokaslan, E. Marroquin, J. T. Chiu, A. Rush, and V. Kuleshov. Simple and effective masked diffusion language models. In Advances in Neural Information Processing Systems (NeurIPS) ,2024. A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems (NeurIPS) , 2017. G. Wang, Y. Schiff, S. S. Sahoo, and V. Kuleshov. Remasking discrete diffusion models with inference-time scaling. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. 
+
+10 S. Watanabe. Information theoretical analysis of multivariate correlation. IBM Journal of Research and Development ,4(1):66–82, 1960. S. Zhang, L. Yu, R. Brekelmans, L. Tang, S. Asif, and G. Ver Steeg. Generation Order and Parallel Decoding in Masked Diffusion Models: An Information-Theoretic Perspective. arXiv preprint arXiv:2602.00286 , 2026. H. Zhou, A. Nova, H. Larochelle, A. Courville, B. Neyshabur, and H. Sedghi. Teaching algorithmic reasoning via in-context learning. arXiv preprint arXiv:2211.09066 , 2022. 
+
+# A ScanAndAdd Task, Data, and Training Details  
+
+> Vocabulary and encoding.
+
+Token ids 0–9 are literal base-10 digits. Special tokens: VALS = 10 , OPS = 11 , ANS 
+
+= 12 , PAD = 13 , MASK = 14 . Vocabulary size = 15 . Total sequence length L = 2 n + A + 5 = 25 .Each command token o ∈ { 0, . . . , M } is read as add if o is even, right if odd. Answer digits are base-10 with the hundreds, tens, and ones places being a2, a 1, a 0 respectively.  
+
+> Table 3
+
+Sequence layout for n = 9 , A = 2 (L = 25 ). The ten command tokens fill positions 15 –24 with no trailing PAD .
+
+Positions Field Contents 
+
+0 marker VALS 
+
+1–9 values v0, . . . , v 8
+
+10 marker ANS 
+
+11 –13 answer digits a2, a 1, a 0
+
+14 marker OPS 
+
+15 –24 commands o0, . . . , o 9
+
+> The sample-level evaluation metrics are described below:
+
+• Well-formedness: the sequence contains exactly one each of VALS , ANS , OPS in that order, exactly three tokens between ANS and OPS , and every field token in its declared range. • Correctness: additionally, the accumulator recomputed from the decoded values and commands equals the decoded answer. • Neither metric checks the add-command count. Both can read 1.00 on samples whose command block has the wrong number of adds. 
+
+> Worked example (
+
+M = 1 ). 
+
+v = (4 , 9, 6, 3, 3, 7, 7, 9, 7) , o = (0 , 1, 1, 1, 0, 1, 1, 1, 1, 1) .
+
+Command positions 1 and 5 are even ( add ); the rest are right . The head starts at position 0, reads v0 = 4 ,moves right three times, reads v3 = 3 : answer = 7 . This sample in serialized form is 
+
+10 |{z} 
+
+> VALS
+
+4 9 6 3 3 7 7 9 7 12 |{z} 
+
+> ANS
+
+0 0 7 11 |{z} 
+
+> OPS
+
+0 1 1 1 0 1 1 1 1 1 .
+
+The answer is always below 100 , so the hundreds digit a2 = 0 in every sample. This is why a2 carries confidence 1.00 .11 Table 4 Data parameters. The two conditions differ only in M .
+
+Symbol Config key M = 1 M = 9 
+
+n (values) num_vals 9 9
+
+V (max value) max_val 9 9
+
+m (value modulus) val_mod 10 10 
+
+A (add commands) num_add 2 2
+
+M (max command id) max_op 1 9
+
+Command multiplicity — 1 5
+
+Sequence length L sample_length 25 25 
+
+Vocabulary size — 15 15 
+
+Training examples num_samples 10 7 10 7 
+
+> Table 5
+
+Training and generation hyperparameters (both conditions, except max_op ). Parameter count covers the full model; sinusoidal encoding contributes none. Error samples are the fraction eligible for random-token corruption. 
+
+Group Parameter Value 
+
+Data Training examples 10 MTrain / validation split 0.9/0.1
+
+Model Positional encoding sinusoidal 
+
+dmodel 256 
+
+Attention heads 8
+
+Layers 6
+
+Feed-forward dim 1024 
+
+Dropout 0.0
+
+Trainable parameters 4.75 MOptimizer Optimizer AdamW Peak learning rate 1.5 × 10 −4
+
+(β1, β 2) (0 .9, 0.95) 
+
+Weight decay 0.001 
+
+Warmup steps 250 
+
+LR schedule cosine, 0.1× peak Gradient clip (norm) 1.0
+
+Training Steps 60 k
+
+Batch size 128 
+
+Checkpoint interval 1k steps Checkpoint evaluated step 60 k
+
+Corruption Corruption ratio r Uniform[0 , 1] 
+
+Fraction → MASK 0.8
+
+Fraction → random token 0.1
+
+Fraction left unchanged 0.1
+
+Error-sample probability 0.5
+
+Forced fully-masked sample prob. 0.1
+
+Generation Diffusion steps T 24 (default) Mask schedule linear Temperature τ 0.40 
+
+Top-k / top-p unrestricted Samples per evaluation 200 –2k
+
+12 B Closed-Form Per-Position Distributions 
+
+Because p is known, the per-position distributions a perfectly trained model reports at the all-masked state are computable. This section derives the entries in Table 1. Parameters: n = 9 values drawn from {0, . . . , 9},
+
+A = 2 add commands, largest possible answer AV = 18 . 
+
+> Step 1: place the two add commands.
+
+Put the two add commands at positions i < j among the A + n − 1 = 10 
+
+command positions. There are  10 2
+
+ = 45 equally likely pairs. The head reads vi and vj−1, so ANS = vi +vj−1.The 9 pairs with j = i + 1 read one value twice (the head does not advance before the second add).  
+
+> Answer hundreds digit
+
+a2. The largest answer is 18 < 100 , so a2 = 0 in every sample. 
+
+max  
+
+> v
+
+p(a2 = v | ∅) = 1 .00 , H(a2 | ∅) = 0 . 
+
+> Answer tens digit
+
+a1.
+
+P (ANS ≥ 10) = 945 · 12
+
+| {z } 
+
+> same value twice
+
++ 36 45 · 45 100 
+
+| {z }
+
+> two distinct values
+
+= 0 .46 ,
+
+so a1 = 1 with probability 0.46 and a1 = 0 with probability 0.54 .
+
+max  
+
+> v
+
+p(a1 | ∅) = 0 .54 , H(a1 | ∅) = 0 .995 bits.  
+
+> Answer units digit
+
+a0. Computing P (a0 = d) over all 45 position pairs and 100 value pairs gives P (a0 = d) = 0.12 for even d and 0.08 for odd d.
+
+max  
+
+> v
+
+p(a0 | ∅) = 0 .12 , H(a0 | ∅) = 3 .29 bits.  
+
+> Value positions (VALS).
+
+Each value is drawn i.i.d. from {0, . . . , 9}, independent of everything else. 
+
+max  
+
+> v
+
+p(vi | ∅) = 0 .10 , H(vi | ∅) = log 2 10 = 3 .32 bits.  
+
+> Command positions (OPS).
+
+Each command is add with probability 2/10 = 0 .20 and right with probability 
+
+0.80 .• M = 1 (one token id per command): max v p = 0 .80 , H = 0 .72 bits. • M = 9 (five synonym ids per command): each id has probability 0.80 /5 = 0 .16 (right ) or 0.20 /5 = 0 .04 
+
+(add ). max v p = 0 .16 , H = 3 .04 bits.  
+
+> Total correlation of the command block.
+
+The synonym choice is independent of everything else and cancels in the TC: 
+
+TC( XC ) = 10 H(0 .2) − log 2 45 = 7 .219 − 5.492 = 1 .727 bits (either M ). 
+
+> Total correlation of the two non-degenerate answer digits.
+
+TC( a1, a 0) = H(a1) + H(a0) − H(ANS) = 0 .995 + 3 .293 − 4.099 = 0 .189 bits.  
+
+> Rank reflects encoding, not dependence.
+
+Changing M from 1 to 9 (replacing each command id with five syn-onyms) leaves the task and its dependency structure unchanged: the command block’s TC stays at 1.727 
+
+bits. What changes is each command’s confidence ( 0.80 → 0.16 ), dropping commands below the tens digit in the ranking. The write order changes; the dependencies do not. A coupled block can therefore be moved up or down the confidence ranking by a change of representation that leaves the distribution unchanged. 13 C How Each Diffusion Family Fails on ScanAndAdd 
+
+The failure of each family follows from one dependency identified in Section 4. Details for each family are below; Appendix B derives the confidence values used. 
+
+C.1 Masked Reveal 
+
+Key fact. Value positions have the lowest confidence in the sequence. A confidence ranking writes them last, by which time two of them are dependent.  
+
+> Phase 1: Writing ANS and OPS.
+
+At the all-masked state, Table 1 gives value positions confidence 0.10 , lower than every other content position. So a confidence ranking writes ANS and OPS first. During this phase, every group of two or more undetermined non-marker positions consists of command positions, answer digits, or both. All of these are dependent (Section 4), so every parallel step in this phase is inexact.  
+
+> Phase 2: Writing the value positions.
+
+Once ANS and OPS are fully written, the nine value positions remain. Two of them, the summed pair , now have elevated confidence: • The recorded answer fixes the sum s of the two values the head reads. Each member of the summed pair is then uniform on k(s) := 10 − | s − 9| values, giving it confidence 1/k (s).• 1/k (s) > 0.10 whenever s̸ = 9 , so both members of the summed pair outrank the seven remaining free value positions. • This happens with probability 36 45 · 910 = 0 .72 (non-adjacent add positions, which give a distinct summed pair, times P (s̸ = 9) ). In those cases, the ranking writes the summed pair as the first value-position parallel step. The summed pair will be one of the following: • Dependent: TC = log 2 k(s), up to 3.17 bits. • Entangled: drawing both members independently from their marginals produces the correct sum s
+
+with probability only 1/k (s), so most such steps record an inconsistent answer.  
+
+> Why the sampler cannot avoid this.
+
+A sampler could write each member of the summed pair in a separate step of size one and then write the seven free positions together, which would be exact. But identifying which positions form the summed pair requires knowing where the two add commands fell, which depends on the sample. Between two and nine command positions must be revealed before the summed pair is identifiable. Step sizes fixed in advance cannot always reserve a size-one step at the right moment. 
+
+C.2 Remasking 
+
+Key fact. When a parallel step writes the command block and produces an invalid add-count, the conditional 
+
+p(· | x−i) is undefined at every position. The remasking rule has nothing valid to read.  
+
+> When this occurs.
+
+Ten command positions drawn independently at P (add ) = 0 .2 produce an add-count of 0
+
+or ≥ 4 with probability 0.228 . At either count, branch (b) of Theorem 5 holds at every position: • Count = 0 (no adds): delete any position i from the sequence. The remaining nine commands hold zero adds. A valid sequence needs two adds total, so even adding an add at position i gives only one — not enough. No valid sequence has this context: p(x−i) = 0 .• Count ≥ 4: delete any position i. The remaining nine hold ≥ 3 adds. No valid sequence permits more than two adds. Again p(x−i) = 0 .14 Deleting a value or answer position instead leaves the invalid command block intact, so p(x−i) = 0 at those positions too. The conditional p(· | x−i) does not exist anywhere, and whatever the remasking rule outputs is not determined by p.
+
+Other add-counts (1 or 3). At count = 1 or 3, branch (a) applies at some positions: the network reports zero probability for the token at those positions, identifying them for rewriting. However, the redraw conditions on the remainder of a command block whose law is already wrong from the same parallel step. 
+
+C.3 Uniform-State Diffusion 
+
+Key fact. At every valid ScanAndAdd sequence, every position except the unread value positions is pinned by the others. Proposition 6 then applies: writing a pinned position alone leaves the support, and any group that could change it is entangled. 
+
+Which positions are pinned at a valid sequence x.
+
+Position type Why pinned 
+
+Command positions add-count is fixed at two; the other nine determine this one Answer digits ( a2, a 1, a 0) deterministic function of values and commands Markers constant Summed pair each member pinned by the recorded answer and the other member Free value positions not pinned — each uniform on ten values 
+
+What Proposition 6 says. At every pinned position, writing that position alone puts the state outside supp( p);writing any group that could change it makes that group entangled, which Theorem 3 then bounds. For the command block: moving from one arrangement to another requires changing at least two command positions at once (the add-count is fixed, so replacing an add requires adding an add elsewhere). Any such set is entangled at the frozen tokens. The terminal phase therefore has no exact route between command arrangements. 
+
+# D The Realized Write Order 
+
+Table 1 predicts the write order from the data alone, without any trained network. Figure 3 verifies this prediction on trained models ( 1k generations at two step budgets, T ∈ { 10 , 25 }). 2 4 6 8 10      
+
+> Diffusion step
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Fraction unmasked
+> M=1
+> VALS OPS ANS
+> M=9
+> VALS OPS ANS 510 15 20 25
+> Diffusion step
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Fraction unmasked
+> M=1
+> VALS OPS ANS
+> M=9
+> VALS OPS ANS
+> Figure 3
+
+Mean fraction of VALS , OPS , and ANS positions written at each remasking step, over 1k generations. Left: 
+
+T = 10 . Right: T = 25 . M = 1 is solid with markers, M = 9 dashed. Shading is the 5–95 percentile range across four independently trained M = 1 models. 
+
+15 What the traces show. 
+
+• In every condition and at every step budget, the first content position written is an ANS digit ( a2,confidence 1.00 ). • VALS is written last in all conditions. • At M = 1 : OPS finishes before VALS starts, as Table 1 predicts (command confidence 0.80 > 0.10 ). • At M = 9 : OPS and VALS rise together after ANS , as Table 1 predicts (synonym encoding drops command confidence to 0.16 , below the tens digit at 0.54 ). • The order is consistent across four independently trained M = 1 models (different initialization, data order, and masking noise): the 5–95 range is at most 0.071 for ANS and 0.024 for VALS . The write order is a property of the task and the decoding rule, not of any one model.  
+
+> Effect of step budget.
+
+Halving the step budget (from T = 25 to T = 10 ) does not move value positions earlier. It forces them into larger groups at the point where they are least independent — after the commands and answer have fixed the sum of the summed pair. The parallelism a tighter budget buys is spent exactly where Theorem 3 gives the largest cost. 
+
+# E Errors Add and Cannot Cancel 
+
+Theorem 3 bounds the error of one step. For the absorbing family (each position written once), the per-step errors add over the full run and none can offset another.  
+
+> Condition: prefix-measurable schedule.
+
+Write Ot for the positions written before step t and xOt for their values. Call the schedule prefix-measurable if the set Rt written at step t is a function of xOt alone. • Prefix-measurable: a schedule fixed in advance; any ranking by max v πi(v) (confidence based on the current conditional). • Not prefix-measurable: ranking by the probability of a token freshly drawn at each candidate position (both the draw and the selected token are random). 
+
+Theorem 9 (Per-step errors add) . Under a prefix-measurable schedule, 
+
+DKL (p ∥ q) = X
+
+> t
+
+δt, δt := ExOt ∼p
+
+"
+
+DKL p(xRt | xOt ) Y
+
+> i∈Rt
+
+πi(· | xOt )
+
+!# 
+
+≥ 0.
+
+Proof sketch. Prefix-measurability gives each sequence x exactly one write path: R1 is fixed; R1 and x
+
+determine xO2 and hence R2; and so on. Along this path, 
+
+q(x) = Y
+
+> t
+
+Y
+
+> i∈Rt
+
+πi(xi | xOt ), p(x) = Y
+
+> t
+
+p(xRt | xOt ).
+
+Take logarithms, subtract, take the expectation under p, and condition the tth summand on xOt : the sum-mand becomes the displayed divergence, which is non-negative. Theorem 3 further splits each δt into an expected total correlation and the model’s per-position error. 
+
+> Three consequences of non-negativity.
+
+1. Exactness requires every step to be exact. The sampler reproduces p only if δt = 0 for every t,i.e., every step is exact at p-almost every prefix it reaches. 2. One step’s error lower-bounds the run. DKL (p∥q) ≥ δt for each t: no other step can offset it. 3. A dependent group’s cost persists. A step that writes a dependent group on a set of prefixes with positive probability contributes at least the total correlation it incurs there. 16 How errors compound (versus how they add). Theorem 9 evaluates each δt under p — as though all prior steps were exact. Under this accounting, an error at step k leaves the later terms untouched: the errors are additive and separate. Switching to q, which reflects the errors already made, gives the same additivity, but shows something extra: an error at step k carries the sampler to contexts where subsequent conditionals may be worse. Theorem 5 is the extreme case — a context at which p defines no conditional at all. Neither accounting admits a negative term, so in neither sense can a later step undo an earlier one.  
+
+> What a token-reading scheduler does not cover.
+
+If Rt is chosen by ranking the probability of a freshly drawn token, the write path is no longer a function of x. Each sequence is reachable along multiple paths, so q(x)
+
+is a sum of products and does not split into per-step terms. Additivity holds on the space of paths, but data processing only bounds the output error above by the sum of per-step errors. Non-cancellation would require a lower bound, which this argument does not provide. Note that cancellation across different departure types is possible: in Section 5, raising temperature from 0.5
+
+to 1.5 reduces the best pooled-token TV from 0.129 to 0.0352 , so tempering partially cancels the distortion from write order. What the results above rule out is one step offsetting another within a prefix-measurable run. 
+
+# F How Much Parallelism the Exception Permits 
+
+Corollary 7 allows exact steps when the group written is conditionally independent. On ScanAndAdd, one such group exists (the free value positions), and the parallelism it provides can be computed.  
+
+> An exact schedule.
+
+The rule: write every position at confidence 1.00 as one group; otherwise write the single lowest-indexed masked position in field order VALS , OPS , ANS .
+
+This schedule produces three types of parallel steps: 1. First step — always: the three markers (constant) and a2 (= 0 in every sample). Four positions, one step. 2. Mid-run — trailing determined commands: once the remaining unwritten command positions are forced (either both adds are placed, or as many positions remain as adds still to place), those trailing commands are written together. Enumerating the 45 command arrangements: on average 64 /9 ≈ 7.11 
+
+commands are written one at a time before this point, leaving 2.89 written together. Step count for this phase: 64 /9 + 1 .3. Last step: once all values and commands are written, a1 and a0 are determined. Two positions, one step. The nine value positions are written one at a time, in VALS field order. 
+
+> Expected step count.
+
+1|{z} 
+
+> markers +a2
+
++ 9|{z} 
+
+> values, one each
+
++ 64 9
+
+|{z} 
+
+> commands, one each
+
++ 1|{z} 
+
+> trailing commands
+
++ 1|{z} 
+
+> a1,a 0
+
+= 172 9 ≈ 19 .11 steps ,
+
+ranging from 14 to 21 across the 45 arrangements. Speedup: 25 /19 .11 ≈ 1.31 ×. 
+
+> Why a confidence ranking cannot use this exception.
+
+This schedule writes value positions before the answer, in ascending order of confidence. A confidence ranking does the opposite: answer first, values last. By the time a confidence ranking reaches the value positions, the answer has made the summed pair dependent, and the exception is unavailable. A fallback that ranked drawn tokens instead of field order would make the reveal path random — a case Appendix E does not cover. 17 G Other Departures from Exact Sampling  
+
+> One criterion covers all cases.
+
+A sampler with exact conditionals reproduces p if and only if, at every step: (a) it draws from an unmodified conditional of p, and (b) the positions it reveals at that step are conditionally independent given what has already been revealed. Violating (a) is score shaping and enters the per-position error terms of Theorem 3. Violating (b) costs the total correlation of the revealed set and enters the grouping term of Theorem 3, which training does not reduce.  
+
+> Interventions that always shift.
+
+These distort for any p with H(p) > 0. 
+
+> Table 6
+
+Interventions that shift the distribution for any non-degenerate p.
+
+Intervention Why 
+
+Greedy / argmax decoding output is a point mass Beam search targets the joint MAP Best-of-n with a reranker reweights by the reranker unless it is constant Classifier-free guidance ( ̸= 1 ) renormalized product of two distributions  
+
+> Interventions that shift under a condition.
+
+Each is a no-op in an identifiable special case.  
+
+> Table 7
+
+Interventions that shift only when the stated condition holds. q denotes the conditional at the step in question; 
+
+R is the set revealed. 
+
+Intervention Shifts if and only if 
+
+Temperature τ̸ = 1 some conditional is non-uniform on its support Top-k k < | supp( q)| at some step Top-p / nucleus the nucleus omits some support element Min-p, ϵ-, typical some support token falls below the threshold Parallel reveal TC( XR | xOt ) > 0 for some R
+
+Fewer steps than positions ( T < L ) some step co-reveals a dependent set Remasking same condition; the remasking kernel is not the issue Constrained / grammar decoding the constraint set C has p(C) < 1 
+
+> Temperature on ScanAndAdd.
+
+Temperature leaves a conditional unchanged if and only if that conditional is uniform on its support. • Under a dependency-respecting order (values written before answer): value conditionals are uniform at 
+
+0.10 per digit, so temperature only affects the command and answer distributions. • Under an answer-first order: value conditionals are no longer uniform (the answer constrains the summed pair). Temperature distorts them as well. The same temperature parameter is inert or distorting depending on the write order.  
+
+> Writing the answer before the values.
+
+Done one position at a time with exact conditionals, this is a valid chain-rule factorization of p and introduces no approximation by itself. Its cost comes indirectly: it makes the summed value pair dependent, so any later parallel step writing both of them leaves the support. The cost is charged to the two terms of Theorem 3.  
+
+> Entropy split (ScanAndAdd only).
+
+On ScanAndAdd, p is uniform on its support, so any sampler that stays inside the support without reproducing p has strictly lower entropy. This splits departures into two kinds: 18 Table 8 How each departure moves the generated distribution on ScanAndAdd. The entropy split uses uniformity of 
+
+p and does not hold for general p. KL costs hold generally. 
+
+Departure Entropy vs. H(p) Support Basis 
+
+Temperature τ < 1 lower inside entropy is Schur-concave Top-k / nucleus lower inside entropy is Schur-concave Greedy / MAP → 0 inside limit of the above Aggregate before its in-puts unchanged leaves once grouped Section 4 Writing a dependent group 
+
+higher, by TC leaves, if entangled Theorem 3 
+
+Interventions that never shift. With exact conditionals, the rules below reproduce p. All assume one position per step.  
+
+> Table 9
+
+Interventions that preserve the distribution with exact conditionals (one position per step). The first row’s assumption matters: reveal order costs nothing, but the choice of which positions to reveal together does, and no scheduler reading per-position distributions can certify that choice (Theorem 4). 
+
+Intervention Why 
+
+Any reveal order, one position per step chain-rule factorization of p; one-per-step is the binding constraint Speculative decoding, exact verification distribution-preserving by construction 
+
+τ = 1 with k ≥ | supp( q)| no-ops 
+
+> Apple and the Apple logo are trademarks of Apple Inc., registered in the U.S. and other countries and regions.
+
+19
