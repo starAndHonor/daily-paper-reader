@@ -18,38 +18,24 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-09-23
-- 运行时间：2026-09-23 22:00:28 UTC
+- 最新运行日期：2026-09-24
+- 运行时间：2026-09-24 22:42:01 UTC
 - 运行状态：成功
-- 本次总论文数：6
-- 精读区：3
-- 速读区：3
+- 本次总论文数：1
+- 精读区：0
+- 速读区：1
 
 ### 今日简报（AI）
-今日精读3篇、速读3篇，聚焦LLM推理加速：块稀疏注意力解耦GPU执行、扩散LLM的IO感知KV缓存与并行解码双双拿下9.0分。最值得看的是这两篇9分工作揭示的同一思路——把注意力/缓存的计算与显存调度拆开优化，长上下文与扩散模型的推理瓶颈正被逐层击破。普通读者可先读这两篇精读的摘要与方法图，速读篇目留作扩展即可。
-- 详情：[/202609/23/README](/202609/23/README)
+今日速读 1 篇：《Latest Exact Match Attention》（6.0/10），精读空缺。该文聚焦精确匹配注意力机制的最新进展，适合关注注意力计算效率与匹配精度的读者一探。建议普通读者先看它的方法思路和实验结论，再决定是否深入原文。
+- 详情：[/202609/24/README](/202609/24/README)
 
 ### 精读区论文标签
-1. [Decoupling Logical Masks from GPU Execution for Dynamic Block-Sparse Attention](/202609/23/2609.25869v1-decoupling-logical-masks-from-gpu-execution-for-dynamic-block-sparse-attention)  
-   标签：评分：9.0/10、query:sparse-attn
-   evidence：面向视频扩散Transformer的动态块稀疏注意力
-2. [Flash-dLLM: IO-Aware KV Caching and Parallel Decoding for Fast, Memory-Efficient Diffusion LLMs](/202609/23/2609.26796v1-flash-dllm-io-aware-kv-caching-and-parallel-decoding-for-fast-memory-efficient-diffusion-llms)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：面向扩散大语言模型的免训练推理加速
-3. [HySparse2: Hybrid Sparse Attention with Two-Level KV Sharing](/202609/23/2609.26368v1-hysparse2-hybrid-sparse-attention-with-two-level-kv-sharing)  
-   标签：评分：8.0/10、query:sparse-attn
-   evidence：两级KV共享的混合稀疏注意力架构
+- 本次无精读推荐。
 
 ### 速读区论文标签
-1. [CompKV: Compensation-Aware KV Selection for Long-Context LLM Inference](/202609/23/2609.26300v1-compkv-compensation-aware-kv-selection-for-long-context-llm-inference)  
-   标签：评分：7.0/10、query:sparse-attn
-   evidence：面向LLM推理的补偿感知稀疏注意力KV选择
-2. [Limits of Confidence in Diffusion](/202609/23/2609.20581v1-limits-of-confidence-in-diffusion)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：离散扩散语言模型并行解码的理论分析
-3. [Diffusion Drafts, AR Verifies: Accelerating Document OCR with Self-Speculative Decoding](/202609/23/2609.26638v1-diffusion-drafts-ar-verifies-accelerating-document-ocr-with-self-speculative-decoding)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：扩散并行起草配合自回归验证以加速解码
+1. [Latest Exact Match Attention](/202609/24/2609.25802v1-latest-exact-match-attention)  
+   标签：评分：6.0/10、query:sparse-attn
+   evidence：每token代价与上下文无关的稀疏硬注意力Transformer
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
