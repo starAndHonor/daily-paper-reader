@@ -18,30 +18,27 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-09-25
-- 运行时间：2026-09-25 22:00:14 UTC
+- 最新运行日期：2026-09-26
+- 运行时间：2026-09-26 21:41:47 UTC
 - 运行状态：成功
-- 本次总论文数：3
-- 精读区：1
+- 本次总论文数：2
+- 精读区：0
 - 速读区：2
 
 ### 今日简报（AI）
-1）2026-09-25日报推荐3篇扩散模型新作，精读1篇、速读2篇，焦点集中在视频生成提速与3D纹理生成。  
-2）最值得看的是9.0分精读《Accelerating Video Diffusion via Training-Free Trajectory Routing》，主打无需训练的视频扩散轨迹路由加速；其次可关注7.0分少步因果视频生成《Vi
-- 详情：[/202609/25/README](/202609/25/README)
+2026-09-26 日报：今日速读 2 篇、精读 0 篇，聚焦注意力机制与语言模型动态。两篇均值得一看：一篇探讨稀疏注意力如何影响意见领袖式 token 聚类，另一篇揭示循环语言模型早期注意力路由的稳定性与工作集推理。普通读者可先从"注意力路由稳定"这篇入手，理解模型推理的早期行为。
+- 详情：[/202609/26/README](/202609/26/README)
 
 ### 精读区论文标签
-1. [Accelerating Video Diffusion via Training-Free Trajectory Routing](/202609/25/2609.30096v1-accelerating-video-diffusion-via-training-free-trajectory-routing)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：免训练轨迹路由加速视频扩散推理
+- 本次无精读推荐。
 
 ### 速读区论文标签
-1. [ViRDM: Taming Representation Distribution Matching for Few-Step Causal Video Generation](/202609/25/2609.28923v1-virdm-taming-representation-distribution-matching-for-few-step-causal-video-generation)  
-   标签：评分：7.0/10、query:diff-accel
-   evidence：少步因果视频扩散实现低延迟流式生成
-2. [UltraTex: Unleashing 2K Multi-View Diffusion for 3D Texturing](/202609/25/2609.23169v1-ultratex-unleashing-2k-multi-view-diffusion-for-3d-texturing)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：高效高分辨率多视角扩散纹理生成降低显存与延迟
+1. [Opinion Leader Dynamics: How Sparse Attention Shapes Token Clustering](/202609/26/2609.24202v1-opinion-leader-dynamics-how-sparse-attention-shapes-token-clustering)  
+   标签：评分：6.0/10、query:sparse-attn
+   evidence：稀疏注意力如何塑造词元表示演化的理论分析
+2. [Attention Routing Stabilizes Early: Working-Set Inference for Recurrent Language Models](/202609/26/2609.27373v1-attention-routing-stabilizes-early-working-set-inference-for-recurrent-language-models)  
+   标签：评分：6.0/10、query:sparse-attn
+   evidence：免训练复用稀疏工作集注意力以降低循环推理开销
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
