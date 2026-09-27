@@ -18,27 +18,27 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-09-26
-- 运行时间：2026-09-26 21:41:47 UTC
+- 最新运行日期：2026-09-27
+- 运行时间：2026-09-27 21:49:54 UTC
 - 运行状态：成功
 - 本次总论文数：2
 - 精读区：0
 - 速读区：2
 
 ### 今日简报（AI）
-2026-09-26 日报：今日速读 2 篇、精读 0 篇，聚焦注意力机制与语言模型动态。两篇均值得一看：一篇探讨稀疏注意力如何影响意见领袖式 token 聚类，另一篇揭示循环语言模型早期注意力路由的稳定性与工作集推理。普通读者可先从"注意力路由稳定"这篇入手，理解模型推理的早期行为。
-- 详情：[/202609/26/README](/202609/26/README)
+2026-09-27 日报：今日精读 0 篇、速读 2 篇，聚焦视频生成与世界模型的高效推理优化。两篇速读均为 6.0/10，分别关注 2-Bit KV Cache 量化提升时序一致性，以及门控 Token 循环用于高效密集预测，适合对推理加速和视频生成感兴趣的读者。建议普通读者先浏览这两篇的摘要与实验结论，判断是否与自身场景相关，再决定是否深入全文。
+- 详情：[/202609/27/README](/202609/27/README)
 
 ### 精读区论文标签
 - 本次无精读推荐。
 
 ### 速读区论文标签
-1. [Opinion Leader Dynamics: How Sparse Attention Shapes Token Clustering](/202609/26/2609.24202v1-opinion-leader-dynamics-how-sparse-attention-shapes-token-clustering)  
+1. [QuantWM: Temporally Consistent 2-Bit KV Cache Quantization for World Models and Video Generation](/202609/27/2609.26425v2-quantwm-temporally-consistent-2-bit-kv-cache-quantization-for-world-models-and-video-generation)  
+   标签：评分：6.0/10、query:diff-accel
+   evidence：KV缓存量化提升视频生成推理效率
+2. [GTR: Gated Token Recurrence for Efficient Dense Prediction](/202609/27/2609.26590v2-gtr-gated-token-recurrence-for-efficient-dense-prediction)  
    标签：评分：6.0/10、query:sparse-attn
-   evidence：稀疏注意力如何塑造词元表示演化的理论分析
-2. [Attention Routing Stabilizes Early: Working-Set Inference for Recurrent Language Models](/202609/26/2609.27373v1-attention-routing-stabilizes-early-working-set-inference-for-recurrent-language-models)  
-   标签：评分：6.0/10、query:sparse-attn
-   evidence：免训练复用稀疏工作集注意力以降低循环推理开销
+   evidence：无softmax线性注意力降低二次计算成本，提升骨干效率
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
