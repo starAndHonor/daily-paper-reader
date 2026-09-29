@@ -1,0 +1,391 @@
+Title: Learning to Replace MCMC in Split-Gibbs Diffusion Posterior Sampling via Deep Unfolding
+
+URL Source: https://arxiv.org/pdf/2609.30539v1
+
+Published Time: Mon, 28 Sep 2026 00:15:07 GMT
+
+Number of Pages: 5
+
+Markdown Content:
+## LEARNING TO REPLACE MCMC IN SPLIT-GIBBS DIFFUSION POSTERIOR SAMPLING VIA DEEP UNFOLDING 
+
+## Yi Zhang 1, Rui Guo 1, Mengchu Xu 1, Zhaofeng Liu 2, Yonina C. Eldar 1,21Faculty of Mathematics and Computer Science, Weizmann Institute of Science, Rehovot, Israel 
+
+> 2
+
+## Department of Electrical and Computer Engineering, Northeastern University, Boston, MA, USA 
+
+ABSTRACT 
+
+Split Gibbs sampling enables diffusion posterior inference for general nonlinear inverse problems by decoupling prior and likelihood computations, allowing a pretrained diffusion prior to be reused across measurement models. However, its likelihood update often relies on iterative MCMC, which can hinder parallelization, require algorithm-specific tuning, and incur substantial computational cost. In this work, we pro-pose a learning-based framework to replace this MCMC step by reformulating both Gibbs updates as Gaussian denoising problems and implementing them through ODE diffusion. The prior step reuses a pretrained denoiser, while the like-lihood denoiser exploits known likelihood structure through a lightweight deep-unfolded network. Experiments on non-linear phase retrieval demonstrate the effectiveness of the proposed method as an alternative to MCMC-based split Gibbs at lower likelihood-update cost. 
+
+Index Terms — diffusion models, posterior inference, Gibbs sampling, deep unfolding, inverse problems 
+
+1. INTRODUCTION 
+
+Diffusion models have emerged as powerful pretrained pri-ors for inverse problems [1–4]. Owing to their ability to generate high-quality samples from complex data distribu-tions, diffusion models facilitate sampling from the posterior 
+
+pS|Y (·| y) ∝ pS (·) × pY |S (y|· ), where S is the unknown sig-nal and Y = y is the observation, allowing various posterior statistics to be estimated from generated samples. Split Gibbs sampling [5–11] provides a flexible frame-work for diffusion posterior inference in general nonlinear in-verse problems, by introducing an auxiliary signal variable 
+
+S′ to decouple the prior and likelihood factors. Specifically,   
+
+> This research was supported by the European Research Council (ERC) under the European Union’s Horizon 2020 research and innovation program (grant No. 101000967) and by the Israel Science Foundation (grant No. 536/22). This work is also supported by Manya Igel Centre for Biomedi-cal Engineering and Signal Processing.
+
+it constructs the augmented joint distribution 
+
+πτ (s, s ′) ∝ pS (s) × pY |S (y|s′) × exp 
+
+
+
+− 12τ 2 ∥s′ − s∥22
+
+
+
+(1) whose S-marginal approaches the target posterior as τ → 0.Here, since the prior factor pS (s) and likelihood factor 
+
+pY |S (y|s′) depend on separate variables and interact only through the Gaussian coupling, alternating Gibbs updates of 
+
+S and S′ separate the prior- and likelihood-dependent com-putations. In diffusion-based implementations, these two updates can be handled independently by a pretrained dif-fusion model and a conventional MCMC sampler [6–11], respectively, allowing the same diffusion prior to be reused across different inverse problems without retraining. However, the likelihood-side MCMC introduces several practical limitations. First, the number of iterations required for adequate mixing generally varies across samples, mak-ing adaptive computation difficult to parallelize, while a fixed budget may sacrifice either efficiency or sampling quality. Second, MCMC performance can be sensitive to algorithm-specific choices such as stepsizes and proposal scales, intro-ducing additional tuning effort [12]. Beyond these implemen-tation issues, the repeated inner sampling itself can incur sub-stantial computational cost, particularly when likelihood eval-uation is expensive or the corresponding conditional distribu-tion is difficult to explore. In this work, we propose a learning-based framework for replacing iterative likelihood-side MCMC in split-Gibbs diffusion posterior sampling while preserving modular prior-likelihood computation. Our approach progressively reduces the likelihood-side sampling problem to a lightweight un-folded denoiser through three key ingredients: 1) Alternating-denoising formulation of split Gibbs. 
+
+We cast both the prior and likelihood updates of split Gibbs as Gaussian denoising sampling problems, yield-ing an exact symmetric formulation equivalent to the original split Gibbs sampler and thus preserving its modular structure and theoretical guarantees. 2) ODE-diffusion implementation of denoising sam-pling. We implement both denoising updates through arXiv:2609.30539v1 [eess.SP] 24 Sep 2026 ODE-based diffusion, reducing them to evaluations of prior and likelihood denoisers. The prior denoiser can be directly reused from a pretrained diffusion model, leaving the likelihood denoiser as the only problem-specific learned component. 3) Lightweight likelihood denoising via deep unfold-ing. Rather than designing a generic high-dimensional conditional denoiser, we exploit the known likelihood structure to derive a deep-unfolded architecture from a model-based iterative solver, yielding a structured low-parameter network. We validate the proposed method on nonlinear phase retrieval, where the learned likelihood updates achieve reconstruction quality comparable to their MCMC-based counterparts with a 4.98 × speedup in likelihood-update computation. These results support the proposed method’s potential as an efficient alternative to MCMC-based likelihood updates. 
+
+2. SPLIT GIBBS AS AN ALTERNATING DENOISING CONDITIONAL SAMPLER 
+
+In this section, we first review the standard split-Gibbs poste-rior sampler and its alternating prior and likelihood updates. We then show that both updates admit a common Gaussian-denoising formulation, yielding a symmetric alternating-denoising sampler. This formulation enables both updates to be implemented within a common ODE-diffusion framework, as described in the next section. 
+
+2.1. Standard Split Gibbs Posterior Sampling 
+
+Given an observation Y = y, split Gibbs sampling performs posterior inference by applying Gibbs sampling to the aug-mented joint distribution (1). Specifically, S and S′ are up-dated alternately by sampling from the conditional distribu-tions πτ (s|s′) and πτ (s′|s), respectively, yielding the follow-ing prior (P-step) and likelihood (L-step) updates [5–8]: 
+
+P-step: sample Si ∼ c × pS (·) × exp − · − S′
+
+> i−1
+> 22
+
+2τ 2
+
+> i
+
+!
+
+,
+
+L-step: sample S′ 
+
+> i
+
+∼ c′ × pY |S (y|· ) × exp − ∥· − Si∥22
+
+2τ 2
+
+> i
+
+!
+
+,
+
+where c, c ′ > 0 are normalizing constants, and the coupling strength τ in (1) is replaced by an iteration-dependent se-quence (τi)∞
+
+> i=1
+
+.The P-step and L-step involve only the prior factor pS (·)
+
+and the likelihood factor pY |S (y|· ), respectively. In prac-tice, the prior distribution often lacks a tractable analytical form. When a pretrained denoising network for pS is avail-able, however, the P-step can be implemented using diffusion-based sampling [6–11]. In contrast, the likelihood pY |S is typ-ically specified explicitly by the observation model, making conventional MCMC methods applicable to the L-step [7, 8]. Importantly, under suitable regularity conditions, if the P-and L-steps exactly sample from their respective conditional distributions and the coupling parameter τi decreases suffi-ciently slowly to zero, the distribution of Si converges to the target posterior pS|Y (·| y) [5, 7]. 
+
+2.2. Reformulating P- and L-Steps as Denoising Samplers 
+
+In standard diffusion-based implementations of split Gibbs, the P- and L-steps are handled asymmetrically. We now show that both steps can be cast as Gaussian denoising sampling problems, yielding a symmetric reformulation of split Gibbs. To this end, we first introduce notation for a Gaussian denois-ing conditional distribution. For a probability distribution μ with density, also denoted by μ, a noise level τ > 0, and a noisy observation z, we define 
+
+gτ [μ]( ·| z) ≜ pX|X+τ N (·| z), (2) where X ∼ μ and N ∼ N (0, I) is independent of X. Apply-ing Bayes’ rule to (2) yields 
+
+gτ [μ]( ·| z) ∝ μ(·) × exp 
+
+
+
+−∥· − z∥22/  2τ 2
+
+(3) By comparing this expression with the conditional distribu-tions defining the P- and L-steps, we can rewrite both steps as sampling from gτ [μ]( ·| z) with suitable μ, τ, z .
+
+Reformulating the P-step . From (3), we have 
+
+gτi [pS ]( ·| S′
+
+> i−1
+
+) ∝ pS (·) × exp 
+
+
+
+− · − S′
+
+> i−1
+> 22
+
+/  2τ 2
+
+> i
+
+
+
+.
+
+Hence, the P-step is exactly a denoising sampling step. 
+
+Reformulating the L-step. Unlike pS (·), the likelihood factor pY |S (y|· ) is generally not a probability density and can-not be directly used as μ in (3). To handle pY |S (y|· ) through the same Gaussian-denoising construction as pS in the P-step, we introduce a surrogate observation model that replaces the true prior with a fictitious Gaussian prior: 
+
+S′ pY |S
+
+−−−→ Y ′, where S′ ∼ N  0, τ 20 I , (4) where τ0 is a user-specified hyperparameter satisfying τ0 > τ i
+
+for all i. Using the surrogate posterior pS′|Y ′=y as μ in 
+
+gτ [μ]( ·| z), the L-step can then be written as a Gaussian-denoising step: 
+
+g τ0τi√τ 20 −τ 2
+
+> i
+
+[pS′|Y ′=y ]
+
+
+
+· τ 20
+
+τ 20 − τ 2
+
+> i
+
+Si
+
+
+
+∝ pY |S (y|· ) × exp − ∥· − Si∥22
+
+2τ 2
+
+> i
+
+!
+
+.P-step: 
+
+Sample ¯XT ∼ N (0 , σ (T )2I)
+
+Set τ ≜ τi, z ≜ S′
+
+> i−1
+
+, D θ (x, η ) ≜ DP 
+
+> θ
+
+(x, η )
+
+Simulate (6) from t = T to 0
+
+Si ← ¯X0
+
+L-step: 
+
+Sample ¯XT ∼ N (0 , σ (T )2I)
+
+Set τ ≜ τ0τi√τ 20 −τ 2
+
+> i
+
+, z ≜ τ 20 Si   
+
+> τ20−τ2
+> i
+
+, D θ (x, η ) ≜ DL 
+
+> θ
+
+(x, η ; y)
+
+Simulate (6) from t = T to 0
+
+S′ 
+
+> i
+
+← ¯X0
+
+S′ 
+
+> i−1
+
+Si S′
+
+> i
+
+likelihood-gradient step component-wise MLP · · · · · · DL 
+
+> θ
+
+(x, η ; y)
+
+s′ 
+
+> 0
+
+≜ x s′ 
+
+> k
+
+s′ 
+
+> k+1
+
+s′
+
+> K
+
+y (x, η )
+
+k-th unfolded layer Fig. 1 . Deep-unfolded ODE-diffusion implementation of the alternating-denoising split Gibbs sampler. Combining the two reformulations above yields the alternating-denoising form of the split-Gibbs iteration :
+
+P-step: sample Si ∼ gτi [pS ]( ·| S′
+
+> i−1
+
+),
+
+L-step: sample S′ 
+
+> i
+
+∼ g τ0τi√τ 20 −τ 2
+
+> i
+
+[pS′|Y ′=y ]
+
+
+
+· τ 20 Si
+
+τ 20 − τ 2
+
+> i
+
+
+
+,
+
+(5) which preserves the modular prior-likelihood structure and theoretical guarantees [7] of split Gibbs and enables a com-mon denoising implementation for both updates. 
+
+3. IMPLEMENTATION OF THE DENOISING CONDITIONAL SAMPLER 
+
+We next implement the Gaussian denoising sampling steps in (5) in two stages: ODE-based diffusion reduces each sam-pling step to denoiser evaluations, after which deep unfold-ing exploits the likelihood structure to derive a principled, lightweight architecture for the likelihood denoiser. 
+
+3.1. ODE-Based Diffusion for Denoising Sampling 
+
+For a general distribution μ, Gaussian denoising sampling can be implemented through an ODE-based diffusion process us-ing a denoiser for μ. Specifically, suppose that a denoising network Dμθ (x, η ) satisfies 
+
+Dμθ (x, η ) ≈ EX∼μ [X|X + ηN = x] , where N ∼ N (0, I) .
+
+Then, a sample from gτ [μ]( ·| z) can be generated by simulat-ing the following reverse-time ODE ( ¯Xt)t≥0:1
+
+d ¯Xt
+
+dt = ˙σ(t)
+
+σ(t) ¯Xt − Dμθ
+
+τ 2 ¯Xt + σ(t)2zτ 2 + σ(t)2 , τ σ (t)
+
+pτ 2 + σ(t)2
+
+!! 
+
+,
+
+(6) where σ(·) > 0 is an increasing noise-level function specified by the user, and ˙σ(·) is its derivative. If the diffusion terminal 
+
+> 1This ODE-based diffusion process was previously derived in [7] for the P-step; our reformulation here extends its applicability to the L-step, enabling a unified diffusion implementation of both steps.
+
+time T > 0 is chosen such that σ(T ) is much larger than the standard deviation of μ, initializing ¯XT ∼ N  0, σ (T )2I
+
+and simulating (6) backward from T to 0 yields ¯X0 as an approximate sample from gτ [μ]( ·| z).Applying this general framework to (5) requires two de-noisers corresponding to the P- and L-steps. For the P-step, 
+
+μ = pS , and hence requires 
+
+DP 
+
+> θ
+
+(x, η ) ≈ E [S | S + ηN = x] ,
+
+which can be implemented by a pretrained diffusion denoiser [13–15]. For the L-step, μ = pS′|Y ′=y depends on the obser-vation y, and therefore requires the conditional denoiser 
+
+DL 
+
+> θ
+
+(x, η ; y) ≈ E [S′ | S′ + ηN = x, Y ′ = y] .
+
+Thus, ODE diffusion reduces the implementation of (5) to evaluations of two denoisers: the prior denoiser can be reused from a pretrained diffusion model, whereas the likelihood de-noiser must be designed for the given likelihood. The result-ing ODE-diffusion framework is shown in Fig. 1; we next construct the latter denoiser via deep unfolding. 
+
+3.2. Likelihood Denoiser Design via Deep Unfolding 
+
+The likelihood denoiser DL 
+
+> θ
+
+maps the high-dimensional in-puts (x, η, y ) to a denoised estimate, for which a generic black-box network offers no natural choice of hidden repre-sentation and can lead to a large parameterization. Since the joint distribution of (S′, Y ′, S ′ + ηN ) is fully specified by the surrogate model (4), we instead exploit this known structure to construct a lightweight model-informed architecture via deep unfolding [16, 17]. Specifically, we derive an unfolded proximal-gradient ar-chitecture [18, 19] from the MAP estimation of S′. The MAP formulation is used only to motivate the network architecture; the subsequent MSE training targets the desired conditional-mean denoiser. Given S′ + ηN = x and Y ′ = y, the MAP estimate solves 
+
+min  
+
+> s′
+
+− log pY |S (y|s′) − log pS′|S′+ηN (s′|x).Fig. 2 . Reconstruction quality versus computation time for different implementations of the split Gibbs sampler. Time includes both prior and likelihood updates; markers indicate the endpoints after 22 outer iterations. 
+
+Table 1 . Average likelihood-update time per image per outer iteration and reconstruction quality after 22 outer iterations. MCMC Proposed Likelihood update 600 iter. 800 iter. 1000 iter. 1200 iter. 1400 iter. 5 NFEs 10 NFEs 15 NFEs Likelihood time (ms) 289.964 386.634 483.589 579.937 676.557 48.624 97.061 145.566 PSNR (dB) ↑ 20.147 20.325 20.412 20.463 20.479 20.092 20.412 20.518 SSIM ↑ 0.5990 0.6032 0.6056 0.6068 0.6072 0.5997 0.6068 0.6091 Let us define two auxiliary functions fy (s′) ≜ − log pY |S (y|s′)
+
+and gηx(s′) ≜ − log pS′|S′+ηN (s′|x), then the corresponding proximal-gradient iteration for solving the MAP problem is 
+
+s′ 
+
+> k+1
+
+= Prox γk gηx (s′ 
+
+> k
+
+− γk∇fy (s′
+
+> k
+
+)) . (7) We unfold K iterations into K network layers and make the stepsizes and measurement-model-induced parameters learn-able. Since S′ and N have independent coordinates, gηx is coordinate-wise separable; accordingly, we replace its proxi-mal operator by a small MLP applied independently to each coordinate, yielding a low-complexity model-informed net-work. The network output is defined as DL 
+
+> θ
+
+(x, η ; y) ≜ s′ 
+
+> K
+
+.Finally, since (S′, Y ′, N ) can be sampled entirely from the surrogate model (4), arbitrarily many synthetic training samples can be generated. We train DL 
+
+> θ
+
+to predict S′ by min-imizing the MSE over the considered noise levels η [13–15]. 
+
+4. EXPERIMENTS 
+
+We compare learned and MCMC-based likelihood updates in split Gibbs sampling for phase retrieval on FFHQ 256 × 256 
+
+images, following the setup, warm-start procedure, and open-source MCMC baseline of [7]. After warm starting, we per-form 22 outer iterations for each implementation. Our learned likelihood denoiser comprises six unfolded proximal-gradient layers, each with separately learned forward and backward masks restricted to the physical support of the true mask used in the measurement, and a four-layer MLP for the proximal step. We vary the number of MCMC iterations or network function evaluations (NFEs) of DL 
+
+> θ
+
+per likelihood update. Fig. 2 shows reconstruction quality versus computation time, and Table 1 reports likelihood-update time and final quality, averaged over 160 images. Prior updates cost ap-proximately 156 ms/image per outer iteration across config-urations and are omitted from the table. As shown in Fig. 2, the proposed method reaches high PSNR and SSIM in less time. At 22 outer iterations, 15 NFEs yield slightly higher PSNR and SSIM than those of 1400 MCMC iterations. Ta-ble 1 shows that the learned likelihood update with 10 NFEs achieves comparable PSNR and SSIM to those obtained with 1000 MCMC iterations, while accelerating the likelihood up-date by a factor of 4.98. These results demonstrate the effec-tiveness of replacing MCMC-based likelihood updates with the proposed method and its potential to reduce likelihood-update computation for complex likelihood models. 
+
+5. CONCLUSION 
+
+We proposed a learning-based framework to replace likelihood-side MCMC in split-Gibbs diffusion posterior sampling. AGaussian-denoising reformulation enables both Gibbs up-dates to be implemented through ODE diffusion, with the likelihood denoiser realized by a lightweight model-informed deep-unfolded network. Experiments on nonlinear phase re-trieval demonstrate the effectiveness of the proposed method as an alternative to MCMC-based split Gibbs and its potential to reduce likelihood-update cost. 6. REFERENCES 
+
+[1] H. Chung, J. Kim, M. T. McCann, M. L. Klasky, and J. C. Ye, “Diffusion posterior sampling for general noisy inverse problems,” in The Eleventh International Con-ference on Learning Representations , 2023. [2] B. Zhang, W. Chu, J. Berner, C. Meng, A. Anandku-mar, and Y. Song, “Improving diffusion inverse problem solving with decoupled noise annealing,” in Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2025, pp. 20 895– 20 905. [3] G. Daras, H. Chung, C.-H. Lai, Y. Mitsufuji, J. C. Ye, P. Milanfar, A. G. Dimakis, and M. Delbracio, “A Sur-vey on Diffusion Models for Inverse Problems,” 2024, arXiv:2410.00083 [cs]. [4] Y. Zhang, R. Guo, and Y. C. Eldar, “Bayesian Signal Separation Via Plug-and-Play Diffusion-Within-Gibbs Sampling,” in ICASSP 2026 - 2026 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , 2026, pp. 16–20. [5] M. Vono, N. Dobigeon, and P. Chainais, “Split-and-Augmented Gibbs Sampler—Application to Large-Scale Inference Problems,” IEEE Transactions on Sig-nal Processing , vol. 67, no. 6, pp. 1648–1661, 2019. [6] F. Coeurdoux, N. Dobigeon, and P. Chainais, “Plug-and-Play Split Gibbs Sampler: Embedding Deep Generative Priors in Bayesian Inference,” IEEE Transactions on Im-age Processing , vol. 33, pp. 3496–3507, 2024. [7] X. Xu and Y. Chi, “Provably Robust Score-Based Dif-fusion Posterior Sampling for Plug-and-Play Image Re-construction,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [8] Z. Wu, Y. Sun, Y. Chen, B. Zhang, Y. Yue, and K. L. Bouman, “Principled Probabilistic Imaging using Dif-fusion Models as Plug-and-Play Priors,” in Advances in Neural Information Processing Systems , vol. 37. Cur-ran Associates, Inc., 2024, pp. 118 389–118 427. [9] R. Guo, Y. Zhang, Y. Kvich, T. Huang, M. Li, and Y. C. Eldar, “Plug-and-play latent diffusion for electromag-netic inverse scattering with application to brain imag-ing,” arXiv preprint arXiv:2509.04860, 2025. [10] H. Gao, T. Huang, L. Guo, J. He, and Y. C. Eldar, “Diffusion-prior split gibbs sampling for synthetic aper-ture radar imaging under incomplete measurements,” arXiv preprint arXiv:2512.02768, 2025. [11] Y. Zhang, R. Guo, and Y. C. Eldar, “Bayesian Signal Component Decomposition via Diffusion-Within-Gibbs Sampling,” IEEE Transactions on Signal Processing ,vol. 74, pp. 3520–3535, 2026. [12] S. Brooks, Ed., Handbook of Markov chain Monte Carlo , ser. Chapman & Hall/CRC handbooks of mod-ern statistical methods. Boca Raton, Fla: CRC Press, 2011. [13] Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, and B. Poole, “Score-Based Generative Mod-eling through Stochastic Differential Equations,” in In-ternational Conference on Learning Representations ,2021. [14] J. Ho, A. Jain, and P. Abbeel, “Denoising Diffusion Probabilistic Models,” in Advances in Neural Informa-tion Processing Systems , vol. 33. Curran Associates, Inc., 2020, pp. 6840–6851. [15] T. Karras, M. Aittala, T. Aila, and S. Laine, “Elucidating the Design Space of Diffusion-Based Generative Mod-els,” in Advances in Neural Information Processing Sys-tems , vol. 35, 2022, pp. 26 565–26 577. [16] V. Monga, Y. Li, and Y. C. Eldar, “Algorithm Unrolling: Interpretable, Efficient Deep Learning for Signal and Image Processing,” IEEE Signal Processing Magazine ,vol. 38, no. 2, pp. 18–44, 2021. [17] N. Shlezinger, S. Segarra, Y. Zhang, D. Avrahami, Z. Davidov, T. Routtenberg, and Y. C. Eldar, “Deep Unfolding: Recent Developments, Theory, and Design Guidelines,” Dec. 2025, arXiv:2512.03768 [cs]. [18] P. L. Combettes and V. R. Wajs, “Signal recovery by proximal forward-backward splitting,” Multiscale Mod-eling & Simulation , vol. 4, no. 4, pp. 1168–1200, 2005. [19] X. Wei, H. van Gorp, L. Gonzalez-Carabarin, D. Freed-man, Y. C. Eldar, and R. J. G. van Sloun, “Deep unfold-ing with normalizing flow priors for inverse problems,” 
+
+IEEE Transactions on Signal Processing , vol. 70, pp. 2962–2971, 2022.

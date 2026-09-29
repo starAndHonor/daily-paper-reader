@@ -1,0 +1,808 @@
+Title: DyMD: Preserving Interaction Dynamics through Distribution Matching Distillation in Few-Step Video World Models
+
+URL Source: https://arxiv.org/pdf/2609.31349v1
+
+Published Time: Mon, 28 Sep 2026 01:31:24 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# DyMD: Preserving Interaction Dynamics through Distribution Matching Distillation in Few-Step Video World Models 
+
+## Haojun Xu 1,2 Jie Huang 2,‡ Xin Lu 2 Mingchen Zhong 2 Zihao Fan 2 Linjiang Huang 1,† Si Liu 11Beihang University 2JD Future Academy 
+
+> ∗
+
+## Equal contribution. †Corresponding author. ‡Project leader. 
+
+## Abstract 
+
+Large video diffusion models provide rich priors for em-bodied prediction and learning. However, generating vi-sual futures with these models requires costly iterative sam-pling. Distribution Matching Distillation (DMD) enables few-step video generation, but suppress robot–object motion while preserving visual quality. Examining DMD’s teacher and fake-score signals, we find that weak re-noising keeps the teacher posterior concentrated near motion-deficient rollouts, limiting motion-restoring guidance. Meanwhile, stronger-motion rollouts tend to incur larger fake-score fit-ting errors, which hinder the generator’s learning of interac-tion dynamics. We propose DyMD, a DMD framework that adapts both teacher supervision and critic fitting to the evolv-ing student. Temporal affinity–conditioned re-noise sampling adapts the timestep distribution to each rollout’s current in-teraction fidelity by mixing the base schedule with a teacher prior motivated by local posterior variation, thereby balanc-ing motion recovery and appearance refinement. To better track stronger-motion rollouts which are empirically associ-ated with higher flow-matching loss, dynamics-guided fake-score tracking uses a noise-conditioned predictor to estimate noise-relative fitting difficulty, then upweights predicted-hard rollouts in the critic loss. Using DyMD, we distill a 14B teacher into a four-step 1.3B student with no auxiliary mod-ules at inference. On embodied-video benchmarks, the stu-dent improves R-Bench task adherence by 9.6 percentage points and PAI-Bench-G Domain score by 5.1 points over Base DMD while maintaining comparable visual quality. As a backbone for downstream action planning, our student achieves 34% mean success across two WorldArena tasks, compared with 16% for Base DMD. 
+
+## 1. Introduction 
+
+Video world models support embodied prediction and learn-ing by generating visual futures and providing representa-tions for downstream policies [8, 9, 15]. For robotic manip-0s 1.7s 4.0s 5.0s    
+
+> Base DMD DyMD
+> Limited motion / Implausible deformation Physically plausible interaction
+> 34.6 44.2
+> 020 40 60
+> Task Adherence
+> R-Bench
+> Base DMD DyMD
+> 74.4 79.5
+> 70 75 80
+> Domain Score
+> PAI-Bench-G
+> Base DMD DyMD
+> 16 34
+> 010 20 30 40
+> Success Rate
+> WorldArena
+> Base DMD DyMD
+
+Figure 1. Preserving interaction dynamics in few-step video world models. Top: Base DMD shows implausible deformation and limited motion; DyMD preserves a physically plausible robot– object interaction. Bottom: gains in R-Bench task adherence, PAI-Bench-G domain score, and WorldArena planning success. Both are 1.3B four-step students. 
+
+ulation, useful predictions must capture coordinated robot– object motion as well as scene appearance. However, gener-ating such visual futures with large video diffusion models requires costly iterative sampling [25, 30], motivating dis-tillation into few-step generators. Distribution Matching Distillation (DMD) [32, 33] trains a few-step student using the score difference between a frozen teacher and an on-line fake-score model (the critic) that estimates the score of the evolving student distribution. But the challenge is to retain task-relevant interaction dynamics under this reduced sampling budget. Our starting observation is that DMD preserve visual qual-ity while suppressing interaction dynamics. When distilling PF-Wan, a teacher fine-tuned for robotic manipulation [36], vanilla DMD produces sharp videos with weak robot–object motion (Fig. 1). To understand this failure, we examine the two components of DMD’s score-difference update: the teacher guidance and the critic’s estimate of the evolving 1arXiv:2609.31349v1 [cs.CV] 25 Sep 2026 Student rollout            
+
+> time
+> Teacher refinement in low noise
+> Teacher refinement in high noise Figure 2. Motion recovery depends on the re-noising level. We re-noise the same nearly static four-step DMD rollout at different noise levels and refine it with the frozen PF-Wan teacher. Low re-noising levels leave the video nearly static, while higher levels recover motion but introduce visible artifacts. Four frames are shown in temporal order. 0.00 0.07 0.14 0.0 0.3 0.6
+> VAE latent motion
+> Critic FM loss
+> (a) Fixed noise: σ = 0.97 ρ = 0.692
+> 00.5 1.0 0.50 0.75 1.00
+> Noise level σ
+> Spearman ρ
+> (b) Across noise levels
+> Figure 3. Stronger latent motion is associated with higher critic FM loss. Left: 32 frozen rollouts at σ= 0 .97 . Right: Spearman correlation between VAE latent motion magnitude and critic FM loss across the same rollouts, computed separately at four noise levels. Protocol in Appendix D.2.
+
+student score. First, the teacher’s ability to correct this motion deficit depends on the re-noising level. Weak re-noising keeps the teacher’s clean-video posterior concentrated near a motion-deficient student rollout, providing little corrective guidance. Stronger re-noising of the same rollout restores robot–object motion but may introduce artifacts (Fig. 2). Typical sched-ules use the same timestep distribution for all rollouts, re-gardless of their current interaction fidelity. This motivates adapting re-noise sampling to balance motion recovery and appearance refinement for each rollout. Second, preserving interaction dynamics requires the critic to accurately track the evolving student distribution, since errors in its student-score estimate perturb the gen-erator’s score-difference update [14, 32]. At fixed noise levels, our frozen-snapshot probe finds that rollouts with stronger motion in VAE latent space tend to incur higher flow-matching (FM) loss (Fig. 3), suggesting that these roll-outs are harder for the critic to fit. Thus, inaccurate critic scores on these rollouts hinder the generator from learn-ing interaction dynamics effectively. To better track these stronger-motion rollouts, we therefore use fitting difficulty to allocate the critic’s limited training effort. These two challenges motivate DyMD, which couples rollout-adaptive teacher supervision with difficulty-aware critic fitting. To balance motion recovery and appearance refinement, temporal affinity–conditioned re-noise sampling adapts each rollout’s mixture of a teacher prior and the base schedule. The prior emphasizes pronounced changes in the teacher’s denoising direction, motivated by the connection between teacher-velocity turning and local posterior varia-tion. Temporal affinity to a paired training video, measured in frozen V-JEPA features [22], assesses the rollout’s current interaction fidelity and controls this mixture: low-affinity rollouts receive more teacher-prior sampling, while well-matched rollouts retain more base-schedule coverage. To improve the critic’s score estimates for rollouts with stronger motion, dynamics-guided fake-score tracking uses a noise-conditioned predictor to estimate noise-relative fitting dif-ficulty from temporal dynamics in VAE latents. Rollouts predicted to be harder than typical samples at the same noise level receive larger weights in the critic loss, without increas-ing the number of critic updates. We distill the PF-Wan teacher into a four-step 1.3B stu-dent. Both components operate only during training, with no auxiliary modules required at inference. Experiments on R-Bench [8], PAI-Bench-G [38], and EZS-Bench [7] show improved interaction fidelity over Base DMD: R-Bench task adherence rises by 9.6 percentage points and PAI-Bench-G Domain score by 5.1 points, with comparable visual qual-ity. As a backbone for downstream action planning, our student achieves 34% mean success across two WorldArena tasks [28], compared with 16% for Base DMD. Our contributions are threefold: • We analyze motion degradation in DMD through its teacher and fake-score signals, identifying teacher-side mode locking and motion-related critic fitting difficulty as obstacles to preserving interaction dynamics. • We propose DyMD, combining temporal affinity– conditioned re-noise sampling with dynamics-guided fake-score tracking to adapt teacher supervision and critic fitting to the current student (Sections 3.2–3.4). • We demonstrate improved interaction fidelity over Base DMD on three embodied-video benchmarks and higher mean success on two downstream action-planning tasks with a four-step 1.3B student (Section 4). 
+
+## 2. Related Work 
+
+Video World Models. Large-scale video diffusion and flow models learn expressive priors for visual genera-tion [3, 18, 25, 30]. Robot video corpora and video-based world models extend these priors to embodied prediction and learning [4, 8, 9, 15], where object persistence, con-2tact consistency, and coordinated robot–object motion are essential. VideoJAM jointly models appearance and mo-tion to improve temporal coherence [5]. ABot-PhysWorld uses physics-aware preference optimization [7], while Ph-ysisForcing introduces region-focused physics supervision for robotic interactions [36]. These advances improve the dynamics available in a video teacher. Our focus is transfer-ring those dynamics to a few-step student through adaptive timestep sampling and critic fitting. 
+
+Diffusion Model Distillation. Few-step distillation trans-fers pretrained diffusion and flow models through trajectory consistency [21, 29] or distribution-level supervision, includ-ing adversarial learning [27] and score-based distribution matching [32, 33]. Several extensions improve the supervi-sion used by DMD. Reward-guided methods combine distri-bution matching with preference optimization [16, 20], while Adaptive Matching Distillation reshapes score guidance to favor higher-quality samples [2]. For temporal fidelity, Adap-tive Video Distillation combines adaptive paired regression with temporal regularization [35]. In generative video com-pression, Adaptive Score Distillation attenuates updates that disagree with a ground-truth reconstruction direction [31]. CoDMD adds a relational objective over samples and frames, reusing teacher and fake-score predictions to preserve their dependency structure [37]. 
+
+Timestep Sampling and Fake-Score Tracking. Noise allocation and fake-score accuracy offer another axis of im-provement. Improved DDPM uses loss-aware timestep im-portance sampling to reduce gradient noise [23], while Min-SNR balances timestep losses through SNR-based weight-ing [12]. Phased DMD progressively matches intermediate distributions and derives score-matching objectives within SNR subintervals for specialized experts [11]. DMD2 sta-bilizes fake-score estimation through two-time-scale up-dates [32]; RTDMD’s ambient-consistent stage adds a cross-timestep consistency regularizer to help fake-score model track the generator distribution under limited updates [14]. Learning Loss predicts sample losses for active data acquisi-tion [34], providing a related perspective on difficulty-based allocation. Our approach uses temporal affinity to adapt each student rollout’s re-noise schedule and a noise-conditioned predictor estimates noise-relative fitting difficulty from latent temporal dynamics to reweight critic samples. 
+
+## 3. Method 
+
+We first review DMD’s generator and fake-score updates and the challenges they pose for preserving interaction dynamics (Section 3.1). Building on this analysis, DyMD (Fig. 4) constructs a teacher-velocity-turning prior and uses temporal affinity to adapt its mixture with the base schedule to each rollout’s current interaction fidelity (Sections 3.2 and 3.3). It further predicts noise-relative fitting difficulty from latent temporal dynamics to reweight critic samples within a fixed update budget (Section 3.4). 
+
+3.1. Preliminaries: DMD and Its Challenges 
+
+DMD [32, 33] distills a multi-step diffusion teacher into a few-step generator Gθ , which produces a latent rollout xS 
+
+> 0
+
+=
+
+Gθ (ξ, c ) from noise ξ and text conditions c. It minimizes a time-averaged reverse KL between the re-noised student and teacher distributions, yielding the score-difference update 
+
+∇θ LG ≈ E
+
+" ∂x S
+
+> 0
+
+∂θ 
+
+⊤ sϕ − sT
+
+#
+
+, (1) where sT is the frozen teacher score and sϕ is the student-score estimate provided by an online fake-score model. Both are evaluated at the re-noised rollout xt = (1 − σt)xS 
+
+> 0
+
++
+
+σtε, with noise level σt = σ(t) and independent standard Gaussian noises ξ, ε .Since the student score is not available in closed form, the critic learns a velocity field vϕ that provides this estimate through 
+
+sϕ(xt, t, c ) = − xt + (1 − σt)vϕ(xt, t, c )
+
+σt
+
+. (2) With the generator fixed, vϕ is trained on detached student rollouts using flow matching (FM) [19]: 
+
+LFM ∝ E
+
+h
+
+vϕ(xt, t, c ) − (ε − xS 
+
+> 0
+
+) 22
+
+i
+
+. (3) Through Eq. (2), FM regression provides the student-score estimate used in the generator update. DMD alternates be-tween generator and fake-score updates, using independently sampled student rollouts for each update. These alternating updates face two obstacles to preserving interaction dynamics. 
+
+Teacher-side mode locking: for a re-noised student roll-out xt, the teacher’s clean-video posterior satisfies: 
+
+pT (x0 | xt, c ) ∝ pT (x0 | c)N  xt; (1 − σt)x0, σ 2 
+
+> t
+
+I . (4) At high signal-to-noise ratio SNR t = (1 − σt)2/σ 2 
+
+> t
+
+, the Gaussian likelihood favors clean videos near xS 
+
+> 0
+
+, so the posterior may remain localized around a motion-deficient student rollout. Since the teacher score is determined by this posterior’s mean [10], even an accurate score may provide little guidance for recovering motion. Appendices C.1–C.2 relate the score difference to posterior means and analyze this mode locking in a two-mode model. Stronger re-noising re-laxes this local constraint but weakens appearance evidence, motivating re-noise sampling adapted to each rollout’s cur-rent interaction fidelity. 3Noise First frame        
+
+> Few Step Generator
+> Student Rolllout 𝒙 𝟎
+> Reference Video
+> V-JEPA Encoder
+> Prompt
+> Reference Feature Student Feature Sample timestep 𝒕 𝒊 ~𝝂 𝒊
+> Adaptive Mixture
+> 𝝂 𝒊 = (𝟏 − 𝒈 𝒊 )𝝂 𝒃𝒂𝒔𝒆 +𝒈 𝒊 𝝂 𝒑𝒓𝒊𝒐𝒓
+> Mixing Weight 𝒈 𝒊
+> Noisy Rollout 𝒙 #)
+> Temporal Descriptor Difficulty Predictor
+> Teacher Critic
+> Re-noise
+> 𝒔 𝑻 ( 𝒙 #))𝒔 𝝓 ( 𝒙 #))
+> 𝝂 𝒊
+> 𝝂 𝒃𝒂𝒔𝒆
+> 𝝂 𝒑𝒓𝒊𝒐𝒓
+> Temporal Affinity–Conditioned Re-noise Sampling On-Policy Distribution Matching DMD Loss Dynamics-Guided Fake-Score Tracking
+> Predicted Difficulty
+
+!𝑟 ! Weighted FM Loss   
+
+> Exp. + Normalize Weight 𝒘 𝒊
+> Prediction Loss Update critic Update predictor Flow Matching Loss
+> Difficulty Target
+> (Noise relative FM loss)
+
+Figure 4. Overview of DyMD. Top (Secs. 3.2–3.3): temporal affinity controls each rollout’s mixture of the teacher prior and base schedule. Middle (Sec. 3.1): the teacher–critic score difference updates the student. Bottom (Sec. 3.4): a dynamics- and noise-conditioned predictor assigns mean-one weights to critic FM losses without changing their targets. Generator and critic share the timestep sampling rule; all auxiliary modules are training-only. 
+
+Critic lag: the score estimate sϕ must track a changing student distribution. With finitely many updates, vϕ may remain inaccurate; Eq. (2) passes this error into the genera-tor’s score difference [11, 14, 32]. This motivates allocating limited critic fitting effort to rollouts that are harder to track. 
+
+3.2. Teacher-Velocity Turning Prior Schedule 
+
+Stronger re-noising can recover motion but may also in-troduce artifacts (Fig. 2). To guide timestep selection, we seek noise intervals where the teacher’s denoising direction undergoes pronounced reorganization. Let bvT (xσ , σ, c ) be its sampled velocity. The operator C centers the velocity field by subtracting the future-block temporal mean. Along trajectory m, the centered velocity and its unit direction are 
+
+vc
+
+> m
+
+(σ) = CbvT (xm,σ , σ, c m), um(σ) = vc
+
+> m
+
+(σ)
+
+∥vc
+
+> m
+
+(σ)∥2
+
+.
+
+(5) We measure the change in teacher velocity direction per unit noise level between adjacent sampling steps: 
+
+bκm,k = arccos  um(σk)⊤um(σk+1 )
+
+|σk+1 − σk| . (6) Its continuous limit is κm(σ) = ∥du m/dσ ∥2. Small turn-ing indicates a locally stable direction; large turning marks pronounced directional reorganization. 
+
+Posterior interpretation. To connect turning to clean-video predictions, use the conditional field vT in Eq. (5). Along trajectory m, the clean posterior and its mean satisfy 
+
+πm,σ (x0) = pT (x0 | xm,σ , c m),μm,σ = xm,σ − σv T (xm,σ , σ, c m). (7) Along a flow trajectory, dx/dσ = vT implies dμ/dσ =
+
+−σ dv T /dσ ; thus velocity turning requires a change in the posterior mean. For neighboring noise levels, the local KL expansion [24] measures variation of the full posterior: 
+
+DKL (πm,σ ∥ πm,σ +δ ) = 12 Im(σ)δ2 + o(δ2), (8) where Im(σ) is the posterior-path Fisher information, quan-tifying local posterior sensitivity to σ along the trajectory. The following result links this posterior variation to turning. 
+
+Proposition 1 (Turning witnesses posterior variation) . For regular posterior paths of the exact conditional flow, suppose 
+
+σ∥vc
+
+> m
+
+(σ)∥2 is uniformly bounded away from zero. Suppose the centered posterior covariance, projected orthogonally to 
+
+um, has uniformly bounded trace. Then a constant CI > 0
+
+exists such that 
+
+Em[Im(σ)] ≥ CI ¯κ(σ)2, ¯κ(σ) = Em[κm(σ)] . (9) The bound motivates the squared mean turning rate as a geometric indicator of posterior variation (proof in Ap-pendix C), supporting a sampling prior that emphasizes noise 40.2 0.4 0.6 0.8 1.0        
+
+> Noise level σ
+> 030 60 90 120 150
+> Mean turning rate ̄  κ(σ)
+> Teacher-Velocity Turning Pro fi le
+> High-noise region Figure 5. Teacher-velocity turning profile. Mean turning rate of future-block-centered velocity across PF-Wan teacher trajectories. The light-blue band shows the interquartile range across trajectories; pale-yellow shading highlights the high-noise region σ∈[0 .9,1] .
+
+intervals with pronounced denoising-direction reorganiza-tion. In practice, we profile 32 trajectories from the PF-Wan teacher [36] using its official 40-step solver with a CFG scale of 5. The measured turning rates are first averaged across trajectories to estimate ¯κ(σ), then smoothed over σ to obtain 
+
+eκ(σ) (Fig. 5). The teacher-velocity-turning prior schedule is defined on T , the timestep range used for re-noising: 
+
+hκ(t) = ( eκ(σt) + ϵκ)2, νκ(t) = hκ(t)
+
+R 
+
+> T
+
+hκ(u) du . (10) The offset ϵκ > 0 preserves support. 
+
+3.3. Temporal Affinity–Conditioned Re-noise Sampling 
+
+The teacher prior νκ emphasizes noise intervals with pro-nounced denoising-direction reorganization, but is fixed across rollouts. We adapt its mixture with the base schedule 
+
+νbase to each rollout’s current interaction fidelity. To assess this fidelity, we compare multi-scale temporal changes be-tween the decoded student video V Si and its paired target 
+
+V ⋆i in a frozen video encoder’s feature space. Their pooled features and temporal differences are 
+
+Zai = Pool(Φ( V ai )) , a ∈ { S, ⋆ },
+
+(∆ ℓZai )j,u = ( Zai )j+ℓ,u − (Zai )j,u , (11) where Φ is the frozen encoder, instantiated as V-JEPA 2.1 [22], and Pool normalizes and pools tokens within a 3 × 3 spatial grid. The indices j, u denote time and spatial cells, and ℓ ∈ { 1, 2, 4} is the temporal lag. For brevity, write 
+
+δz ai = (∆ ℓZai )j,u and let ⟨·⟩ denote lag-weighted averaging over time–cell pairs. We use their temporal affinity Ai as a feature-space proxy for interaction fidelity: 
+
+Ai = 2 [( δz Si )⊤δz ⋆i ]+
+
+∥δz Si ∥22 + ∥δz ⋆i ∥22
+
+, (12) where [ · ]+ = max( ·, 0) and Ai ∈ [0 , 1] . Identical tem-poral changes give one, while mismatches in direction or magnitude reduce affinity. The affinity sets the teacher-prior probability gi and timestep sampling density: 
+
+gi = αα + (1 − α)Ai
+
+, 0 < α ≤ 1,νi(t) = (1 − gi)νbase (t) + giνκ(t).
+
+(13) Here α sets the minimum teacher-prior probability. Low-affinity rollouts receive more teacher-prior sampling, while well-matched rollouts retain more base-schedule coverage for appearance refinement. Both generator and critic sample 
+
+ti ∼ νi, with νi computed from their respective rollouts. This aligns critic training with the noise-level allocation used for generator updates. 
+
+3.4. Dynamics-Guided Fake-Score Tracking 
+
+Even at a fixed noise level, critic fitting difficulty varies across rollouts: stronger latent motion is associated with higher FM loss (Fig. 3). We therefore use latent temporal dy-namics to predict noise-relative fitting difficulty and allocate fitting effort within a fixed critic-update budget. To compare rollouts evaluated at different noise levels, we center log-FM loss by a noise-bin baseline bk(ti), an expo-nential moving average of log-FM loss in the bin containing 
+
+ti. We define the noise-relative fitting difficulty as 
+
+ri = sg[log ℓFM  
+
+> i
+
+− bk(ti)]. (14) A positive ri indicates higher log-FM loss than the running baseline at a comparable noise level. We predict this difficulty from VAE latent dynamics, mea-sured in the critic’s FM regression space. For a detached student latent Xi = sg[ xS
+
+> 0,i
+
+], a fixed map Dtemp aggregates RMS magnitudes of multi-lag latent differences and displace-ments from the first block using temporal statistics such as the mean and standard deviation. A lightweight MLP f maps the descriptor di and a noise-level embedding e(ti) to the predicted fitting difficulty bri:
+
+di = Dtemp (Xi),
+
+bri = f (di, e (ti)) . (15) We train f online with a Huber loss Lpred against ri. De-scriptor details are given in Appendix E.1. To emphasize predicted-hard rollouts within the existing critic updates, we exponentiate bri and normalize the weights to unit mean over the global minibatch of size B:
+
+wi = exp( βbri)
+
+B−1 PBj=1 exp( βbrj ) . (16) 5Table 1. Main comparison on embodied-video benchmarks. The teacher and undistilled student are reference models and are separated from the two matched four-step DMD variants. Bold with blue shading marks the better result within the matched pair. NFE counts denoiser evaluations, including both CFG branches. Benchmark scores are percentages and higher is better. R-Bench embodiment columns are abbreviated as Dual (dual-arm), Hum. (humanoid), Single (single-arm), and Quad. (quadruped). Method Params NFE R-Bench: TAC PAI-Bench-G EZS-Bench Overall Dual Hum. Single Quad. Domain Space Physics Time Quality Domain Space Physics Time PF-Wan 14B 80 75.3 72.5 79.8 71.8 77.2 89.0 91.8 92.2 88.4 76.9 83.2 80.9 89.2 78.0 Wan2.1-Fun 1.3B 100 47.3 42.5 53.2 30.8 63.2 79.0 79.7 82.5 76.4 75.3 75.5 71.7 83.9 68.8 Base DMD 1.3B 4 34.6 25.2 33.4 25.8 54.0 74.4 77.0 82.8 64.7 78.1 73.3 66.9 86.0 64.8 
+
+DyMD 1.3B 4 44.2 38.8 48.0 31.2 58.8 79.5 82.4 81.2 73.5 78.1 76.2 71.8 84.4 70.8 (a) Lift the blue shipping container Base DMD 
+
+> Ours
+> (b) Hand the menu to the person Base DMD
+> Ours
+
+Figure 6. Visual comparison of interaction dynamics between Base DMD and DyMD at four NFE. Uniformly spaced frames from two PAI-Bench cases. Top: lifting a blue shipping container. Bottom: handing a menu to a person. Base DMD fails to lift the target container and produces limited handover motion, whereas DyMD realizes the instructed interaction. 
+
+Here β > 0 controls the strength on predicted-hard rollouts. The training objective is 
+
+LC = 1
+
+B
+
+> B
+
+X
+
+> i=1
+
+sg[ wi] ℓFM  
+
+> i
+
+(ϕ) + λpred Lpred . (17) Rollouts with higher predicted fitting difficulty receive larger coefficients in the critic gradient. Detached weights ensure that f learns only from Lpred and all auxiliary modules are training-only. 
+
+## 4. Experiments 
+
+4.1. Experimental Setup 
+
+Models and training. We distill the PF-Wan 14B image-to-video teacher [36] into a bidirectional 1.3B student. PF-Wan is fine-tuned on robotic manipulation videos with interaction-focused physics supervision, making it a suitable teacher for transferring interaction dynamics to a few-step student. The student and fake-score model are initialized from Wan2.1-Fun-V1.1-1.3B-InP [1]. The teacher uses its official 40-step, shift-5 sampler with CFG 5; the student generates 81-frame videos in four denoiser evaluations. A frozen V-JEPA 2.1-L encoder provides temporal-affinity fea-tures. We train on 32,897 clips curated from RoVid-X [8] through semantic deduplication, image–text alignment, and motion/visibility filtering. All DMD variants use the same 2,500-step training budget and effective batch size of 32. Tracking reweights samples without changing the number of critic updates. We set the teacher-prior probability floor to α = 0 .3 and critic-weighting strength to β = 0 .5. Data curation and implementation details are provided in Appen-dices A and B, with hyperparameters listed in Table S3. 
+
+Evaluation. For in-domain evaluation, we report Task-Adherence Consistency (TAC) on 400 held-out image– prompt pairs from R-Bench [8], spanning four robot em-bodiments. We assess cross-dataset generalization on the robot subset of PAI-Bench-G [38] (174 samples) and EZS-Bench [7] (196 samples), reporting the Domain score along-6Table 2. Sampling and fake-score tracking ablation. Sampling denotes temporal affinity–conditioned re-noise sampling; Tracking denotes dynamics-guided critic weighting. All variants retain the critic and use the same update and inference budgets. Bold with blue shading marks the best result in each column.                                  
+
+> Method Components R-Bench PAI-Bench-G EZS-Bench Sampling Tracking TAC Domain Quality Domain Base DMD ××34.6 74.4 78.1 73.3 w/o Tracking ✓×43.5 78.5 78.1 75.1 w/o Sampling ×✓38.3 75.4 78.0 74.0
+> DyMD ✓✓44.2 79.5 78.1 76.2
+
+side Space, Physics, and Time scores. We also report the official PAI-Bench-G Quality score to assess visual qual-ity. All models are evaluated with the same initial images, prompts, and random seeds. For EZS-Bench, we follow PhysisForcing [36] in compressing the original descriptions into action-centric prompts for video generation. Detailed evaluation protocols are provided in Appendix F. 
+
+4.2. Main Results 
+
+As shown in Table 1, our student uses 4 NFE, versus 80 for the teacher and 100 for the undistilled student. Base DMD, which uses the base re-noise schedule and uniform critic weights, substantially degrades interaction fidelity: R-Bench TAC falls to 34 .6 and PAI Domain to 74 .4, despite an increase in PAI Quality from 75 .3 to 78 .1. These results indicate that Base DMD preserves visual quality but does not adequately retain task-relevant interaction dynamics. At the same four-NFE budget, DyMD better preserves interaction dynamics, raising R-Bench TAC to 44 .2 (+9 .6
+
+points), and PAI/EZS Domain to 79 .5/76 .2 (+5 .1/ + 2 .9
+
+points). Base DMD scores 1.6 points higher on Physics in PAI-Bench-G because its near-static outputs preserve plausi-ble physical states without executing the instructed interac-tion (Fig. 6). 
+
+4.3. Representation Analysis for the Generator and Critic 
+
+We compare VAE and V-JEPA representations for two train-ing signals: target-relative temporal affinity for generator sampling and noise-relative fitting difficulty for critic track-ing. Each probe uses a frozen 32-rollout bank. 
+
+Generator representations. We compute temporal affin-ity Ai (Section 3.3) in both spaces. As an independent motion reference, we compute a trajectory agreement score 
+
+Ti using point trajectories tracked by CoTracker3 [17]. This score measures how closely the generated video matches the target video in the directions and magnitudes of point dis-placements. Figure 7(a) compares the rankings induced by 
+
+Ai and Ti. V-JEPA achieves a higher Spearman correlation (a) Generator (b) Critic      
+
+> 1116 16 32 32
+> 0.162 0.374
+> Trajectory agreement rank
+> Temporal affinity rank
+> Spearman ρ
+> −0.4 0.0 0.4 0.8
+> 0.5 0.8 0.97
+> 0.400 0.587 0.497 −0.348 −0.298 −0.239
+> Noise level σ
+> VAE V-JEPA
+
+Figure 7. Representations for generator sampling and critic tracking. (a) Rank comparison between temporal affinity and CoTracker3-based trajectory agreement across 32 student–target video pairs. Solid lines show linear fits and the dashed diagonal denotes identical rankings. (b) Spearman ρ between MLP predic-tions and log-FM loss, computed separately at each noise level on a 32-rollout bank. FM losses are averaged over three independent noise draws per rollout and noise level. 
+
+with trajectory agreement than VAE ( 0.374 vs. 0.162 ), indi-cating that its temporal affinity better reflects target-relative motion consistency on these rollouts. 
+
+Critic representations. We fit small offline MLPs to predict log-FM loss from temporal descriptors and evalu-ate them on held-out rollouts. Figure 7(b) reports Spear-man correlations computed separately at each noise level 
+
+σ ∈ { 0.5, 0.8, 0.97 }. VAE-based predictions are positively correlated with the measured loss across all tested noise levels, whereas V-JEPA-based predictions are consistently negatively correlated. At a fixed noise level, subtracting the shared baseline preserves the ranking of log-FM losses, so this probe evaluates the sample ordering for noise-relative fitting difficulty. These results support VAE descriptors for critic tracking, complementing V-JEPA features for target-relative motion assessment. Appendix D.3 evaluates the trained online predictor. Its predictions remain strongly cor-related with measured FM loss, supporting its ability to distinguish samples by critic fitting difficulty. 
+
+4.4. Ablation Study 
+
+Re-noise sampling and fake-score tracking. Table 2 eval-uates the individual and combined effects of two compo-nents. Sampling alone raises R-Bench TAC/PAI Domain from 34 .6/74 .4 to 43 .5/78 .5, while tracking alone achieves 
+
+38 .3/75 .4. Adding tracking to adaptive sampling further improves R-Bench TAC/PAI Domain to 44 .2/79 .5 and EZS Domain from 75 .1 to 76 .2, with PAI Quality unchanged at 
+
+78 .1. These results show that fake-score tracking comple-ment adaptive re-noise sampling. 7Table 3. Re-noise sampling-schedule ablation. We compare Base DMD with a high-noise control (Shift-25, raising the flow shift from 5 to 25), the teacher prior, and our temporal affinity–conditioned sampler. All variants disable critic reweighting ( β = 0 ). Bold with blue shading marks the best result in each column.                                                 
+
+> Sampling schedule R-Bench PAI-Bench-G EZS-Bench TAC Domain Quality Domain Base DMD 34.6 74.4 78.1 73.3 Shift-25 40.0 77.2 78.2 74.6 Teacher prior 42.5 77.9 78.0 75.0 Affinity-conditioned 43.5 78.5 78.1 75.1
+> Table 4. Sensitivity to critic-weighting strength β.We vary only
+> β, with α= 0 .3. The β= 0 .5row repeats the full-model results from Table 1. Bold with blue shading marks column-wise best values, including ties.
+> βR-Bench PAI-Bench-G EZS-Bench TAC Domain Quality Domain
+> 0.143.8 79.1 78.0 75.4
+> 0.544.2 79.5 78.1 76.2
+> 1.043.6 78.4 78.1 75.1
+
+Re-noise sampling schedules. Table 3 compares re-noise schedules with critic reweighting disabled ( β = 0 ). We choose Shift-25 to approximately match the teacher prior’s probability mass at SNR < 1 (Appendix B.3). Increasing the shift from 5 to 25 raises R-Bench TAC/PAI Domain from 
+
+34 .6/74 .4 to 40 .0/77 .2, supporting stronger re-noising for motion recovery. The teacher prior further improves them to 42 .5/77 .9 at similar total high-noise mass, supporting timestep sampling informed by the teacher’s flow geome-try across noise levels. Affinity conditioning achieves the best R-Bench TAC and Domain scores ( 43 .5/78 .5/75 .1), supporting rollout-specific adaptation beyond a fixed prior. 
+
+Critic-weighting strength. At fixed α = 0 .3 (Table 4), both β = 0 .1 and 0.5 improve TAC and both Domain scores over uniform critic weighting, supporting moderate emphasis on motion-related hard rollouts. Increasing β from 0.5 to 
+
+1.0 reduces R-Bench TAC and Domain scores, suggesting that excessive emphasis on hard rollouts compromise score estimation on typical samples under a fixed update budget. 
+
+4.5. Qualitative Results 
+
+As illustrated in Fig. 6, base DMD often produces nearly static videos or limited gripper motion without completing the intended interaction. In contrast, DyMD generates coor-dinated robot–object motion while preserving scene appear-ance. In the container-lifting example, Base DMD moves the lifting mechanism without lifting the target container,                             
+
+> Table 5. WorldArena action-planner success rate (%). Upper block: results reported in PhysisForcing [36]. Lower block: our 1.3B backbones with separately trained, task-specific VPP heads. Bold with blue shading compares the lower block only. Model Adjust Bottle Click Bell Avg. Genie Envisioner 10.0 20.0 15.0 TesserAct 1.0 35.0 18.0 RoboMaster 8.0 20.0 14.0 Vidar 2.0 19.0 10.5 WoW 20.0 21.0 20.5 Wan2.2-TI2V-5B 12.0 20.0 16.0 Base DMD (Wan2.1-1.3B) 1.0 31.0 16.0
+> DyMD (Wan2.1-1.3B) 2.0 66.0 34.0
+
+whereas DyMD lifts the blue container from the stack. In the menu-handover example, Base DMD moves the grippers but fails to complete the handover, whereas DyMD depicts the robot successfully passing the menu to the person. 
+
+4.6. Downstream Action Planning 
+
+Following WorldArena action-planner protocol [28], we compare Base DMD and DyMD as frozen 1.3B backbones on Adjust Bottle and Click Bell in RoboTwin 2.0 [6]. For each frozen 1.3B backbone, we train task-specific VPP heads [13] to predict actions from intermediate DiT fea-tures, using 50 demonstrations per task for 200 epochs. We report closed-loop success rates over 100 episodes per task. Implementation details are in Appendix F.1. Using DyMD as the backbone raises mean success from Base DMD’s 16 .0% to 34 .0% (Table 5). The gain comes mainly from Click Bell ( 31 .0% → 66 .0% ), with a smaller increase on Adjust Bottle ( 1.0% → 2.0% ). 
+
+## 5. Conclusion 
+
+We presented DyMD for preserving interaction dynamics in few-step video world models. Temporal affinity–conditioned re-noise sampling adapts the mixture of the teacher-velocity-turning prior and the base schedule to each rollout’s current interaction fidelity. To improve score estimation for rollouts with stronger motion, dynamics-guided fake-score tracking reweights the critic loss according to predicted noise-relative fitting difficult. The resulting four-step 1.3B student im-proves R-Bench TAC and Domain scores on PAI-Bench-G and EZS-Bench over Base DMD without auxiliary inference modules. As a frozen backbone for downstream action plan-ning, the student also improves the mean success rate from Base DMD’s 16% to 34% across two WorldArena tasks. 
+
+Limitations. The turning profile is teacher- and schedule-specific and must be re-estimated for a new teacher. 8References 
+
+[1] aigc-apps. VideoX-Fun: A video generation pipeline for diffusion transformer, 2026. 6, S1 [2] Lichen Bai et al. Optimizing few-step generation with adaptive match-ing distillation. arXiv preprint arXiv:2602.07345 , 2026. 3 [3] Tim Brooks, Bill Peebles, Connor Holmes, Will DePue, Yufei Guo, Leo Jing, David Schnurr, Joe Taylor, Troy Luhman, Eric Luhman, et al. Video generation models as world simulators. OpenAI Blog , 1 (8):1, 2024. 2 [4] Jake Bruce et al. Genie: Generative interactive environments. In Int. Conf. Mach. Learn. , 2024. 2 [5] Hila Chefer, Uriel Singer, Amit Zohar, Yuval Kirstain, Adam Polyak, Yaniv Taigman, Lior Wolf, and Shelly Sheynin. Videojam: Joint appearance-motion representations for enhanced motion generation in video models. arXiv preprint arXiv:2502.02492 , 2025. 3 [6] Tianxing Chen, Zanxin Chen, Baijun Chen, Zijian Cai, Yibin Liu, Zixuan Li, Qiwei Liang, Xianliang Lin, Yiheng Ge, Zhenyu Gu, et al. RoboTwin 2.0: A scalable data generator and benchmark with strong domain randomization for robust bimanual robotic manipula-tion. arXiv preprint arXiv:2506.18088 , 2025. 8, S5 [7] Yuzhi Chen, Ronghan Chen, Dongjie Huo, Yandan Yang, Dekang Qi, Haoyun Liu, Tong Lin, Shuang Zeng, Junjin Xiao, Xinyuan Chang, et al. ABot-PhysWorld: Interactive world foundation model for robotic manipulation with physics alignment. arXiv preprint arXiv:2603.23376 , 2026. 2, 3, 6, S4 [8] Yufan Deng, Zilin Pan, Hongyu Zhang, Xiaojie Li, Ruoqing Hu, Yufei Ding, Yiming Zou, Yan Zeng, and Daquan Zhou. Rethinking video generation model for the embodied world. In Int. Conf. Mach. Learn. ,2026. 1, 2, 6, S1, S4 [9] Yilun Du, Sherry Yang, Bo Dai, Hanjun Dai, Ofir Nachum, Josh Tenenbaum, Dale Schuurmans, and Pieter Abbeel. Learning univer-sal policies via text-guided video generation. Advances in neural information processing systems , 36:9156–9172, 2023. 1, 2 [10] Bradley Efron. Tweedie’s formula and selection bias. Journal of the American Statistical Association , 106(496):1602–1614, 2011. 3 [11] Xiangyu Fan, Zesong Qiu, Zhuguanyu Wu, Fanzhou Wang, Zhiqian Lin, Tianxiang Ren, Dahua Lin, Ruihao Gong, and Lei Yang. Phased DMD: Few-step distribution matching distillation via score matching within subintervals. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 41667–41676, 2026. 3, 4 [12] Tiankai Hang, Shuyang Gu, Chen Li, Jianmin Bao, Dong Chen, Han Hu, Xin Geng, and Baining Guo. Efficient diffusion training via Min-SNR weighting strategy. In 2023 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 7407–7417. IEEE, 2023. 3 [13] Y. Hu, Y. Guo, P. Wang, X. Chen, Y. Wang, J. Zhang, K. Sreenath, C. Lu, and J. Chen. Video prediction policy: A generalist robot policy with predictive visual representations. arXiv preprint arXiv:2412.14803 , 2024. 8, S4 [14] Yushi Huang, Xiangxin Zhou, Ruoyu Wang, Chi Zhang, Jun Zhang, and Tianyu Pang. Reinforcing few-step generators via reward-tilted distribution matching. arXiv preprint arXiv:2605.26108 , 2026. 2, 3, 4 [15] Joel Jang, Seonghyeon Ye, Zongyu Lin, Jiannan Xiang, Johan Bjorck, Yu Fang, Fengyuan Hu, Spencer Huang, Kaushil Kundalia, Yen-Chen Lin, et al. Dreamgen: Unlocking generalization in robot learning through video world models. arXiv preprint arXiv:2505.12705 , 2025. 1, 2 [16] Dengyang Jiang, Dongyang Liu, Zanyi Wang, Qilong Wu, Li-uzhuozheng Li, Hengzhuang Li, Xin Jin, David Liu, Changsheng Lu, Zhen Li, Bo Zhang, Mengmeng Wang, Steven Hoi, Peng Gao, and Harry Yang. Distribution matching distillation meets reinforce-ment learning. arXiv preprint arXiv:2511.13649 , 2026. 3 [17] Nikita Karaev, Yuri Makarov, Jianyuan Wang, Natalia Neverova, An-drea Vedaldi, and Christian Rupprecht. Cotracker3: Simpler and better point tracking by pseudo-labeling real videos. In 2025 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 1–10. IEEE, 2025. 7, S1, S3 [18] Weijie Kong et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2025. 2 [19] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 , 2022. 3 [20] Yunhong Lu, Yanhong Zeng, Haobo Li, Hao Ouyang, Qiuyu Wang, Ka Leong Cheng, Jiapeng Zhu, Hengyuan Cao, Zhipeng Zhang, Xing Zhu, Yujun Shen, and Min Zhang. Reward Forcing: Efficient stream-ing video generation with rewarded distribution matching distillation. 
+
+arXiv preprint arXiv:2512.04678 , 2025. 3 [21] Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. Latent consistency models: Synthesizing high-resolution images with few-step inference. arXiv preprint arXiv:2310.04378 , 2023. 3 [22] Lorenzo Mur-Labadia et al. V-JEPA 2.1: Unlocking dense features in video self-supervised learning. arXiv preprint arXiv:2603.14482 ,2026. 2, 5 [23] Alexander Quinn Nichol and Prafulla Dhariwal. Improved denois-ing diffusion probabilistic models. In International Conference on Machine Learning , pages 8162–8171. PMLR, 2021. 3 [24] Frank Nielsen. An elementary introduction to information geometry. 
+
+Entropy , 22(10):1100, 2020. 4 [25] NVIDIA. Cosmos world foundation model platform for physical ai. 
+
+arXiv preprint arXiv:2501.03575 , 2025. 1, 2 [26] Maxime Oquab, Timoth´ ee Darcet, Th´ eo Moutakanni, Huy Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez, Daniel Haziza, Fran-cisco Massa, Alaaeldin El-Nouby, et al. Dinov2: Learning robust visual features without supervision. arXiv preprint arXiv:2304.07193 ,2023. S5 [27] Axel Sauer, Dominik Lorenz, Andreas Blattmann, and Robin Rom-bach. Adversarial diffusion distillation. In ECCV , 2024. 3 [28] Yu Shang, Zhuohang Li, Yiding Ma, Weikang Su, Xin Jin, Ziyou Wang, Lei Jin, Xin Zhang, Yinzhou Tang, Haisheng Su, et al. Worl-dArena: A unified benchmark for evaluating perception and functional utility of embodied world models. arXiv preprint arXiv:2602.08971 ,2026. 2, 8, S4 [29] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Con-sistency models. In Int. Conf. Mach. Learn. , 2023. 3 [30] Wan Team. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. 1, 2 [31] Naifu Xue, Zhaoyang Jia, Haosen Li, Zihan Zheng, Jiahao Li, Bin Li, Xiaoyi Zhang, Qi Meng, Yuan Zhang, and Yan Lu. Generative video compression with adaptive score distillation. arXiv preprint arXiv:2607.22772 , 2026. 3 [32] Tianwei Yin, Micha¨ el Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Fredo Durand, and William T Freeman. Improved dis-tribution matching distillation for fast image synthesis. Advances in neural information processing systems , 37:47455–47487, 2024. 1, 2, 3, 4 [33] Tianwei Yin, Micha¨ el Gharbi, Richard Zhang, Eli Shechtman, Fr´ edo Durand, William T. Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. In CVPR , pages 6613–6623, 2024. 1, 3 [34] Donggeun Yoo and In So Kweon. Learning loss for active learn-ing. In 2019 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 93–102. IEEE, 2019. 3 [35] Yuyang You, Yongzhi Li, Jiahui Li, Yadong Mu, Quan Chen, and Peng Jiang. Adaptive video distillation: Mitigating oversaturation and temporal collapse in few-step generation. In CVPR , 2026. 3 [36] Peiwen Zhang, Yufan Deng, Shangkun Sun, Juncheng Ma, Duomin Wang, Jonas Du, Zilin Pan, Ye Huang, Hao Liang, Songyan Huang, et al. Physisforcing: Physics reinforced world simulator for robotic manipulation. arXiv preprint arXiv:2606.28128 , 2026. 1, 3, 5, 6, 7, 8, S4 
+
+9[37] Wenhu Zhang, Kun Cheng, Changyuan Wang, Shiyao Li, Yuechen Zhang, Wenbo Li, Jiajun Zha, Jingyi Zhang, Kang Zhao, and Jiaya Jia. CoDMD: Copula-aware distribution matching distillation for fast video generation. arXiv preprint arXiv:2606.21982 , 2026. 3 [38] Fengzhe Zhou, Jiannan Huang, Jialuo Li, Deva Ramanan, and Humphrey Shi. PAI-Bench: A comprehensive benchmark for physical AI. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21522–21536, 2026. 2, 6, S4 
+
+10 DyMD: Preserving Interaction Dynamics through Distribution Matching Distillation in Few-Step Video World Models 
+
+# Supplementary Material                 
+
+> Stage Criterion Input Output Deduplication greedy cover, 0.95 2,824,039 448,528 Image–text top-50% cosine 448,528 224,264 Motion tracks ≥50 , vis. ≥0.6224,264 32,897 Table S1. Training-data curation funnel.
+
+## A. Training-Set Curation 
+
+We curate a training set of 32,897 clips from the 2,824,039-clip RoVid-X corpus [8] through three stages, prioritizing semantic diversity and measurable interaction motion. 
+
+Stage 1: semantic caption deduplication. We first re-move exact duplicates from the short caption field, ob-taining 1,374,834 distinct captions. We then encode these captions with a ViT-L/14 text encoder and ℓ2-normalize the embeddings. To remove semantically redundant captions, we apply a greedy covering procedure with a cosine similarity threshold of 0.95. We process captions in descending order of frequency, retaining each remaining caption as a represen-tative and discarding all remaining captions whose similarity to it is at least 0.95. Unlike connected-component clustering, this procedure avoids merging captions through chains of intermediate matches and retains 448,528 representatives. 
+
+Stage 2: image–text filtering. For each retained clip, we decode the first frame and compute its similarity to the cap-tion using ViT-L/14 image and text embeddings. We retain the top 50% by similarity, leaving 224,264 clips. This stage filters visual–textual mismatches that caption-only dedupli-cation cannot detect. 
+
+Stage 3: motion and visibility filtering. We track points with CoTracker3 [17] and retain clips with at least 50 se-lected tracks and a mean visibility of at least 0.6. This retains 14.7% of the remaining clips, yielding the final training set of 32,897 clips. 
+
+## B. Implementation Details 
+
+B.1. Image-to-video conditioning 
+
+The 1.3B student and critic use the Wan2.1-Fun I2V inter-face [1] and share the 16-channel Wan2.1 latent space with the PF-Wan teacher. For image conditioning, we construct a video containing the input image as its first frame and zeros in all subsequent frames, then encode it with the Wan2.1 VAE. An accompanying mask marks only the first latent temporal block as observed. The student performs four bidirectional denoising evalua-tions at model times {1, 0.75 , 0.5, 0.25 } with flow shift 5. It generates 21 latent temporal blocks, decoded to 81 frames at 16 FPS. The teacher uses its official 40-step, shift-5, CFG-5 schedule. During DMD, teacher-score evaluations use CFG 5; the critic is conditional without CFG. 
+
+B.2. Video features for temporal affinity 
+
+We sample 16 RGB frames uniformly over the 81-frame video. V-JEPA produces an 8 × 24 × 32 × 1024 token grid. We normalize its tokens, pool them within a fixed 3 × 3
+
+full-frame grid, and normalize the pooled features.Paired targets are cached as 8 × 9 × 1024 fp16 features. 
+
+B.3. Teacher prior schedule and re-noise sampling 
+
+The base DMD schedule samples raw model time uniformly and applies the flow-shift transformation with shift 5. For 
+
+u ∼ U [0 , 1) , the shift and physical noise coordinate are 
+
+σt = t = fs(u) = 1000 s (u)1 + ( s − 1)( u) (18) We sample re-noising timesteps within T = [0 .020 , 0.999) .For s > 1, the shift moves raw times toward higher noise. For the Shift-25 control in Table 3, we choose s = 25 to approximately match the teacher prior’s mass in the high-noise region SNR t < 1. On the common interval T =[0 .020 , 0.999) , the normalized CDFs give probabilities of 
+
+96 .14% for Shift-25 and 95 .69% the teacher prior. 
+
+## C. Geometry and Posterior Interpretation of Teacher-Velocity Turning 
+
+We relate DMD’s score difference to posterior means, an-alyze high-SNR mode locking in a two-mode model, and prove the connection between teacher-velocity turning and posterior variation. 
+
+C.1. Score difference and posterior means 
+
+Let qθ,t and pT,t denote the noisy marginals obtained by applying the re-noising process in Section 3.1 to the clean student and teacher distributions, with exact scores sq,t and 
+
+sT . Let μq,t and μT,t be the corresponding clean posterior S1 means conditioned on the same (xt, c ). Gaussian condition-ing gives 
+
+sq,t − sT = 1 − σt
+
+σ2
+
+> t
+
+(μq,t − μT,t ). (19) Thus, the exact score difference depends on the two posterior means; the analysis below shows how high SNR can cause the teacher posterior to concentrate near a motion-deficient student rollout. 
+
+C.2. Mode-Locking Analysis 
+
+Proposition 2 (High-SNR mode locking) . Consider a teacher with two clean modes pT, 0 = πsδxs +πmδxm , where 
+
+δx is a Dirac measure, πs, π m > 0, πs + πm = 1 , xs is a static mode, and xm is a moving mode. Re-noise a collapsed student sample as xt = (1 − σt)xs + σtε, ε ∼ N (0 , I), and let d = xm − xs and SNR t = (1 − σt)2/σ 2 
+
+> t
+
+. The teacher posterior odds and their expected log value satisfy 
+
+log pT (xm | xt, c )
+
+pT (xs | xt, c ) = log πm
+
+πs
+
+− SNR t
+
+2 ∥d∥22
+
++ 1 − σt
+
+σt
+
+⟨ε, d ⟩,
+
+Eε
+
+
+
+log pT (xm | xt, c )
+
+pT (xs | xt, c )
+
+
+
+= log πm
+
+πs
+
+− SNR t
+
+2 ∥d∥22.
+
+(20) 
+
+The expected log-odds of the moving mode decrease with SNR and squared mode separation, favoring the static mode at high SNR. Proof. Bayes’ rule reduces the posterior odds to the prior odds times the ratio of the two Gaussian likelihoods. Ex-panding their squared distances gives Eq. (20). 
+
+C.3. Posterior Variation and Proof of Proposition 1 
+
+Setup. For L latent temporal blocks v = ( v1, . . . , v L),define the linear operator 
+
+Hv = vec 
+
+h
+
+vj − 1
+
+> L−1
+
+PLℓ=2 vℓ
+
+iLj=2 
+
+. (21) The operator H excludes the observed block and subtracts the temporal mean over the future blocks. We consider the linear noising process xσ = (1 −
+
+σ)x0 + σε , where ε is standard Gaussian noise indepen-dent of x0. Let vT denote its exact conditional velocity field. Along a characteristic xm,σ satisfying dx m,σ /dσ =
+
+vT (xm,σ , σ, c m), define 
+
+πm,σ (x0) = pT (x0 | xm,σ , c m),
+
+Im(σ) = Eπm,σ 
+
+" ddσ log πm,σ (x0)
+
+2#
+
+. (22) Here the derivative follows the trajectory xm,σ . Write 
+
+μm,σ = Eπm,σ [x0], Σm,σ = Cov πm,σ (x0), and vm,σ =
+
+vT (xm,σ , σ, c m). Define the centered velocity and its direc-tion as 
+
+vc
+
+> m
+
+(σ) = Hv m,σ , um(σ) = vc
+
+> m
+
+(σ)
+
+∥vc
+
+> m
+
+(σ)∥2
+
+,
+
+with Pm,σ = I − umu⊤ 
+
+> m
+
+and κm(σ) = ∥ ˙um(σ)∥2. Dots denote total derivatives along the characteristic. We assume a regular posterior path, σ > 0, nonzero centered velocity, and a positive projected covariance trace. 
+
+Pointwise bound. For the linear noising process, the exact conditional velocity satisfies 
+
+vm,σ = ET [ε − x0 | xm,σ , c m]= xm,σ − μm,σ 
+
+σ . (23) Differentiating μm,σ = xm,σ − σv m,σ along the character-istic gives 
+
+˙μm,σ = −σ ˙vm,σ . (24) Since H is fixed, differentiation of the normalized centered velocity yields 
+
+˙um = Pm,σ H ˙vm,σ 
+
+∥Hv m,σ ∥2
+
+. (25) Combining this identity with Eq. (24) gives 
+
+κm(σ) = ∥Pm,σ H ˙μm,σ ∥2
+
+σ∥Hv m,σ ∥2
+
+. (26) To relate posterior-mean variation to Im(σ), define the posterior-path score 
+
+ℓm,σ (x0) = ddσ log πm,σ (x0). (27) Normalization gives Eπm,σ [ℓm,σ ] = 0 . Differentiating the posterior mean under the integral therefore yields 
+
+˙μm,σ = Eπm,σ [( x0 − μm,σ )ℓm,σ (x0)] . (28) Applying Pm,σ H and using Cauchy–Schwarz gives 
+
+∥Pm,σ H ˙μm,σ ∥22
+
+≤ tr  Pm,σ HΣm,σ H⊤Pm,σ 
+
+ Im(σ). (29) Substituting Eq. (26) and rearranging establishes the point-wise bound: 
+
+Im(σ) ≥ σ2∥vc
+
+> m
+
+(σ)∥22κm(σ)2
+
+tr( Pm,σ HΣm,σ H⊤Pm,σ ) . (30) S2 Average bound. Suppose there exist constants cv > 0 and 
+
+0 < C Σ < ∞ such that, uniformly over the trajectories and noise interval under consideration, 
+
+σ∥Hv m,σ ∥2 ≥ cv ,
+
+tr  Pm,σ HΣm,σ H⊤Pm,σ 
+
+ ≤ CΣ. (31) These conditions keep the noise-scaled centered velocity away from zero and uniformly bound the projected posterior covariance. Taking expectations in Eq. (30) and applying Jensen’s inequality gives 
+
+Em[Im(σ)] ≥ c2
+
+> v
+
+CΣ
+
+Em[κm(σ)2]
+
+≥ c2
+
+> v
+
+CΣ
+
+ Em[κm(σ)] 2
+
+= CI ¯κ(σ)2,
+
+(32) where CI = c2 
+
+> v
+
+/C Σ and ¯κ(σ) = Em[κm(σ)] . This proves Eq. (9). 
+
+Connection to the empirical statistic. The analysis as-sumes the exact conditional velocity field and its continuous flow trajectories. In practice, we estimate turning from dis-crete states along numerical trajectories of the CFG-guided teacher field, which need not coincide with the exact condi-tional field. The proposition therefore motivates the empiri-cal turning statistic without establishing the exact solution. 
+
+## D. Diagnostic Protocols 
+
+D.1. Representations for temporal affinity 
+
+Protocol. We compare VAE and V-JEPA temporal affini-ties Ai on 32 frozen student rollouts with paired targets. Both spaces use Eq. (12) with lags {1, 2, 4} and weights 
+
+(0 .2, 0.3, 0.5) .As an independent reference, we use CoTracker3 [17] to track selected target-video points in each generated video, initialized at corresponding first-frame coordinates. We nor-malize 2-D point displacements by image width and height and compare them at matched relative times. Using the same temporal lags, weights, and similarity formula as for Ai, we obtain a trajectory-agreement score Ti based on point mo-tion rather than feature changes. Spearman ρ compares the rankings of Ai and Ti. Generator quartile recall measures how many of the eight lowest-Ti rollouts are recovered by the eight lowest-Ai rollouts. 
+
+Results. Figure 7(a) plots temporal-affinity and trajectory-agreement ranks for all 32 pairs. VAE/V-JEPA affinities attain Spearman correlations of 0.162 /0.374 , Kendall corre-lations of 0.117 /0.246 , and quartile recalls of 25% /50% .            
+
+> Table S2. Difficulty ranking by the trained predictor. Predictor
+> ρis the Spearman correlation between predicted fitting difficulty
+> briand measured critic FM loss on 32 fresh rollouts. FM losses average three independent noise draws at each noise level. Noise σ0.50.80.97
+> Predictor ρ0.758 0.898 0.952
+
+D.2. Motion magnitude and critic fitting difficulty 
+
+Measurement protocol. We evaluate 32 frozen rollouts with the step-1500 critic at σ ∈ { 0.5, 0.8, 0.92 , 0.97 }. FM loss is the mean squared velocity error over future latent blocks, averaged over three independent re-noising draws per rollout and noise level. We measure latent motion magnitude by averaging RMS latent differences over time and lags 
+
+{1, 2, 4, 8}
+
+Offline representation probes. We fit two-hidden-layer MLPs to predict log-FM loss from VAE and V-JEPA tem-poral descriptors, using four-fold cross-validation grouped by rollout. Standardization and PCA are fitted on training folds only. Out-of-fold Spearman correlations are computed within each noise level and averaged over all evaluated lev-els. VAE descriptors obtain 0.460 ± 0.048 , compared with 
+
+−0.254 ±0.125 for V-JEPA temporal features. Their hardest-quartile recalls are 36 .7±5.9% and 12 .5±5.7% , respectively (chance: 25% ). 
+
+D.3. Difficulty ranking by the trained predictor 
+
+We evaluate the online-trained predictor from the frozen step-2000 DyMD checkpoint on 32 fresh rollouts generated with training-time random denoising exits. At each noise level, Spearman ρ compares predicted fitting difficulty bri with critic FM loss averaged over three independent re-noising draws per rollout. Table S2 reports correlations of 0.758 –
+
+0.952 , showing that the trained predictor captures rollout-dependent fitting-difficulty rankings. 
+
+## E. Objective and Optimization Details 
+
+E.1. Dynamics-guided fake-score tracking 
+
+For detached student latents Xi, we form RMS-difference se-quences q(ℓ) 
+
+> i,j
+
+= RMS( Xi,j +ℓ − Xi,j ) at lags ℓ ∈ { 1, 2, 4, 8}.The fifth sequence measures RMS latent differences rela-tive to the first block. Each sequence q is summarized by 
+
+S(q) = [mean( q), std( q), max( q), q last ]. We concatenate the summaries in lag order 1, 2, 4, 8, followed by the first-block displacement summary, into a 20-dimensional vector. Transforming each component x to log(1 + x) gives the de-scriptor di. The two-hidden-layer MLP receives di together with the fixed Fourier noise-level embedding e(ti) to predict fitting difficulty bri.S3 Table S3. Default hyperparameters for re-noise sampling and fake-score tracking. Quantity Choice Latent measurement / spatial size 21 blocks V-JEPA input / output blocks 16 frames / 8 blocks Temporal-affinity lags / weights {1, 2, 4} / (0 .2, 0.3, 0.5) 
+
+Teacher-prior probability floor α 0.3
+
+Turning-rate offset ϵκ 0.1 median( eκ)
+
+Critic timestep sampling Same rule as generator Latent descriptor lags {1, 2, 4, 8}
+
+Descriptor dimension 20 
+
+Critic residual ema decay ρb 0.99 
+
+Difficulty predictor Two-hidden-layer MLP Critic-weighting strength β 0.5
+
+Predictor loss weight λpred 1.0
+
+Using the per-rollout mean squared FM loss over future latent blocks, the noise-bin baseline and predictor supervi-sion are updated as 
+
+bk ← ρbbk + (1 − ρb) mean  
+
+> i:k(ti)= k
+
+log( ℓFM  
+
+> i
+
++ ϵc),ri = sg[log( ℓFM  
+
+> i
+
++ ϵc) − bk(ti)],
+
+Lpred = 1
+
+B
+
+> B
+
+X
+
+> i=1
+
+Huber( bri, r i).
+
+(33) Here ρb is the EMA decay and ϵc > 0 stabilizes the log-arithm. Bin statistics are aggregated across workers; bins without samples retain their previous baseline. Table S3 collects the default hyperparameters used. 
+
+## F. Benchmark Protocols and Metrics 
+
+R-Bench. We evaluate on 400 image–prompt pairs from the embodiment split of R-Bench [8], spanning four robot embodiments(dual-arm, humanoid, single-arm, and quadruped). GPT-5 assigns each video a 1–5 task-completion rating rv from a grid of six uniformly sampled frames. We normalize scores as (rv − 1) /4 and compute Overall by averaging first within each embodiment, then equally across the four embodiments 
+
+PAI-Bench-G. We evaluate the 174-condition robot sub-set of PAI-Bench-G [38], comprising 913 binary questions. Eight frames are sampled uniformly and judged with Qwen3-VL-235B using the official binary-VQA templates. Domain averages per-video accuracies, while Space, Physics, and Time micro-average question accuracies within each axis, assessing spatial interactions, physical plausibility, and tem-poral progression, respectively. PAI Quality is the mean of eight normalized dimensions: subject consistency, background consistency, motion smooth-ness, aesthetic quality, imaging quality, overall consistency, 
+
+Table S4. PAI-Bench-G Quality breakdown. Quality is the unweighted mean of the eight official metrics. SC: subject consis-tency; BC: background consistency; MS: motion smoothness; AQ: aesthetic quality; IQ: imaging quality; OC: overall consistency; IS/IB: image-to-video subject/background fidelity. All values are percentages; higher is better. Column-wise best values, including ties, are bold and shaded blue.                                              
+
+> Method Quality SC BC MS AQ PF-Wan 14B 76.9 90.3 90.6 98.9 50.1
+> Wan2.1-Fun 1.3B 75.3 87.8 91.6 98.6 47.6 Base DMD 78.1 95.3 91.9 99.5 48.6
+> DyMD 78.1 95.3 92.2 99.6 48.5 Method IQ OC IS IB PF-Wan 14B 71.6 19.9 96.2 97.5 Wan2.1-Fun 1.3B 67.2 19.4 94.4 96.0 Base DMD 73.2 19.5 97.8 98.9dymd
+> DyMD 73.1 19.6 97.9 98.9
+
+Table S5. Video-native versus framewise temporal-affinity fea-tures. We compare V-JEPA 2.1-L and DINOv2-L for affinity-conditioned sampling under the same training budget. Bold with blue shading marks the better result.               
+
+> Encoder R-Bench PAI-Bench-G EZS-Bench TAC Domain Quality Domain V-JEPA 2.1-L 43.5 78.5 78.1 75.1
+> DINOv2-L 41.8 76.7 77.8 75.0
+
+and I2V subject/background fidelity. Table S4 gives the breakdown. 
+
+EZS-Bench. EZS-Bench [7] contains 196 unseen robot– task–scene conditions and 2,272 binary questions. We use the same per-video and per-axis aggregation as PAI-Bench-G. Under the official two-model evaluation protocol, Qwen3-VL-32B-Thinking generates the questions and physics check-lists, while Qwen2.5-VL-72B-Instruct scores the videos. Fol-loing PhysisForcing [36], we use GPT-5 to compress each original description into a 40–60-word action-centric prompt, using the first-frame image as context. The original ques-tions and checklists remain unchanged for scoring. 
+
+F.1. Downstream action-planning protocol 
+
+Frozen world-model features. Following WorldArena’s action-planner interface [28], we use a VPP inverse-dynamics head [13] to predict actions from frozen student features. At each planning step, we condition the student on the current image and instruction and extract intermediate DiT features at the initial, highest-noise timestep. Feature ex-traction requires only a single partial forward pass, without S4 (a) Open the oven door Base DMD   
+
+> Ours
+> (b) Lift the crumpled paper Base DMD
+> Ours Figure S1. Additional interaction-dynamics comparisons at four NFE. Eight uniformly spaced frames are shown for each of two PAI-Bench-G cases, with prompts, seeds, and step-1500 checkpoints matched to the main qualitative results. Base DMD often preserves the initial configuration or incompletely executes the action, whereas DyMD produces clearer object-directed motion.
+
+completing the denoiser or decoding an RGB rollout. 
+
+VPP training. We train a separate VPP head for each backbone and task using the 50 demonstrations in 
+
+aloha-agilex clean 50 . Each training sample pairs an observation with a 45-step sequence of 14-dimensional joint actions. The input features span 21 latent temporal blocks, corresponding to an 81-frame horizon. VPP uses a six-layer Video Former with eight attention heads and 399 latent queries, followed by an action-denoising head. We train for 200 epochs with AdamW, using a learn-ing rate of 10 −4, weight decay of 0.05 , and (β1, β 2) = (0 .9, 0.9) , with eight processes and a batch size of eight per process. For Adjust Bottle, we evaluate the Base DMD and DyMD heads at steps 13904 and 15010, respectively; for Click Bell, the corresponding steps are 4509 and 5319. 
+
+Closed-loop evaluation. VPP predicts 45-action chunks with ten action-denoising steps. Actions are executed in RoboTwin 2.0 [6], with updated observations conditioning subsequent predictions. Each backbone is evaluated over 100 episodes per task. 
+
+## G. Additional Ablation Studies 
+
+G.1. Video-native versus framewise temporal-affinity features 
+
+Table S5 compares video-native V-JEPA 2.1-L with frame-wise DINOv2-L [26] for temporal affinity–conditioned re-noise sampling. For DINOv2, we encode 16 uniformly sampled frames into 24 ×32 patch grids, apply spatial pool-ing, and average adjacent frame pairs into eight temporal blocks. Relative to DINOv2, V-JEPA improves TAC, PAI Domain, Quality, and EZS Domain by 1.7, 1.8, 0.3, and 
+
+0.1 points, respectively, supporting video-native features for target-relative interaction assessment. 
+
+G.2. Teacher-prior probability floor 
+
+Table S6 varies α ∈ { 0.1, 0.3, 0.5} with tracking disabled. Increasing α raises the minimum teacher-prior sampling probability, allocating more samples under the teacher prior schedule. The weaker results at α = 0 .1 suggest that these intervals receive insufficient supervision: increasing α to 
+
+0.3 improves TAC, PAI Domain, and EZS Domain by 4.3,
+
+1.1, and 1.9 points, respectively. Further increasing α to 0.5
+
+yields comparable performance, with TAC increasing by 0.3
+
+points and both Domain scores decreasing by 0.3 points. We therefore use the moderate floor α = 0 .3, which provides sufficient teacher-prior coverage                          
+
+> Table S6. Sensitivity to the teacher-prior probability floor α.
+> Only αvaries, with tracking disabled. The α= 0 .3row repeats the sampling-only result from Table 2. Column-wise best values, including ties, are bold and shaded blue.
+> αR-Bench PAI-Bench-G EZS-Bench TAC Domain Quality Domain
+> 0.139.2 77.4 78.1 73.2
+> 0.343.5 78.5 78.1 75.1
+> 0.543.8 78.2 78.1 74.8
+
+S5
