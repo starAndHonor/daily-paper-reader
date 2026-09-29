@@ -1,0 +1,624 @@
+Title: Carnator: Fast Text-to-Video Generation with Generation-Native Compatibility-Guided Cross-Request Reuse
+
+URL Source: https://arxiv.org/pdf/2609.32420v1
+
+Published Time: Tue, 29 Sep 2026 00:51:40 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+Network Intelligence and Computing Ecosystem Lab N i CE 
+
+Network Intelligence and Computing Ecosystem Lab nice CARNATOR : FAST TEXT -TO -V IDEO GENERATION WITH GENERATION -N ATIVE COMPATIBILITY -G UIDED 
+
+# CROSS -R EQUEST REUSE 
+
+Xingkun Yin 1 Xuebin Tang 1 Mingkun Xu 2 Hongyang Du 1,†
+
+> 1
+
+Department of Electrical and Computer Engineering, University of Hong Kong, Hong Kong SAR, China 
+
+> 2
+
+Guangdong Institute of Intelligence Science and Technology, Zhuhai, China 
+
+> †
+
+Corresponding authors. 
+
+yinxingkun@connect.hku.hk, marcus.tang.official@gmail.com xumingkun@gdiist.cn, duhy@hku.hk 
+
+## ABSTRACT 
+
+Video diffusion transformers produce high-quality videos, yet iterative denoising incurs substantial inference latency, limiting interactive and large-scale serving. Most existing acceleration methods focus on individual requests, thereby restrict-ing efficiency gains to redundancy within a single generation trajectory. Recent cross-request reuse offers an additional source of savings, but existing approaches often infer reusability from coarse semantic similarity. This conflates semantic re-latedness with generation-level computational compatibility, so aggressive reuse may accept incompatible historical computation while conservative reuse leaves substantial acceleration unrealized. We present Carnator , a cross-request acceler-ation framework that addresses this challenge by extracting and using generation-native compatibility evidence directly from the model’s evolving internal states. Specifically, Carnator performs a lightweight early probe to construct an Early Signature from internal diffusion states, assessing reuse validity through risk-aware compatibility decisions. The same evidence characterizes reuse scope by lo-calizing target-specific computation and guiding joint reuse of historical latent tra-jectories and sparse attention connectivity. Across three text-to-video backbones, Carnator consistently achieves higher cache-hit end-to-end acceleration than the evaluated cross-request baselines despite more selective cache acceptance, reach-ing up to 2.17 × speedup while maintaining competitive generation quality. 
+
+## 1 INTRODUCTION 
+
+Video diffusion transformers have rapidly advanced in generation fidelity, temporal coherence, and controllability, fueling the growing popularity and adoption of AI-generated video across content creation, entertainment, and online media (Wan et al., 2025; Kong et al., 2024; Yang et al., 2025). However, video generation remains computationally intensive as iterative denoising repeatedly pro-cesses long spatiotemporal token sequences through large Transformer backbones. This results in substantial generation latency and prolonged GPU occupation, limiting both interactive use and serving throughput. For instance, in batch-one video generation, where lower latency improves throughput, a 3.2 × speedup can reduce serving cost by about 69 % at scale, highlighting the practi-cal value of efficient inference (Shahsavan et al., 2026). To accelerate video generation, prior work has primarily explored a broad range of intra-request acceleration techniques. These approaches exploit computational redundancy, including few-step distillation, feature caching (Nie et al., 2026; Lyu et al., 2025), token-wise computation reduction, and sparse attention (Zou et al., 2025; Chen et al., 2026). While effective, their acceleration gains are inherently bounded by the redundancy available within a single request. At serving scale, how-ever, video generation systems operate under continuous workloads consisting of requests that often share objects, scenes, and structural patterns. This workload pattern reveals a new opportunity for inference acceleration by exploiting computational redundancy across different generation requests. 1arXiv:2609.32420v1 [cs.AI] 26 Sep 2026 Preprint Recent cross-request methods have demonstrated that historical computation can accelerate related generation requests. However, effective reuse requires two coupled decisions, reuse validity , which determines whether a historical cache can be reused, and reuse scope , which determines where target-specific computation must be preserved once reuse is deemed valid. Reuse validity cannot be reliably inferred from request semantics alone, as semantically similar requests may develop substantially different visual structures during generation. As illustrated in Fig. 1, an incompatible reuse can preserve historical scene content that conflicts with the target request while still achiev-ing competitive aggregate quality scores. Existing text-to-video (T2V) approaches have primarily exploited intermediate latent states or region-selective recomputation, while recent sparse-attention connectivity reuse has been demonstrated mainly in image-to-video (I2V) settings with stronger vi-sual conditioning. Reuse scope therefore remains unclear in T2V, since reusable computation may span both latent trajectories and attention connectivity. Even for a compatible history, reusable com-putation may vary across spatial regions and attention interactions. Overly aggressive reuse may degrade generation quality, whereas conservative reuse leaves substantial acceleration opportunities unrealized. “An apple on a mountain” “A peach on a snowy mountain” Target request Historical request Unsafe Reuse      
+
+> High Semantic Similarity
+> Cache Naïve Reuse Result
+> CLIP-T: 0.3423 Vbench-Q: 0.6144 CLIP-T: 0.3530 Vbench-Q: 0.5970
+
+Figure 1: Failure of semantic-similarity-based reuse. A semantically similar historical request yields competitive CLIP-T and VBench-Q scores, yet naive reuse preserves the incompatible non-snowy background and violates the target request. Carnator detects the incompatibility and falls back to dense generation. These challenges suggest looking beyond re-quest semantics and into the generation pro-cess itself. Early diffusion states already reveal request-specific differences in object appearance, geometry, and spatial struc-ture (Wen et al., 2024; Liu et al., 2024; Qi et al., 2023). Cross-attention provides noun-conditioned localization, self-attention expands this evidence over the spatial sup-port of generated objects, and the corre-sponding latent states encode emerging ge-ometric and appearance information. We refer to these request-specific internal sig-nals as generation-native compatibility evi-dence , which better captures reuse validity than prompt semantics alone by directly re-flecting the evolving target generation. The same evidence also reveals object regions and attention interaction structure, indicat-ing where target-specific computation must be preserved and where historical computation can remain reusable. Together, these observations suggest that generation-native compatibility evidence can support both reuse validity and reuse scope within a unified cross-request acceleration framework. Motivated by these observations, we present Carnator , a generation-native compatibility-guided framework for cross-request video generation acceleration. To assess reuse validity, Carnator first performs text-level recall to retrieve semantically related historical requests and then applies a lightweight early probe to construct an Early Signature, a compact representation of generation-native compatibility evidence in the target’s early generation state. The Early Signature is compared with recalled histories under risk-aware compatibility thresholds to select caches whose computa-tion remains suitable for reuse. Once a cache is accepted, the same evidence is carried forward to determine reuse scope by identifying the target-specific computation that must be preserved. For accepted caches, it guides Joint Latent-Attention Reuse , which combines reuse of historical latent states and sparse attention connectivity while preserving target-specific computation. Extensive ex-periments across multiple video diffusion models demonstrate that Carnator consistently reduces end-to-end (E2E) inference latency while maintaining competitive generation quality. Our main contributions are summarized as follows: • Carnator introduces a generation-native compatibility assessment component for reuse validity. It performs a lightweight early probe to construct an Early Signature directly from internal diffusion states and uses risk-aware compatibility decisions to identify compatible historical computation beyond coarse semantic similarity. 2Preprint • Carnator further develops an evidence-guided joint reuse component for reuse scope. The same generation-native evidence localizes target-specific computation and guides joint reuse of histor-ical latent trajectories and sparse attention connectivity, reducing redundant token updates and attention interactions while preserving necessary target updates. • We conduct extensive experiments on VidProM across three text-to-video diffusion backbones to evaluate both reuse validity and inference acceleration. Carnator improves cache selection reliability, reduces unsafe reuse, and achieves up to 1.72 × end-to-end acceleration across the three backbones while maintaining competitive generation quality. 
+
+## 2 RELATED WORK 
+
+Efficient diffusion inference. Diffusion models require repeated neural network evaluation over many denoising steps, and video generation further increases the cost through long spatiotemporal token sequences. Existing acceleration methods reduce this cost through step reduction, quanti-zation, token selection, feature caching, sparse attention, and adaptive computation. Recent ap-proaches also coordinate multiple acceleration mechanisms to reduce computation across timesteps, tokens, and attention connections (Liu et al., 2026c; Zhao et al., 2026). Most of these techniques optimize a single generation process and do not exploit reusable computation from previously com-pleted requests. 
+
+Intra-request acceleration. Intra-request methods exploit redundancy within one denoising tra-jectory. Feature caching reuses intermediate representations across nearby timesteps, while token-wise methods selectively refresh tokens according to their sensitivity to caching errors (Zou et al., 2025; Liu et al., 2025). Sparse attention methods reduce quadratic attention cost by identifying structured patterns across timesteps, layers, and heads, then executing only selected query-key inter-actions with efficient kernels (Chen et al., 2026). Diffusion attention has also been used to recover semantic regions from cross-attention and self-attention maps (Tian et al., 2024). These methods provide important foundations for selective computation, but their reuse decisions are derived from states within the current trajectory. Carnator instead considers whether latent states, intermediate features, token regions, and attention patterns from a different generation trajectory remain compat-ible with the target request. 
+
+Inter-request acceleration. Inter-request reuse has recently emerged as a new direction for dif-fusion serving. Early work retrieves similar T2I requests and reuses intermediate noise states to skip initial denoising computation (Agarwal et al., 2024). Subsequent methods extend this idea to T2V generation through entity-level retrieval, shared semantic components, staged latent reuse, and region-selective recomputation (Liu et al., 2026b). CHAI (Cherian et al., 2026) instantiates cross-inference cache attention on OpenSora 1.2 by modifying its STDiT attention blocks, while its portability to other video diffusion architectures remains unexplored. Historical sparse attention patterns can also be transferred across related I2V requests to reduce online mask construction (Liu et al., 2026a). Carnator uses generation-native compatibility evidence to address reuse validity and reuse scope in inter-request acceleration. It constructs an Early Signature for compatibility filtering according to the target generation state, and exploits accepted caches through joint region-guided latent reuse and historical sparse-connectivity reuse. 
+
+## 3 METHOD 
+
+3.1 OVERVIEW AND PROBLEM SETUP 
+
+Let q denote a target video generation request and B = {C 1, . . . , CM } a cache bank constructed from completed historical requests. For each target request, Carnator addresses two coupled decisions, namely reuse validity, which determines whether a historical cache can be reused, and reuse scope, which determines where target-specific computation must be preserved within joint latent-attention reuse once a compatible cache is identified. To assess reuse validity, Carnator first performs text-level recall to identify semantically related candidate histories and then runs a lightweight target probe to construct an Early Signature Sq , a 3Preprint Cache Bank 
+
+> Target Prompt
+> ‘A cat sleep on grass land.’
+> Reuse Validity
+> Early Signature
+> Latent Trajectory
+> Sparse Attention
+
+1
+
+> Early Signature
+> Latent Trajectory
+> Sparse Attention
+> Early Signature Construction
+> Cross-Attn
+> T-Tokens
+> Ranking
+> Self-Attn
+> V-Token
+> Text-Level Recall
+> CLIP Similarity
+> Noun Constraint
+> Compatibility
+> Filtering
+> Semantic
+> Match
+> Structure
+> Align
+> Color
+> Consistency
+> Joint Latent-Attention Reuse
+> Reuse Scope
+> Region Guided
+> Latent Reuse
+> Historical Sparse
+> Connectivity Reuse
+> Hit Cache
+> Latent Trajectory
+> Sparse Attention
+
+2
+
+> Cache 1 Cache 2
+
+3 4 Generated  
+
+> Video
+> ‘A cat sleep on
+> grass land.’
+> Determine whether a historical cache is reusable. Preserve target-specific computation.
+> Top seeds
+> Bottom seeds
+> top-k most similar requests
+
+Figure 2: Overview of Carnator . Historical requests are first retrieved through text-level recall and filtered using generation-native Early Signatures. For an accepted cache, Carnator jointly reuses historical latent trajectories and sparse attention connectivity while preserving target-specific com-putation. compact representation of generation-native compatibility evidence. The target signature is com-pared with the stored signatures of recalled caches under risk-aware compatibility thresholds. If no candidate is compatible, the target proceeds with dense generation. Otherwise, an accepted cache 
+
+Cj⋆ is selected for subsequent reuse. For an accepted cache, Carnator carries the same generation-native compatibility evidence forward to determine reuse scope. The localized evidence identifies where target-specific computation must be preserved within joint latent-attention reuse. The same generation-native evidence therefore con-nects the two stages, with the Early Signature supporting reuse-validity assessment and its localized evidence guiding reuse scope during subsequent inference. The overall workflow is illustrated in Fig. 2 with more details in Appendix C. Sec. 3.2 describes reuse validity, while Sec. 3.3 describes reuse scope. 3.2 REUSE VALIDITY WITH GENERATION -N ATIVE EVIDENCE 
+
+Early Signature Construction Carnator requires generation-native evidence before committing to cache reuse. For a request r with prompt yr , it performs a lightweight early probe and summarizes the partially formed generation state into an Early Signature Sr . Conceptually, Sr is a compact representation of generation-native evidence that is informative for cross-request compatibility. In this work, we instantiate Sr using lightweight object-centric spatiotemporal support and appearance descriptors extracted from the model’s internal cross- and self-attention states. Early diffusion states already provide informative evidence for reuse-validity assessment, as illustrated in Fig. 3, with additional implementation details provided in Appendix C. For each noun entity o ∈ N (yr ), Carnator first extracts noun-conditioned seed responses from cross-attention, following prior use of cross- and self-attention for semantic localization (Liu et al., 2024; Qi et al., 2023). Let Ω denote the spatiotemporal visual-token domain over T × H × W loca-tions. For visual token i ∈ Ω, Across  
+
+> l,h
+
+[i, o ] denotes its cross-attention weight to noun o at Transformer layer l and head h.These responses are aggregated as Coi = Agg l,h Across  
+
+> l,h
+
+[i, o ], with high- and low-response tokens forming the noun and noise seed sets I+ 
+
+> o
+
+and I− 
+
+> o
+
+, respectively. The seeds are then expanded through self-attention using Soi = Agg h
+
+h
+
+max u∈I + 
+
+> o
+
+Aself  
+
+> h
+
+[i, u ] − max u∈I − 
+
+> o
+
+Aself  
+
+> h
+
+[i, u ]
+
+i
+
+. Fusing Coi and Soi
+
+and thresholding the resulting object-support score yields the Evidence Region Revidence  
+
+> r,o
+
+⊆ Ω.
+
+Carnator converts the Evidence Region into a binary spatiotemporal indicator mr,o ∈{0, 1}T ×H×W , which summarizes the object’s support across both video frames and spatial lo-cations. The compatibility descriptors are read from the tail slice mr,o (T −1, ·, ·), since appearance 4Preprint Similar Pair  Easy negative Pair  Hard negative Pair      
+
+> source target source target source target
+
+Figure 3: Early generation states provide informative signals for cross-request compatibility. Sim-ilar request pairs exhibit stronger alignment in early denoising representations, while easy and hard negative pairs show increasingly distinct prompt-conditioned residuals and latent dynamics. is recovered from a single decoded frame. Its normalized support size is therefore 
+
+Ar,o = 1
+
+HW 
+
+X
+
+> h,w
+
+mr,o (T −1, h, w ).
+
+Appearance is represented by the mean CIELAB color cLab  
+
+> r,o
+
+∈ R3 over the corresponding decoded tail frame. The resulting descriptor is sr,o = ( mr,o , A r,o , cLab  
+
+> r,o
+
+).
+
+Under this object-centric instantiation, we construct the Early Signature as Sr = {sr,o | o ∈N (yr )}. The same representation can accommodate additional generation-native statistics when compatibility is characterized by richer temporal or inter-object structure. For historical requests, the resulting signature is stored together with the reusable latent states and sparse connectivity. 
+
+Compatibility Filtering Given a target request q and cache bank B, Carnator first performs text-level recall to obtain a coarse candidate set Lq . The target constructs its Early Signature Sq once and compares it with the stored signature Sj of each candidate Cj . Compatibility is evaluated over the entity correspondences established during candidate recall. The generation-native compatibility is represented by a discrepancy vector d(q, Cj ) =[dk(q, Cj )] k∈D (q, Cj ) , where each dk measures a compatibility-relevant discrepancy between the target and historical generation states, and D(q, Cj ) denotes the set of applicable discrepancy di-mensions for the candidate pair. The resulting discrepancy vector captures four complementary as-pects of generation-native compatibility, including context appearance, object size, object shape, and object appearance. Shared entities contribute the context-appearance discrepancy. When a substituted entity pair is present, Carnator additionally compares its size, object shape, and appearance. For the shared nouns, Carnator measures the maximum appearance discrepancy 
+
+dcontext = max o∈O same ∆E00 
+
+ cLab  
+
+> q,o
+
+, cLab 
+
+> j,o
+
+ , where dcontext = 0 when Osame is empty. When a substituted entity pair is present, Carnator further compares its size, object shape, and appearance as 
+
+dsize = log Aq,o q
+
+Aj,o j
+
+, dshape = 1 − 2| emq,o q ∩ emj,o j || emq,o q | + | emj,o j | , dcolor = ∆ E00 
+
+
+
+cLab  
+
+> q,o q
+
+, cLab 
+
+> j,o j
+
+
+
+.
+
+Here, emq,o q and emj,o j denote bounding-box-normalized object indicators, obtained by cropping each tail slice to its tight support box and resizing it to a common 2D resolution. Given a threshold τk for each applicable discrepancy dimension, the compatibility decision is 
+
+gτ (q, Cj ) = Y 
+
+> k∈D (q, Cj)
+
+I [dk(q, Cj ) ≤ τk] .
+
+Carnator selects the first compatible candidate in recall order and falls back to dense generation if none satisfies the rule. 5Preprint 
+
+Risk-Aware Compatibility Decisions. Carnator selects compatibility thresholds τ from ob-served reuse outcomes. For each request–cache pair i, let Q(m) 
+
+> i
+
+and Qdense ,(m) 
+
+> i
+
+denote the quality of the reused and dense generations for the same target request under criterion m ∈ M . We define an acceptable reuse outcome as 
+
+yi = I
+
+h
+
+Q(m) 
+
+> i
+
+≥ Qdense ,(m) 
+
+> i
+
+− ∆m, ∀m ∈ M 
+
+i
+
+,
+
+where ∆m specifies the tolerated reuse-induced degradation under criterion m. This relative crite-rion normalizes prompt-dependent generation difficulty and isolates quality degradation introduced by reuse. On the threshold-selection set, Carnator selects τ to maximize reuse coverage subject to an unsafe-reuse risk constraint, τ ⋆ = arg max τ C(τ ) s.t. R(τ ) ≤ δ, with 
+
+C(τ ) = 1
+
+N
+
+X
+
+> i
+
+gτ (i), R(τ ) = 
+
+P 
+
+> i
+
+gτ (i)(1 − yi)
+
+P 
+
+> i
+
+gτ (i) .
+
+The selected thresholds are then fixed and evaluated on a disjoint certification set. For n accepted pairs with u unsafe cases, we compute the one-sided Clopper–Pearson upper confidence bound 
+
+Uα(u, n ) and accept the thresholds when Uα(u, n ) ≤ δ.3.3 REUSE SCOPE WITH JOINT LATENT -A TTENTION REUSE 
+
+Reuse validity determines whether a historical cache can be used. Once accepted, Carnator uses the same generation-native compatibility evidence to determine where target-specific computation must be preserved within a joint latent-attention reuse path. Carnator jointly exploits cached latent states and historical sparse attention connectivity, while restricting target-specific computation to the evidence-derived regions and their associated attention domain. The target generation resumes from a cached intermediate state and continues denoising under the target prompt, preserving compatible historical latent states outside target-specific regions while reusing historical sparse connectivity to reduce redundant query–key interactions. Fig. 4 illustrates how the two forms of reuse are integrated across the DiT computation path. latent  𝑍  
+
+> Cache Latent Trajectory Sparse Attention Pattern
+> 𝑅 !"#$%&
+> 𝑅 "'(#&)#
+
+# ∩
+
+> Executed Sparse Pattern
+
+# ⇒
+
+…
+
+> VAEVAE
+> self-attention FFN cross-attention
+> …
+> Text prompt Region Guided Latent Reuse
+> Source Latent
+> Target Latent
+
+Figure 4: Joint latent-attention reuse in Carna-tor .
+
+Region-Guided Latent Reuse For latent reuse, 
+
+Carnator uses the object regions obtained from the accepted cache to localize target-specific computation. The Evidence Region Revidence is spatially expanded into an Active Region Ractive 
+
+and a larger Context Region Rcontext , satisfying 
+
+Revidence ⊆ R active ⊆ R context . The difference 
+
+Rtrans = Ractive \ R evidence forms a narrow transition band for latent blending. All three re-gions are defined over the same T × H × W spa-tiotemporal token domain. Tokens in Revidence 
+
+are fully updated according to the target request, tokens in the transition band receive a distance-weighted mixture of target and historical states, and tokens outside Ractive inherit the historical trajectory. Within selected middle Transformer layers, active tokens are recomputed using contex-tual keys and values from Rcontext , whereas tokens outside Ractive preserve their cached compu-tation. We focus region-restricted updates on intermediate layers, motivated by prior observations that intermediate diffusion representations contain richer visual-semantic information (Pnvr et al., 2023), with the layer-window choice evaluated in Appendix E. For each subsequent denoising step, the resulting latent is 
+
+zk+1 = W ⊙ bzqk+1 + (1 − W) ⊙ zj⋆
+
+> k+1
+
+,
+
+6Preprint where bzqk+1 denotes the target-updated latent and zj⋆ 
+
+> k+1
+
+denotes the corresponding historical latent. The weight W ∈ [0 , 1] is continuous across the transition band, 
+
+W(x) = 
+
+
+
+1, x ∈ R evidence ,
+
+1 − s
+
+ ˆd(x)
+
+
+
+, x ∈ R trans ,
+
+0, x / ∈ R active ,
+
+with s(·) the smoothstep map and ˆd(x) the Chebyshev distance from Revidence , normalized by the maximum distance attained in the band. 
+
+Historical Sparse-Connectivity Reuse In parallel, Carnator reuses the sparse attention structure recorded during the historical generation. For each denoising step, Transformer layer, and attention head, the historical request stores the blockwise connectivity that captures its dominant query–key interactions. During target inference, Carnator recomputes the target Q, K, and V representa-tions but reuses the historical sparse block structure to determine which query–key interactions are evaluated. Thus, the transferred computation describes where attention is performed rather than reusing historical attention values themselves. This allows the target request to preserve its own rep-resentations while avoiding the dense attention computation associated with structurally redundant interactions. 
+
+Joint Reuse in Intermediate Layers The two forms of reuse are combined in the middle Trans-former layers. In these layers, historical sparse connectivity is further constrained by the target-specific computation domain defined by Ractive and Rcontext . Only historical connectivity asso-ciated with active queries and their valid contextual tokens is retained, so attention reuse is re-stricted to the portion of the historical structure that remains relevant to the target generation. Other Transformer layers directly reuse the historical sparse block structure without this additional re-gion constraint. In this way, Carnator combines region-guided latent reuse with historical sparse-connectivity reuse, reducing computation along token and attention dimensions while preserving target-specific semantic updates. Additional implementation details are provided in Appendix C. 
+
+## 4 EXPERIMENTS 
+
+4.1 EXPERIMENTAL SETUP 
+
+Models and Hardware. We evaluate all methods on three video diffusion models, Wan2.2-TI2V-5B, Wan2.1-T2V-1.3B (Wan et al., 2025), and LTX-Video-13B (HaCohen et al., 2024). Wan2.2-TI2V-5B serves as our primary evaluation model and generates 121 frames at 1280 ×704 resolu-tion and 24 FPS using 50-step UniPC sampling. Within each model, all methods use the same model-specific generation configuration, random-seed protocol, precision, and decoding pipeline. Experiments are conducted on NVIDIA H100 GPUs. 
+
+Workload and Cache Settings. We construct the serving workload from VidProM (Wang & Yang, 2024), with 1,000 historical requests as a fixed warm cache and a disjoint 300-request test stream. Within each model, all cross-request methods use the same cache and request order. Cache misses fall back to dense generation, and all online costs, including retrieval, early probing, signa-ture construction, compatibility filtering, reuse, fallback, and decoding, are included in end-to-end latency for cache-hit requests. 
+
+Baselines. We compare Carnator with dense inference, NIRVANA (Agarwal et al., 2024), Cho-rus (Liu et al., 2026b), and Chorus II (Liu et al., 2026a). NIRVANA is originally designed for text-to-image (T2I) generation, and we adapt its cross-request latent reuse to T2V. Chorus is evalu-ated in its original T2V setting, while Chorus II, originally developed for I2V, is adapted to T2V by transferring its historical sparse-attention reuse mechanism. All methods share the same backbone, workload, and cache setting. CHAI (Cherian et al., 2026) is evaluated separately in Appendix D due to its OpenSora 1.2-specific STDiT design. 7Preprint 
+
+Metrics. We evaluate both generation quality and inference efficiency. Generation quality is mea-sured by VBench-Q (Huang et al., 2024) and CLIP-T (Radford et al., 2021), capturing general video quality and text-condition alignment, respectively. Efficiency is measured by end-to-end latency, DiT latency, and speedup over dense inference. 
+
+Candidate Recall. We rank historical requests by CLIP text similarity and retain the top-K can-didates for generation-native compatibility assessment. We use K = 10 for all experiments. For the VidProM workload, noun composition is used to establish entity correspondence be-tween recalled requests. We retain pairs with identical noun sets or a single noun substitution, 
+
+|N (yq ) \ N (yj )| = |N (yj ) \ N (yq )| ≤ 1.
+
+4.2 MAIN RESULTS 
+
+Table 1 summarizes the end-to-end performance of all methods on the VidProM workload. On Wan2.2-TI2V-5B, Carnator accepts fewer historical caches than every evaluated cross-request base-line (72.67% versus 80.67% hit rate), yet it still delivers the highest workload-level acceleration: 1.36 × end-to-end speedup over dense inference against 1.24 × for the strongest baseline. This re-versal is the central empirical point of our evaluation and follows directly from the argument of Fig. 1. Because Carnator declines caches that are semantically similar but generation-incompatible, the computation it does accept is more extensively reusable. Among cache-hit requests, it reaches the lowest end-to-end and DiT latencies on all three backbones, at 187.30 s and 159.65 s on Wan2.2-TI2V-5B (1.57 × and 1.66 × over dense inference), the largest per-hit savings of any evaluated method. Normalized by hit rate, each accepted cache buys 0.50 × of end-to-end speedup on Wan2.2, against 0.30 × for the strongest baseline. Reuse validity and reuse scope thus act in the same di-rection: a stricter validity rule does not merely avoid bad reuse; it makes each accepted reuse more profitable. The efficiency gains are particularly pronounced within the DiT backbone. Region-guided latent reuse reduces redundant token updates, while historical sparse-connectivity reuse avoids unneces-sary query–key interactions during attention computation. Their joint use therefore increases the amount of computation that can be reused from each compatible historical request. In terms of generation quality, Carnator achieves a VBench-Q score of 0.6382, comparable to dense inference and the evaluated acceleration baselines, together with a CLIP-T score of 0.2913. The VBench-Q results indicate that the proposed reuse mechanism preserves the major visual-quality di-mensions captured by VBench while substantially reducing inference latency. Across the evaluated methods, the results reveal a favorable quality–efficiency trade-off for cross-request computation reuse. Overall, the results highlight two complementary factors in cross-request acceleration. Reuse valid-ity determines whether historical computation can be reused, while reuse scope determines where target-specific computation must be preserved within joint latent-attention reuse. Together, these two components enable Carnator to translate cross-request redundancy into substantial end-to-end inference savings. 4.3 ABLATION STUDIES 
+
+Generation-Level Compatibility. Table 2 evaluates the effect of incorporating the Early Signa-ture into cross-request cache retrieval. Compared with text-level retrieval alone, generation-level filtering reduces the cache hit rate from 77.33% to 72.67%, while improving CLIP-T from 0.2725 to 0.2913 and maintaining a comparable VBench-Q score of 0.6382. This indicates that the Early Signature filters out a small fraction of textually similar but generation-incompatible caches, leading to better text–video alignment without sacrificing overall visual quality. Meanwhile, the end-to-end latency remains essentially unchanged, showing that the additional compatibility filtering introduces little overhead relative to the computation saved by cache reuse. On a disjoint certification set, the risk-aware compatibility rule accepts 50 of 70 request-cache pairs with no unsafe cases. The resulting one-sided Clopper-Pearson upper bound is 4.50 percent, satis-fying the prescribed 5 percent risk constraint. The same risk-aware threshold-selection protocol is applied across models, with details provided in Appendix F. 8Preprint Table 1: End-to-end performance on the VidProM workload across three video diffusion models. Within each model, all methods process the same request sequence under the same generation con-figuration. For cross-request methods, cache misses fall back to dense generation. Method CLIP-T ↑ VBench-Q ↑ DiT Hit Latency (s) ↓ E2E Hit Latency (s) ↓ DiT Speedup (Hit) ↑ E2E Speedup (Hit) ↑ E2E Speedup ↑ Hit Rate                                                                                                                         
+
+> Wan2.2-TI2V-5B
+> Dense 0.3372 0.6331 265.23 293.88 1.00 ×1.00 ×1.00 ×N/A NIRVANA-VID 0.2955 0.6457 204.21 256.09 1.30 ×1.15 ×1.12 ×80.67% Chorus 0.3005 0.6392 175.48 264.47 1.51 ×1.11 ×1.09 ×80.67% Chorus II 0.2986 0.6400 201.58 222.44 1.32 ×1.32 ×1.24 ×80.67%
+> CARNATOR 0.2913 0.6382 159.65 187.30 1.66 ×1.57 ×1.36 ×72.67%
+> Wan2.1-T2V-1.3B
+> Dense 0.2984 0.6379 974.2 1138.6 1.00 ×1.00 ×1.00 ×N/A NIRVANA-VID 0.2944 0.6210 884.5 1035.9 1.10 ×1.10 ×1.08 ×80.67% Chorus 0.2915 0.6089 582.4 719.8 1.67 ×1.58 ×1.42 ×80.67% Chorus II 0.2891 0.6445 556.9 577.1 1.75 ×1.97 ×1.66 ×80.67%
+> CARNATOR 0.2810 0.6361 496.0 525.58 1.96 ×2.17 ×1.72 ×77.67%
+> LTX-Video-13B
+> Dense 0.2608 0.5896 79.37 81.42 1.00 ×1.00 ×1.00 ×N/A NIRVANA-VID 0.2586 0.6060 70.78 72.82 1.12 ×1.12 ×1.09 ×80.67% Chorus 0.2574 0.5994 70.78 136.24 1.12 ×0.60 ×0.65 ×80.67% Chorus II 0.2639 0.6244 75.26 77.69 1.05 ×1.05 ×1.04 ×80.67%
+> CARNATOR 0.2583 0.6022 62.53 65.88 1.27 ×1.24 ×1.18 ×79.33%
+
+Table 2: Ablation of reuse-validity assessment on the VidProM workload. Speedup is calculated with respect to dense generation. Retrieval / Gate Hit Rate CLIP-T ↑ VBench-Q ↑ E2E Hit Latency (s) ↓ Speedup ↑
+
+Text-Level Retrieval 77.33% 0.2725 0.6301 185.6 1.58 ×
+
++ Early Signature 72.67% 0.2913 0.6382 187.3 1.57 ×
+
+Joint Latent-Attention Reuse. Table 3 evaluates the individual contributions of latent reuse and attention reuse on a randomly sampled fixed subset of 100 requests. Latent reuse reduces redundant token updates and lowers end-to-end latency to 206.06 s, while attention reuse decreases query–key computation and achieves 160.91 s. Combining the two mechanisms achieves the lowest latency of 155.85 s and the highest end-to-end speedup of 1.71 ×, confirming that the two forms of reuse provide complementary acceleration benefits. Across all variants, CLIP-T and VBench-Q remain within a narrow range, indicating that the additional acceleration from joint reuse does not substan-tially compromise generation quality. Table 3: Ablation of latent and attention reuse in CARNATOR .Variant Latency (s) ↓ Speedup ↑ CLIP-T ↑ VBench-Q ↑
+
+Full Computation 266.26 1.00 × 0.3391 0.6432 Latent Reuse Only 206.06 1.29 × 0.3237 0.6436 Attention Reuse Only 160.91 1.65 × 0.3291 0.6291 
+
+Joint Latent-Attention Reuse 155.85 1.71 × 0.3281 0.6433 
+
+## 5 CONCLUSION 
+
+In this work, we presented Carnator , a cross-request acceleration framework for text-to-video diffu-sion models that uses generation-native compatibility evidence to jointly address reuse validity and reuse scope. Carnator constructs an Early Signature from early diffusion states to identify reusable historical caches beyond prompt similarity, and applies risk-aware compatibility decisions. For ac-cepted caches, it jointly exploits redundancy in latent trajectories and attention connectivity through region-guided latent reuse and historical sparse-connectivity reuse. Experiments demonstrate that 
+
+Carnator reduces video diffusion inference latency while maintaining competitive generation qual-ity across diverse generation requests. More broadly, our results show that cross-request redundancy provides a complementary dimension for accelerating video generation beyond conventional opti-mization within individual denoising trajectories. 9Preprint 
+
+## AI U SE STATEMENT 
+
+Generative AI tools were used to assist with language editing and manuscript organization. They were also used to help refine figures, captions, and terminology. All AI-assisted content was re-viewed and verified by the authors. 10 Preprint 
+
+## REFERENCES 
+
+Shubham Agarwal, Subrata Mitra, Sarthak Chakraborty, Srikrishna Karanam, Koyel Mukherjee, and Shiv Kumar Saini. Approximate caching for efficiently serving text-to-image diffusion models. In 21st USENIX Symposium on Networked Systems Design and Implementation (NSDI 24) , pp. 1173–1189, 2024. Pengtao Chen, Xianfang Zeng, Maosen Zhao, Mingzhu Shen, Wei Cheng, Gang Yu, and Tao Chen. Sparse-vdit: Unleashing the power of sparse attention to accelerate video diffusion transformers. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pp. 2957–2965, 2026. Joel Mathew Cherian, Ashutosh Muralidhara Bharadwaj, Vima Gupta, and Anand Padmanabha Iyer. Chai: Cache attention inference for text2video. arXiv preprint arXiv:2602.16132 , 2026. Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richardson, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, et al. Ltx-video: Realtime video latent diffusion. 
+
+arXiv preprint arXiv:2501.00103 , 2024. Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianx-ing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 21807–21818. IEEE, 2024. Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. Bingyan Liu, Chengyu Wang, Tingfeng Cao, Kui Jia, and Jun Huang. Towards understanding cross and self-attention in stable diffusion for text-guided image editing. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 7817–7826. IEEE, 2024. Hao Liu, Chenghuan Huang, Xing Cai, Chen Li, Ziyang Ma, Jing Lyu, Nong Xiao, and Jiangsu Du. Chorus ii: Cross-request sparsity reuse for efficient image-to-video generation. arXiv preprint arXiv:2606.25040 , 2026a. Hao Liu, Ye Huang, Chenghuan Huang, Zhenyi Zheng, Jiangsu Du, Ziyang Ma, Jing Lyu, and Yutong Lu. Beyond few-step inference: Accelerating video diffusion transformer model serving with inter-request caching reuse. arXiv preprint arXiv:2604.04451 , 2026b. Haosong Liu, Yuge Cheng, Wenxuan Miao, Zihan Liu, Aiyue Chen, Jing Lin, Yiwu Yao, Chen Chen, Jingwen Leng, Minyi Guo, and Yu Feng. Astraea: A token-wise acceleration framework for video diffusion transformers. In C. Vondrick, B. Hariharan, C. Raffel, L. Pinto, D. Yang, and A. Faust (eds.), International Conference on Learning Representations , volume 2026, pp. 90226– 90250, 2026c. URL https://proceedings.iclr.cc/paper_files/paper/2026/ file/921ac785fa9edc73cacaf2664f43d234-Paper-Conference.pdf .Jiacheng Liu, Chang Zou, Yuanhuiyi Lyu, Fei Ren, Shaobo Wang, Kaixin Li, and Linfeng Zhang. Speca: Accelerating diffusion transformers with speculative feature caching. In Proceedings of the 33rd ACM International Conference on Multimedia , pp. 10024–10033, 2025. Zhengyao Lyu, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K Wong. Fastercache: Training-free video diffusion model acceleration with high quality. In Inter-national Conference on Learning Representations , volume 2025, pp. 33132–33156, 2025. Weili Nie, Julius Berner, Nanye Ma, Chao Liu, Saining Xie, and Arash Vahdat. Transition matching distillation for fast video generation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 4645–4655, June 2026. Koutilya Pnvr, Bharat Singh, Pallabi Ghosh, Behjat Siddiquie, and David Jacobs. Ld-znet: A latent diffusion approach for text-based image segmentation. In Proceedings of the IEEE/CVF interna-tional conference on computer vision , pp. 4157–4168, 2023. 11 Preprint Chenyang Qi, Xiaodong Cun, Yong Zhang, Chenyang Lei, Xintao Wang, Ying Shan, and Qifeng Chen. Fatezero: Fusing attentions for zero-shot text-based video editing. In 2023 IEEE/CVF International Conference on Computer Vision (ICCV) , pp. 15886–15896. IEEE, 2023. Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In International conference on machine learning , pp. 8748–8763. PmLR, 2021. Faraz Shahsavan, Yikai Zhu, Pankaj Gupta, and Philip Kiely. Wan 2.2 video generation in less than 60 seconds. https://www.baseten.co/blog/ wan-2-2-video-generation-in-less-than-60-seconds/ , August 2026. Baseten Blog, accessed September 14, 2026. Junjiao Tian, Lavisha Aggarwal, Andrea Colaco, Zsolt Kira, and Mar Gonzalez-Franco. Dif-fuse, attend, and segment: Unsupervised zero-shot segmentation using stable diffusion. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 3554–3563. IEEE, 2024. Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. Wenhao Wang and Yi Yang. Vidprom: A million-scale real prompt-gallery dataset for text-to-video diffusion models. Advances in Neural Information Processing Systems , 37:65618–65642, 2024. Yuxin Wen, Yuchen Liu, Chen Chen, and Lingjuan Lyu. Detecting, explaining, and mitigating memorization in diffusion models. In The Twelfth International Conference on Learning Repre-sentations , 2024. Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. Cogvideox: Text-to-video diffusion models with an expert transformer. In International Conference on Learning Representations , volume 2025, pp. 83048–83077, 2025. Wangbo Zhao, Yizeng Han, Zhiwei Tang, Jiasheng Tang, Pengfei Zhou, Kai Wang, Bohan Zhuang, Zhangyang Wang, Fan Wang, and Yang You. Rapid 3: Tri-level reinforced acceleration poli-cies for diffusion transformer. In International Conference on Learning Representations , volume 2026, pp. 149423–149446, 2026. Chang Zou, Xuyang Liu, Ting Liu, Siteng Huang, and Linfeng Zhang. Accelerating diffusion transformers with token-wise feature caching. In Y. Yue, A. Garg, N. Peng, F. Sha, and R. Yu (eds.), International Conference on Learning Representations , volume 2025, pp. 75467–75488, 2025. URL https://proceedings.iclr.cc/paper_files/paper/2025/file/ bbe024e0517fe12ac3a8d388b19ff9fe-Paper-Conference.pdf .
+
+## A ADDITIONAL ANALYSIS 
+
+A.1 EARLY -S TATE GENERATION -N ATIVE COMPATIBILITY EVIDENCE 
+
+Fig. 5 provides additional analysis of early latent dynamics. Similar request pairs exhibit consis-tently smaller source–target discrepancies than incompatible pairs, providing further evidence that early diffusion states contain useful generation-native compatibility evidence for reuse-validity as-sessment. 12 Preprint similar: latent energy easy negative: latent energy hard negative: latent energy 
+
+Figure 5: Latent-state discrepancy for similar, easy-negative, and hard-negative request pairs across video frames. A.2 CROSS -R EQUEST ATTENTION SIMILARITY 
+
+Fig. 6 visualizes the blockwise attention structure of two semantically related requests. Despite the object substitution, the two requests exhibit highly similar attention mass distributions and sparse connectivity patterns, motivating Historical Sparse-Connectivity Reuse. “A cat is sleeping on a grassland, focus on the cat" 
+
+> “A dog is sleeping on a grassland, focus on the dog"
+
+Figure 6: Blockwise attention mass and sparse connectivity for two related text-to-video requests. Similar requests preserve substantial structural similarity in their attention patterns despite changes in object identity. 
+
+## B ADDITIONAL QUALITATIVE RESULTS 
+
+This section provides additional qualitative results of Carnator on diverse text-to-video generation requests. The examples illustrate that Carnator preserves target-specific content and overall visual quality while reusing computation from compatible historical requests. 13 Preprint "a dog is sleeping on a grassland " & "a cat is sleeping on a grassland"     
+
+> "a bear is standing in a snowy forest " & " a panda is standing in a snowy forest"
+> dense computation
+> (source)
+> dense computation
+> (target) NIRVANA-VID Chorus Chorus II CARNATOR
+> "an airplane is flying through a clear blue sky " & "a helicopter is flying through a clear blue sky "
+
+Figure 7: Qualitative result of Carnator 
+
+## C EARLY SIGNATURE DETAILS 
+
+C.1 EVIDENCE REGION CONSTRUCTION 
+
+We construct the Early Signature after the first four denoising steps. Noun entities are extracted using spaCy with the en core web sm model, retaining tokens tagged as nouns. For each noun, we collect its cross-attention response from a fixed intermediate Transformer layer and aggregate the response across attention heads and the corresponding text-token positions. High- and low-response visual tokens are selected as noun and background seeds, respectively. These seeds are propagated through self-attention to obtain a noun–background contrast score. The cross- and self-attention responses are fused as 
+
+F = Norm [ S (ϵ + (1 − ϵ)Cγ )] .
+
+Fixed fusion coefficients and hysteresis thresholds are used to obtain the Evidence Region Revidence ,and the same configuration is used throughout evaluation for each model. 
+
+Signature descriptors. For each noun, the implementation records the Evidence Region together with its normalized support size—computed on the tail slice mr,o (T −1, ·, ·) and normalized by 
+
+HW —and appearance, while object shape is derived from that same tail slice during comparison. Appearance is extracted by decoding the latent once and projecting the Evidence Region onto the final decoded frame. Pixels inside the region are converted from sRGB to CIELAB under the D65 illuminant and averaged to form the appearance descriptor. For compatibility comparison, shared nouns are compared using CIEDE2000 color distance, while a one-noun substitution additionally uses log-area ratio, normalized mask-shape distance, and CIEDE2000 appearance distance. Noun strings are normalized to lowercase, repeated nouns are merged, and the current implementation accepts either identical noun sets or a single one-to-one noun substitution. C.2 EARLY PROBE EVIDENCE REGION 
+
+Figure 8 shows that the Evidence Region rapidly converges during the first few denoising steps. The response is diffuse at the beginning, rapidly concentrates on the target object within the first few steps, and becomes spatially stable thereafter. This observation provides qualitative evidence that useful localization cues emerge early in the denoising trajectory, allowing Carnator to construct its Early Signature from a lightweight early probe rather than requiring a complete generation. 14 Preprint Step 1 Step 2 Step 3 Step 4 Step 5 Step 6 Step 7 Step 8 Step 9 Step 10 
+
+Figure 8: Heat Map of Evidence Region Revidence under the first ten denoising steps. C.3 REUSE -S COPE IMPLEMENTATION DETAILS 
+
+Source trajectories are generated with the same model-specific scheduler and denoising schedule used for target inference, and post-scheduler latents are stored by timestep. For reuse, the target resumes from the corresponding historical latent at the reuse point and thereafter accesses the cached latent from the same scheduler step, while target prompt conditioning and guidance computations are recomputed for the target request. The cached Evidence Region is spatially dilated to form the Active and Context Regions, with the Context Region using the larger support. Region-restricted updates are applied to the designated middle Transformer layers, while the remaining layers follow the historical sparse-connectivity path. We obtain the Active Region by dilating the Evidence Region with a radius of 2 tokens, and the Context Region by a further dilation with a radius of 3 tokens, applied per latent frame on the H×W grid. The band Ractive \R evidence is used as a transition region for latent fusion. Within this band, the source weight is the Chebyshev distance to the Evidence Region, normalized by the maximum distance attained in the band and mapped through a smoothstep function, yielding a gradual transition from target to historical latent states. Historical self-attention is partitioned into query–key blocks, and for each head and query block we retain the smallest set of key blocks covering a fixed fraction of the source attention mass. The resulting binary connectivity masks are stored per denoising step, guidance branch, and Transformer layer. During target inference, Q, K, and V are recomputed from the target generation, while only the historical block connectivity is reused. Within the middle layers, the cached connectivity is further restricted to active queries and their valid contextual tokens before sparse execution. C.4 OVERALL INFERENCE PROCEDURE 
+
+Algorithm 1 summarizes the end-to-end inference procedure of Carnator . The risk-aware compati-bility thresholds are selected offline as described in Appendix F and remain fixed during serving. For each target request, Carnator first retrieves candidate histories, constructs the target Early Signature, and selects the first compatible cache in recall order. If no compatible cache is found, the request falls back to dense generation. Otherwise, the accepted cache is used for joint latent-attention reuse. 15 Preprint 
+
+Algorithm 1 CARNATOR Cross-Request Inference 
+
+Require: Target request q, cache bank B, recall size K, compatibility thresholds τ ⋆
+
+Ensure: Generated video Vq 
+
+> 1:
+
+Lq ← TEXT RECALL (q, B, K ) 
+
+> 2:
+
+(Sq , Revidence ) ← EARLY PROBE (q) 
+
+> 3:
+
+C⋆ ← ∅ 
+
+> 4:
+
+for Cj ∈ L q in recall order do  
+
+> 5:
+
+dj ← COMPATIBILITY (Sq , S j ) 
+
+> 6:
+
+if gτ ⋆ (q, Cj ) = 1 then  
+
+> 7:
+
+C⋆ ← C j 
+
+> 8:
+
+break  
+
+> 9:
+
+end if  
+
+> 10:
+
+end for  
+
+> 11:
+
+if C⋆ = ∅ then  
+
+> 12:
+
+return DENSE GENERATION (q) 
+
+> 13:
+
+end if  
+
+> 14:
+
+(Ractive , Rcontext , W) ← BUILD REUSE REGIONS (Revidence ) 
+
+> 15:
+
+Initialize target generation from the accepted cached trajectory  
+
+> 16:
+
+for each remaining denoising step k do  
+
+> 17:
+
+Recompute target-specific latent states in Ractive  
+
+> 18:
+
+Fuse target and historical latents using W 
+
+> 19:
+
+Recompute target Q, K, and V 
+
+> 20:
+
+Reuse historical sparse connectivity within the valid target computation domain  
+
+> 21:
+
+end for  
+
+> 22:
+
+Vq ← DECODE (zq ) 
+
+> 23:
+
+return Vq
+
+## D CROSS -A RCHITECTURE PORTABILITY OF CHAI 
+
+CHAI (Cherian et al., 2026) designs Cache Attention specifically for the STDiT architecture of OpenSora 1.2. We further examine its cross-architecture portability by directly adapting the same cache-reuse mechanism to Wan2.2. As illustrated in Fig. 9, CHAI preserves generation quality on its native OpenSora 1.2 architecture, whereas the direct Wan2.2 adaptation exhibits noticeable visual degradation. This qualitative comparison suggests that CHAI’s Cache Attention mechanism requires architecture-specific adaptation when transferred to models other than OpenSora 1.2. Opensora1.2 baseline  Opensora1.2 CHAI  Wan2.2 baseline  Wan2.2 CHAI 
+
+Figure 9: Qualitative comparison of CHAI across video diffusion architectures. From left to right, we show the OpenSora 1.2 baseline, CHAI on OpenSora 1.2, the Wan2.2 baseline, and a direct adap-tation of CHAI to Wan2.2. CHAI preserves generation quality on its native OpenSora architecture, while the direct Wan2.2 adaptation exhibits noticeable visual degradation. 
+
+## E LAYER -W INDOW ABLATION 
+
+We ablate the number of middle Transformer layers used for region-restricted latent updates on Wan2.2-TI2V-5B. All configurations use the same accepted request–cache pair, while the remaining layers perform historical sparse-connectivity reuse. 16 Preprint Table 4: Layer-window ablation on Wan2.2-TI2V-5B. All reuse variants use the same accepted cache. Latency includes the dense probe, and speedup is relative to dense inference.                                         
+
+> Region-update layers Window Latency (s) ↓Speedup ↑CLIP-T ↑VBench-Q ↑
+> None (dense) —273.61 1.00 ×0.3330 0.6699 513–17 160.67 1.70 ×0.2681 0.6447 11 10–20 156.67 1.75 ×0.2676 0.6415 15 8–22 150.58 1.82 ×0.2700 0.6440 20 6–25 150.97 1.81 ×0.2803 0.6497 25 3–27 148.97 1.84 ×0.2749 0.6268 30 0–29 145.09 1.89 ×0.2617 0.6092
+
+As shown in Table 4, wider region-update windows provide modest additional speedup, while gen-eration quality begins to degrade beyond 20 layers. 
+
+## F RISK -A WARE COMPATIBILITY DECISION 
+
+For each request–cache pair, we generate a dense reference under the same target prompt and eval-uate the reused and dense generations under the same quality criteria. Following Sec. 3.2, a reuse outcome is considered acceptable when 
+
+yi = I
+
+h
+
+Q(m) 
+
+> i
+
+≥ Qdense ,(m) 
+
+> i
+
+− ∆m, ∀m ∈ M 
+
+i
+
+.
+
+In our evaluation, we instantiate M = {CLIP -T, VBench -Q} and set ∆CLIP -T = ∆ VBench -Q =0.02 . Dense references are used only offline to construct reuse-outcome labels for threshold selection and certification, and are not required during serving. We use a threshold-selection set of 30 request–cache pairs and a disjoint certification set of 70 pairs. On the threshold-selection set, Carnator selects the compatibility thresholds to maximize reuse coverage subject to the risk constraint in Sec. 3.2, yielding 
+
+τ ⋆ = ( τcontext , τ size , τ shape , τ color ) = (1 .62 , 2.17 , 1.00 , 7.58) .
+
+We set the target unsafe-reuse rate to δ = 5% and use a one-sided confidence level of 90% 
+
+(α = 0 .10 ). On the certification set, the selected risk-aware compatibility rule accepts 50 of the 70 request–cache pairs, with no unsafe cases. The corresponding reuse coverage is 71 .43% , and the one-sided Clopper–Pearson upper bound is U0.10 (0 , 50) = 4 .50% , satisfying the prescribed risk constraint. Table 5: Risk-aware threshold selection and certification results. The target unsafe-reuse rate is 
+
+δ = 5% at a one-sided confidence level of 90% .                
+
+> τ⋆Coverage Accepted nUnsafe uEmpirical Risk Uα(u, n )(1 .62 ,2.17 ,1.00 ,7.58) 71.43% 50 00.00% 4.50%
+
+## G LATENCY ACCOUNTING 
+
+G.1 END -TO -END LATENCY 
+
+E2E latency is the wall-clock time of one request: the timer opens at the start of the request and closes when the decoded video is ready. It therefore covers retrieval, text encoding and initial latent construction, the entire denoising loop (DiT forwards and scheduler updates, latent injection/fusion, and in-loop mask or index lookups), any dense probe prefix a method requires, method preprocessing that is not hoisted out (e.g. Chorus’s LLM prompt-diff and segmentation), and VAE decoding of the final latent. 17 Preprint G.2 DIT LATENCY 
+
+DiT latency isolates the denoiser: the CUDA-synchronized wall time of the transformer forward passes alone, summed over the executed steps. Synchronizing at both ends means the interval con-tains only that forward’s own kernels — it never absorbs the launch tail of the preceding operation, nor the scheduler update, CFG/STG combination, latent injection or fusion, mask lookups, VAE decoding, or text encoding. Under classifier-free guidance the model runs once per branch and all branches are counted, so the metric scales with the number of forwards rather than sampler steps; where a pipeline batches its guidance branches into a single call, that call counts once. Because a method may add work before reuse, any dense probe prefix is included here too, and its steps are added to the executed-step count, so the reported DiT time always covers every forward the request actually ran. A per-module CUDA-event profiler (self-attention, cross-attention, FFN) is recorded alongside as a cross-check. 18

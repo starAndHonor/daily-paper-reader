@@ -1,0 +1,4321 @@
+Title: GeoShrink: Accelerating Diffusion Transformers with Two Lines of Code
+
+URL Source: https://arxiv.org/pdf/2609.33723v1
+
+Published Time: Tue, 29 Sep 2026 03:00:12 GMT
+
+Number of Pages: 47
+
+Markdown Content:
+# GeoShrink: Accelerating Diffusion Transformers with Two Lines of Code 
+
+## Haosen Li 1,∗ Wenshuo Chen 1,∗ Shaofeng Liang 1 Lei Wang 2,3 Bowen Tian 1 Yutao Yue 1,4,†
+
+> 1
+
+The Hong Kong University of Science and Technology (Guangzhou) 
+
+> 2
+
+Griffith University 3Data61, CSIRO 4Artificial Intelligence Lab, Institute of Deep Perception Technology, JITRI 
+
+jasonhaosenl@hkust-gz.edu.cn wenshuochen@hkust-gz.edu.cn shawnsfliang@hkust-gz.edu.cn l.wang4@griffith.edu.au bowentian@hkust-gz.edu.cn yutaoyue@hkust-gz.edu.cn 
+
+> ∗
+
+Equal contribution †Corresponding author 
+
+Figure 1: Qualitative comparison of GeoShrink. Direct NFE reduction (left) vs. GeoShrink (right) under the same model-evaluation budget. GeoShrink better preserves visual structure and temporal evolution under aggressive accel-eration. 
+
+Abstract 
+
+Diffusion transformers incur substantial inference cost through repeated model evaluations along a sampling trajectory. We introduce GeoShrink, a training-free acceleration method that retains the original solver grid while evaluating the model only at a prescribed set of anchors. At skipped stages, GeoShrink predicts the solver-facing output by adding a geometrically retained fraction of the latest observed innovation to the most recent exact output. We derive this rule from chordal tangent transport and round-trip line projection, and establish a geometric anchor-spacing principle that minimizes the largest adjacent gap expansion under fixed coverage and first span. The analysis characterizes the geometric closure and propagation of prediction errors without assuming access to future model outputs. Experiments cover image, video, motion, and audio generation, together with adapted 3D backends. At approximately 5× acceleration, GeoShrink improves FLUX PSNR by 3.10 dB over the strongest listed baseline. On HunyuanVideo, it achieves a reported 4.99 × speedup and improves ChronoMagic-Bench-150 PSNR by 5.44 dB over the strongest listed fidelity baseline. Comparisons at fixed evaluation budgets further show substantial gains on Motion, Audio, Music and 3d generation. 
+
+1arXiv:2609.33723v1 [cs.CV] 27 Sep 2026 Full NFE  ω=0  ω=0.5  ω=1.5  ω=2  ours Figure 2: Motivation for adaptive innovation retention. From left to right, we show the full-NFE reference, fixed-coefficient predictions with ω ∈ { 0, 0.5, 1.5, 2}, and GeoShrink. Small ω underuses the latest innovation, while aggressive reuse ( ω > 1) progressively introduces color, contrast, and appearance drift. GeoShrink instead adapts ωt
+
+from observable trajectory geometry and more closely preserves the full-NFE reference. 
+
+# 1 Introduction 
+
+Diffusion transformers (Peebles and Xie, 2023; Bao et al., 2023) have become a common backbone for generative modeling across images (Esser et al., 2024; Black Forest Labs, 2024), video (Kong et al., 2024), human motion (Wen et al., 2025), audio (Hung et al., 2024; Gong et al., 2025), and 3D content (Xiang et al., 2025; Zhao et al., 2025b). Despite their versatility, inference remains expensive because a large neural network should be repeatedly evaluated along the sampling trajectory (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song and Ermon, 2019; Song et al., 2021b; Rombach et al., 2022). Reducing these evaluations without modifying or retraining the pretrained generator is therefore an important practical problem across generative domains. Existing training-free acceleration methods exploit temporal redundancy through caching or forecasting interme-diate features across denoising steps (Ma et al., 2024b; Selvaraju et al., 2024; Zhao et al., 2025a; Liu et al., 2025a; Zou et al., 2025; Lv et al., 2025; Liu et al., 2025b,c; Zhao et al., 2026). Feature caching reuses previously computed representations, while feature forecasting extrapolates them to approximate features at subsequent stages. While effec-tive, these approaches rely on model-specific internal representations, making transfer to new backbones dependent on choices such as layers, tokens, cache locations, reuse intervals, or verification mechanisms (Zou et al., 2025; Liu et al., 2025c). We explore a simpler alternative: accelerating diffusion models entirely at the solver interface . The solver only consumes the model output at each sampling stage, rather than its internal representations. We therefore retain the original solver grid, query the pretrained model only at sparse anchor stages, and predict the missing solver-facing outputs from previous exact observations. The key question is then: how much of the latest observed change should be reused? As shown in Figure 2, small coefficients underuse the observed trajectory, whereas full reuse or further ex-trapolation quickly increases deviation from the full-NFE reference. This motivates shrinking the latest change rather than predicting a new high-dimensional representation. Motivated by this observation, we introduce GeoShrink , a training-free acceleration method operating entirely at the solver interface. GeoShrink stores only the three most recent exact outputs and predicts along the latest observed change. Its key idea is to adaptively shrink this change using trajectory geometry: stronger turning or longer forecast horizons lead to more conservative reuse, while locally consistent changes over short horizons retain more of the latest direction. This reduces prediction from forecasting a new high-dimensional representation to estimating the reliability of an already observed direction. The same principle also determines where exact queries are placed. Since future turning is unknown, GeoShrink controls prediction exposure through anchor spacing. Under a fixed query budget, minimizing the worst-case exposure yields a geometric anchor schedule. Thus, GeoShrink unifies how much observed information to reuse with how far to propagate it, without training, learned predictors, intermediate-feature access, or architecture-specific design. On standard image and video generation, GeoShrink substantially outperforms strong training-free acceleration baselines: at approximately 5× acceleration, it improves PSNR by 3.10 dB on FLUX.1-dev and 5.44 dB on Hunyuan-Video over the strongest listed fidelity baselines. Transferring the same solver-interface principle to human motion yields even larger gains, reducing key geometric errors by tens to hundreds of times over direct step reduction at matched NFE budgets. We further extend GeoShrink to 3D, audio, and music generation, demonstrating broad cross-modal applicability across diverse architectures and generative domains. Our contributions are threefold: i. We formulate training-free acceleration as sparse prediction of solver-facing outputs while preserving the original solver grid, avoiding model-internal feature access. 2(a) Previous: Internal Feature Caching 
+
+DiT 
+
+> AdaLN
+> Self-Attention
+> Cross-Attention
+> MLP
+
+reuse / forecast 
+
+Feature cache 
+
+Predicted field  Exact query 
+
+(b) GeoShrink: Solver-Interface Prediction 
+
+DiT 
+
+> Original solver
+
+(c)  Shrinkage Principle 
+
+θ
+
+h |𝜌𝜌𝑡𝑡 |h  1   
+
+> 1 + |𝜌𝜌𝑡𝑡 |2𝑠𝑠𝑠𝑠𝑠𝑠 2𝜃𝜃
+> θ ↑ or |𝜌𝜌𝑡𝑡 |↑
+
+⇒ 𝜔𝜔𝑡𝑡 ↓    
+
+> 2. Forecast horizon 1. Turning angle 3. Innovation Retention
+> Skipped stages
+> 𝑣𝑣 𝑡𝑡
+> (3)𝑣𝑣 𝑡𝑡
+> (2)𝑣𝑣 𝑡𝑡
+> (1)
+> Exact computation stages
+
+𝑣𝑣𝑡𝑡 
+
+𝛥𝛥𝑣𝑣 − 𝛥𝛥𝑣𝑣  𝑣𝑣𝑡𝑡 = 𝑣𝑣 𝑡𝑡 
+
+> (1)
+
++𝜔𝜔𝑡𝑡𝛥𝛥 𝑣𝑣 
+
+𝑥𝑥𝑡𝑡−1 
+
+𝑥𝑥𝑡𝑡 
+
+𝛥𝛥𝑣𝑣 −
+
+𝛥𝛥𝑣𝑣 
+
+𝑥𝑥𝑡𝑡 
+
+𝜎𝜎 𝑡𝑡 
+
+> (1)
+
+𝜎𝜎 𝑡𝑡  
+
+> (2)
+> Acute angle
+
+𝜇𝜇𝑡𝑡 
+
+𝜔𝜔𝑡𝑡 =
+
+𝑡𝑡𝑇𝑇  𝑡𝑡1  𝑡𝑡𝑇𝑇  𝑡𝑡1       
+
+> 50-47 44 41 36 29 18 1
+
+𝜔𝜔𝑡𝑡  
+
+> ratio
+> 01
+
+𝑣𝑣𝑡𝑡 
+
+> Exact history
+
+Figure 3: Overview of GeoShrink. (a) Previous methods rely on internal feature caching, reusing or forecasting intermediate DiT representations across denoising steps. (b) GeoShrink operates at the solver interface, allocating 10 exact model queries over a 50-step grid through geometric anchoring. At skipped stages, it predicts the solver-facing field from the three latest exact outputs while preserving the original solver and its grid. (c) The retention coefficient 
+
+ωt = (1 + ρ2 
+
+> t
+
+sin 2 θ)−1 combines the acute angle θ between successive innovations with the normalized midpoint forecast horizon ρt. Stronger turning or a longer horizon reduces the retained innovation in vt = v(1)  
+
+> t
+
++ ωt∆v.ii. We derive a parameter-free geometric retention rule and a fixed-budget anchor schedule whose unique continuous solution is a geometric mesh. iii. We analyze prediction and error propagation, and evaluate GeoShrink across image, video, motion, audio, music, and 3D generation. 
+
+# 2 Methodology 
+
+## 2.1 Preliminaries 
+
+Diffusion transformers (Peebles and Xie, 2023) process noisy latent tokens conditioned on time and auxiliary in-formation. Rectified flow (Liu et al., 2023) learns a velocity field Vθ (xσ , σ, c ) with target ϵ − xdata along xσ =(1 − σ)xdata + σϵ , where xdata is a clean latent, ϵ ∼ N (0 , I ), and c is the condition. Sampling integrates dx/ dσ =
+
+Vθ (x, σ, c ) from σ = 1 to σ = 0 . On the grid {σt}Tt=0 , a solver uses vt = Vθ (xt, σ t, c ) to update xt to xt−1.
+
+## 2.2 Geometric Retention from Exact Anchors 
+
+At a non-anchor stage t / ∈ A , let t(3) > t (2) > t (1) > t index the three latest exact queries, with outputs v(i) 
+
+> t
+
+=
+
+Vθ (xt(i) , σ (i) 
+
+> t
+
+, c ), i ∈ { 1, 2, 3}, where σ(i) 
+
+> t
+
+= σt(i) . Define the innovations ∆v = v(1)  
+
+> t
+
+− v(2)  
+
+> t
+
+and ∆v− = v(2)  
+
+> t
+
+− v(3)  
+
+> t
+
+.GeoShrink uses the prediction family 
+
+vt(ω) = v(1)  
+
+> t
+
++ ω∆v, 0 ≤ ω ≤ 1, (1) Let θ ∈ [0 , π/ 2] be the angle between the innovation lines: 
+
+sin 2 θ = sin 2 ∠(∆ v, ∆v−) = ∥P ⊥ 
+
+> ∆v−
+
+∆v∥22
+
+∥∆v∥22
+
+∈ [0 , 1] . (2) 3With μt = ( σt + σt−1)/2 and h = |σ(1)  
+
+> t
+
+− σ(2)  
+
+> t
+
+|, define the normalized horizon 
+
+ρt = μt − σ(1) 
+
+> t
+
+σ(1)  
+
+> t
+
+− σ(2) 
+
+> t
+
+= σt + σt−1 − 2σ(1) 
+
+> t
+
+2( σ(1)  
+
+> t
+
+− σ(2)  
+
+> t
+
+) . (3) The geometric exposure is Rt = ρ2 
+
+> t
+
+sin 2 θ.
+
+Proposition 1. Assume ∆v̸ = 0 and ∆v−̸ = 0 . Let ut = ∆ v/ ∥∆v∥2 and u− 
+
+> t
+
+= ∆ v−/∥∆v−∥2, choosing the sign of 
+
+u− 
+
+> t
+
+such that ⟨ut, u − 
+
+> t
+
+⟩ ≥ 0. Define ξt = P ⊥ 
+
+> ut
+
+u− 
+
+> t
+
+, ηt = −ρtξt, and eut = ( ut + ηt)/∥ut + ηt∥2. The line overlap is 
+
+ωt = tr( Put Peut ) = 11 + ρ2 
+
+> t
+
+sin 2 θ (4) 
+
+Proof. By construction, ⟨ut, ξ t⟩ = 0 and ∥ξt∥22 = sin 2 θ. Hence 
+
+∥ηt∥22 = ρ2 
+
+> t
+
+sin 2 θ = Rt, ∥ut + ηt∥22 = 1 + Rt, ⟨ut, eut⟩2 = 11 + Rt
+
+.
+
+Since Put and Peut are rank-one projectors, ωt = tr( Put Peut ) = ⟨ut, eut⟩2, proving the claim. Combining Proposition 1 and equation 1 yields 
+
+vt = v(1)  
+
+> t
+
++ v(1)  
+
+> t
+
+− v(2) 
+
+> t
+
+1 + 
+
+ σt+σt−1−2σ(1)   
+
+> t
+> 2( σ(1)
+> t−σ(2)
+> t)
+
+2
+
+sin 2∠
+
+
+
+v(1)  
+
+> t
+
+− v(2)  
+
+> t
+
+, v (2)  
+
+> t
+
+− v(3) 
+
+> t
+
+ (5) 
+
+## 2.3 Budget-Optimal Geometric Anchoring 
+
+With future turning unknown, anchor spacing controls exposure. Let hj , h j+1 > 0 denote consecutive exact-query gaps in a forward progress coordinate. 
+
+Lemma 1. For skipped updates in the cell following hj ,
+
+0 ≤ | ρ(s) 
+
+> t
+
+| ≤ hj+1 
+
+hj
+
+. (6) 
+
+If hj+1 /h j ≤ Γ, then 
+
+R(s) 
+
+> t
+
+≤ Γ2, ω(s) 
+
+> t
+
+≥ 11 + Γ 2 . (7) 
+
+Proof. The distance from the latest anchor to any point in the next cell is at most hj+1 , while the normalization span is hj , giving |ρ(s) 
+
+> t
+
+| ≤ hj+1 /h j . Since 0 ≤ sin 2 θ ≤ 1, R(s) 
+
+> t
+
+= ( ρ(s) 
+
+> t
+
+)2 sin 2 θ ≤ Γ2, and equation 4 gives the retention bound. With B queries over T stages and bootstrap queries ( h1 = h2 = 1 ), Lemma 1 motivates 
+
+min  
+
+> {hj}B−1
+> j=1
+
+max 
+
+> 2≤j≤B−2
+
+hj+1 
+
+hj
+
+s.t. h1 = h2 = 1 ,
+
+> B−1
+
+X
+
+> j=1
+
+hj = T − 1. (8) 
+
+Theorem 1. Equation 8 has the unique continuous solution 
+
+hj = rmax( j−2,0)  
+
+> ⋆
+
+, j = 1 , . . . , B − 1,
+
+> B−1
+
+X
+
+> j=1
+
+rmax( j−2,0)  
+
+> ⋆
+
+= T − 1, r⋆ ≥ 1. (9) 4Proof. Let Γ = max 2≤j≤B−2 hj+1 /h j . Then hj ≤ Γmax( j−2,0) , so any feasible schedule satisfies 
+
+T − 1 = 
+
+> B−1
+
+X
+
+> j=1
+
+hj ≤
+
+> B−1
+
+X
+
+> j=1
+
+Γmax( j−2,0) .
+
+The right-hand side is strictly increasing for Γ ≥ 1, so Γ ≥ r⋆. The geometric sequence attains equality and is therefore optimal. If an optimizer satisfied hj < r max( j−2,0)  
+
+> ⋆
+
+for any j, its total coverage would be strictly less than 
+
+T − 1; hence equality holds for every j, proving uniqueness. The continuous anchor stages are 
+
+tm = T −
+
+> m−1
+
+X
+
+> j=1
+
+rmax( j−2,0)  
+
+> ⋆
+
+, m = 1 , . . . , B. (10) On the solver grid, apply the guarded order-preserving projection 
+
+tdisc  
+
+> m
+
+= Π grid 
+
+T −
+
+> m−1
+
+X
+
+> j=1
+
+rmax( j−2,0) 
+
+> ⋆
+
+ . (11) 
+
+Algorithm 1 GeoShrink 
+
+Input: Model Vθ , total steps T, solver Dt, condition c, noise xT , noise schedule {σt}Tt=0 , and budget B
+
+Output: Final sample x0 
+
+> 1:
+
+for t = T, T − 1, . . . , 1 do  
+
+> 2:
+
+if t ∈
+
+(
+
+Πgrid T −
+
+> m−1
+
+X
+
+> j=1
+
+rmax( j−2,0) 
+
+> ⋆
+
+!
+
+m = 1 , . . . , B, r ⋆ ≥ 1,
+
+> B−1
+
+X
+
+> j=1
+
+rmax( j−2,0)  
+
+> ⋆
+
+= T − 1
+
+)
+
+then 
+
+> 3:
+
+vt ← Vθ (xt, σ t, c ), t(3) ← t(2) , t(2) ← t(1) , t(1) ← t 
+
+> 4:
+
+else 
+
+> 5:
+
+vt ← v(1)  
+
+> t
+
++ v(1)  
+
+> t
+
+− v(2) 
+
+> t
+
+1 + 
+
+ σt+σt−1−2σ(1) 
+
+> t
+> 2
+
+ σ(1)  
+
+> t−σ(2)
+> t
+
+2
+
+sin 2
+
+
+
+∠
+
+
+
+v(1)  
+
+> t
+
+− v(2)  
+
+> t
+
+, v (2)  
+
+> t
+
+− v(3) 
+
+> t
+
+  
+
+> 6:
+
+end if 
+
+> 7:
+
+xt−1 ← D t(xt, v t; σt, σ t−1) 
+
+> 8:
+
+end for  
+
+> 9:
+
+return x0
+
+# 3 Empirical Analysis 
+
+## 3.1 Experimental Settings 
+
+Models, benchmarks, and baselines. We evaluate SD3.5 Medium (Stability AI, 2024; Esser et al., 2024) and FLUX.1-dev (Black Forest Labs, 2024) on Pick-a-Pic (Kirstain et al., 2023), and HunyuanVideo (Kong et al., 2024) on ChronoMagic-Bench-150 (Yuan et al., 2024) and VBench (Huang et al., 2024b), with additional audiovisual evalua-tion on MiniMax-H3 (MiniMax, 2026). Cross-domain experiments use HY-Motion (Wen et al., 2025), TRELLIS-text-base (Xiang et al., 2025) on T 3Bench-300 (He et al., 2023), Hunyuan3D-2 (Zhao et al., 2025b) on GSO-100 (Downs et al., 2022), TangoFlux (Hung et al., 2024) on AudioCaps-100 (Kim et al., 2019), and ACE-Step (Gong et al., 2025) on MusicCaps-100 (Agostinelli et al., 2023). Image and video baselines include FORA (Selvaraju et al., 2024), Tea-Cache (Liu et al., 2025a), ToCa (Zou et al., 2025), TaylorSeer (Liu et al., 2025b), SpeCa (Liu et al., 2025c), and ResilPhase (Zhao et al., 2026). 5Evaluation metrics. We report PSNR (Wang and Bovik, 2009), SSIM (Wang et al., 2004), and LPIPS (Zhang et al., 2018) for visual fidelity, together with ImageReward (Xu et al., 2023), MTScore (Yuan et al., 2024), VBench Score (Huang et al., 2024b), CLIP (Radford et al., 2021), and FVD (Unterthiner et al., 2018). Motion evaluation uses joint, root, velocity, acceleration, and retrieval metrics (Petrovich et al., 2023); 3D evaluation uses Chamfer distance (Fan et al., 2017), Hausdorff distance (Huttenlocher et al., 1993), IoU, and normal error. Audio evaluation uses log-spectral distance (Gray and Markel, 1976), multi-resolution STFT distance (Yamamoto et al., 2020), SI-SDR (Le Roux et al., 2019), and CLAP (Wu et al., 2023), with mel-spectrogram cosine similarity and log-mel L1 for audiovisual evaluation. Reference  GeoShrink  ResilPhase  SpeCa  TaylorSeer  TeaCache  ToCa 
+
+Figure 4: Qualitative comparison on text-to-image generation. GeoShrink better preserves the full-sampling refer-ence than competing acceleration methods at comparable speedups. 
+
+## 3.2 Image and Video Generation 
+
+As shown in Table 1, GeoShrink improves reference fidelity at comparable speedups. On SD3.5 Medium and FLUX.1-dev, it improves PSNR over the strongest listed fidelity baselines by 3.87 dB and 3.10 dB, respectively, while also improving SSIM and LPIPS. On HunyuanVideo, it reaches 4.99 × speedup and improves ChronoMagic-Bench-150 PSNR by 5.44 dB. Figures 4 and 5 further show improved visual fidelity, while Table 2 confirms clear gains over direct step reduction on MiniMax-H3 at matched NFE. On MiniMax-H3, improvements extend to both visual and audio metrics across all tested NFE budgets. These results support the applicability of solver-interface prediction to joint audiovisual generation. Table 2: Quantitative comparison between GeoShrink and direct step reduction on MiniMax-H3. 
+
+NFE Method Visual Audio CLIP ↑ FVD ↓ PSNR ↑ SSIM ↑ LPIPS ↓ Mel Cos ↑ LogMel L1 ↓ SI-SDR ↑
+
+10 Direct 33.7164 166.0071 17.4910 0.6190 0.3632 0.7730 1.1660 -0.2793 
+
+GeoShrink 33.8711 164.5004 24.2122 0.7883 0.1678 0.8528 0.6998 1.5133 
+
+15 Direct 33.6598 166.8756 19.2673 0.6732 0.2914 0.8537 0.8240 3.2408 
+
+GeoShrink 33.7885 166.1741 29.1320 0.8810 0.0818 0.9595 0.3645 7.6285 
+
+20 Direct 33.6435 166.9863 21.2167 0.7250 0.2317 0.9011 0.5850 6.3888 
+
+GeoShrink 33.6454 164.4024 33.1394 0.9276 0.0451 0.9878 0.2134 12.585 
+
+6Table 1: Quantitative comparison of acceleration methods across image and video generation models. For the task-specific metric, we report ImageReward on Pick-a-Pic, MTScore on ChronoMagic-Bench-150, and VBench Score on VBench. 
+
+Model Benchmark Method Setting Speedup PSNR ↑ SSIM ↑ LPIPS ↓ Task Score ↑
+
+SD3.5 Medium Pick-a-Pic SpeCa τ0 = 7 , β = 0 .3 2.40 × 20.759 0.7743 0.2704 0.7873 TaylorSeer N = 3 , O = 1 2.49 × 18.493 0.7454 0.2918 0.7815 TeaCache l = 0 .4 2.66 × 20.872 0.7616 0.2942 0.7671 ToCa N = 10 , R = 90% 2.09 × 20.431 0.7057 0.3111 0.7662 ResilPhase N = 3 , O = 1 2.76 × 18.483 0.7451 0.2921 0.7813 
+
+GeoShrink B = 10 2.80 × 24.744 0.8450 0.2078 0.7924 
+
+FLUX.1-dev Pick-a-Pic SpeCa τ0 = 12 , β = 0 .3 4.78 × 17.4881 0.6768 0.4481 0.9031 TaylorSeer N = 11 , O = 2 4.65 × 15.7641 0.6439 0.4398 0.9181 TeaCache l = 1 .4 4.82 × 18.0757 0.6850 0.4123 0.9207 ToCa N = 3 , R = 93% 4.86 × 14.8189 0.4608 0.7701 0.7310 ResilPhase N = 6 , O = 1 4.97 × 18.5211 0.7083 0.3499 0.9219 
+
+GeoShrink B = 10 4.98 × 21.6227 0.7903 0.2552 0.9468 
+
+HunyuanVideo ChronoMagic-150 FORA N = 6 4.87 × 14.181 0.5812 0.4924 41.4804 TeaCache l = 0 .4 4.62 × 17.620 0.6706 0.3492 41.1334 ToCa N = 10 , R = 90% 4.86 × 13.335 0.5166 0.5840 42.3887 SpeCa τ0 = 1 .5, β = 0 .2 4.65 × 14.428 0.5867 0.4720 40.9493 TaylorSeer N = 7 , O = 1 4.63 × 14.303 0.5872 0.4850 41.1623 ResilPhase N = 6 , O = 1 4.98 × 19.881 0.6854 0.2878 42.7770 
+
+GeoShrink B = 10 4.99 × 25.317 0.8202 0.1699 42.9833 
+
+HunyuanVideo VBench FORA N = 6 4.87 × 15.871 0.6073 0.4584 78.70 TeaCache l = 0 .4 4.62 × 17.923 0.6547 0.3760 79.77 ToCa N = 10 , R = 90% 4.86 × 17.581 0.5857 0.4501 76.37 SpeCa τ0 = 1 .5, β = 0 .2 4.65 × 16.461 0.5883 0.4219 79.59 TaylorSeer N = 7 , O = 1 4.63 × 15.520 0.5641 0.4581 79.07 ResilPhase N = 6 , O = 1 4.98 × 18.920 0.6709 0.3341 79.78 
+
+GeoShrink B = 10 4.99 × 22.8045 0.7925 0.1930 80.18 
+
+7Reference 
+
+> GeoShrink
+> ResilPhase
+> FORA
+> SpeCa
+> TaylorSeer
+> TeaCache
+> ToCa
+
+Figure 5: Qualitative comparison on text-to-video generation. GeoShrink preserves spatial details and temporal consistency more faithfully under aggressive acceleration. Table 3: Comparison between GeoShrink and direct step reduction on the HY-Motion. 
+
+NFE Method RA-MPJPE ↓ Global MPJPE ↓ RootErr ↓ VelErr ↓ AccErr ↓ uTMR R@3 ↑ Matching ↓
+
+10 Direct 120.618 501.158 465.109 7.325 2.484 0.6260 49.8151 
+
+GeoShrink 5.303 26.009 25.024 0.694 0.301 0.7280 46.8595 
+
+20 Direct 81.194 360.800 335.515 5.822 1.948 0.7105 47.9181 
+
+GeoShrink 1.252 6.004 5.786 0.199 0.102 0.7320 46.7981 
+
+30 Direct 51.350 194.661 177.461 4.035 1.363 0.7175 47.2669 
+
+GeoShrink 0.394 2.337 2.279 0.093 0.063 0.7300 46.8036 
+
+40 Direct 25.686 86.252 77.388 2.219 0.766 0.7155 46.9870 
+
+GeoShrink 0.100 0.799 0.789 0.046 0.047 0.7300 46.8060 
+
+## 3.3 Human Motion Generation 
+
+As shown in Table 3 and Figure 6, the benefit of retaining the dense solver trajectory is particularly pronounced for human motion. Across all tested NFE budgets, GeoShrink sharply reduces geometric and kinematic errors over direct step reduction while improving retrieval-based semantic metrics. The large gap at matched NFE suggests that motion trajectories are especially sensitive to removing intermediate solver updates. 
+
+## 3.4 3D Generation 
+
+Table 4 and Figure 7 show that GeoShrink generally improves reference fidelity over direct step reduction, especially on TRELLIS, where Center Chamfer Distance, LPIPS, and Hausdorff distance are consistently reduced. Results on Hunyuan3D-2 are more heterogeneous, with clear gains at several budgets and small reversals on individual geometry metrics. 8Reference 
+
+Direct 
+
+Reduction 
+
+GeoShrink 
+
+> “A person leans their body to the right while running in a curve to the right ”
+> “A person swings their right arm while striding ”
+> “A person turns to the left,
+> then walks forward ”
+
+Figure 6: Motion qualitative comparison. GeoShrink better preserves full-sampling trajectories. Input Reference Direct reduction GeoShrink 
+
+Figure 7: 3D qualitative comparison. Left to right: input, reference (black), direct reduction (red), and GeoShrink (green). GeoShrink better preserves geometry. Table 5: Comparison between GeoShrink and direct step reduction for audio generation at matched NFE budgets. We evaluate TangoFlux on AudioCaps-100 and ACE-Step on MusicCaps-100. 
+
+NFE Method TangoFlux / AudioCaps-100 ACE-Step / MusicCaps-100 LSD ↓ MS-STFT ↓ SI-SDR ↑ CLAP ↑ LSD ↓ MS-STFT ↓ SI-SDR ↑ CLAP ↑
+
+15 Direct 9.594 0.458 3.83 0.6857 8.524 0.454 3.66 0.4906 
+
+GeoShrink 6.233 0.228 11.06 0.6886 8.156 0.453 3.58 0.4947 
+
+20 Direct 8.006 0.332 6.92 0.6902 7.989 0.395 5.45 0.4902 
+
+GeoShrink 4.852 0.090 18.52 0.6914 7.596 0.340 6.87 0.4955 
+
+25 Direct 6.744 0.245 10.10 0.6922 7.513 0.309 8.25 0.4887 
+
+GeoShrink 4.295 0.045 24.39 0.6928 7.486 0.322 7.47 0.4923 
+
+30 Direct 6.184 0.184 13.48 0.6913 7.333 0.285 9.18 0.4895 
+
+GeoShrink 3.922 0.016 33.55 0.6931 6.945 0.229 11.30 0.4922 
+
+91 2 3 4 5 6               
+
+> Speedup (×)
+> 15 20 25 30 35
+> PSNR ↑
+> GeoShrink TeaCache ToCa TaylorSeer ResilPhase SpeCa
+> 123456
+> Speedup (×)
+> 0.5 0.6 0.7 0.8 0.9 1.0
+> SSIM ↑
+> 123456
+> Speedup (×)
+> 0.0 0.2 0.4 0.6
+> LPIPS ↓
+> 123456
+> Speedup (×)
+> -0.50 -0.25 0.00 0.25 0.50 0.75 1.00
+> ImageReward ↑
+
+Figure 8: Speed-quality trade-off. GeoShrink yields a better Pareto frontier on SD3.5 Medium. Table 4: Comparison between GeoShrink implementations and direct step reduction for 3D generation. We evaluate TRELLIS-text-base on T 3Bench-300 and Hunyuan3D-2 on GSO-100. 
+
+TRELLIS-text-base / T 3Bench-300 Hunyuan3D-2 / GSO-100 NFE Method CLIP ↑ Center CD 2 ↓ LPIPS ↓ Hausdorff ↓ NFE Method CLIP ↑ Surface CD 2 ↓ IoU ↑ Normal (◦) ↓
+
+10 Direct 26 .6521 2.007 × 10 −6 0.009377 0.013083 10 Direct 74 .3904 5.411 × 10 −3 0.89199 15 .3606 
+
+GeoShrink 26 .7623 1.005 × 10 −6 0.004232 0.010800 GeoShrink 74 .4081 5.270 × 10 −3 0.89790 15 .0119 
+
+12 Direct 26 .7772 1.529 × 10 −6 0.006723 0.012179 15 Direct 75 .1844 6.383 × 10 −4 0.95457 9.4850 
+
+GeoShrink 26 .7711 4.042 × 10 −7 0.001528 0.008603 GeoShrink 75 .3055 6.704 × 10 −4 0.95319 9.5296 
+
+15 Direct 26 .6790 1.176 × 10 −6 0.004662 0.011269 20 Direct 75 .2853 4.383 × 10 −4 0.96723 7.6636 
+
+GeoShrink 26 .7704 3.845 × 10 −7 0.001484 0.008399 GeoShrink 75 .3562 4.505 × 10 −4 0.96818 7.4691 
+
+18 Direct 26 .7687 5.040 × 10 −7 0.001729 0.008954 25 Direct 75 .4099 3.750 × 10 −4 0.97453 6.5459 
+
+GeoShrink 26 .7743 1.710 × 10 −7 0.000603 0.006766 GeoShrink 75 .4237 1.796 × 10 −4 0.97631 6.1900 
+
+20 Direct 26 .8150 4.745 × 10 −7 0.001613 0.008815 30 Direct 75 .4142 1.380 × 10 −4 0.98147 5.6879 
+
+GeoShrink 26 .7753 1.593 × 10 −7 0.000584 0.006574 GeoShrink 75 .4569 8.061 × 10 −5 0.98253 5.5189 
+
+## 3.5 Audio and Music Generation 
+
+As shown in Table 5, GeoShrink transfers effectively to audio generation. On TangoFlux, it consistently improves spectral and waveform fidelity across all tested NFE budgets, with especially large gains in SI-SDR. Results on ACE-Step are more mixed: GeoShrink generally improves LSD and CLAP but does not dominate every spectral metric at every budget, indicating that music generation can be more metric-dependent. 
+
+## 3.6 Ablation Study 
+
+Component ablation. Table 6 shows that geometric adaptation and shrink interpolation improve quality on SD3.5 Medium at 4× acceleration. Both compo-nents provide individual gains, while their combi-nation performs best across all metrics, confirming their complementary effects. Table 6: Ablation study of geometric adaptation and innovation shrinkage using SD3.5 Medium. 
+
+Method PSNR ↑ SSIM ↑ LPIPS ↓ ImageReward ↑
+
+Fixed-Linear 9.882 0.404832 0.702306 -1.2556 Geo-Linear 15.457 0.621274 0.414758 0.278629 Fixed-Shrink 19.556 0.692327 0.388319 0.559383 
+
+GeoShrink 19.851 0.735519 0.360551 0.619176 
+
+Budget robustness. As shown in Figure 8, GeoShrink maintains a stronger speed-quality trade-off across the tested acceleration range. At comparable speedups, it achieves higher PSNR and SSIM and lower LPIPS, while maintaining competitive ImageReward scores. Its fidelity advantage remains evident as acceleration increases, suggesting greater robustness to reduced computation budgets. These results show that the gains extend across multiple metrics and operating points, allowing GeoShrink to accommodate different inference budgets while preserving output quality. 
+
+# 4 Conclusion 
+
+We introduced GeoShrink , a training-free acceleration method that preserves the original solver grid while sparsifying expensive model evaluations. GeoShrink predicts skipped solver-facing outputs through geometry-aware innovation shrinkage and places exact queries using a geometric anchor schedule. Experiments across image, video, motion, 10 audio, music, and 3D generation show that GeoShrink consistently improves fidelity under aggressive acceleration and yields a stronger speed-quality trade-off. Overall, GeoShrink demonstrates that preserving the solver grid can be more effective than directly shortening it. 
+
+# References 
+
+Andrea Agostinelli, Timo I. Denk, Zal´ an Borsos, Jesse Engel, Mauro Verzetti, Antoine Caillon, Qingqing Huang, Aren Jansen, Adam Roberts, Marco Tagliasacchi, Matt Sharifi, Neil Zeghidour, and Christian Frank. MusicLM: Generating Music From Text. arXiv preprint arXiv:2301.11325 , 2023. URL https://arxiv.org/abs/ 2301.11325 .Fan Bao, Shen Nie, Kaiwen Xue, Yue Cao, Chongxuan Li, Hang Su, and Jun Zhu. All are Worth Words: A ViT Backbone for Diffusion Models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2023. URL https://arxiv.org/abs/2209.12152 .Black Forest Labs. FLUX.1 [dev]. Official model card, 2024. URL https://huggingface.co/ black-forest-labs/FLUX.1-dev . Accessed September 22, 2026. Peiliang Cai, Jiacheng Liu, Haowen Xu, Xinyu Wang, Chang Zou, and Linfeng Zhang. LESA: Learnable Stage-Aware Predictors for Diffusion Model Acceleration. arXiv preprint arXiv:2602.20497 , 2026. URL https://arxiv. org/abs/2602.20497 .Pengtao Chen, Mingzhu Shen, Peng Ye, Jianjian Cao, Chongjun Tu, Christos-Savvas Bouganis, Yiren Zhao, and Tao Chen. ∆-DiT: A Training-Free Acceleration Method Tailored for Diffusion Transformers. arXiv preprint arXiv:2406.01125 , 2024. URL https://arxiv.org/abs/2406.01125 .Wenshuo Chen, Haosen Li, Shaofeng Liang, Lei Wang, Haozhe Jia, Kaishen Yuan, Jieming Wu, Bowen Tian, and Yutao Yue. POLARIS: Projection-orthogonal least squares for robust and adaptive inversion in diffusion models, 2025. URL https://arxiv.org/abs/2512.00369 .Wenshuo Chen, Kuimou Yu, Bowen Tian, Jianfei Song, Shaofeng Liang, Haozhe Jia, Kan Cheng, Haosen Li, Kaishen Yuan, Lei Wang, Jiemin Wu, Songning Lai, and Yutao Yue. MemoGen: Can past experience improve future text-to-image generation?, 2026. URL https://arxiv.org/abs/2606.03243 .Laura Downs, Anthony Francis, Nate Koenig, Brandon Kinman, Ryan Hickman, Krista Reymann, Thomas B. McHugh, and Vincent Vanhoucke. Google Scanned Objects: A High-Quality Dataset of 3D Scanned Household Items. In IEEE International Conference on Robotics and Automation , 2022. URL https://arxiv.org/ abs/2204.11918 .Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas M¨ uller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, Dustin Podell, Tim Dockhorn, Zion English, and Robin Rombach. Scaling Rectified Flow Transformers for High-Resolution Image Synthesis. In Proceedings of the 41st International Con-ference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 12606–12633. PMLR, 2024. URL https://proceedings.mlr.press/v235/esser24a.html .Haoqiang Fan, Hao Su, and Leonidas Guibas. A Point Set Generation Network for 3D Object Reconstruction from a Single Image. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition , 2017. URL 
+
+https://arxiv.org/abs/1612.00603 .Junmin Gong, Sean Zhao, Sen Wang, Shengyuan Xu, and Joe Guo. ACE-Step: A Step Towards Music Generation Foundation Model. arXiv preprint arXiv:2506.00045 , 2025. URL https://arxiv.org/abs/2506.00045 .A. Gray and J. Markel. Distance measures for speech processing. IEEE Transactions on Acoustics, Speech, and Signal Processing , 24(5):380–391, 1976. doi: 10.1109/tassp.1976.1162849. URL https://doi.org/10. 1109/tassp.1976.1162849 .11 Yuze He, Yushi Bai, Matthieu Lin, Wang Zhao, Yubin Hu, Jenny Sheng, Ran Yi, Juanzi Li, and Yong-Jin Liu. T 3Bench: Benchmarking Current Progress in Text-to-3D Generation. arXiv preprint arXiv:2310.02977 , 2023. URL https: //arxiv.org/abs/2310.02977 .Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising Diffusion Probabilistic Models. In Advances in Neural Infor-mation Processing Systems , 2020. URL https://arxiv.org/abs/2006.11239 .Yushi Huang, Zining Wang, Ruihao Gong, Jing Liu, Xinjie Zhang, Jinyang Guo, Xianglong Liu, and Jun Zhang. Har-moniCa: Harmonizing Training and Inference for Better Feature Caching in Diffusion Transformer Acceleration. 
+
+arXiv preprint arXiv:2410.01723 , 2024a. URL https://arxiv.org/abs/2410.01723 .Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, Yaohui Wang, Xinyuan Chen, Limin Wang, Dahua Lin, Yu Qiao, and Ziwei Liu. VBench: Comprehensive Benchmark Suite for Video Generative Models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024b. URL https://arxiv.org/abs/2311.17982 .Chia-Yu Hung, Navonil Majumder, Zhifeng Kong, Ambuj Mehrish, Amir Ali Bagherzadeh, Chuan Li, Rafael Valle, Bryan Catanzaro, and Soujanya Poria. TangoFlux: Super Fast and Faithful Text to Audio Generation with Flow Matching and Clap-Ranked Preference Optimization. arXiv preprint arXiv:2412.21037 , 2024. URL https: //arxiv.org/abs/2412.21037 .D.P. Huttenlocher, G.A. Klanderman, and W.J. Rucklidge. Comparing images using the Hausdorff distance. IEEE Transactions on Pattern Analysis and Machine Intelligence , 15(9):850–863, 1993. doi: 10.1109/34.232073. URL 
+
+https://doi.org/10.1109/34.232073 .Kumara Kahatapitiya, Haozhe Liu, Sen He, Ding Liu, Menglin Jia, Chenyang Zhang, Michael S. Ryoo, and Tian Xie. Adaptive Caching for Faster Video Generation with Diffusion Transformers. arXiv preprint arXiv:2411.02397 ,2024. URL https://arxiv.org/abs/2411.02397 .Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the Design Space of Diffusion-Based Generative Models. In Advances in Neural Information Processing Systems , 2022. URL https://arxiv.org/abs/ 2206.00364 .Chris Dongjoo Kim, Byeongchang Kim, Hyunmin Lee, and Gunhee Kim. AudioCaps: Generating Captions for Audios in The Wild. In Proceedings of the 2019 Conference of the North American Chapter of the As-sociation for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers) ,pages 119–132. Association for Computational Linguistics, 2019. doi: 10.18653/v1/N19-1011. URL https: //aclanthology.org/N19-1011/ .Yuval Kirstain, Adam Polyak, Uriel Singer, Shahbuland Matiana, Joe Penna, and Omer Levy. Pick-a-Pic: An Open Dataset of User Preferences for Text-to-Image Generation. In Advances in Neural Information Processing Systems ,2023. URL https://arxiv.org/abs/2305.01569 .Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, Kathrina Wu, Qin Lin, Junkun Yuan, Yanxin Long, Aladdin Wang, Andong Wang, Changlin Li, Duojun Huang, Fang Yang, Hao Tan, Hongmei Wang, Jacob Song, Jiawang Bai, Jianbing Wu, Jinbao Xue, Joey Wang, Kai Wang, Mengyang Liu, Pengyu Li, Shuai Li, Weiyan Wang, Wenqing Yu, Xinchi Deng, Yang Li, Yi Chen, Yutao Cui, Yuanbo Peng, Zhentao Yu, Zhiyu He, Zhiyong Xu, Zixiang Zhou, Zunnan Xu, Yangyu Tao, Qinglin Lu, Songtao Liu, Dax Zhou, Hongfa Wang, Yong Yang, Di Wang, Yuhong Liu, Jie Jiang, and Caesar Zhong. HunyuanVideo: A Systematic Framework For Large Video Generative Models. arXiv preprint arXiv:2412.03603 , 2024. URL 
+
+https://arxiv.org/abs/2412.03603 .Jonathan Le Roux, Scott Wisdom, Hakan Erdogan, and John R. Hershey. SDR – Half-baked or Well Done? In ICASSP 2019 - 2019 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , pages 626–630, 2019. doi: 10.1109/icassp.2019.8683855. URL https://doi.org/10.1109/icassp.2019.8683855 .Haosen Li, Wenshuo Chen, Shaofeng Liang, Lei Wang, Haozhe Jia, and Yutao Yue. Guided path sampling: Steer-ing diffusion models back on track with principled path guidance. In Companion Proceedings of the ACM Web Conference 2026 , pages 1295–1300. ACM, 2026a. doi: 10.1145/3774905.3794681. 12 Haosen Li, Wenshuo Chen, Shaofeng Liang, Lei Wang, Kaishen Yuan, and Yutao Yue. Z2-Sampling: Zero-cost zigzag trajectories for semantic alignment in diffusion models, 2026b. URL https://arxiv.org/abs/ 2604.23536 .Haosen Li, Wenshuo Chen, Lei Wang, Shaofeng Liang, Haozhe Jia, and Yutao Yue. Oracle noise: Faster seman-tic spherical alignment for interpretable latent optimization, 2026c. URL https://arxiv.org/abs/2604. 23540 .Haosen Li, Wenshuo Chen, Lei Wang, Shaofeng Liang, Bowen Tian, Soning Lai, and Yutao Yue. Delta score matters! spatial adaptive multi guidance in diffusion models, 2026d. URL https://arxiv.org/abs/2604.26503 .Senmao Li, Taihang Hu, Joost van de Weijer, Fahad Shahbaz Khan, Tao Liu, Linxuan Li, Shiqi Yang, Yaxing Wang, Ming-Ming Cheng, and Jian Yang. Faster Diffusion: Rethinking the Role of the Encoder for Diffusion Model Inference. arXiv preprint arXiv:2312.09608 , 2023. URL https://arxiv.org/abs/2312.09608 .Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep Embedding Tells: It’s Time to Cache for Video Diffusion Model. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2025a. URL https://arxiv.org/abs/ 2411.19108 .Jiacheng Liu, Chang Zou, Yuanhuiyi Lyu, Junjie Chen, and Linfeng Zhang. From Reusing to Forecasting: Acceler-ating Diffusion Models with TaylorSeers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , 2025b. URL https://arxiv.org/abs/2503.06923 .Jiacheng Liu, Chang Zou, Yuanhuiyi Lyu, Fei Ren, Shaobo Wang, Kaixin Li, and Linfeng Zhang. SpeCa: Ac-celerating Diffusion Transformers with Speculative Feature Caching. In Proceedings of the 33rd ACM Interna-tional Conference on Multimedia , pages 10024–10033, 2025c. doi: 10.1145/3746027.3755331. URL https: //doi.org/10.1145/3746027.3755331 .Joseph Liu, Joshua Geddes, Ziyu Guo, Haomiao Jiang, and Mahesh Kumar Nandwana. SmoothCache: A Univer-sal Inference Acceleration Technique for Diffusion Transformers. arXiv preprint arXiv:2411.10510 , 2024. URL 
+
+https://arxiv.org/abs/2411.10510 .Luping Liu, Yi Ren, Zhijie Lin, and Zhou Zhao. Pseudo Numerical Methods for Diffusion Models on Manifolds. In International Conference on Learning Representations , 2022. URL https://arxiv.org/abs/2202. 09778 .Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow. In International Conference on Learning Representations , 2023. URL https://arxiv.org/ abs/2209.03003 .Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps. In Advances in Neural Information Processing Systems , 2022. URL https://arxiv.org/abs/2206.00927 .Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. DPM-Solver++: Fast Solver for Guided Sampling of Diffusion Probabilistic Models. Machine Intelligence Research , 22(4):730–751, 2025. doi: 10.1007/ s11633-025-1562-4. URL https://doi.org/10.1007/s11633-025-1562-4 .Zhengyao Lv, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K. Wong. FasterCache: Training-Free Video Diffusion Model Acceleration with High Quality. In International Conference on Learning Representations , 2025. URL https://arxiv.org/abs/2410.19355 .Xinyin Ma, Gongfan Fang, Michael Bi Mi, and Xinchao Wang. Learning-to-Cache: Accelerating Diffusion Trans-former via Layer Caching. arXiv preprint arXiv:2406.01733 , 2024a. URL https://arxiv.org/abs/2406. 01733 .13 Xinyin Ma, Gongfan Fang, and Xinchao Wang. DeepCache: Accelerating Diffusion Models for Free. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 15762–15772, 2024b. URL https://openaccess.thecvf.com/content/CVPR2024/html/Ma_DeepCache_ Accelerating_Diffusion_Models_for_Free_CVPR_2024_paper.html .Zehong Ma, Longhui Wei, Feng Wang, Shiliang Zhang, and Qi Tian. MagCache: Fast Video Generation with Magnitude-Aware Cache. arXiv preprint arXiv:2506.09045 , 2025. URL https://arxiv.org/abs/2506. 09045 .MiniMax. MiniMax H3. Official model card, 2026. URL https://huggingface.co/MiniMaxAI/ MiniMax-H3 . Accessed September 22, 2026. William Peebles and Saining Xie. Scalable Diffusion Models with Transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , pages 4195–4205, 2023. URL 
+
+https://openaccess.thecvf.com/content/ICCV2023/html/Peebles_Scalable_ Diffusion_Models_with_Transformers_ICCV_2023_paper.html .Mathis Petrovich, Michael J. Black, and G¨ ul Varol. TMR: Text-to-Motion Retrieval Using Contrastive 3D Human Motion Synthesis. In Proceedings of the IEEE/CVF International Conference on Computer Vision , 2023. URL 
+
+https://arxiv.org/abs/2305.00976 .Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. Learning Transferable Vi-sual Models From Natural Language Supervision. In Proceedings of the 38th International Conference on Machine Learning , volume 139 of Proceedings of Machine Learning Research , pages 8748–8763. PMLR, 2021. URL 
+
+https://proceedings.mlr.press/v139/radford21a.html .Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj¨ orn Ommer. High-Resolution Image Synthesis with Latent Diffusion Models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2022. URL https://arxiv.org/abs/2112.10752 .Amirmojtaba Sabour, Sanja Fidler, and Karsten Kreis. Align Your Steps: Optimizing Sampling Schedules in Diffusion Models. arXiv preprint arXiv:2404.14507 , 2024. URL https://arxiv.org/abs/2404.14507 .Pratheba Selvaraju, Tianyu Ding, Tianyi Chen, Ilya Zharkov, and Luming Liang. FORA: Fast-Forward Caching in Diffusion Transformer Acceleration. arXiv preprint arXiv:2407.01425 , 2024. URL https://arxiv.org/ abs/2407.01425 .Junhyuk So, Jungwon Lee, and Eunhyeok Park. FRDiff : Feature Reuse for Universal Training-free Acceleration of Diffusion Models. arXiv preprint arXiv:2312.03517 , 2023. URL https://arxiv.org/abs/2312.03517 .Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep Unsupervised Learning using Nonequilibrium Thermodynamics. In Proceedings of the 32nd International Conference on Machine Learning ,volume 37 of Proceedings of Machine Learning Research , pages 2256–2265. PMLR, 2015. URL https:// proceedings.mlr.press/v37/sohl-dickstein15.html .Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising Diffusion Implicit Models. In International Conference on Learning Representations , 2021a. URL https://arxiv.org/abs/2010.02502 .Yang Song and Stefano Ermon. Generative Modeling by Estimating Gradients of the Data Distribution. In Advances in Neural Information Processing Systems , 2019. URL https://arxiv.org/abs/1907.05600 .Yang Song, Jascha Sohl-Dickstein, Diederik P. Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-Based Generative Modeling through Stochastic Differential Equations. In International Conference on Learning Representations , 2021b. URL https://arxiv.org/abs/2011.13456 .Stability AI. Stable Diffusion 3.5 Medium. Official model card, 2024. URL https://huggingface.co/ stabilityai/stable-diffusion-3.5-medium . Accessed September 22, 2026. 14 Thomas Unterthiner, Sjoerd van Steenkiste, Karol Kurach, Raphael Marinier, Marcin Michalski, and Sylvain Gelly. Towards Accurate Generative Models of Video: A New Metric & Challenges. arXiv preprint arXiv:1812.01717 ,2018. URL https://arxiv.org/abs/1812.01717 .Zhou Wang and Alan C. Bovik. Mean squared error: Love it or leave it? A new look at Signal Fidelity Measures. 
+
+IEEE Signal Processing Magazine , 26(1):98–117, 2009. doi: 10.1109/msp.2008.930649. URL https://doi. org/10.1109/msp.2008.930649 .Zhou Wang, Alan C. Bovik, Hamid R. Sheikh, and Eero P. Simoncelli. Image quality assessment: from error visibility to structural similarity. IEEE Transactions on Image Processing , 13(4):600–612, 2004. doi: 10.1109/tip.2003. 819861. URL https://doi.org/10.1109/tip.2003.819861 .Yuxin Wen, Qing Shuai, Di Kang, Jing Li, Cheng Wen, Yue Qian, Ningxin Jiao, Changhai Chen, Weijie Chen, Yiran Wang, Jinkun Guo, Dongyue An, Han Liu, Yanyu Tong, Chao Zhang, Qing Guo, Juan Chen, Qiao Zhang, Youyi Zhang, Zihao Yao, Cheng Zhang, Hong Duan, Xiaoping Wu, Qi Chen, Fei Cheng, Liang Dong, Peng He, Hao Zhang, Jiaxin Lin, Chao Zhang, Zhongyi Fan, Yifan Li, Zhichao Hu, Yuhong Liu, Linus, Jie Jiang, Xiaolong Li, and Linchao Bao. HY-Motion 1.0: Scaling Flow Matching Models for Text-To-Motion Generation. arXiv preprint arXiv:2512.23464 , 2025. URL https://arxiv.org/abs/2512.23464 .Yusong Wu, Ke Chen, Tianyu Zhang, Yuchen Hui, Marianna Nezhurina, Taylor Berg-Kirkpatrick, and Shlomo Dubnov. Large-scale Contrastive Language-Audio Pretraining with Feature Fusion and Keyword-to-Caption Augmentation. In IEEE International Conference on Acoustics, Speech and Signal Processing , 2023. URL 
+
+https://arxiv.org/abs/2211.06687 .Jianfeng Xiang, Zelong Lv, Sicheng Xu, Yu Deng, Ruicheng Wang, Bowen Zhang, Dong Chen, Xin Tong, and Jiaolong Yang. Structured 3D Latents for Scalable and Versatile 3D Generation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 21469–21480, 2025. URL https://openaccess.thecvf.com/content/CVPR2025/html/Xiang_Structured_3D_ Latents_for_Scalable_and_Versatile_3D_Generation_CVPR_2025_paper.html .Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. ImageReward: Learning and Evaluating Human Preferences for Text-to-Image Generation. In Advances in Neural Information Processing Systems , 2023. URL https://arxiv.org/abs/2304.05977 .Shuchen Xue, Mingyang Yi, Weijian Luo, Shifeng Zhang, Jiacheng Sun, Zhenguo Li, and Zhi-Ming Ma. SA-Solver: Stochastic Adams Solver for Fast Sampling of Diffusion Models. arXiv preprint arXiv:2309.05019 , 2023. URL 
+
+https://arxiv.org/abs/2309.05019 .Ryuichi Yamamoto, Eunwoo Song, and Jae-Min Kim. Parallel WaveGAN: A fast waveform generation model based on generative adversarial networks with multi-resolution spectrogram. In ICASSP 2020 - 2020 IEEE Interna-tional Conference on Acoustics, Speech and Signal Processing (ICASSP) , pages 6199–6203, 2020. doi: 10.1109/ icassp40776.2020.9053795. URL https://doi.org/10.1109/icassp40776.2020.9053795 .Shenghai Yuan, Jinfa Huang, Yongqi Xu, Yaoyang Liu, Shaofeng Zhang, Yujun Shi, Ruijie Zhu, Xinhua Cheng, Jiebo Luo, and Li Yuan. ChronoMagic-Bench: A Benchmark for Metamorphic Evaluation of Text-to-Time-lapse Video Generation. In Advances in Neural Information Processing Systems , 2024. URL https://arxiv.org/abs/ 2406.18522 .Qinsheng Zhang and Yongxin Chen. Fast Sampling of Diffusion Models with Exponential Integrator. In International Conference on Learning Representations , 2023. URL https://arxiv.org/abs/2204.13902 .Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, and Oliver Wang. The Unreasonable Effectiveness of Deep Features as a Perceptual Metric. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2018. URL https://arxiv.org/abs/1801.03924 .Qicheng Zhao, Yu Li, Qi Sun, and Zheyu Yan. ResilPhase: Plug-and-Play Phase Mapping and Noise-Resilient Macro-Trajectory Extrapolation for Diffusion Acceleration. arXiv preprint arXiv:2606.26769 , 2026. URL https:// arxiv.org/abs/2606.26769 .15 Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. UniPC: A Unified Predictor-Corrector Framework for Fast Sampling of Diffusion Models. In Advances in Neural Information Processing Systems , 2023. URL 
+
+https://arxiv.org/abs/2302.04867 .Xuanlei Zhao, Xiaolong Jin, Kai Wang, and Yang You. Real-Time Video Generation with Pyramid Attention Broad-cast. In International Conference on Learning Representations , 2025a. URL https://arxiv.org/abs/ 2408.12588 .Zibo Zhao, Zeqiang Lai, Qingxiang Lin, Yunfei Zhao, Haolin Liu, Shuhui Yang, Yifei Feng, Mingxin Yang, Sheng Zhang, Xianghui Yang, Huiwen Shi, Sicong Liu, Junta Wu, Yihang Lian, Fan Yang, Ruining Tang, Zebin He, Xinzhou Wang, Jian Liu, Xuhui Zuo, Zhuo Chen, Biwen Lei, Haohan Weng, Jing Xu, Yiling Zhu, Xinhai Liu, Lixin Xu, Changrong Hu, Shaoxiong Yang, Song Zhang, Yang Liu, Tianyu Huang, Lifu Wang, Jihong Zhang, Meng Chen, Liang Dong, Yiwen Jia, Yulin Cai, Jiaao Yu, Yixuan Tang, Hao Zhang, Zheng Ye, Peng He, Runzhou Wu, Chao Zhang, Yonghao Tan, Jie Xiao, Yangyu Tao, Jianchen Zhu, Jinbao Xue, Kai Liu, Chongqing Zhao, Xinming Wu, Zhichao Hu, Lei Qin, Jianbing Peng, Zhan Li, Minghui Chen, Xipeng Zhang, Lin Niu, Paige Wang, Yingkai Wang, Haozhao Kuang, Zhongyi Fan, Xu Zheng, Weihao Zhuang, YingPing He, Tian Liu, Yong Yang, Di Wang, Yuhong Liu, Jie Jiang, Jingwei Huang, and Chunchao Guo. Hunyuan3D 2.0: Scaling Diffusion Models for High Resolution Textured 3D Assets Generation. arXiv preprint arXiv:2501.12202 , 2025b. URL https: //arxiv.org/abs/2501.12202 .Kaiwen Zheng, Cheng Lu, Jianfei Chen, and Jun Zhu. DPM-Solver-v3: Improved Diffusion ODE Solver with Empiri-cal Model Statistics. arXiv preprint arXiv:2310.13268 , 2023. URL https://arxiv.org/abs/2310.13268 .Xin Zhou, Dingkang Liang, Kaijin Chen, Tianrui Feng, Xiwu Chen, Hongkai Lin, Yikang Ding, Feiyang Tan, Heng-shuang Zhao, and Xiang Bai. Less is Enough: Training-Free Video Diffusion Acceleration via Runtime-Adaptive Caching. arXiv preprint arXiv:2507.02860 , 2025. URL https://arxiv.org/abs/2507.02860 .Chang Zou, Shikang Zheng, Evelyn Zhang, Runlin Guo, Haohang Xu, Zhengyi Shi, Conghui He, Xuming Hu, and Linfeng Zhang. Rethinking Token-wise Feature Caching: Accelerating Diffusion Transformers with Dual Feature Caching. arXiv preprint arXiv:2412.18911 , 2024. URL https://arxiv.org/abs/2412.18911 .Chang Zou, Xuyang Liu, Ting Liu, Siteng Huang, and Linfeng Zhang. Accelerating Diffusion Transformers with Token-wise Feature Caching. In International Conference on Learning Representations , 2025. URL https: //arxiv.org/abs/2410.05317 .
+
+# A Related Works 
+
+Diffusion acceleration has been explored through improved numerical solvers, temporal reuse, computation reduction, and low-overhead test-time refinement. 
+
+Fast numerical sampling. Early work reduces the number of denoising evaluations by designing more accurate discretizations of diffusion ODEs or SDEs. DDIM (Song et al., 2021a) enables non-Markovian sampling with fewer denoising steps, while PNDM (Liu et al., 2022), DEIS (Zhang and Chen, 2023), DPM-Solver (Lu et al., 2022), DPM-Solver++ (Lu et al., 2025), UniPC (Zhao et al., 2023), DPM-Solver-v3 (Zheng et al., 2023), and SA-Solver (Xue et al., 2023) improve low-budget sampling through higher-order or structure-aware integration. EDM (Karras et al., 2022) jointly studies parameterization and discretization, while Align Your Steps (Sabour et al., 2024) directly optimizes the sampling schedule for a fixed model and solver. 
+
+Temporal reuse and feature caching. A large body of work exploits temporal redundancy in intermediate dif-fusion representations. DeepCache (Ma et al., 2024b), Faster Diffusion (Li et al., 2023), and FRDiff (So et al., 2023) reuse slowly varying U-Net features across timesteps. For diffusion transformers, Learning-to-Cache (Ma et al., 2024a), HarmoniCa (Huang et al., 2024a), ∆-DiT (Chen et al., 2024), FORA (Selvaraju et al., 2024), Pyramid Atten-tion Broadcast (Zhao et al., 2025a), FasterCache (Lv et al., 2025), TeaCache (Liu et al., 2025a), ToCa (Zou et al., 2025), AdaCache (Kahatapitiya et al., 2024), SmoothCache (Liu et al., 2024), DuCa (Zou et al., 2024), EasyCache (Zhou et al., 2025), and MagCache (Ma et al., 2025) develop increasingly adaptive policies for deciding what and when to reuse. More recently, TaylorSeer (Liu et al., 2025b), SpeCa (Liu et al., 2025c), ResilPhase (Zhao et al., 2026), and 16 LESA (Cai et al., 2026) go beyond direct caching by forecasting future intermediate representations from historical features. 
+
+Efficient test-time refinement and incremental adaptation. A complementary line of training-free work im-proves generation through lightweight corrections applied during inference, progressively refining the trajectory, guid-ance signal, initialization, or reusable experience without updating model parameters. POLARIS (Chen et al., 2025) performs step-wise adaptation of the guidance scale to suppress accumulated inversion error with negligible addi-tional overhead, while Guided Path Sampling (Li et al., 2026a) stabilizes iterative denoising–inversion refinement through path-aware guidance. Z2-Sampling (Li et al., 2026b) further eliminates the extra evaluations of explicit zigzag refinement by algebraically collapsing the trajectory and reusing a temporal semantic surrogate, recovering the standard sampling cost. At a finer spatial level, Delta Score (Li et al., 2026d) adapts guidance locally according to the conditional–unconditional prediction difference, providing region-dependent semantic correction without retraining. Oracle Noise (Li et al., 2026c) instead performs fast constrained optimization of the initial latent to incrementally improve semantic alignment before denoising. Beyond a single sampling trajectory, MemoGen (Chen et al., 2026) extends test-time refinement across generation episodes by accumulating successful strategies and failure feedback as reusable experience memory. Together, these methods demonstrate that substantial improvements can be obtained through lightweight incremental interventions at inference time. GeoShrink follows the same training-free efficiency principle but targets a different source of redundancy: rather than refining guidance, inversion, initialization, or exter-nal memory, it sparsifies expensive model evaluations while preserving the original solver grid and predicts only the missing solver-facing outputs. 
+
+# B Implementation details 
+
+All experiments are conducted on NVIDIA A100 GPUs, with each experiment repeated using five random seeds. We report sampling latency, excluding encoding and decoding. Speedups are computed relative to the corresponding full-NFE reference using the same timing protocol. For each example and seed, all methods and the corresponding reference use identical inputs, conditioning, and initial noise, with all other inference settings held fixed except for the acceleration configuration. We evaluate SD3.5 Medium and FLUX.1-dev on 100 prompts from the Pick-a-Pic test set, using 28-step and 50-step reference grids, respectively. Both models use an image resolution of 1024 × 1024 , with guidance scales of 4.5 and 3.5, respectively. HunyuanVideo is evaluated on ChronoMagic-Bench-150 and the full VBench prompt set using a 50-step reference grid. It produces 65-frame videos at 640 × 480 resolution and 24 fps, with a guidance scale of 5.0. For MiniMax-H3, we evaluate all 150 prompts from ChronoMagic-Bench-150 using a 30-step reference grid and evaluation budgets of B ∈ { 10 , 15 , 20 }. Videos contain 124 frames at 960 × 544 resolution and 24 fps. Inference uses BF16 precision and automatic offloading with a 12 GB memory reserve. For HY-Motion-1.0, we select 100 examples through stratified sampling from the official 1,983-example SSAE set. We generate five-second motions with the Euler solver, a guidance scale of 5.0, and a 50-step reference grid, evaluating budgets of B ∈ { 10 , 20 , 30 , 40 }. Prompt rewriting and duration estimation are disabled. For TRELLIS-text-base, we evaluate all 300 examples from T³Bench, comprising 100 examples per category. The sparse-structure stage remains fixed at 25 steps, while the SLAT stage uses a 25-step reference grid. We set the guidance scale to 7.5, the guidance interval to [0 .5, 0.95] , and the time-rescaling parameter to 3.0. For Hunyuan3D-2, we evaluate shape generation on 100 objects selected from GSO by a fixed hash-based rule. Inference uses FP16 precision, a 50-step reference grid, a guidance scale of 5.0, a latent shape of 3072 ×64 , and a mesh extraction resolution of 256. For TangoFlux and ACE-Step, we select 100 examples at fixed index intervals from the AudioCaps test split and MusicCaps, respectively. Both models generate ten-second audio using a 40-step reference grid. TangoFlux uses a sampling rate of 44.1 kHz and a guidance scale of 4.5. ACE-Step uses 48 kHz, BF16 precision, a guidance scale of 7.0, and a shift parameter of 3.0, with empty lyrics in text-to-music mode. 
+
+# C Proofs and Additional Analysis 
+
+In the appendix, q indexes the latest exact query, aq is its solver stage, and n is the current skipped stage. Write 
+
+v(i) 
+
+> n
+
+= Vθ (exaq−i+1 , σ (i) 
+
+> n
+
+, c ) and σ(i) 
+
+> n
+
+= σaq−i+1 for i ∈ { 1, 2, 3}. The anchor-indexed innovations are ∆vq = v(1)  
+
+> n
+
+−v(2) 
+
+> n
+
+17 and ∆v− 
+
+> q
+
+= v(2)  
+
+> n
+
+− v(3)  
+
+> n
+
+; θq ∈ [0 , π/ 2] is the acute angle between their lines, and ωq,n denotes the corresponding retention coefficient. 
+
+## C.1 Directional Prediction Loss and the Benefit of Shrinkage 
+
+Proposition 2 (Directional prediction loss) . For a skipped stage, define the unavailable target innovation at the same current state by 
+
+Iq,n = Vθ (exn, σ n, c ) − v(1)  
+
+> n
+
+.
+
+Suppose Aq = ∥∆vq ∥22 > 0, and define 
+
+cq,n = ⟨∆vq , I q,n ⟩
+
+Aq
+
+. (12) 
+
+For every real ω,
+
+∥ω∆vq − Iq,n ∥22 = P ⊥ 
+
+> ∆vq
+
+Iq,n 
+
+> 22
+
++ Aq (ω − cq,n )2. (13) 
+
+Consequently, the optimal coefficient in equation 1 is ω⋆q,n = clip [0 ,1] (cq,n ). For 0 < ω < 1, the prediction strictly improves on both ω = 0 and ω = 1 if and only if 
+
+ω
+
+2 < c q,n < 1 + ω
+
+2 . (14) 
+
+Proof of Proposition 2. Fix an anchor-target pair and abbreviate ∆v = ∆ vq , I = Iq,n , A = ∥∆v∥22 > 0, and 
+
+c = ⟨∆v, I ⟩ /A . Orthogonal decomposition gives 
+
+I = c∆v + P ⊥ 
+
+> ∆v
+
+I. 
+
+Therefore 
+
+ω∆v − I = ( ω − c)∆ v − P ⊥ 
+
+> ∆v
+
+I. 
+
+The two terms are orthogonal, so the Pythagorean theorem gives equation 13. The only term depending on ω is 
+
+A(ω − c)2. Its minimizer over [0 , 1] is the Euclidean projection clip [0 ,1] (c).Let L(ω) = ∥ω∆v − I∥22. Direct subtraction yields 
+
+L(ω) − L (0) = A ω (ω − 2c), (15) 
+
+L(ω) − L (1) = A (ω − 1)( ω + 1 − 2c). (16) For 0 < ω < 1, the first difference is negative precisely when c > ω/ 2, and the second is negative precisely when 
+
+c < (1 + ω)/2. Their intersection is equation 14. If ∆vq = 0 , all members of equation 1 coincide with v(1)  
+
+> n
+
+. No coefficient needs to be identified, and equation 12 is left undefined. The implemented predictor automatically returns v(1)  
+
+> n
+
+in this case. 
+
+## C.2 Conditional Calibration of a Scalar Exposure 
+
+The scalar R need not contain all useful information in the query history. The following statement specifies the optimum only within the class of retention rules that are functions of R.
+
+Proposition 3 (Best retention rule based on one scalar) . Consider a distribution of anchor-target pairs, with E ∥∆v∥22 <
+
+∞ and E ∥I∥22 < ∞. Let R be any measurable scalar statistic. Where a(r) = E[∥∆v∥22 | R = r] > 0, the minimizer over measurable f : R → [0 , 1] of E ∥f (R)∆ v − I∥22 is, almost surely, 
+
+f ⋆(r) = clip [0 ,1] 
+
+E[⟨∆v, I ⟩ | R = r]
+
+E[∥∆v∥22 | R = r]
+
+!
+
+. (17) 
+
+On a conditional set with a(r) = 0 , every coefficient has the same loss. 
+
+18 Proof. Let 
+
+b(r) = E[⟨∆v, I ⟩ | R = r], d(r) = E[∥I∥22 | R = r].
+
+For a deterministic coefficient ω, expand the squared norm before taking the conditional expectation: 
+
+∥ω∆v − I∥22 = ⟨ω∆v − I, ω ∆v − I⟩
+
+= ω2 ∥∆v∥22 − 2ω ⟨∆v, I ⟩ + ∥I∥22 .
+
+Linearity of conditional expectation gives 
+
+E[∥ω∆v − I∥22 | R = r] = a(r)ω2 − 2b(r)ω + d(r). (18) If a(r) > 0, complete the square: 
+
+a(r)ω2 − 2b(r)ω + d(r) = a(r)
+
+
+
+ω2 − 2 b(r)
+
+a(r) ω
+
+
+
++ d(r)= a(r)
+
+
+
+ω − b(r)
+
+a(r)
+
+2
+
++ d(r) − b(r)2
+
+a(r) .
+
+The last two terms do not depend on ω. The closest point in the closed interval [0 , 1] to the unconstrained minimizer 
+
+b(r)/a (r) is its Euclidean projection clip [0 ,1] (b(r)/a (r)) , which proves equation 17 on {a(r) > 0}.To pass from conditional to global risk, let f be any measurable rule with values in [0 , 1] , and let f ⋆ be the conditional minimizer. The pointwise conditional inequality gives, almost surely, 
+
+E[∥f ⋆(R)∆ v − I∥22 | R] ≤ E[∥f (R)∆ v − I∥22 | R].
+
+Taking expectations of both sides and using the tower property gives 
+
+E ∥f ⋆(R)∆ v − I∥22 = E
+
+h
+
+E[∥f ⋆(R)∆ v − I∥22 | R]
+
+i
+
+≤ E
+
+h
+
+E[∥f (R)∆ v − I∥22 | R]
+
+i
+
+= E ∥f (R)∆ v − I∥22 .
+
+If a(r) = 0 , then the nonnegative random variable ∥∆v∥22 has conditional expectation zero. It is therefore zero conditionally almost surely. Both ω2 ∥∆v∥22 and ω ⟨∆v, I ⟩ vanish, so equation 18 reduces to d(r), independently of 
+
+ω.If A = ∥∆v∥22 > 0 and c = ⟨∆v, I ⟩ /A , the unclipped optimum is E[Ac | R]/E[A | R]. Thus calibration for ordinary field MSE is innovation-energy weighted; it is generally not the unweighted conditional average of c.An unweighted average instead corresponds to a per-sample loss normalized by A, under the integrability conditions needed for that loss. 
+
+## C.3 Why Smoothness Cannot Determine the Retention Coefficient 
+
+Proposition 4 (Smoothness alone does not identify retention) . Fix three distinct anchor times and their vector-valued outputs, with ∆vq̸ = 0 , and fix a distinct target time. For every c0 ∈ R, there exists a C∞ model-output trace that matches all three anchor outputs and whose target coefficient in equation 12 equals c0. The trace can be realized by a smooth time-dependent flow field that is independent of the state. Proof of Proposition 4. Let the three anchor times be t0, t 1, t 2, let the target time be t3, and let the corresponding fixed anchor outputs be v0, v 1, v 2. All four times are distinct. Define 
+
+∆v = v2 − v1̸ = 0 
+
+and fix an arbitrary desired coefficient c0 ∈ R. Choose the target output 
+
+v3 = v2 + c0∆v. 
+
+19 For i ∈ { 0, 1, 2, 3}, define the scalar Lagrange basis polynomial 
+
+Li(t) = Y 
+
+> 0≤j≤3
+> j̸=i
+
+t − tj
+
+ti − tj
+
+.
+
+Every denominator is nonzero because the times are distinct. Moreover, Li(tj ) = 1 when i = j and Li(tj ) = 0 when 
+
+i̸ = j. The vector-valued polynomial 
+
+gc0 (t) = 
+
+> 3
+
+X
+
+> i=0
+
+viLi(t) (19) therefore satisfies 
+
+gc0 (ti) = vi, i = 0 , 1, 2, 3.
+
+It is a polynomial of degree at most three in each coordinate, hence it is C∞. At the target, 
+
+I = gc0 (t3) − gc0 (t2) = v3 − v2 = c0∆v. 
+
+Substitution into equation 12 gives 
+
+c = ⟨∆v, c 0∆v⟩∥∆v∥22
+
+= c0.
+
+The three anchor outputs and all statistics computed from them, including sin 2 θ, are identical for every c0; the times and hence ρ are also identical. Finally, define a state-independent time-dependent field 
+
+Vc0 (x, t ) = gc0 (t).
+
+This field is C∞ in (x, t ), and its output along every state trace is exactly gc0 (t). Thus the construction lies inside the class of smooth flow fields and completes the proof. The preceding construction can be strengthened: even revealing any fixed finite number of derivatives at every anchor does not identify the target coefficient. 
+
+Proposition 5 (Finite anchor jets do not identify retention) . Fix an integer m ≥ 0, distinct anchor times t0, t 1, t 2, a distinct target time t3, and a C∞ trace g0 with ∆v = g0(t2) − g0(t1)̸ = 0 . There is a one-parameter family of C∞
+
+traces gα such that 
+
+g(k) 
+
+> α
+
+(tj ) = g(k)0 (tj ), j ∈ { 0, 1, 2}, 0 ≤ k ≤ m, (20) 
+
+while the oracle coefficient at t3 ranges over all of R. Each trace is realizable by a state-independent smooth flow field. Proof. Define the scalar polynomial 
+
+ϕ(t) = 
+
+> 2
+
+Y
+
+> j=0
+
+(t − tj )m+1 (21) and the vector-valued trace 
+
+gα(t) = g0(t) + αϕ (t)∆ v, α ∈ R. (22) Fix an anchor tj . Factoring the corresponding term gives 
+
+ϕ(t) = ( t − tj )m+1 ψj (t), ψj (t) = Y
+
+> 0≤i≤2
+> i̸=j
+
+(t − ti)m+1 .
+
+For 0 ≤ k ≤ m, Leibniz’ rule gives 
+
+ϕ(k)(t) = 
+
+> k
+
+X
+
+> ℓ=0
+
+kℓ
+
+ dℓ
+
+dt ℓ (t − tj )m+1 ψ(k−ℓ) 
+
+> j
+
+(t).
+
+20 Every ℓ in this sum satisfies ℓ ≤ k ≤ m, and hence 
+
+dℓ
+
+dt ℓ (t − tj )m+1 = (m + 1)! (m + 1 − ℓ)! (t − tj )m+1 −ℓ
+
+still contains a positive power of t − tj . Therefore ϕ(k)(tj ) = 0 . Differentiating equation 22 now proves equation 20 term by term. In particular, gα(tj ) = g0(tj ) at all three anchors, so the latest innovation remains ∆v. Since ϕ(t2) = 0 , the target innovation is 
+
+Iα = gα(t3) − gα(t2)= g0(t3) − g0(t2) + αϕ (t3)∆ v. 
+
+Let c0 = ⟨∆v, g 0(t3) − g0(t2)⟩ / ∥∆v∥22. Then 
+
+cα = ⟨∆v, I α⟩∥∆v∥22
+
+= c0 + αϕ (t3).
+
+The target differs from every anchor, so every factor in ϕ(t3) is nonzero and ϕ(t3)̸ = 0 . As α ranges over R, so does 
+
+cα. Finally, Vα(x, t ) = gα(t) is a state-independent C∞ field realizing the trace. The interpolation proofs are global and exact. A local expansion shows more specifically why projective turning and the oracle coefficient contain different differential information. 
+
+Proposition 6 (Tangential-normal separation) . Let g ∈ C3, fix a time t with v = g′(t)̸ = 0 , and put a = g′′ (t). Use equally spaced anchor times t − 2h, t − h, t , and a target time t + λh with fixed λ > 0. Let ch be the oracle coefficient and sin 2 θh the projective statistic. Then 
+
+ch = λ + λ(1 + λ)2 h ⟨v, a ⟩∥v∥22
+
++ O(h2), (23) 
+
+sin 2 θh = h2 P ⊥ 
+
+> v
+
+a 22
+
+∥v∥22
+
++ O(h3). (24) 
+
+Thus the first correction to ch depends on tangential log-speed ⟨v, a ⟩ / ∥v∥22, whereas sin 2 θh measures normal turning. Proof. Taylor expansion about t gives 
+
+g(t − h) = g(t) − hv + h2
+
+2 a + O(h3),g(t − 2h) = g(t) − 2hv + 2 h2a + O(h3),g(t + λh ) = g(t) + λhv + λ2h2
+
+2 a + O(h3).
+
+Therefore the latest innovation, previous innovation, and target innovation are 
+
+∆vh = g(t) − g(t − h) = hv − h2
+
+2 a + O(h3), (25) 
+
+∆v− 
+
+> h
+
+= g(t − h) − g(t − 2h) = hv − 3h2
+
+2 a + O(h3), (26) 
+
+Ih = g(t + λh ) − g(t) = λhv + λ2h2
+
+2 a + O(h3). (27) Using bilinearity of the inner product in equation 25 and equation 27, 
+
+⟨∆vh, I h⟩ = λh 2 ∥v∥22 + λ(λ − 1) 2 h3 ⟨v, a ⟩ + O(h4),
+
+∥∆vh∥22 = h2 ∥v∥22 − h3 ⟨v, a ⟩ + O(h4).
+
+21 After cancelling h2, use (A + hB )−1 = A−1 − hB/A 2 + O(h2) with A = ∥v∥22 to obtain 
+
+ch = λ ∥v∥22 + λ(λ−1) 2 h ⟨v, a ⟩ + O(h2)
+
+∥v∥22 − h ⟨v, a ⟩ + O(h2)= λ +
+
+ λ(λ − 1) 2 + λ
+
+
+
+h ⟨v, a ⟩∥v∥22
+
++ O(h2)= λ + λ(1 + λ)2 h ⟨v, a ⟩∥v∥22
+
++ O(h2),
+
+which proves equation 23. It remains to expand the angle. Let u = v/ ∥v∥2. For any fixed vector b, direct expansion of the norm shows 
+
+v + hb + O(h2)
+
+∥v + hb + O(h2)∥2
+
+= u + h
+
+∥v∥2
+
+P ⊥ 
+
+> v
+
+b + O(h2). (28) Indeed, 
+
+v + hb + O(h2) 2 = ∥v∥2 + h ⟨u, b ⟩ + O(h2),
+
+and substituting the reciprocal of this scalar yields b − u ⟨u, b ⟩ = P ⊥ 
+
+> v
+
+b in the first-order term. Divide equation 25 and equation 26 by h and apply equation 28. Their unit directions obey 
+
+u∆v = u − h
+
+2 ∥v∥2
+
+P ⊥ 
+
+> v
+
+a + O(h2),u∆v− = u − 3h
+
+2 ∥v∥2
+
+P ⊥ 
+
+> v
+
+a + O(h2).
+
+Hence 
+
+u∆v − u∆v− = h
+
+∥v∥2
+
+P ⊥ 
+
+> v
+
+a + O(h2).
+
+Because P ⊥ 
+
+> u∆v−
+
+u∆v− = 0 and u∆v− = u + O(h),
+
+sin θh = P ⊥ 
+
+> u∆v−
+
+u∆v 2
+
+= P ⊥ 
+
+> u∆v−
+
+(u∆v − u∆v− ) 2
+
+= h
+
+∥v∥2
+
+P ⊥ 
+
+> v
+
+a 2 + O(h2).
+
+Squaring this identity proves equation 24. Even when tangential speed is constant, the observable closure is not the oracle coefficient of every smooth curved trace. The following exact example keeps this distinction visible. 
+
+Proposition 7 (Constant-speed circular sanity check) . Let g(t) = (cos(Ω t), sin(Ω t)) , use anchors at −2h, −h, 0, and predict the target at h. Assume sin(Ω h/ 2) ̸ = 0 . Then 
+
+sin 2 θh = sin 2(Ω h), ch = cos(Ω h). (29) 
+
+At unit normalized horizon, GeoShrink instead uses 
+
+ωh = 11 + sin 2(Ω h) . (30) 
+
+Consequently, 
+
+ch = 1 − Ω2h2
+
+2 + O(h4),ωh = 1 − Ω2h2 + O(h4).
+
+(31) 
+
+so the two coefficients already differ at order h2.
+
+22 Proof. For arbitrary u, the angle-addition identities give 
+
+g(u + h) − g(u) =  cos(Ω( u + h)) − cos(Ω u), sin(Ω( u + h)) − sin(Ω u)
+
+= 2 sin 
+
+ Ωh
+
+2
+
+  
+
+− sin 
+
+
+
+Ωu + Ωh
+
+2
+
+
+
+, cos 
+
+
+
+Ωu + Ωh
+
+2
+
+ 
+
+.
+
+Thus every length-h chord has magnitude 2| sin(Ω h/ 2) |, and its oriented unit direction is the unit tangent at the chord midpoint, up to a common sign. The previous innovation, latest innovation, and target innovation have midpoints 
+
+−3h/ 2, −h/ 2, h/ 2, respectively. The angle between the previous and latest chord lines is therefore Ωh modulo sign, and the squared projective sine is sin 2(Ω h). This proves the first identity in equation 29. The latest and target innovations have equal magnitude, and their oriented directions differ by Ωh. Hence 
+
+ch = ⟨∆vh, I h⟩∥∆vh∥22
+
+= cos(Ω h),
+
+which proves the second identity. At unit normalized horizon, R = sin 2 θh, so equation 4 gives equation 30. Finally, with x = Ω h,
+
+cos x = 1 − x2
+
+2 + O(x4), sin 2 x = x2 + O(x4),
+
+and 11 + sin 2 x = 1 − sin 2 x + O(sin 4 x) = 1 − x2 + O(x4).
+
+Substituting x = Ω h proves equation 31. 
+
+## C.4 Projective Residual and Projector Identities 
+
+For nonzero vectors a, b ,
+
+Pb = bb ⊤
+
+∥b∥22
+
+, ∥Pba∥22 = (a⊤b)2
+
+∥b∥22
+
+.
+
+The orthogonality of Pba and P ⊥ 
+
+> b
+
+a implies 
+
+P ⊥ 
+
+> b
+
+a 22
+
+∥a∥22
+
+= 1 − (a⊤b)2
+
+∥a∥22 ∥b∥22
+
+. (32) Let u = a/ ∥a∥2 and v = b/ ∥b∥2. Since u and v are unit vectors, 
+
+∥uu ⊤ − vv ⊤∥2 
+
+> F
+
+= tr( uu ⊤uu ⊤) + tr( vv ⊤vv ⊤) − 2 tr( uu ⊤vv ⊤)= 2 − 2( u⊤v)2.
+
+Taking a = ∆ vq , b = ∆ v− 
+
+> q
+
+proves equation 32. Nonzero scalar multiplication does not change a line projector. Orthogonal coordinate transformations conjugate the projectors and preserve their Frobenius distance. 
+
+## C.5 Why the Update Midpoint Appears 
+
+The midpoint horizon used in equation 3 satisfies 
+
+Z 10
+
+r(u) du = ρq,n ,
+
+Z 10
+
+r(u)2 du = ρ2 
+
+> q,n
+
++ 112 
+
+ σn − σn−1
+
+σ(1)  
+
+> n
+
+− σ(2) 
+
+> n
+
+2
+
+. (33) Let 
+
+Hq = σ(1)  
+
+> n
+
+− σ(2) 
+
+> n
+
+̸ = 0 , r0 = σn − σ(1) 
+
+> n
+
+Hq
+
+, r1 = σn−1 − σ(1) 
+
+> n
+
+Hq
+
+.
+
+23 The normalized displacement at the affine interval coordinate u ∈ [0 , 1] is 
+
+r(u) = (1 − u)σn + uσ n−1 − σ(1) 
+
+> n
+
+Hq
+
+= (1 − u)r0 + ur 1.
+
+Define its midpoint and endpoint difference by 
+
+¯r = r0 + r1
+
+2 , ∆r = r1 − r0.
+
+Then 
+
+r(u) = (1 − u)
+
+
+
+¯r − ∆r
+
+2
+
+
+
++ u
+
+
+
+¯r + ∆r
+
+2
+
+
+
+= ¯ r +
+
+
+
+u − 12
+
+
+
+∆r. 
+
+(34) By equation 3, ¯r = ρq,n . Also, 
+
+Z 10
+
+
+
+u − 12
+
+
+
+du =
+
+ u2
+
+2 − u
+
+2
+
+10
+
+= 0 ,
+
+Z 10
+
+
+
+u − 12
+
+2
+
+du =
+
+Z 10
+
+
+
+u2 − u + 14
+
+
+
+du 
+
+=
+
+ u3
+
+3 − u2
+
+2 + u
+
+4
+
+10
+
+= 13 − 12 + 14 = 112 .
+
+Integrating equation 34 therefore gives 
+
+Z 10
+
+r(u) du = ¯ r + ∆ r
+
+Z 10
+
+
+
+u − 12
+
+
+
+du 
+
+= ¯ r = ρq,n .
+
+Squaring the same identity first gives 
+
+r(u)2 = ¯ r2 + 2¯ r∆r
+
+
+
+u − 12
+
+
+
++ (∆ r)2
+
+
+
+u − 12
+
+2
+
+.
+
+After integration, the cross term vanishes and the last integral equals 1/12 , so 
+
+Z 10
+
+r(u)2 du = ¯ r2 + (∆ r)2
+
+12 = ρ2 
+
+> q,n
+
++ 112 
+
+ σn−1 − σn
+
+Hq
+
+2
+
+= ρ2 
+
+> q,n
+
++ 112 
+
+ σn − σn−1
+
+σ(1)  
+
+> n
+
+− σ(2) 
+
+> n
+
+2
+
+.
+
+This proves both identities in equation 33. The implemented rule uses the square of the mean horizon, whereas the exact mean squared horizon contains the nonnegative within-update variance. The difference vanishes quadratically as the solver interval becomes small relative to the latest anchor span. 24 C.6 Continuum Consistency under C2 Regularity 
+
+Theorem 2 (Continuum limit of the chordal tangent and exposure) . Let g be C2 near t⋆, with g′(t⋆)̸ = 0 . Let 
+
+t0 < t 1 < t 2 converge to t⋆, write h1 = t1 − t0, h2 = t2 − t1, and suppose h1/h 2 → η ∈ (0 , ∞). Let u1, u 2
+
+be the two unit secant directions, let mj = ( tj−1 + tj )/2, and orient each sign so that ⟨uj , U (mj )⟩ > 0, where 
+
+U (t) = g′(t)/ ∥g′(t)∥2. Let θh be their projective angle. Then 
+
+− P ⊥ 
+
+> u2
+
+u1
+
+h2
+
+−→ 1 + η
+
+2 U ′(t⋆),
+
+sin θh
+
+h2
+
+−→ 1 + η
+
+2 ω(t⋆).
+
+(35) 
+
+where 
+
+ω(t) = ∥U ′(t)∥2 =
+
+P ⊥
+
+> g′(t)
+
+g′′ (t) 2
+
+∥g′(t)∥2
+
+. (36) 
+
+If δh → δ and ρh = δh/h 2, then 
+
+−ρhP ⊥ 
+
+> u2
+
+u1 −→ δ 1 + η
+
+2 U ′(t⋆),ρ2 
+
+> h
+
+sin 2 θh −→ δ2
+
+ 1 + η
+
+2
+
+2
+
+ω(t⋆)2.
+
+(37) 
+
+Proof of Theorem 2. Define the normalized tangent 
+
+U (t) = g′(t)
+
+∥g′(t)∥2
+
+.
+
+Because g′ is continuous and g′(t⋆)̸ = 0 , there are a neighborhood N of t⋆ and a number b > 0 such that ∥g′(t)∥2 ≥ b
+
+for every t ∈ N . Hence normalization is well defined on N . Put s(t) = ∥g′(t)∥2. Direct differentiation gives 
+
+s′(t) = ⟨g′(t), g ′′ (t)⟩∥g′(t)∥2
+
+.
+
+Applying the quotient rule to U (t) = g′(t)/s (t) yields 
+
+U ′(t) = g′′ (t)
+
+s(t) − g′(t)s′(t)
+
+s(t)2
+
+= g′′ (t)
+
+∥g′(t)∥2
+
+− g′(t) ⟨g′(t), g ′′ (t)⟩∥g′(t)∥32
+
+= 1
+
+∥g′(t)∥2
+
+I − g′(t)g′(t)⊤
+
+∥g′(t)∥22
+
+!
+
+g′′ (t)= P ⊥
+
+> g′(t)
+
+g′′ (t)
+
+∥g′(t)∥2
+
+.
+
+Therefore U (t)⊤U ′(t) = 0 and ∥U ′(t)∥2 = ω(t).For j ∈ { 1, 2}, define the interval midpoint and secant velocity 
+
+mj = tj−1 + tj
+
+2 , sj = g(tj ) − g(tj−1)
+
+hj
+
+.
+
+The fundamental theorem of calculus gives 
+
+sj = 1
+
+hj
+
+Z tj
+
+> tj−1
+
+g′(t) dt 
+
+= 1
+
+hj
+
+Z hj /2 
+
+> −hj/2
+
+g′(mj + u) du. 
+
+25 Since g′′ is continuous, uniformly for |u| ≤ hj /2,
+
+g′(mj + u) = g′(mj ) + ug ′′ (mj ) + ur j (u), sup  
+
+> |u|≤ hj/2
+
+∥rj (u)∥2 = o(1) .
+
+Substitution into the integral gives 
+
+sj − g′(mj ) = g′′ (mj )
+
+hj
+
+Z hj /2 
+
+> −hj/2
+
+u du + 1
+
+hj
+
+Z hj /2 
+
+> −hj/2
+
+ur j (u) du 
+
+= 1
+
+hj
+
+Z hj /2 
+
+> −hj/2
+
+ur j (u) du, 
+
+because the integral of the odd function u over the symmetric interval is zero. Consequently, 
+
+∥sj − g′(mj )∥2 ≤ 1
+
+hj
+
+sup  
+
+> |u|≤ hj/2
+
+∥rj (u)∥2
+
+Z hj /2 
+
+> −hj/2
+
+|u| du 
+
+= hj
+
+4 sup  
+
+> |u|≤ hj/2
+
+∥rj (u)∥2 = o(hj ).
+
+(38) The map N (x) = x/ ∥x∥2 is continuously differentiable wherever x̸ = 0 , with derivative 
+
+DN (x) = 1
+
+∥x∥2
+
+I − xx ⊤
+
+∥x∥22
+
+!
+
+.
+
+Equation 38 and continuity give sj → g′(t⋆). Hence, for all sufficiently small spans, ∥sj − g′(mj )∥2 ≤ b/ 2. Every point on the segment joining them has the form xλ = g′(mj ) + λ[sj − g′(mj )] , with 0 ≤ λ ≤ 1, and satisfies 
+
+∥xλ∥2 ≥ ∥ g′(mj )∥2 − λ ∥sj − g′(mj )∥2 ≥ b/ 2.
+
+Thus the displayed derivative satisfies ∥DN (xλ)∥op ≤ 2/b along the entire segment. The mean-value inequality therefore yields 
+
+sj
+
+∥sj ∥2
+
+− g′(mj )
+
+∥g′(mj )∥2
+
+≤ 2
+
+b ∥sj − g′(mj )∥2
+
+= o(hj ).
+
+Therefore 
+
+uj := sj
+
+∥sj ∥2
+
+= U (mj ) + o(hj ).
+
+In particular, both u1 and u2 converge to U (t⋆), so their inner product is positive for all sufficiently small intervals. The ordinary angle and the projective angle then have the same sine. The midpoint separation is 
+
+dh = m2 − m1 = h1 + h2
+
+2 .
+
+The assumption h1/h 2 → η ∈ (0 , ∞) implies dh ≍ h1 ≍ h2. Hence o(h1) + o(h2) = o(dh). By the fundamental theorem of calculus applied to U ,
+
+u2 − u1 = U (m2) − U (m1) + o(dh)=
+
+Z m2
+
+> m1
+
+U ′(t) dt + o(dh)= dhU ′(t⋆) + o(dh),
+
+where the last equality follows from continuity of U ′ and m1, m 2 → t⋆.26 The vector used by the chordal retraction is based at the latest secant u2. Since P ⊥ 
+
+> u2
+
+u2 = 0 ,
+
+P ⊥ 
+
+> u2
+
+u1 = P ⊥ 
+
+> u2
+
+(u1 − u2)= −dhP ⊥ 
+
+> u2
+
+U ′(t⋆) + o(dh).
+
+Because u2 → U (t⋆) and U ′(t⋆) ⊥ U (t⋆), division by dh gives the vector limit 
+
+− P ⊥ 
+
+> u2
+
+u1
+
+dh
+
+−→ U ′(t⋆).
+
+The two projected residuals have the same norm: 
+
+P ⊥ 
+
+> u2
+
+u1 
+
+> 22
+
+= 1 − ⟨ u1, u 2⟩2
+
+= P ⊥ 
+
+> u1
+
+u2 
+
+> 22
+
+= sin 2 θh.
+
+Taking norms in the vector limit therefore gives 
+
+sin θh
+
+dh
+
+−→ ∥ U ′(t⋆)∥2 = ω(t⋆).
+
+Finally, 
+
+dh
+
+h2
+
+= h1 + h2
+
+2h2
+
+= 1 + h1/h 2
+
+2 −→ 1 + η
+
+2 .
+
+Multiplying both the vector limit and its norm limit by dh/h 2 proves the two limits in equation 35. For the transported tangent, use ρh = δh/h 2 to write 
+
+−ρhP ⊥ 
+
+> u2
+
+u1 = δh − P ⊥ 
+
+> u2
+
+u1
+
+h2
+
+!
+
+−→ δ 1 + η
+
+2 U ′(t⋆).
+
+For its squared magnitude, 
+
+ρ2 
+
+> h
+
+sin 2 θh = δ2
+
+> h
+
+ sin θh
+
+h2
+
+2
+
+−→ δ2
+
+ 1 + η
+
+2
+
+2
+
+ω(t⋆)2.
+
+These are the two limits in equation 37. The square in the GeoShrink exposure is used because the transported directional deviation enters a squared-error objective; the theorem does not claim that a remote-horizon asymptotic uniquely determines this exponent. 
+
+Corollary 1 (Shape-regular bounds without a limiting gap ratio) . Keep the definitions, C2 regularity, nonvanishing derivative, and convergence t0, t 1, t 2 → t⋆ from Theorem 2, but do not assume that h1/h 2 converges. Instead, suppose that for some Γ ≥ 1,
+
+Γ−1 ≤ h1
+
+h2
+
+≤ Γ
+
+for all sufficiently small intervals. Then 
+
+sin θh
+
+h2
+
+= 1 + h1/h 2
+
+2 ω(t⋆) + o(1) . (39) 
+
+If additionally δh → δ, then 
+
+δ2
+
+ 1 + Γ −1
+
+2
+
+2
+
+ω(t⋆)2 ≤ lim inf  
+
+> h
+
+ρ2 
+
+> h
+
+sin 2 θh, (40) 
+
+lim sup 
+
+> h
+
+ρ2 
+
+> h
+
+sin 2 θh ≤ δ2
+
+ 1 + Γ 2
+
+2
+
+ω(t⋆)2. (41) 27 Proof. The proof above established sin θh/d h → ω(t⋆) before using convergence of h1/h 2. The shape-regular bounds imply dh ≍ h2, so the same remainder remains o(1) after multiplication by dh/h 2 = (1 + h1/h 2)/2. This proves equation 39. Squaring, multiplying by δ2
+
+> h
+
+, and using 
+
+1 + Γ −1
+
+2 ≤ 1 + h1/h 2
+
+2 ≤ 1 + Γ 2
+
+gives equation 40 and equation 41. 
+
+Corollary 2 (A quantitative local refinement) . Under the conditions of Theorem 2, write h = max {h1, h 2}. Suppose additionally that g ∈ C3 near t⋆ and max 0≤j≤2 |tj − t⋆| = O(h). Then 
+
+sin θh = dhω(t⋆) + O(h2). (42) 
+
+For bounded δh and ρh = δh/h 2,
+
+ρ2 
+
+> h
+
+sin 2 θh = δ2
+
+> h
+
+ 1 + h1/h 2
+
+2
+
+2
+
+ω(t⋆)2 + O(δ2
+
+> h
+
+h). (43) 
+
+Proof. A midpoint Taylor expansion now gives sj = g′(mj ) + O(h2 
+
+> j
+
+). The normalized secants therefore obey uj =
+
+U (mj ) + O(h2 
+
+> j
+
+). Since U ∈ C2 and the observation midpoints are O(h) from t⋆,
+
+u2 − u1 = dhU ′(t⋆) + O(h2), u1 = U (t⋆) + O(h).
+
+Because P ⊥ 
+
+> u2
+
+u2 = 0 ,
+
+P ⊥ 
+
+> u2
+
+u1 = P ⊥ 
+
+> u2
+
+(u1 − u2)= −dhP ⊥ 
+
+> u2
+
+U ′(t⋆) + O(h2).
+
+Moreover, u2 = U (t⋆) + O(h) and U ′(t⋆) ⊥ U (t⋆). Since P ⊥ 
+
+> u2
+
+= I − u2u⊤ 
+
+> 2
+
+,
+
+P ⊥ 
+
+> u2
+
+U ′(t⋆) − U ′(t⋆) = −u2u⊤ 
+
+> 2
+
+U ′(t⋆)= −u2 ⟨u2 − U (t⋆), U ′(t⋆)⟩
+
+= O(h).
+
+Consequently, 
+
+P ⊥ 
+
+> u2
+
+u1 = −dhU ′(t⋆) + O(h2),
+
+where dh = O(h). Taking norms and using dh > 0 gives 
+
+sin θh = P ⊥ 
+
+> u2
+
+u1 2
+
+= dh ∥U ′(t⋆)∥2 + O(h2)= dhω(t⋆) + O(h2),
+
+which proves equation 42. Squaring gives 
+
+sin 2 θh = dhω(t⋆) + O(h2)2
+
+= d2
+
+> h
+
+ω(t⋆)2 + O(dhh2) + O(h4)= d2
+
+> h
+
+ω(t⋆)2 + O(h3).
+
+Because h1/h 2 → η ∈ (0 , ∞), we have h2 ≍ h. Using ρh = δh/h 2,
+
+ρ2 
+
+> h
+
+sin 2 θh = δ2
+
+> h
+
+h22
+
+d2
+
+> h
+
+ω(t⋆)2 + O(h3)
+
+= δ2
+
+> h
+
+ dh
+
+h2
+
+2
+
+ω(t⋆)2 + O(δ2
+
+> h
+
+h)= δ2
+
+> h
+
+ 1 + h1/h 2
+
+2
+
+2
+
+ω(t⋆)2 + O(δ2
+
+> h
+
+h),
+
+which proves equation 43. 28 The localization condition in this corollary is needed to state the O(h2) rate at a fixed t⋆. Convergence of all observation times to t⋆ alone suffices for the main theorem’s limit, but does not specify their distance from t⋆ relative to their spacing. Neither result predicts a finite remote tangent from local information. Applying the interpretation to a sampler additionally requires a smooth model-output trace; the lemmas alone do not establish smoothness of an accelerated trajectory. 
+
+## C.7 Complete Derivation of Chordal Projective Retention 
+
+Theorem 3 (Chordal transport and cache projection) . Under the chordal transport construction of Proposition 1, let 
+
+∆v = ∆ vq , ∆v− = ∆ v− 
+
+> q
+
+, Lq = span(∆ v), and eLq,n = span( euq,n ). The two projection problems 
+
+yq,n = arg min 
+
+> y∈eLq,n
+
+∥y − ∆v∥22 , (44) 
+
+c∆vq,n = arg min 
+
+> x∈Lq
+
+∥x − yq,n ∥22 (45) 
+
+have unique solutions, and 
+
+c∆vq,n = Pu ePq,n ∆v = tr( Pu ePq,n )∆ v = 11 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+∆v. (46) 
+
+The same scalar obeys 
+
+ωq,n =
+
+ePq,n ∆v 22
+
+∥∆v∥22
+
+= tr( Pu ePq,n )= 1 − 12 Pu − ePq,n 
+
+> 2
+> F
+
+.
+
+(47) 
+
+It is also the Hilbert-Schmidt compression coefficient, 
+
+ωq,n = arg min 
+
+> γ∈R
+
+ePq,n − γP u
+
+> 2
+> F
+
+,Pu ePq,n Pu = ωq,n Pu.
+
+(48) 
+
+Finally, for every ω ∈ R,
+
+(1 + Rq,n ) ω∆v − ePq,n ∆v 22 = ∥∆v − ω∆v∥22 + ρ2 
+
+> q,n
+
+P ⊥ 
+
+> ∆v−
+
+(ω∆v) 22 . (49) 
+
+Therefore the unique cache-compatible coefficient is exactly equation 4. 
+
+This section proves Theorem 3 for the deterministic closure stated in the main text. The closure has four explicit parts: the scalar correction family in equation 1, the observable chordal tangent between the last two innovation lines, the declared constant-tangent ambient continuation followed by normalization, and two Euclidean orthogonal projections. Equivalently, the last operation is the Hilbert-Schmidt compression of the transported line projector onto the one-dimensional cache-operator family. Once these parts are fixed, the coefficient and the quadratic identity follow without a stochastic model, a fitted constant, or an assumed future output. Smoothness supplies only the local scaling result in Theorem 2; it does not uniquely select this closure. 
+
+Step 1: orient the two line representatives. Abbreviate 
+
+∆v = ∆ vq , ∆v− = ∆ v− 
+
+> q
+
+, A = ∥∆v∥22 > 0,
+
+and define the unit vectors 
+
+u = ∆v
+
+√A , v = ∆v−
+
+∥∆v−∥2
+
+.
+
+A projective line is unchanged when its unit representative changes sign. Choose ¯v ∈ { v, −v} so that 
+
+α = ⟨u, ¯v⟩ = | ⟨ u, v ⟩ | ∈ [0 , 1] .
+
+29 When ⟨u, v ⟩ = 0 , either sign may be used. Define the component of the previous direction tangent to the unit sphere at u by 
+
+ξ = P ⊥ 
+
+> u
+
+¯v = ( I − uu ⊤)¯ v = ¯ v − αu. (50) Its orthogonality to u follows term by term: 
+
+⟨u, ξ ⟩ = ⟨u, ¯v⟩ − α ⟨u, u ⟩
+
+= α − α = 0 .
+
+Its squared norm is 
+
+∥ξ∥22 = ⟨¯v − αu, ¯v − αu ⟩
+
+= ∥¯v∥22 − 2α ⟨u, ¯v⟩ + α2 ∥u∥22
+
+= 1 − 2α2 + α2
+
+= 1 − α2
+
+= 1 − ⟨ u, v ⟩2
+
+= 1 − ⟨∆v, ∆v−⟩2
+
+∥∆v∥22 ∥∆v−∥22
+
+= sin 2 θq .
+
+(51) This establishes the chordal-tangent identity used in Proposition 1. In particular, 
+
+q
+
+sin 2 θq is exactly the chordal tangent magnitude, not a postulated curvature variable. 
+
+Step 2: verify the normalization retraction. For a tangent vector η ∈ u⊥, the normalization map 
+
+Retr u(η) = u + η
+
+∥u + η∥2
+
+is a retraction on the unit sphere. Indeed, 
+
+Retr u(0) = u. 
+
+For a scalar s, orthogonality gives 
+
+∥u + sη ∥22 = ∥u∥22 + 2 s ⟨u, η ⟩ + s2 ∥η∥22 = 1 + s2 ∥η∥22 ,
+
+so 
+
+Retr u(sη ) = u + sη 
+
+q
+
+1 + s2 ∥η∥22
+
+.
+
+Differentiating at s = 0 gives 
+
+dds Retr u(sη )
+
+> s=0
+
+= η
+
+q
+
+1 + s2 ∥η∥22
+
+− s ∥η∥22 (u + sη )(1 + s2 ∥η∥22)3/2
+
+> s=0
+
+= η. 
+
+Thus the map has the required first-order velocity. Taking η = −ρq,n ξ, and using equation 51, gives 
+
+∥u − ρq,n ξ∥22 = ∥u∥22 − 2ρq,n ⟨u, ξ ⟩ + ρ2 
+
+> q,n
+
+∥ξ∥22
+
+= 1 + ρ2 
+
+> q,n
+
+sin 2 θq .
+
+Set aρ = u − ρq,n ξ. The preceding norm identity shows that aρ̸ = 0 . For every unit vector y, expansion followed by the Cauchy-Schwarz inequality gives 
+
+∥y − aρ∥22 = ∥y∥22 + ∥aρ∥22 − 2 ⟨y, a ρ⟩
+
+= 1 + ∥aρ∥22 − 2 ⟨y, a ρ⟩≥ 1 + ∥aρ∥22 − 2 ∥aρ∥2 .
+
+30 Equality in Cauchy-Schwarz holds with the required positive inner product if and only if y = aρ/ ∥aρ∥2. Therefore the unique unit vector closest to the affine first-order continuation is 
+
+eu = Retr u(−ρq,n ξ) = arg min  
+
+> ∥y∥2=1
+
+∥y − aρ∥22 = u − ρq,n ξ
+
+q
+
+1 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+.
+
+It defines the orthogonal line projector 
+
+Q = eueu⊤, Q⊤ = Q, Q2 = Q. 
+
+The last identity follows explicitly from 
+
+Q2 = eueu⊤ eueu⊤ = eu(eu⊤ eu)eu⊤ = eueu⊤ = Q. 
+
+This establishes the normalization retraction used in Proposition 1. 
+
+Step 3: solve the projection onto the extrapolated line. Let eL = span( eu). Every vector y ∈ eL satisfies Qy = y.Moreover, 
+
+eu⊤(∆ v − Q∆v) = eu⊤∆v − eu⊤ eueu⊤∆v = 0 ,
+
+so ∆v − Q∆v is orthogonal to eL. For arbitrary y ∈ eL, write 
+
+∆v − y = (∆ v − Q∆v) + ( Q∆v − y).
+
+The first summand is orthogonal to eL, while the second belongs to eL. The Pythagorean theorem therefore gives 
+
+∥∆v − y∥22 = ∥∆v − Q∆v∥22 + ∥Q∆v − y∥22 ≥ ∥ ∆v − Q∆v∥22 . (52) Equality holds exactly when y = Q∆v. Hence 
+
+yq,n = Q∆v
+
+is the unique solution of equation 44. 
+
+Step 4: project back to the cache-compatible line. Let L = span( u) = span(∆ v) and P = uu ⊤. The same orthogonal projection argument, now applied to Q∆v and the closed subspace L, gives the unique solution 
+
+c∆vq,n = P Q ∆v
+
+of equation 45. It remains to evaluate this vector. Orthogonality of u and ξ gives 
+
+⟨u, eu⟩ = ⟨u, u − ρq,n ξ⟩
+
+q
+
+1 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+= ⟨u, u ⟩ − ρq,n ⟨u, ξ ⟩
+
+q
+
+1 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+= 1
+
+q
+
+1 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+. (53) Because ∆v = √A u , first applying Q gives 
+
+Q∆v = eueu⊤(√A u )= √A ⟨eu, u ⟩ eu. 
+
+31 Applying P gives 
+
+P Q ∆v = uu ⊤ √A ⟨eu, u ⟩ eu
+
+
+
+= √A ⟨eu, u ⟩ ⟨ u, eu⟩ u
+
+= √A ⟨u, eu⟩2 u
+
+=
+
+√A
+
+1 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+u
+
+= 11 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+∆v. 
+
+The transported component has squared norm 
+
+∥Q∆v∥22 = ( Q∆v)⊤(Q∆v)= ∆ v⊤Q⊤Q∆v
+
+= ∆ v⊤Q∆v
+
+= A u ⊤ eueu⊤u
+
+= A ⟨u, eu⟩2 .
+
+Dividing by ∥∆v∥22 = A shows that the retained energy fraction is ⟨u, eu⟩2. The same scalar is the overlap of the two rank-one projectors. Cyclicity of the trace gives 
+
+tr( P Q ) = tr( uu ⊤ eueu⊤)= tr( u⊤ eueu⊤u)= ⟨u, eu⟩2
+
+= 11 + ρ2 
+
+> q,n
+
+sin 2 θq
+
+.
+
+Moreover, since P 2 = P , Q2 = Q, and both projectors have trace one, 
+
+∥P − Q∥2 
+
+> F
+
+= tr[( P − Q)⊤(P − Q)] = tr( P 2) + tr( Q2) − 2 tr( P Q )= 2 − 2 tr( P Q ).
+
+Rearrangement proves equation 47. This also proves equation 46. The same scalar follows from an operator-space least-squares problem. Equip matrices with the Hilbert-Schmidt inner product 
+
+⟨A, B ⟩F = tr( A⊤B).
+
+Because P and Q are symmetric rank-one projectors, 
+
+∥P ∥2 
+
+> F
+
+= tr( P 2) = tr( P ) = 1 , ∥Q∥2 
+
+> F
+
+= 1 .
+
+For any γ ∈ R, bilinearity of this inner product gives 
+
+∥Q − γP ∥2 
+
+> F
+
+= ∥Q∥2 
+
+> F
+
+− 2γ⟨Q, P ⟩F + γ2∥P ∥2
+
+> F
+
+= 1 − 2γ tr( P Q ) + γ2
+
+= [ γ − tr( P Q )] 2 + 1 − tr( P Q )2.
+
+The final term does not depend on γ, so the unique minimizer is 
+
+γ⋆ = tr( P Q ) = ωq,n .
+
+32 Moreover, 
+
+P QP = uu ⊤Quu ⊤
+
+=  u⊤Qu  uu ⊤
+
+= tr( P Q )P
+
+= ωq,n P. 
+
+Since P ∆v = ∆ v, applying this compressed operator to the latest innovation gives 
+
+P QP ∆v = ωq,n P ∆v = ωq,n ∆v, 
+
+while P QP ∆v = P Q ∆v. This proves every statement in equation 48 and shows that the sequential vector projections are the action of the Hilbert-Schmidt compression on the cache line. Therefore the scalar coefficient ω, the retained-energy fraction, and the scalar projection loss are unchanged by the sign of ¯v, by the sign of ρq,n , or by reversing either observed line. When ⟨u, v ⟩ = 0 , the two admissible choices of 
+
+¯v may produce different oriented transported lines, but they have the same squared line overlap with L and hence the same coefficient. 
+
+Step 5: derive the scalar least-squares problem. Every cache-compatible correction has the form x = ω∆v. Since 
+
+P Q ∆v is the orthogonal projection of Q∆v onto L, it is also the unique minimizer of 
+
+min  
+
+> ω∈R
+
+∥ω∆v − Q∆v∥22 .
+
+For completeness, this follows by direct expansion. Put 
+
+R = ρ2 
+
+> q,n
+
+sin 2 θq , a2 = ⟨u, eu⟩2 = 11 + R .
+
+Because Q is symmetric and idempotent, 
+
+⟨∆v, Q ∆v⟩ = ∆ v⊤Q∆v, 
+
+∥Q∆v∥22 = ( Q∆v)⊤(Q∆v) = ∆ v⊤Q⊤Q∆v = ∆ v⊤Q2∆v = ∆ v⊤Q∆v. 
+
+Equation 53 further gives 
+
+∆v⊤Q∆v = A u ⊤ eueu⊤u = Aa 2 = A
+
+1 + R .
+
+Consequently, 
+
+∥ω∆v − Q∆v∥22 = ∥ω∆v∥22 − 2 ⟨ω∆v, Q ∆v⟩ + ∥Q∆v∥22
+
+= Aω 2 − 2Aωa 2 + Aa 2
+
+= A (ω − a2)2 + a2 − a4 .
+
+The last term is independent of ω, and A > 0, so the unique minimizer is 
+
+ω = a2 = 11 + R .
+
+Since R ≥ 0, this value lies in (0 , 1] , so imposing the bounded family 0 ≤ ω ≤ 1 does not change the solution. 
+
+Step 6: prove the exact variational identity. Multiply the preceding expansion before completing the square by 
+
+1 + R:
+
+(1 + R) ∥ω∆v − Q∆v∥22
+
+= (1 + R)A
+
+
+
+ω2 − 2ω
+
+1 + R + 11 + R
+
+
+
+= A (1 + R)ω2 − 2ω + 1  . (54) 33 The first term on the right side of equation 49 is 
+
+∥∆v − ω∆v∥22 = (1 − ω)2A = A(1 − 2ω + ω2).
+
+Linearity of P ⊥ 
+
+> ∆v−
+
+and equation 32 give 
+
+ρ2 
+
+> q,n
+
+P ⊥ 
+
+> ∆v−
+
+(ω∆v) 22 = ρ2
+
+> q,n
+
+ω2 P ⊥ 
+
+> ∆v−
+
+∆v 22
+
+= ρ2
+
+> q,n
+
+ω2A sin 2 θq
+
+= ARω 2.
+
+Adding these two expressions yields 
+
+∥∆v − ω∆v∥22 + ρ2 
+
+> q,n
+
+P ⊥ 
+
+> ∆v−
+
+(ω∆v) 22
+
+= A(1 − 2ω + ω2) + ARω 2
+
+= A (1 + R)ω2 − 2ω + 1  ,
+
+which equals equation 54. This proves equation 49 exactly. In particular, the objective on the right-hand side of equation 49 is a positive rescaling of one euclidean projection loss, and its two displayed terms are its exact scalar expansion. They need not be interpreted as orthogonal components of the original output-space residual. Completing the square gives the equivalent certificate 
+
+Jq,n (ω) = A(1 + R)
+
+
+
+ω − 11 + R
+
+2
+
++ AR 
+
+1 + R . (55) The nonnegative square vanishes only at the GeoShrink coefficient, proving optimality and uniqueness a second way. 
+
+Sensitivity to reference amplitude and tangent scale. The same projection geometry identifies precisely how two deliberate method changes alter the coefficient. Let β ∈ R multiply the reference innovation, and rescale the chordal tangent by √κ, where κ ≥ 0. Define 
+
+euκ = u − √κρ q,n ξ
+
+√1 + κR , Qκ = euκ eu⊤ 
+
+> κ
+
+.
+
+Repeating equation 53 gives 
+
+⟨u, euκ⟩2 = 11 + κR .
+
+Therefore 
+
+arg min  
+
+> ω∈R
+
+∥ω∆v − βQ κ∆v∥22 = β
+
+1 + κR . (56) If the candidate family is constrained to 0 ≤ ω ≤ 1, the solution is its Euclidean projection onto that interval: 
+
+ω⋆ 
+
+> [0 ,1]
+
+= clip [0 ,1] 
+
+ β
+
+1 + κR 
+
+
+
+. (57) The corresponding exact identity is 
+
+(1 + κR ) ∥ω∆v − βQ κ∆v∥22
+
+= A(β − ω)2 + κρ 2 
+
+> q,n
+
+P ⊥ 
+
+> ∆v−
+
+(ω∆v) 22 . (58) This is a counterfactual sensitivity calculation, rather than an additional assumption used by GeoShrink. GeoShrink uses the latest observed innovation without amplitude rescaling and the unscaled ambient chordal tangent, hence 
+
+(β, κ ) = (1 , 1) . A time-scaled reference sets β = λq,n . A value κ̸ = 1 changes the tangent transport scale and is a different method; it is not required to derive the implemented rule. 34 Relation to intrinsic projective geometry. Let 
+
+θq = arccos | ⟨ u, v ⟩ | ∈ [0 , π/ 2] .
+
+Then 
+
+∥ξ∥2 = sin θq = θq + O(θ3 
+
+> q
+
+) as θq → 0.
+
+Thus the chordal tangent and the intrinsic projective logarithm agree to first order in the fine-anchor regime covered by Theorem 2. They differ at finite angles. If the intrinsic logarithm is followed by the same normalization retraction and round-trip projection, define, for θq > 0, the tangent pointing away from the aligned previous line by 
+
+ζ = − θq
+
+sin θq
+
+ξ. 
+
+Because ξ ⊥ u and ∥ξ∥2 = sin θq ,
+
+ζ ⊥ u, ∥ζ∥2 = θq .
+
+The normalization retraction therefore gives 
+
+ulog = u + ρq,n ζ
+
+q
+
+1 + ρ2
+
+> q,n
+
+θ2
+
+> q
+
+, ⟨u, u log ⟩2 = 11 + ρ2
+
+> q,n
+
+θ2
+
+> q
+
+.
+
+Step 4 showed that the round-trip projection coefficient equals this squared line overlap. Hence 
+
+ωlog = 11 + ρ2
+
+> q,n
+
+θ2
+
+> q
+
+.
+
+At θq = 0 , the same formula follows by continuity and equals one. If instead one transports by the exact projective exponential along the same local geodesic branch, its unit-sphere representative is 
+
+uexp = cos( ρq,n θq )u + sin( ρq,n θq ) ζθq
+
+.
+
+Orthogonality of u and ζ gives 
+
+⟨u, u exp ⟩ = cos( ρq,n θq ).
+
+Applying the same round-trip projection identity then yields 
+
+ωexp = cos 2(ρq,n θq ),
+
+for horizons that remain on that branch. These are different finite rules. We call the present construction chordal or extrinsic throughout because its normalization retraction and round-trip projection give exactly (1 + ρ2 
+
+> q,n
+
+sin 2 θq )−1
+
+in the zero-regularization model. 
+
+Degenerate cases and scope. If ∆v = 0 , every vector ω∆v is zero, so the correction is zero and the prediction is 
+
+v(1)  
+
+> n
+
+; no current line or scalar coefficient needs to be defined. If ∆v− = 0 , the preceding line and its chordal tangent are unidentified, so the ideal theorem does not assign a geometric coefficient; a numerical fallback in this event is an operational convention. If sin 2 θq = 0 , then ξ = 0 , eL = L, and ω = 1 . If ρq,n = 0 , the retracted line also equals L
+
+and ω = 1 .The theorem establishes exact optimality for the observable chordal transport-and-projection closure. It does not identify the true future line. Proposition 4 shows why no such identification follows from finite anchor data and smoothness alone; the causal bound in equation 64 states separately what standard C1,1 regularity does guarantee about the actual trace error. 35 C.8 Blockwise Direct-Sum Extension 
+
+Let the output space be an orthogonal direct sum H = LGb=1 Hb, and write ∆v = (∆ v(1) , . . . , ∆v(G)). A modality, a batch element, or any orthogonal coordinate/token group may define one block. No statistical independence assump-tion is required. For block-specific horizons ρb, previous innovations ∆v(b),−, and coefficients ωb, the ideal objective below assumes ∆v(b),−̸ = 0 for every block. If ∆v(b),− = 0 , the ideal projector term is undefined and the residual convention of Appendix C.15 should be used. If Ab = ∆v(b) 22
+
+= 0 , the corresponding block correction is zero for every coefficient, so that coefficient is immaterial. Under the nondegenerate ideal convention, consider 
+
+Jblock (ω1, . . . , ω G) = 
+
+> G
+
+X
+
+> b=1
+
+
+
+∆v(b) − ωb∆v(b) 22
+
++ ρ2 
+
+> b
+
+P ⊥ 
+
+> ∆v(b),−
+
+(ωb∆v(b)) 22
+
+
+
+. (59) 
+
+Proposition 8 (Blockwise GeoShrink) . For every block with Ab = ∆v(b) 22 > 0 and ∆v(b),−̸ = 0 , the unique minimizer of equation 59 is 
+
+ω⋆b = Ab
+
+Ab + ρ2 
+
+> b
+
+Nb
+
+= 11 + ρ2 
+
+> b
+
+sin 2 θb
+
+, Nb = P ⊥ 
+
+> ∆v(b),−
+
+∆v(b) 22
+
+, sin 2 θb = Nb/A b. (60) 
+
+If a single shared coefficient ω is imposed across all blocks, its unique minimizer, provided P 
+
+> b
+
+Ab > 0, is 
+
+ω⋆ 
+
+> shared
+
+=
+
+P 
+
+> b
+
+Ab
+
+P 
+
+> b
+
+Ab + P 
+
+> b
+
+ρ2 
+
+> b
+
+Nb
+
+. (61) 
+
+Proof. Orthogonality of the direct sum makes the squared norm of a concatenated vector equal to the sum of its block squared norms. Therefore equation 59 contains no cross-block terms. For each block, the expansion in equation 49 gives 
+
+Jb(ωb) = Ab(1 − ωb)2 + ρ2 
+
+> b
+
+Nbω2 
+
+> b
+
+.
+
+Differentiation gives 
+
+J ′ 
+
+> b
+
+(ωb) = 2( Ab + ρ2 
+
+> b
+
+Nb)ωb − 2Ab,
+
+and the second derivative 2( Ab + ρ2 
+
+> b
+
+Nb) is positive. Solving the first-order equation proves equation 60. If all blocks share ω, summing the displayed quadratic over b gives 
+
+Jshared (ω) = X
+
+> b
+
+Ab
+
+!
+
+(1 − ω)2 + ω2 X
+
+> b
+
+ρ2 
+
+> b
+
+Nb.
+
+Its derivative is 
+
+2 X
+
+> b
+
+Ab + X
+
+> b
+
+ρ2 
+
+> b
+
+Nb
+
+!
+
+ω − 2 X
+
+> b
+
+Ab.
+
+Setting it to zero proves equation 61; the positive second derivative proves uniqueness. 
+
+## C.9 Innovation Retention and Time-Scaled Extrapolation 
+
+The same dimensionless time displacement can play two different roles. GeoShrink uses the update-midpoint dis-placement ρq,n only as the strength of the transported-turning penalty. An affine extrapolator for the model output at the stage time σn would instead multiply the latest innovation by 
+
+λq,n = σn − σ(1) 
+
+> n
+
+σ(1)  
+
+> n
+
+− σ(2) 
+
+> n
+
+(62) to account for the target displacement. The two quantities share the same anchor-span denominator, but ρq,n uses the solver-interval midpoint whereas λq,n uses the field-evaluation time. More fundamentally, GeoShrink uses the displacement to control confidence and deliberately does not use it as an extrapolation amplitude. 36 For example, let g(t) = b + tv , v̸ = 0 , with ordered anchor times tq−2 < t q−1 < t q . Both innovations are parallel to v, so the ideal sin 2 θq = 0 . GeoShrink then predicts 
+
+bg(t) = g(tq ) + g(tq ) − g(tq−1) = g(tq ) + ( tq − tq−1)v. 
+
+This equals g(t) only when t − tq = tq − tq−1. The ideal predictor therefore does not reproduce an arbitrary affine trace at every target time. This is a statement about affine exactness, not a proof that the method cannot converge when all anchor gaps and forecast distances tend to zero. A time-scaled comparison rule would be 
+
+bvtime  
+
+> n
+
+= v(1)  
+
+> n
+
++ λq,n ∆vq
+
+1 + Rq,n 
+
+, (63) which is affine-exact in the ideal zero-turning case. It belongs to a different correction family, based on λq,n ∆vq . For 
+
+λq,n > 1, it can exceed one observed innovation even though its retention coefficient is at most one. It is not the algorithm specified in this manuscript. Affine exactness by itself does not establish a smaller error on nonlinear generative trajectories. A comparison between the two rules should keep the exact-query schedule fixed. For either family, the loss decomposition in Propo-sition 2 applies after choosing the corresponding nominal correction vector. Purely tangential acceleration remains invisible to the projective statistic: any scalar trace g(t) = b(t)v has zero ideal projective angle whenever its two innovations are nonzero. 
+
+## C.10 Causal Secant Remainder and Retention Bias 
+
+Under the C1,1 assumptions stated below, let ∆v = g(a) − g(a − h), λ = δ/h , and let ω ∈ R. Then 
+
+∥g(a + δ) − g(a) − ω∆v∥2 ≤ M
+
+2 δ(δ + h) + |λ − ω| ∥ ∆v∥2 . (64) We now prove equation 64 directly from the standard C1,1 regularity used in ODE error analysis. Let g take values in a finite-dimensional Euclidean space, or more generally in a Hilbert space, and suppose 
+
+∥g′(t) − g′(s)∥2 ≤ M |t − s| for all s, t ∈ [a − h, a + δ]. (65) Assume h > 0 and δ ≥ 0, and define 
+
+∆v = g(a) − g(a − h), λ = δh .
+
+The fundamental theorem of calculus gives 
+
+∆v =
+
+Z aa−h
+
+g′(u) du =
+
+Z h
+
+> 0
+
+g′(a − u) du, (66) 
+
+g(a + δ) − g(a) = 
+
+Z a+δa
+
+g′(u) du =
+
+Z δ
+
+> 0
+
+g′(a + s) ds. (67) Multiply equation 66 by λ = δ/h , subtract it from equation 67, and add and subtract δg ′(a). This yields the exact identity 
+
+g(a + δ) − g(a) − λ∆v
+
+=
+
+Z δ
+
+> 0
+
+g′(a + s) − g′(a) ds + δh
+
+Z h
+
+> 0
+
+g′(a) − g′(a − u) du. (68) 37 Apply the triangle inequality for vector-valued integrals and then equation 65 to each term: 
+
+∥g(a + δ) − g(a) − λ∆v∥2
+
+≤
+
+Z δ
+
+> 0
+
+∥g′(a + s) − g′(a)∥2 ds + δh
+
+Z h
+
+> 0
+
+∥g′(a) − g′(a − u)∥2 du 
+
+≤
+
+Z δ
+
+> 0
+
+M s ds + δh
+
+Z h
+
+> 0
+
+M u du 
+
+= M δ 2
+
+2 + M δh 
+
+2= M
+
+2 δ(δ + h).
+
+This is the causal secant remainder: it uses only past observations and is exact for every affine trace. For an arbitrary correction coefficient ω, add and subtract λ∆v:
+
+g(a + δ) − g(a) − ω∆v = g(a + δ) − g(a) − λ∆v + ( λ − ω)∆ v. 
+
+Taking norms, using the triangle inequality, and substituting the bound just proved gives 
+
+∥g(a + δ) − g(a) − ω∆v∥2 ≤ M
+
+2 δ(δ + h) + |λ − ω| ∥ ∆v∥2 ,
+
+which is equation 64. No probabilistic independence, Gaussian noise, monotone curvature, or assumed relation be-tween tangential and normal acceleration is used. For the ideal GeoShrink coefficient ω = 1 /(1 + R), another triangle inequality on the real line gives 
+
+|λ − ω| ≤ | λ − 1| + |1 − ω|
+
+= |λ − 1| + R
+
+1 + R .
+
+Therefore 
+
+∥g(a + δ) − g(a) − ω∆v∥2 ≤ M
+
+2 h2λ(1 + λ) + 
+
+
+
+|λ − 1| + R
+
+1 + R
+
+
+
+∥∆v∥2 . (69) The three displayed contributions have separate meanings: local secant truncation, the one-span reference mismatch, and shrinkage bias. When g is affine, M = 0 ; when it is also collinear, R = 0 . The remaining error is then exactly 
+
+|λ − 1| ∥ ∆v∥2, recovering the affine counterexample in Appendix C.9. 
+
+## C.11 Relative-Horizon Certificates 
+
+Let sj−1 < s j < s j+1 be consecutive anchors in an increasing affine progress coordinate and let 
+
+hj = sj − sj−1 > 0, hj+1 = sj+1 − sj > 0.
+
+For any update interval wholly contained in the next anchor cell, its midpoint μ satisfies 
+
+sj ≤ μ ≤ sj+1 .
+
+Subtracting sj from all three terms gives 
+
+0 ≤ μ − sj ≤ sj+1 − sj = hj+1 .
+
+Division by the positive previous span hj yields 
+
+0 ≤ μ − sj
+
+hj
+
+≤ hj+1 
+
+hj
+
+,
+
+which is equation 6. 38 Likewise, for any field-evaluation coordinate ξ in the same cell, define 
+
+λ(s) 
+
+> j
+
+= ξ − sj
+
+hj
+
+.
+
+The inequalities sj ≤ ξ ≤ sj+1 give 
+
+0 ≤ λ(s) 
+
+> j
+
+≤ hj+1 
+
+hj
+
+.
+
+If the adjacent ratio is at most Γ, then λ(s) 
+
+> j
+
+≤ Γ. Since the derivative of x(1 + x) is 1 + 2 x > 0 for x ≥ 0, it also follows that 
+
+λ(s) 
+
+> j
+
+(1 + λ(s) 
+
+> j
+
+) ≤ Γ(1 + Γ) .
+
+On an integer progress grid, if the cell length is the integer hj+1 and both endpoints are exact anchors, the skipped stage midpoints are 
+
+sj + 32 , s j + 52 , . . . , s j+1 − 12
+
+whenever hj+1 ≥ 2. The exact largest skipped midpoint horizon is therefore 
+
+max  
+
+> skips in cell
+
+|ρ(s) 
+
+> j
+
+| = hj+1 − 1/2
+
+hj
+
+< hj+1 
+
+hj
+
+. (70) If there is no skipped stage in the cell, the maximum over skips is zero. Finally, 0 ≤ sin 2 θq ≤ 1 implies in this progress coordinate 
+
+R(s) 
+
+> q,n
+
+= ( ρ(s)
+
+> q,n
+
+)2 sin 2 θq ≤
+
+ hj+1 
+
+hj
+
+2
+
+.
+
+Since ω(s) = 1 /(1 + R(s)) is decreasing in R(s), if hj+1 /h j ≤ Γ, then 
+
+ω(s) 
+
+> q,n
+
+≥ 11 + Γ 2 .
+
+This proves equation 7 and establishes the direct connection between adjacent gap expansion and the worst model-free retention certificate. 
+
+## C.12 The Geometric Mesh at Fixed First Span and Coverage 
+
+Theorem 4 (Minimax normalized horizon at fixed coverage) . Fix N ≥ 2, d > 0, and H ≥ N d . Among positive spans 
+
+ℓ0, . . . , ℓ N −1 satisfying ℓ0 = d and PN −1 
+
+> j=0
+
+ℓj = H, the unique minimizer of 
+
+Γ( ℓ) = max  
+
+> 0≤j<N −1
+
+ℓj+1 
+
+ℓj
+
+(71) 
+
+is 
+
+ℓj = dr j , d 
+
+> N−1
+
+X
+
+> j=0
+
+rj = H, r ≥ 1. (72) 
+
+The closure equation has exactly one root in [1 , ∞).
+
+Corollary 3 (Canonical terminal-closed mesh after minimal bootstrap) . Fix B ≥ 4, a total progress length S, and a bootstrap span d > 0, with S ≥ (B − 1) d. Among terminal-closed meshes with positive gaps h1, . . . , h B−1,
+
+h1 = h2 = d, 
+
+> B−1
+
+X
+
+> j=1
+
+hj = S, (73) 39 the unique minimizer of max 2≤j≤B−2 hj+1 /h j is 
+
+h1 = d, hj = dr j−2 (2 ≤ j ≤ B − 1) , d 1 + 
+
+> B−3
+
+X
+
+> k=0
+
+rk
+
+!
+
+= S, r ≥ 1. (74) 
+
+The corresponding continuous anchors are 
+
+es0 = 0 , es1 = d, esq = d 1 + 
+
+> q−2
+
+X
+
+> k=0
+
+rk
+
+!
+
+, 2 ≤ q ≤ B − 1. (75) 
+
+Proof of Theorem 4. For N ≥ 2, the polynomial 
+
+SN (r) =  
+
+> N−1
+
+X
+
+> j=0
+
+rj
+
+is continuous on [1 , ∞). Its derivative is 
+
+S′ 
+
+> N
+
+(r) =  
+
+> N−1
+
+X
+
+> j=1
+
+jr j−1.
+
+Every summand is nonnegative on [1 , ∞), and the j = 1 summand equals one. Hence S′ 
+
+> N
+
+(r) > 0, so SN is strictly increasing. At the left endpoint, 
+
+SN (1) =  
+
+> N−1
+
+X
+
+> j=0
+
+1 = N. 
+
+The last term rN −1 diverges as r → ∞ , so SN (r) → ∞ . Because H/d ≥ N = SN (1) , the intermediate value theorem gives at least one r ∈ [1 , ∞) satisfying SN (r) = H/d . Strict monotonicity gives at most one such r. Thus the closure root exists and is unique. For any feasible spans, let γ = max 0≤j<N −1 ℓj+1 /ℓ j . By the definition of a maximum, 
+
+ℓj+1 
+
+ℓj
+
+≤ γ =⇒ ℓj+1 ≤ γℓ j (0 ≤ j < N − 1) .
+
+We now prove ℓj ≤ dγ j by induction. For j = 0 , feasibility gives ℓ0 = d = dγ 0. If the bound holds at index j, then 
+
+ℓj+1 ≤ γℓ j ≤ γ(dγ j ) = dγ j+1 .
+
+Thus it holds for every j = 0 , . . . , N − 1. Summing the componentwise bounds yields 
+
+H = 
+
+> N−1
+
+X
+
+> j=0
+
+ℓj ≤ 
+
+> N−1
+
+X
+
+> j=0
+
+dγ j = dS N (γ). (76) If γ < 1, the sum is strictly smaller than N d , contradicting H ≥ N d . Explicitly, γ0 = 1 and γj < 1 for every j ≥ 1,so 
+
+dS N (γ) = d
+
+1 +  
+
+> N−1
+
+X
+
+> j=1
+
+γj
+
+ < d [1 + ( N − 1)] = N d. 
+
+Equation 76 would then imply H < N d , a contradiction. Hence γ ≥ 1. On this interval, strict monotonicity of SN ,together with 
+
+dS N (γ) ≥ H = dS N (r),
+
+implies SN (γ) ≥ SN (r) and therefore γ ≥ r.Now set ℓ⋆j = dr j . Its first span is ℓ⋆ 
+
+> 0
+
+= d, and the closure equation gives  
+
+> N−1
+
+X
+
+> j=0
+
+ℓ⋆j = dS N (r) = H, 
+
+40 so it is feasible. Every adjacent ratio is 
+
+ℓ⋆j+1 
+
+ℓ⋆j
+
+= dr j+1 
+
+dr j = r, 
+
+so its objective value is r. The lower bound γ ≥ r proves global optimality. For uniqueness, suppose another feasible sequence has objective value r. Repeating the induction above with 
+
+γ = r gives 
+
+ℓj ≤ dr j = ℓ⋆j for every j. 
+
+If at least one of these inequalities were strict, summing all coordinates would give  
+
+> N−1
+
+X
+
+> j=0
+
+ℓj < 
+
+> N−1
+
+X
+
+> j=0
+
+dr j = H, 
+
+contradicting feasibility. Therefore equality holds at every coordinate, and the geometric sequence is the unique minimizer. 
+
+Proof of Corollary 3. The first gap is fixed at h1 = d, so the remaining gaps 
+
+ℓ0 = h2, ℓ1 = h3, . . . , ℓB−3 = hB−1
+
+contain N = B − 2 positive spans. Their first span is ℓ0 = h2 = d, and their total coverage is 
+
+> B−3
+
+X
+
+> k=0
+
+ℓk =
+
+> B−1
+
+X
+
+> j=2
+
+hj
+
+= S − h1
+
+= S − d. 
+
+The assumption S ≥ (B − 1) d implies 
+
+S − d ≥ (B − 2) d = N d, 
+
+so Theorem 4 applies with H = S − d. It gives the unique minimizing branch 
+
+ℓk = dr k, 0 ≤ k ≤ B − 3,
+
+where r ≥ 1 is the unique solution of 
+
+d
+
+> B−3
+
+X
+
+> k=0
+
+rk = S − d. 
+
+Restoring h1 = d and using hj = ℓj−2 for j ≥ 2 yields 
+
+h1 = d, hj = dr j−2 (2 ≤ j ≤ B − 1) .
+
+Moving the fixed first gap to the left side of the closure equation gives 
+
+d 1 + 
+
+> B−3
+
+X
+
+> k=0
+
+rk
+
+!
+
+= S, 
+
+which is equation 74. Starting from es0 = 0 , the cumulative locations are 
+
+es1 = h1 = d, 
+
+esq = h1 +
+
+> q
+
+X
+
+> j=2
+
+hj
+
+= d +
+
+> q
+
+X
+
+> j=2
+
+dr j−2
+
+= d 1 + 
+
+> q−2
+
+X
+
+> k=0
+
+rk
+
+!
+
+, 2 ≤ q ≤ B − 1,
+
+41 which proves equation 75; at q = B − 1, the closure equation gives esB−1 = S. The objective in the corollary is exactly the adjacent-ratio objective of the ℓ-branch, because 
+
+max 
+
+> 2≤j≤B−2
+
+hj+1 
+
+hj
+
+= max 
+
+> 0≤k<B −3
+
+ℓk+1 
+
+ℓk
+
+.
+
+Existence, attainment, and uniqueness therefore follow directly from the corresponding parts of Theorem 4. 
+
+## C.13 Integer Projection of the Canonical Mesh 
+
+For the canonical integer mesh, compute the continuous anchors from equation 75 with S = T − 1 and d = 1 , fix 
+
+s0 = 0 , s1 = 1 , s2 = 2 , sB−1 = T − 1, (77) and sequentially for 3 ≤ q ≤ B − 2 set 
+
+sq = min {T − B + q, max( sq−1 + 1 , Q even (esq )) } . (78) For any resulting integer mesh, define the realized whole-mesh certificate 
+
+bΓ( A) = max 
+
+> 2≤j<B −1
+
+sj+1 − sj
+
+sj − sj−1
+
+. (79) We prove that equation 77– equation 78 always produce a feasible integer mesh. For every index q, define the largest value that leaves enough terminal slots by 
+
+Uq = T − 1 − (B − 1 − q) = T − B + q. 
+
+Because T ≥ B, the last bootstrap offset satisfies 
+
+s2 = 2 ≤ T − B + 2 = U2.
+
+Now fix q ∈ { 3, . . . , B − 2} and suppose inductively that sq−1 ≤ Uq−1. Since Uq = Uq−1 + 1 ,
+
+sq−1 + 1 ≤ Uq−1 + 1 = Uq
+
+= T − B + q. 
+
+Thus the interval between the lower and upper guards in equation 78 is nonempty. The rounded value Qeven (esq ) is an integer, and both guards preserve integrality, so sq is an integer satisfying 
+
+sq−1 + 1 ≤ sq ≤ Uq . (80) This proves by induction that every interior offset is strictly larger than its predecessor and leaves the required number of unused integer stages. At the final interior index, if it exists, 
+
+sB−2 ≤ UB−2 = T − 2 < T − 1 = sB−1.
+
+When the interior range is empty, B = 4 , and the same terminal inequality follows directly from s2 = 2 ≤ T − 2.Consequently, 
+
+0 = s0 < s 1 = 1 < s 2 = 2 < · · · < s B−1 = T − 1
+
+contains exactly B distinct integer offsets. The mapping aq+1 = T −sq reverses their order and therefore gives exactly 
+
+B distinct solver-stage anchors containing T, T − 1, T − 2, and 1.The full-grid boundary case is also contained in the same construction. If B = T , then Uq = q. Starting from 
+
+s2 = 2 , equation 80 forces sq = q at every interior index, and the terminal condition gives sT −1 = T − 1. Hence every solver stage is an anchor. 42 For completeness, the realized certificate applies to any strictly increasing integer mesh satisfying s0 = 0 , s 1 =1, s 2 = 2 , s B−1 = T − 1, independently of how it was obtained. Define bhj = sj − sj−1 > 0. By equation 79, 
+
+bhj+1 
+
+bhj
+
+≤ bΓ( A) (2 ≤ j < B − 1) .
+
+Applying the cell calculation in Appendix C.11 at every eligible anchor gives 
+
+λ(s) 
+
+> j
+
+≤ bΓ( A), λ(s) 
+
+> j
+
+(1 + λ(s) 
+
+> j
+
+) ≤ bΓ( A)[1 + bΓ( A)] ,
+
+and, because 0 ≤ sin 2 θj ≤ 1,
+
+R(s) 
+
+> j
+
+≤ bΓ( A)2, ω(s) 
+
+> j
+
+≥ 11 + bΓ( A)2 .
+
+This proof uses the realized gaps themselves and therefore remains valid when rounding changes the continuous geometric ratios. 
+
+## C.14 Comparison under a Bounded Time Warp 
+
+Suppose a monotone time coordinate can be written as t = ψ(s), with 0 < m ≤ ψ′(s) ≤ Mψ < ∞ over the relevant intervals. For a decreasing solver time, use t = −σ; this leaves the ratio in equation 3 unchanged. Let r0, r 1 be the progress endpoints of a skipped raw interval after sj , and let sj−1, s j be the latest anchors. The two midpoint-based ratios are 
+
+ρ(s) = r0 + r1 − 2sj
+
+2( sj − sj−1) ,ρ(t) = ψ(r0) + ψ(r1) − 2ψ(sj )2[ ψ(sj ) − ψ(sj−1)] .
+
+All increments in the decomposition of the numerator as 
+
+[ψ(r0) − ψ(sj )] + [ ψ(r1) − ψ(sj )] 
+
+are nonnegative. For any a ≤ b, the fundamental theorem of calculus and the derivative bounds give 
+
+m(b − a) ≤ ψ(b) − ψ(a) = 
+
+Z ba
+
+ψ′(u) du ≤ Mψ (b − a).
+
+Apply this inequality separately to the two numerator increments. With 
+
+Ns = ( r0 − sj ) + ( r1 − sj ), Nt = [ ψ(r0) − ψ(sj )] + [ ψ(r1) − ψ(sj )] ,
+
+we obtain 
+
+mN s ≤ Nt ≤ Mψ Ns.
+
+For the denominator increments 
+
+Ds = sj − sj−1, Dt = ψ(sj ) − ψ(sj−1),
+
+the same argument gives 
+
+mD s ≤ Dt ≤ Mψ Ds.
+
+Since all denominators are positive, 
+
+ρ(t) = Nt
+
+2Dt
+
+≥ mN s
+
+2Mψ Ds
+
+= mMψ
+
+ρ(s),ρ(t) ≤ Mψ Ns
+
+2mD s
+
+= Mψ
+
+m ρ(s).
+
+43 Therefore mMψ
+
+ρ(s) ≤ ρ(t) ≤ Mψ
+
+m ρ(s). (81) In particular, a logical-progress gap-ratio certificate Γ transfers to at most (Mψ /m )Γ in physical solver time under this additional bounded-distortion assumption. Combining this with equation 7 gives the physical-time floor 
+
+ω ≥ 11 + ( Mψ Γ/m )2 .
+
+Without a bound on the time warp, no such uniform transfer follows from logical geometric spacing alone. 
+
+## C.15 Regularization and Degenerate Innovations 
+
+Let 
+
+∆v = ∆ vq , ∆v− = ∆ v− 
+
+> q
+
+, S = ∥∆v∥22 , P = ∆v− 22 , D = ∆v, ∆v− .
+
+When P > 0, the ideal least-squares residual is 
+
+r0 = ∆ v − DP ∆v−, N0 = ∥r0∥22 = S − D2
+
+P .
+
+The regularized residual uses 
+
+rϵp = ∆ v − DP + ϵp
+
+∆v−. (82) Expanding its squared norm one term at a time gives 
+
+Nϵp = rϵp
+
+> 22
+
+= ∥∆v∥22 − 2DP + ϵp
+
+∆v, ∆v− + D2
+
+(P + ϵp)2 ∆v− 22
+
+= S − 2D2
+
+P + ϵp
+
++ D2P
+
+(P + ϵp)2
+
+= S − D2(P + 2 ϵp)(P + ϵp)2 .
+
+Subtracting the ideal residual energy yields the exact identity 
+
+Nϵp − N0 = D2ϵ2
+
+> p
+
+P (P + ϵp)2 ≥ 0. (83) Thus regularizing the projection denominator can only increase the residual energy relative to exact projection. The finite weight is itself an exact minimizer. Define 
+
+Jϵ(ω) = S(1 − ω)2 + ( ρ2Nϵp + ϵs)ω2.
+
+Expanding and differentiating gives 
+
+J ′ 
+
+> ϵ
+
+(ω) = 2[ S + ρ2Nϵp + ϵs]ω − 2S, 
+
+and 
+
+J ′′  
+
+> ϵ
+
+(ω) = 2[ S + ρ2Nϵp + ϵs].
+
+This is strictly positive unless all three nonnegative terms vanish. Hence the unique minimizer whenever the denomi-nator is positive is 
+
+ωϵ = SS + ρ2Nϵp + ϵs
+
+. (84) This shows precisely that ϵs adds a small numerical ridge to the transported-turning penalty. 44 The degenerate cases require an explicit convention only when the displayed ratio becomes 0/0. If ∆v = 0 ,then S = Nϵp = 0 . When ϵs > 0, the formula gives ωϵ = 0 ; when ϵs = 0 , every ω has the same objective and the implementation sets ωϵ = 0 . In both cases the correction ωϵ∆v is zero. If ∆v− = 0 , then P = D = 0 , so 
+
+rϵp = ∆ v: without a previous line, the full latest innovation is treated as unsupported. If ∆v−̸ = 0 and ϵp, ϵ s ↓ 0, then 
+
+Nϵp → N0 = S sin 2 θ and ωϵ → 1/(1 + ρ2 sin 2 θ).A backend that regularizes the direct angle instead may use 
+
+sin 2 eθϵa = 1 − D2
+
+SP + ϵa
+
+.
+
+Cauchy-Schwarz gives 0 ≤ D2 ≤ SP , so this quantity lies in [0 , 1] . For S, P > 0, its exact relation to the ideal statistic is 
+
+sin 2 eθϵa = sin 2 θ + (1 − sin 2 θ) ϵa
+
+SP + ϵa
+
+. (85) Both finite-precision forms converge to the same ideal rule as their regularizers vanish, but they are not algebraically identical at fixed positive regularization. Fixed absolute regularizers break the exact scale invariance of equation 2 and are outside the continuum theorem. Dot products and norm accumulations should use sufficient precision, and a direct-angle implementation should clamp its final statistic to [0 , 1] to suppress roundoff outside the mathematical range. All invariance and continuum claims in the paper concern the zero-regularization equations; reported inference uses the finite rule of its stated backend. 
+
+## C.16 Full-Grid Error Propagation 
+
+For an exact anchor the supplied field is exact at the current accelerated state. Define the additional field defect by 
+
+εn = evn − Vθ (exn, σ n, c ),
+
+so that εn = 0 at every anchor. For a solver with history, let Xn denote the augmented numerical state and let 
+
+πX n = xn extract the latent. 
+
+Proposition 9 (Full-grid perturbation bound) . Let Un(X, v ) be the solver update and 
+
+Fn(X) = Un(X, V θ (πX, σ n, c )) .
+
+Assume 
+
+∥Fn(X) − Fn(Y )∥ ≤ αn∥X − Y ∥, ∥U n(X, v ) − U n(X, w )∥ ≤ βn ∥v − w∥2 ,
+
+with αn, β n ≥ 0. If the exact-field and GeoShrink runs have identical initial solver states, then 
+
+∥ eX0 − X⋆ 
+
+> 0
+
+∥ ≤ 
+
+> T
+
+X
+
+> n=1
+
+βn ∥εn∥2
+
+> n−1
+
+Y
+
+> k=1
+
+αk. (86) 
+
+If hn = |σn − σn−1|, αn ≤ 1 + Lh n, and βn ≤ CD hn, then 
+
+∥ eX0 − X⋆ 
+
+> 0
+
+∥ ≤ CD eL P 
+
+> nhn
+> T
+
+X
+
+> n=1
+
+hn ∥εn∥2 . (87) 
+
+If latent extraction is nonexpansive and the exact-field full-grid method has latent discretization error Egrid , then 
+
+EGeoShrink ≤ Egrid + CD eL P 
+
+> nhn
+
+X
+
+> n
+
+hn ∥εn∥2 . (88) 
+
+Proof of Proposition 9. Let en = ∥ eXn − X⋆n∥. At stage n, insert the exact-field update evaluated at the GeoShrink solver state: 
+
+en−1 ≤ ∥U n( eXn, evn) − U n( eXn, V θ (π eXn, σ n, c )) ∥
+
++ ∥Fn( eXn) − Fn(X⋆n)∥≤ βn ∥εn∥2 + αnen.
+
+45 The initial states coincide, so eT = 0 . Repeated substitution in descending stage order can be written explicitly. Put 
+
+bn = βn ∥εn∥2. The first two substitutions are 
+
+e0 ≤ b1 + α1e1
+
+≤ b1 + α1b2 + α1α2e2.
+
+We claim that after substituting through stage m,
+
+e0 ≤
+
+> m
+
+X
+
+> n=1
+
+bnn−1Y
+
+> k=1
+
+αk + emmY
+
+> k=1
+
+αk. (89) For m = 1 , this is the one-step recurrence, with the empty product in the first term equal to one. Suppose it holds for 
+
+m < T . The next recurrence is em ≤ bm+1 + αm+1 em+1 . Multiplying it by the nonnegative product Qmk=1 αk and substituting into equation 89 gives 
+
+e0 ≤
+
+> m
+
+X
+
+> n=1
+
+bnn−1Y
+
+> k=1
+
+αk + bm+1 
+
+> m
+
+Y
+
+> k=1
+
+αk + em+1 
+
+> m+1
+
+Y
+
+> k=1
+
+αk
+
+=
+
+> m+1
+
+X
+
+> n=1
+
+bnn−1Y
+
+> k=1
+
+αk + em+1 
+
+> m+1
+
+Y
+
+> k=1
+
+αk.
+
+This proves the claim by induction. Taking m = T and using eT = 0 gives 
+
+e0 ≤
+
+> T
+
+X
+
+> n=1
+
+βn ∥εn∥2
+
+> n−1
+
+Y
+
+> k=1
+
+αk,
+
+which is equation 86. If αn ≤ 1 + Lh n and βn ≤ CD hn, then 
+
+> n−1
+
+Y
+
+> k=1
+
+αk ≤
+
+> n−1
+
+Y
+
+> k=1
+
+(1 + Lh k)
+
+≤
+
+> n−1
+
+Y
+
+> k=1
+
+eLh k
+
+= exp L
+
+> n−1
+
+X
+
+> k=1
+
+hk
+
+!
+
+≤ eL PTk=1 hk ,
+
+where 1+ x ≤ ex was applied to each nonnegative x = Lh k. Substitution into equation 86, together with βn ≤ CD hn,gives 
+
+e0 ≤
+
+> T
+
+X
+
+> n=1
+
+CD hn ∥εn∥2 eL P 
+
+> khk
+
+= CD eL P 
+
+> khk
+> T
+
+X
+
+> n=1
+
+hn ∥εn∥2 ,
+
+which proves equation 87. For the final error decomposition, let x0 denote the endpoint of the continuous reference dynamics and let Egrid =
+
+∥πX ⋆ 
+
+> 0
+
+− x0∥2. The triangle inequality and nonexpansiveness of π give 
+
+π eX0 − x0 2
+
+≤ π eX0 − πX ⋆ 
+
+> 02
+
++ ∥πX ⋆ 
+
+> 0
+
+− x0∥2
+
+≤ eX0 − X⋆ 
+
+> 02
+
++ Egrid .
+
+Applying equation 87 to the first term proves equation 88. 46 The augmented-state formulation is required when the numerical update depends on stored fields or past latent states. An update written only as a function of the current latent can otherwise omit a source of perturbation. The special constants 1 + Lh n and CD hn are assumptions to verify for the chosen method and state norm; they do not follow automatically from introducing an augmented state. When the special constants are deterministic and the defects have finite second moments, weighted Cauchy-Schwarz also gives, with S = P 
+
+> n
+
+hn,
+
+E∥ eX0 − X⋆ 
+
+> 0
+
+∥2 ≤ C2 
+
+> D
+
+e2LS S X
+
+> n
+
+hn E ∥εn∥22 . (90) Indeed, weighted Cauchy-Schwarz gives, pathwise, 
+
+X
+
+> n
+
+hn ∥εn∥2
+
+!2
+
+= X
+
+> n
+
+phn
+
+phn ∥εn∥2
+
+!2
+
+≤ X
+
+> n
+
+hn
+
+! X
+
+> n
+
+hn ∥εn∥22
+
+!
+
+= S X
+
+> n
+
+hn ∥εn∥22 .
+
+Squaring equation 87, applying this bound, and then taking expectations gives 
+
+E eX0 − X⋆
+
+> 0
+> 22
+
+≤ C2 
+
+> D
+
+e2LS E X
+
+> n
+
+hn ∥εn∥2
+
+!2
+
+≤ C2 
+
+> D
+
+e2LS S X
+
+> n
+
+hnE ∥εn∥22 ,
+
+where the finite sum is exchanged with expectation by linearity. This is equation 90. This connects local field MSE to an upper bound on deviation from the full-grid trajectory under the stated stability conditions. It is not a global optimality result for the retention policy: different policies change later states, histories, and target innovations. 47

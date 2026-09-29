@@ -1,0 +1,800 @@
+Title: WaveAlign: Cache-Aware Query-Row Scheduling for Sparse Attention in Long-Video Generation
+
+URL Source: https://arxiv.org/pdf/2609.34814v1
+
+Published Time: Tue, 29 Sep 2026 03:27:31 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# WaveAlign: Cache-Aware Query-Row Scheduling for Sparse Attention in Long-Video Generation 
+
+Zijian Dai 1,2, Sen Han 1, Youhui Bai 1, Shannon Wang 2, Kan Wu 1
+
+Jingkai Huang 3, Yuhang Wang 1, Jing Li 1, Cheng Li 1,2
+
+> 1
+
+University of Science and Technology of China 
+
+> 2
+
+Institute of Artificial Intelligence, Hefei Comprehensive National Science Center 
+
+> 3
+
+South China University of Technology daizijian2080@outlook.com, handsome2022@mail.ustc.edu.cn, youhuibai@ustc.edu.cn, wsn511799@163.com, kanwu.wisc@gmail.com, 202364820481@mail.scut.edu.cn, wyh2022@mail.ustc.edu.cn, lj@ustc.edu.cn, chengli7@ustc.edu.cn 
+
+Abstract —Long-video generation with diffusion transformers (DiTs) produces extremely long token sequences, making atten-tion a dominant inference bottleneck. Dynamic sparse attention reduces computation, but its realized speedup remains limited because irregular query-row execution degrades L2 cache locality and increases HBM traffic. We present WaveAlign, a lightweight, cache-aware query-row reordering framework for dynamic sparse attention. WaveAlign formulates row ordering as an optimization problem and ap-proximates it with two stages. The first stage derives a low-rank SVD representation of sparse-mask rows and groups query rows with similar K/V access patterns, increasing K/V overlap among concurrently scheduled rows. The second stage exploits streaming GPU scheduling by sorting rows within each wave in descending order of their K/V-block counts, so that short rows from the current wave are followed by long rows from the next. This aligns K/V accesses across wave boundaries and enables shared blocks to be reused before eviction. An adaptive skip module avoids unprofitable reordering. By only permuting query and mask rows, WaveAlign preserves sparse-attention semantics and requires no changes to existing methods or backend kernels. Across two GPU architectures, two video DiTs, and four sparse-attention methods, WaveAlign raises the L2 cache hit ratio from 28.48%–36.35% to 79.38%–89.06%, reduces HBM read traffic by up to 92.11%, and achieves up to 1.25 × kernel and 1.17 ×
+
+end-to-end generation speedup without quality loss. 
+
+I. I NTRODUCTION 
+
+Diffusion transformers (DiT) has emerged as a dominant paradigm for high-fidelity video generation, for its strong scal-ability and high-fidelity synthesis capabilities [28]. Compared with image generation, video generation typically requires handling longer sequences, since the sequence length increases with both spatial resolution and the number of frames, so video generation remains very costly and time-consuming. The bottleneck mainly comes from the quadratic complexity in terms of input sequence length in the attention module [6]. For example, generating a 401-frame 720p video, corresponding to a 364K sequence length, takes 10,678 seconds using Wan2.1-14B [34] on a single NVIDIA H100 GPU, among which the attention accounts for 85.86%. Similar behaviors are also observed in LTX2.3 [21] and other video DiTs. Utilizing the inherent sparsity of attention [16], [18], [42], [49], each query (block) only selects its most relevant KV (blocks) for attention calculation, which significantly reduces the attention computation while preserving generation quality. Nevertheless, in practice, the speedup brought by such sparse attention methods is far below the reduction in computation, even with GPU-optimized backend kernels such as FlashAt-tention4 [48] and FlashInfer [47]. Across Wan2.1 and LTX2.3, the speedup can only reach 80 % of the expected level. This gap reveals substantial untapped optimization potential in existing GPU implementations of sparse attention. Our profiling shows that this gap is fundamentally amemory-locality problem. Sparsification increases the L2 miss rate, collapses L2 cache reuse, and drives HBM bandwidth toward saturation, shifting attention from compute-bound to memory-bandwidth-bound execution. We trace this transition to two root causes of poor L2 cache locality. A wave comprises Q blocks executing concurrently across all GPU compute units, together with the K/V blocks they access. First, Q blocks in the same wave select spatially scattered, weakly overlapping K/V blocks, so their union overflows L2 cache and blocks are evicted before reuse. Second, Q blocks select different numbers of K/V blocks, creating workload imbalance that causes adjacent waves to interleave in execution, temporally misaligning accesses to shared blocks and extending their reuse distance. To address these problems, we present WaveAlign, alightweight high-performance sparse attention framework. Note that the attention outputs w.r.t. the queries are computed independently. Through reordering the query rows, gathering the rows accessing similar KV blocks, WaveAlign improves L2 locality and hence improves the kernel efficiency. However, finding an effective row order is non-trivial. Existing locality-aware reordering methods for sparse matrix multiplication [1], [4], [17], [43] cannot be directly applied to online sparse at-tention. Lower-cost methods provide little improvement in L2 locality, whereas methods that substantially improve locality incur preprocessing overhead that outweighs their kernel-time savings. A practical solution must capture similarities across irregular K/V access patterns and mitigate row-workload im-balance while providing reordering overhead from offsetting the resulting kernel gains. 1arXiv:2609.34814v1 [cs.DC] 28 Sep 2026 To this end, WaveAlign proposes a cache-aware query-row reordering method, which cast row reordering as an optimization problem and approximate its solution with a lightweight two-stage algorithm. Exploiting the observation that similarities among irregular mask rows are low-rank, Stage 1 embeds the rows via a matrix-free rank-2 SVD [11] and orders them by polar angle, grouping rows with similar K/V-access patterns. Stage 2 then sorts rows within each wave by descending K/V-block count, so that short and long rows interleave across wave boundaries and shared K/V blocks are reused before eviction. The two stages are complementary: Stage 1 creates cross-row reuse opportunities and Stage 2 realizes them before cache eviction, jointly improving L2 locality. WaveAlign only permutes query and mask rows and restores the original output order, preserving sparse-attention semantics without modifying the sparse algorithms or back-end kernels. Moreover, WaveAlign introduces an automatic discrimination mechanism that bypasses query-row reordering when the expected gain cannot amortize its overhead, such as for short sequences or highly sparse masks. We implement WaveAlign in vLLM-Omni [32] and eval-uate it on two GPU architectures, using FlashAttention4 as backend kernel on NVIDIA H100 and FlashInfer on NVIDIA A40. Our evaluation spans two widely used video DiT fam-ilies, Wan2.1 [35] and LTX2.3 [21], and four representative dynamic sparse-attention methods. Across these workloads, WaveAlign increases the L2 cache hit ratio from 28.48%– 36.35% to 79.38%–89.06% and reduces HBM read traffic by 80.71%–92.11%, shifting sparse attention from the memory-bandwidth-bound regime back into the compute-bound regime. This improved memory efficiency yields up to 1.25 × kernel speedup, which translates into up to 1.17 × end-to-end gener-ation speedup. Because WaveAlign preserves sparse-attention semantics, it maintains the same generation quality as the corresponding baselines. II. B ACKGROUND 
+
+A. Video Diffusion Transformers (DiTs) 
+
+DiT models. Video generation powers a growing range of applications, from entertainment and advertising to virtual reality [37], [41]. Video diffusion transformers (DiTs) [22], [35], [46], which pair diffusion models with Transformer back-bones [28], have become the dominant architecture, as they scale well and excel at capturing long-range spatiotemporal dependencies [35], [46]. Popular video DiTs share the same recipe. A video is en-coded into a sequence of spatiotemporal tokens, whose length grows with both the frame count and the spatial resolution. Each Transformer layer applies multi-head attention (MHA) to capture dependencies across tokens, followed by a feed-forward network (FFN) [31]. MHA projects the hidden states 
+
+X into queries ( Q), keys ( K), and values ( V ), computes softmax-normalized query–key scores, and aggregates the val-ues accordingly [31]. Unlike autoregressive large language models (LLMs), which restrict attention to preceding tokens with a causal mask, video DiTs apply full, non-causal self-attention over the entire sequence. Inference iteratively refines the latent noise over tens of denoising steps, each requiring a complete forward pass [13]. Because hidden states change at every step, the derived K/V tensors are transient and cannot be cached across steps, forcing full long-sequence attention to be recomputed throughout inference. 
+
+Computation bottleneck of DiT. Despite their generation quality, DiTs are painfully slow. Using Wan2.1 T2V 1.3B [33], a popular open source DiT model, generating an 81 frame video at a resolution of 720 ×1280 takes over five minutes on an H100 GPU. At 1920 ×1080, the generation time increases dramatically to approximately 25 minutes [2]. Our profiling shows that attention dominates the generation time, accounting for 73% and 90% in the two settings above. This overhead stems from the quadratic complexity of atten-tion with respect to sequence length [6]. Video sequences are exceptionally long and grow with both frame count and spatial resolution, reaching 76K and 364K tokens in these settings. Moreover, bi-directional attention and iterative denoising incur this full quadratic cost at every layer and denoising step. Other popular video DiTs, such as LTX2.3 [21], exhibit similar behavior. Therefore, reducing attention cost is essential for efficient long, high-resolution video generation. 
+
+B. Sparse Attention for Long-Video Generation 
+
+To mitigate the high cost of full attention, recent studies exploit the inherent sparsity of attention mechanisms [39]. Only a small subset of key/value tokens typically receives substantial attention weights and materially affects the output. Identifying these tokens and computing only the correspond-ing interactions can substantially reduce computation while preserving generation quality [30]. Consequently, recent works have increasingly favored 
+
+dynamic-pattern methods, as important interactions vary across inputs. These methods estimate relevance from the online attention statistics and select important K/V tokens for each query at runtime, offering broader applicability and bet-ter accuracy preservation. MInference [16] instantiates head-specific A-shape, vertical-slash, or general sparse patterns; FlexPrefill [18] further adapts the pattern and budget to each input and head; XAttention [42] scores tokens via antidiagonal aggregation; and SpargeAttn [49] predicts relevance from pooled Q/K features and refines it via online softmax statistics. 
+
+Block-sparse attention for modern GPUs. To exploit the GPU memory hierarchy as shown on the left of Figure 1, memory accesses should be contiguous, while on-chip compu-tation is naturally tiled over data blocks [5], [6]. GPU-oriented dynamic sparse attention therefore organizes the Q, K, and V
+
+tensors and their computation at block granularity, with each block containing tens to hundreds of consecutive tokens. Based on this organization, dynamic sparse attention en-codes block-level computation using a binary mask M . Dense attention computes each query block Qi with all K/V block pairs to produce Oi, whereas sparse attention executes only the interactions retained by M . As illustrated on the right of 2wave0                                                           
+
+> wave1
+> row 0 row 1 row 2
+> row 5 row 4
+> V₁miss
+> Q₀ O₀
+> ⋯⋯⋯⋯
+> Q₇ K₇ V₇ O₇
+> HBM = 80GB
+> row 3
+> row 7
+> hit
+> Q
+> K
+> V
+> O
+> SM 1
+> SMEM / registers Q₁
+> O₁Q₀
+> K₀Q₁
+> row 2 Q₂
+> row 3 Q₃
+> row 4 Q₄
+> K₀Q₅
+> row 6 Q₆
+> Q₀K₀
+> K₁
+> K
+> V₀
+> V₁
+> V
+> O₀
+> O₁
+> O
+> K₀
+> V₀
+> Q
+> K
+> V
+> O
+> inner loop
+> K₁ K₃ K₄ K₅ K₆ K₇
+> V₅
+> QOQ
+> resid ent KVK
+> strea med
+> L2 cache mis bandwidth TB/s
+> K
+> QQQQ
+> KKKK
+> VVVV
+> OOOO
+> SM 3
+> O
+> O₂
+> O₃
+> O₄
+> O₆
+> O₇
+> row 6 SM 0
+> K₂ SM 2
+> SMEM / registers
+> V₁ V₂ V₃ V₄ V₆ SMEM / registers
+> V₇
+> Cache
+> SM0
+> L1 SMEM / registers Q₀resid ent
+> Cache
+> SM1
+> L1 O₀Cache
+> SM2
+> L1 SM3
+> L1
+> Cache resid ent
+> row 0
+> V₀
+> resid ent
+> O₀ VK₁hit
+> K₀ V₀ K₂
+> strea med
+> row 1 strea med
+> O₁ strea med
+> hit
+> L2 Cache = 50MB (BW ≈ 12 TB/s)
+> V₂
+> L2 cache hit bandwidth≈12 TB/s
+> K₁ V₁
+> L2 Cache = 50MB(shared by all SMs)
+> outer
+> loop
+> HBM = 80GB (BW = 3.35 TB/s)
+> K₁K₀ V₀
+> V₁row 5
+> V₀
+> KVV
+> O₅
+> row 7
+> Q₁
+> Q₇
+> QFig. 1. GPU architecture, block-sparse attention, and the mapping of query rows and K/V blocks onto GPU execution units. We use NVIDIA H100 as an example and show 4 of its 132 SMs for clarity.
+
+Figure 1, each mask row corresponds to a query block. A purple block with Mij = 1 denotes an executed interaction between Qi and (Kj , V j ), while a white block with Mij = 0 
+
+denotes a skipped interaction. For example, Q0 uses (K0, V 0)
+
+and (K3, V 3) to produce O0, while Q3 also uses (K3, V 3),showing that different query blocks may share K/V blocks. The row sum ni = P 
+
+> j
+
+Mij , or its number of nonzero blocks (NNZ), determines the workload of Qi.
+
+C. Mapping Sparse Attention onto GPUs 
+
+After constructing the block mask M , the sparse-attention method passes Q, K, V , and M to a backend kernel such as FlashAttention4 [48] or FlashInfer [47] for attention com-putation. As illustrated in Figure 1, the QKV tensors and attention output O reside in HBM, while the kernel loads the required blocks on chip for computation. These kernels follow the FlashAttention-style nested-loop structure, with query blocks in the outer loop and the K/V blocks selected by the corresponding mask row in the inner loop. For each 
+
+Qi, the task represented by mask row i is assigned to one streaming multiprocessor (SM) on the GPU, which maintains the online-softmax state and partial output Oi on chip while iterating over its selected K/V blocks. The completed Oi is then written back to HBM. The query-row tasks concurrently occupying all SMs form a wave [24]. In the four-SM example in Figure 1, rows 0–3 initially form wave 0, followed by rows 4–7 in wave 1. A wave is not a synchronization barrier. If row 2 finishes first because it accesses fewer K/V blocks, the freed SM immediately begins row 4 while the remaining rows of wave 0 continue. Because all SMs share the L2 cache, a K/V block loaded by one row can be reused by another if it remains resident in L2 cache; otherwise, it must be fetched again from HBM. The K/V access overlap, row workloads, and execution order therefore jointly determine the L2 cache hit ratio and HBM traffic. 230 287 344 401         
+
+> Seq Length (K)
+> 1.05 1.15 1.25
+> 148 220 292 364
+> Seq Length (K)
+> Upper / Actual Speedup Gap
+> (a) LTX2.3 (b) Wan2.1-T2V-14B
+> MInference FlexPrefill XAttention SpargeAttn
+> Fig. 2. Upper bound vs. actual attention kernel speedup across sequence lengths on Wan2.1-T2V-14B and LTX2.3, with each sparse-attention method using its default sparsity configuration on H100.
+
+III. M OTIVATION 
+
+Sparse attention eliminates a substantial fraction of the FLOPs in dense attention, yet existing implementations often fail to achieve proportional speedups. We first quantify this gap, then show that sparsification shifts the kernel from compute-bound to memory-bandwidth-bound (Section III-B), and finally identify two root causes (Section III-C). 
+
+A. FLOP Reduction Does Not Yield Proportional Speedup 
+
+We evaluate four representative dynamic sparse-attention methods: MInference [16], FlexPrefill [18], XAttention [42], and SpargeAttn [49]. We run them on two widely used video DiT models, Wan2.1-T2V-14B [34] and LTX2.3 [12], using an NVIDIA H100 GPU with FlashAttention4 [48] as the backend kernel. The workloads span sequence lengths of 148K–364K tokens for Wan2.1 and 230K–401K tokens for LTX2.3; detailed setups are provided in Section VI-A. For each workload, ρ denotes the retained block density, i.e., the fraction of non-skipped blocks among all dense-attention blocks. Executing a ρ fraction of the blocks gives a compute-proportional upper-bound speedup of 1/ρ . We measure the actual sparse-kernel speedup over the dense kernel as Sactual ,and define the gap as (1 /ρ )/S actual .Figure 2 shows a consistent gap between the compute-proportional and measured speedups. The upper bound ex-ceeds the measured speedup by 1.12–1.26 × on LTX2.3 and 1.09–1.26 × on Wan2.1, with the gap generally increasing at longer sequence lengths. MInference and FlexPrefill, whose masks retain predefined structures, exhibit smaller gaps than XAttention and SpargeAttn, which construct fully content-dependent dynamic masks. These results show that FLOP reduction alone cannot yield sparse-attention kernel speedup. 
+
+B. Sparse Attention Becomes Memory-Bandwidth-Bound 
+
+To locate the source of the speedup gap, we profile the 364K-token Wan2.1 workload from Figure 2 using NVIDIA Nsight Compute (NCU) [26]. Table I reports each method’s default density ρ, HBM bandwidth saturation measured as Speed of Light (SOL) [24], and L2 hit ratio. The results show that sparsification degrades cache behavior. Dense attention achieves the highest L2 hit ratio and the lowest HBM SOL, because its regular K/V access stream enables effective cache 3TABLE I NCU CHARACTERIZATION ON ATTENTION MODULE OF WAN 2.1-14B    
+
+> MODEL WITH 364K TOKENS ON H100.
+
+Methods Density ρ (%) HBM SOL (%) L2 Hit (%) 
+
+Dense 100 .0 49 .38 46 .51 
+
+MInference 18 .3 79 .28 21 .67 
+
+FlexPrefill 29 .4 86 .43 14 .72 
+
+XAttention 28 .8 83 .44 17 .94 
+
+SpargeAttn 28 .3 84 .06 17 .35 
+
+Random 20 .0 87 .77 10 .64 100 150 300 700 2000 Operational intensity (FLOP/B) 450 600 800 1000 Achieved Arithmetic Rate (TFLOP/s)   
+
+> ridge point
+> H100 peak (990)
+> Dense MInference FlexPrefill XAttention SpargeAttn Random-CV
+> Memory-bound Compute-bound
+> Fig. 3. Roofline analysis on attention kernels of Wan2.1-14B model with 364K tokens on H100.
+
+reuse. All four dynamic sparse methods, in contrast, issue irregular and discontinuous K/V accesses, which substantially reduce L2 locality and drive up HBM SOL. Consistent with their smaller speedup gaps in Figure 2, MInference and FlexPrefill retain more structured access patterns and therefore better L2 locality than XAttention and SpargeAttn. Finally, a synthetic random mask approximates the locality floor for fully unstructured K/V accesses, which XAttention and SpargeAttn already approach. To determine whether the increased HBM traffic shifts the kernel bottleneck from computation to memory bandwidth, we further conduct a roofline analysis [38] in Figure 3. We estimate FLOPs from the two matrix multiplications in attention using the number of executed attention blocks and the per-block operation count. Kernel execution time and HBM traffic are measured directly with NCU tool. The achieved arithmetic throughput is calculated by dividing the estimated FLOPs by the measured kernel time, while operational in-tensity is calculated by dividing the estimated FLOPs by the measured HBM traffic. The compute roof corresponds to the theoretical FP16 peak throughput of H100. The results show that dense attention is compute-bound, whereas all sparse methods become memory-bandwidth-bound. Although sparsification reduces FLOPs, poor L2 locality prevents HBM traffic from decreasing proportionally, limiting kernel speedup and producing the gap observed in Figure 2. 
+
+C. Why Access Is Irregular: Two Root Causes 
+
+Effective L2 reuse requires rows executing within the same wave to access overlapping K/V blocks and to reach these KV index legend 
+
+0 1 2 3 4 5 6
+
+row 0 
+
+row 1 Wave 0  row 2 
+
+row 3 
+
+row 4 
+
+row 5 Wave 1  row 6 
+
+row 7 
+
+(a) Spatially dispersed K/V accesses 
+
+SM0 
+
+row 1  row 6 
+
+SM1 
+
+row 2  row 5 
+
+SM2 
+
+row 3  row 7 
+
+SM3 
+
+(b) NNZ-induced temporal misalignment 
+
+time 
+
+Wave 0 
+
+row 0  row 4 
+
+Wave 1  
+
+> Fig. 4. Two root causes of poor L2 cache locality.
+
+blocks close together in time. Dynamic masks undermine both conditions. As illustrated in Figure 4, we consider eight query rows scheduled on four SMs, where rows 0–3 form Wave 0 and rows 4–7 form Wave 1. Each colored block denotes an accessed K/V block, with its color indicating the block index. 
+
+Root cause 1: Spatially dispersed K/V accesses. Rows scheduled in the same wave share few K/V blocks, because dynamic masks assign each row an irregular access set (Fig-ure 4(a)). With little overlap, the SMs’ concurrent accesses span a large union of K/V blocks that overflows the working set of L2 cache. Useful blocks are evicted before they are reused, and each eviction converts a potential L2 hit into an extra HBM fetch. 
+
+Root cause 2: NNZ-induced temporal misalignment. Even rows with overlapping access sets may fail to reuse shared blocks when their accesses are separated in time. As shown in Figure 4(b), rows access different numbers of K/V blocks and therefore take different times to execute. Under streaming scheduling, an SM that finishes a shorter row immediately starts one from the next wave, temporally interleaving the two waves. This workload imbalance separates accesses to shared blocks. Although rows 4–7 all access the block pair (K6, V 6),they reach it far enough apart that the cached copy may be evicted between accesses, forcing repeated HBM fetches. These two root causes jointly determine whether K/V reuse can occur. The sparse method fixes which K/V blocks each row needs, but not which rows run together or when they reach the shared blocks. Spatial overlap creates opportunities for cross-row reuse, while temporal alignment determines whether these opportunities can be realized before the blocks are evicted from L2. A failure in either condition leads to poor L2 cache locality and repeated HBM accesses. IV. W AVE ALIGN INTERNALS 
+
+A. Design Rationale 
+
+As described in Section II-C, each query row is mapped to an SM, while rows in the same wave execute concurrently or in close temporal proximity and share the L2 cache. Meanwhile, query rows are mutually independent, allowing query and 4𝑄, 𝐾, 𝑉  Sparse mask  𝑀   
+
+> method
+> Sparse
+> reordering
+> Adaptive
+> Skip attention
+> Sparse
+> kernel
+> Skip
+> No skip
+> Two-stage
+> reorder
+> Sparse mask
+
+𝑀′ 
+
+𝑂 
+
+> reorder
+> Inverse
+
+𝑂 Fig. 5. Workflow of WaveAlign. 
+
+mask rows to be jointly reordered and their outputs restored af-terward without changing attention semantics. Together, these observations enable us to group rows with overlapping K/V accesses into the same wave, increasing cross-SM L2 reuse and reducing HBM traffic. Building on this opportunity, we propose WaveAlign, a lightweight query-row scheduling framework. As shown in Figure 5, the original workflow of sparse attention in the black path directly passes mask M to the backend kernel. In contrast, WaveAlign introduces the red components as plug-in stages between mask construction and the backend kernel. Once receiving M , WaveAlign first uses an adaptive guard to determine whether reordering is profitable (Section IV-E). If reordering is skipped, the workload follows the original path. Otherwise, WaveAlign applies its two-stage row-ordering strategy to construct a reordered mask M ′ (Section IV-C and IV-D). After kernel execution, an inverse reorder restores the output rows to their original positions. Since each query row still attends to exactly the same K/V blocks, WaveAlign changes only the physical execution order and preserves both the semantics of sparse attention. However, realizing this workflow efficiently poses two chal-lenges. First, the irregular masks generated by dynamic sparse attention make it difficult to efficiently identify rows with similar K/V access patterns. Second, reordering must incur low overhead, since it is repeatedly performed across attention heads, layers, and denoising steps and can otherwise offset the resulting kernel speedup. 
+
+B. Problem Definition 
+
+To systematically address these challenges, we first for-mulate this problem. For attention head h, let Mh ∈{0, 1}MB ×NB denote its block-sparse mask, where MB and 
+
+NB are the numbers of query and K/V blocks, respectively, and Mh[i, j ] = 1 indicates that query block i accesses K/V block j. WaveAlign aims to maximize the K/V-block overlap among query rows assigned to the same scheduling wave. Specifically, we aim to divide the whole Mh into k waves, and each wave contains at most W query-block rows selected from Mh. In order to make the rows within the same wave as close as possible, we construct the following problem: 𝒖 𝟏       
+
+> ①Origin mask ⑤Reordered
+> mask
+> 𝒖 𝟐
+> ②Rank-2
+> truncated SVD
+> ③2D polar
+> embedding
+> ④Sort by θ
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 𝑀 8×8 ≈ 𝑈 8×2 Σ2×2 𝑉 2×8
+> 𝑇
+> 0.1
+> 0.1
+> 0.4
+> −0.5
+> 0.1
+> −0. 5
+> 0.4
+> −0. 3
+> 29.1°
+> 79.5°
+> 140.7°
+> 186.4°
+> 239.2°
+> 289.4°
+> 298.4°
+> 352.1°
+> 0.6
+> −0. 4
+> 0.2
+> −0. 1
+> −0. 3
+> 0.4
+> −0. 1
+> −0.4
+> 2
+> 0
+> 5
+> 3
+> 7
+> 1
+> 4
+> 6
+> 𝒖 𝟏
+> 𝒖 𝟐
+> θ = 79.5°
+> Fig. 6. Example of SVD-Based Global Spatial Ordering.
+
+min 
+
+> Ph
+> k
+
+X
+
+> l=1
+
+X
+
+> i,j
+
+Slh[i] − Slh[j] 2
+
+s.t. Slh = P lhMh,Ph = [ P 1 
+
+> h
+
+; P 2 
+
+> h
+
+; . . . ; P kh ],Ph ∈ { 0, 1}MB ×MB ,PhP Th = I. 
+
+(1) Here, Ph is the row-permutation matrix for head h, and P lh
+
+selects the rows assigned to wave l. Accordingly, Slh denotes the reordered mask rows executed in that wave. The constraint 
+
+PhP Th = I ensures that each query row appears exactly once. 
+
+C. SVD-Based Global Spatial Ordering 
+
+For each attention head, directly searching the optimal permutation requires jointly partitioning and ordering all mask rows to minimize their intra-wave distances, which is NP-hard, motivating the efficient approximation introduced next. Problem (1) seeks a row partition that keeps mutually close rows in the same wave. This is exactly what SVD exposes. Since statistically several query blocks attend to nearly identical K/V blocks, the rows are highly correlated and the singular spectrum is top-heavy, and a few leading directions already capture the dominant row geometry. In the following, we show that the row partitioning of Problem (1) can be turned into a low-dimensional geometric problem in a principled rather than heuristic way, as illustrated in Figure 6. Before using the SVD, we first apply column centering to the mask, 
+
+fMh =
+
+
+
+I − 1 
+
+> MB
+
+11 ⊤
+
+Mh. (2) Centering subtracts the same mean row from every row, so all pairwise row distances are preserved, namely, ∥ fMh[i] −
+
+fMh[j]∥ = ∥Mh[i] − Mh[j]∥, so reordering Mh is equivalent to reordering fMh.Write the SVD as fMh = P 
+
+> t
+
+σtutv⊤ 
+
+> t
+
+with σ1 ≥ σ2 ≥· · · ≥ σR ≥ 0 and R = min( MB , N B ). Since the right sin-gular vectors {vt} are orthonormal, the pairwise row distance decomposes exactly as 
+
+∥ fMh[i] − fMh[j]∥2 = X
+
+> t
+
+σ2
+
+> t
+
+ ut[i] − ut[j]2. (3) Assigning row i the coordinate vector ϕr (i) =(σ1u1[i], . . . , σ r ur [i]) therefore makes the Euclidean 5distance in the r-dimensional embedding equal to the rank-r partial sum of the true row distance, with residual 
+
+ϵij = P 
+
+> t>r
+
+σ2 
+
+> t
+
+(ut[i] − ut[j]) 2, which is small when the singular spectrum decays quickly, as is typical for these masks. By the Eckart–Young theorem [9], [23], this truncation is the best rank-r approximation of fMh, so the leading (scaled) left singular vectors are exactly the r-dimensional coordinates that best preserve the pairwise row distances in the least-squares sense (classical multidimensional scaling). The SVD thus yields the optimal low-rank distance-preserving embedding on which we build the ordering, rather than an ad-hoc proxy, and a few leading directions suffice because the σ2 
+
+> t
+
+weights concentrate the row geometry in the top of the spectrum. 
+
+1) Polar spectral ordering: Although a larger r preserves the row distances more faithfully, in practice we set r = 2 and use only the rank-2 truncation [50], for two reasons.  
+
+> •
+
+Sufficiency. Two directions already capture the structure that matters at this stage: the σ2 
+
+> t
+
+weights place most of the row geometry in the leading modes, and we only need a coarse neighborhood order here; the fine intra-wave alignment is handled in Section IV-D.  
+
+> •
+
+Linearizability. The scheduler ultimately needs a single one-dimensional execution order, so the coordinates must be collapsed onto one axis. Two dimensions form the smallest embedding that a polar angle can turn into a total order: every row then has a well-defined angle and the rows sort directly, whereas r ≥ 3 admits no comparably cheap and rotation-robust linearization and would instead require a clustering or space-filling heuristic. As analyzed above, we can represent each row i by a 2-dimensional point (σ1u1[i], σ 2u2[i]) , and then sort them by their polar angles. Note that σ1, σ 2 ≥ 0, so they merely reparametrizes the angle monotonically but leaves the resulting order unchanged. We therefore drop the singular-value weights and order the rows by the polar angles 
+
+ai = atan2  u2[i], u 1[i]. (4) As shown in Figure 6, each row i is placed at the point 
+
+(u1[i], u 2[i]) , and the polar angle unrolls the ring into a one-dimensional sequence where angularly adjacent rows tend to share more K/V blocks. 
+
+2) Matrix-Free Centered Subspace Iteration: To obtain 
+
+u1, u 2, a direct approach would first form fMh and apply an SVD, or equivalently an eigendecomposition of the Gram matrix fMh fM ⊤ 
+
+> h
+
+; both are computationally expensive. Instead, we compute u1, u 2 with a subspace power iteration, detailed in Algorithm 1. Crucially, it never materializes fMh or the 
+
+MB × MB Gram matrix: centering enters only as a rank-1 correction to two sparse matrix–vector products, fM ⊤ 
+
+> h
+
+X =
+
+M ⊤ 
+
+> h
+
+X − 1 
+
+> MB
+
+c(1⊤X) and fMhY = MhY − 1 
+
+> MB
+
+1(c⊤Y ) with 
+
+c = M ⊤ 
+
+> h
+
+1. Each iteration only costs O(nnz) . It converges geometrically to the top-2 invariant subspace, and a small fixed T (5–15 ) suffices because the subsequent angular sort is invariant to in-plane rotations and sign flips of (u1, u 2).It is worth emphasizing that the centering step is necessary rather than cosmetic: the embedding coordinates are measured 
+
+Algorithm 1 Matrix-Free Centered Subspace Iteration (MFCSI)                                                                                             
+
+> Require: binary mask M∈ { 0,1}MB×NB, iterations T
+> Ensure: top-2left singular vectors u1, u 2of fM=
+> 
+> I−1
+> MB11 ⊤
+> 
+> M
+> 1: c←M⊤1
+> 2: m←MB
+> 3: X←random orthonormal block of shape MB×2
+> 4: Subspace power iteration
+> 5: for t= 1 to Tdo
+> 6: Y←M⊤X−1
+> mc(1⊤X)
+> 7: Z←M Y −1
+> m1(c⊤Y)
+> 8: X←Qfrom the QR factorization Z=QR
+> 9: end for
+> 10: Optional: order by singular value
+> 11: Y←M⊤X−1
+> mc(1⊤X);Z←M Y −1
+> m1(c⊤Y)
+> 12: B←X⊤Z
+> 13: (Λ , R )←eig( B)
+> 14: X←XR
+> 15: u1, u 2←columns of X
+> 16: return u1, u 2
+
+K/V block index legend 
+
+(a) Original row order: 
+
+high overlap, temporal misalign   
+
+> 011 23
+
+(b) Intra-wave NNZ-desc: 
+
+high overlap, temporal align                                          
+
+> SM0
+> SM1
+> SM2
+> SM3
+> SM4
+> SM5
+> SM6
+> SM7
+> SM0
+> SM1
+> SM2
+> SM3
+> SM4
+> SM5
+> SM6
+> SM7
+> r4 (10) r10 (5) r23 (9)
+> r1 (8) r14 (7) r19 (8)
+> r3 (7) r13 (7) r17 (9)
+> r0 (6) r15 (9) r16 (9)
+> r2 (6) r9 (8) r18 (9)
+> r7 (6) r8 (7) r22 (10)
+> r5 (5) r12 (10) r20 (7)
+> r6 (5) r11 (9) r21 (9)
+> r0 (6) r16 (9)
+> r1 (8) r14 (7) r20 (7)
+> r2 (6) r11 (9) r21 (9)
+> r3 (7) r13 (7) r19 (8)
+> r4 (10) r15 (9)
+> r5 (5) r9 (8) r18 (9)
+> r6 (5) r8 (7) r17 (9)
+> r7 (6) r12 (10) r22 (10)
+> r10 (5)
+> r23 (9)
+> wave0 wave1 wave2 wave0 wave1 wave2
+> Fig. 7. Effect of Stage 2 intra-wave ordering, ri(n)denotes row iwith n
+> nonzero blocks.
+
+from the origin, so on the raw mask the leading singular vector is spent on the row centroid, which tracks the per-row workload ( σ1u1[i] = ⟨Mh[i], v 1⟩ ≈ ni) rather than the K/V-access shape. Centering sends this constant (workload) direction to a zero singular value ( 1⊤ fMh = 0), so both retained coordinates u1, u 2 of fMh carry purely structural information. 
+
+D. NNZ-Guided Intra-Wave Temporal Alignment 
+
+The SVD-based ordering mentioned above (Stage 1) ad-dresses spatially dispersed K/V accesses by grouping rows with similar access patterns. However, as discussed in Sec-tion III-C, it does not account for the varying numbers of nonzero blocks across rows. Figure 7(a) illustrates 24 rows scheduled on 8 SMs over 3 waves. SM0–SM7 initially execute rows r0–r7, but rows with fewer NNZ blocks finish earlier and immediately fetch subsequent rows from the Wave 1. For example, after completing r5 and r6, the corresponding SMs proceed to r9 and r8, respectively. This progressive execution skew creates temporal misalignment across waves. Consequently, although Stage 1 places rows with overlapping K/V accesses close together, their accesses to the same blocks may occur far apart in time, weakening L2 cache reuse. 6Algorithm 2 Two-stage reordering                                                        
+
+> Require: binary mask M∈ { 0,1}H×MB×NB, wave size W
+> Ensure: per-head row permutations Ph
+> 1: for h= 1 to Hdo
+> 2: Stage 1: SVD-based global spatial ordering
+> 3: Compute the top-2left singular vectors u1, u 2by MFCSI 4: ai←atan2( u2[i], u 1[i])
+> 5: O←rows sorted by ai
+> 6: Split Ointo consecutive buckets B1, . . . , B Kof at most Wrows 7: Stage 2: NNZ-based intra-wave alignment
+> 8: N N Z i←P
+> jMh[i, j ]for all rows i
+> 9: for each bucket Bkdo
+> 10: sort rows in Bkby descending N N Z i
+> 11: end for
+> 12: Ph←concatenation of the refined buckets B1, . . . , B K
+> 13: end for
+
+To mitigate this temporal misalignment, we first sort the rows within each Stage 1 Wave in descending order of NNZ blocks and then schedule them onto the SMs. As shown in Figure 7(b), the first Wave assigns the longest row r4
+
+to SM0 and the shortest row r6 to SM7. After the shorter rows r5 and r6 complete, their SMs fetch the longest rows in the next Wave, r12 and r11 , respectively. This long-short complementary assignment at successive Wave boundaries limits the accumulation of execution skew and keeps the SMs approximately aligned. Because rows in adjacent waves have similar K/V access patterns after Stage 1, temporal alignment allows their shared K/V blocks to be accessed within shorter reuse distances, thereby improving L2 cache locality. 
+
+E. Runtime Coordination 
+
+Two-stage coordination. Sections IV-C and IV-D improve L2 locality from complementary spatial and temporal dimensions, respectively. Algorithm 2 integrates the two stages. Given the sparse mask M and wave size W , WaveAlign reorders each attention head independently (Line 1). It first applies Stage 1 to derive a global row order based on K/V-access similarity (Lines 2–6), and partitions the ordered rows into wave-sized buckets (Line 7). Within each bucket, Stage 2 sorts rows by descending NNZ count to reduce cross-wave execution skew (Lines 8–12). Finally, the refined buckets are concatenated to produce the row permutation that can be directly scheduled by the backend kernel (Line 13). 
+
+Adaptive reordering skip. Row reordering is not always profitable, because its overhead must be amortized by the resulting kernel-time reduction. We skip reordering in three cases. First, for short sequences, the entire K/V working set fits in the L2 cache, making row order largely irrelevant to cache reuse. Second, when the mask is too sparse, the remaining attention workload is insufficient to amortize the reordering cost. Third, when adjacent rows already exhibit high K/V-access similarity, the original order provides adequate L2 locality. To make this decision automatically, our adaptive skip module extracts lightweight statistics from the sparse mask and combines them with offline profiles of kernel latency and reordering cost. Reordering is enabled only when the estimated latency reduction exceeds its overhead. V. IMPLEMENTATION We integrate WaveAlign into vLLM-Omni [32] as alightweight plug-in between sparse-mask construction and backend-kernel execution. 
+
+Reordering operator. We introduce two additional operators. The first implements the two-stage row reordering described in Algorithm 2, applying the resulting permutation to the query blocks and sparse mask before attention kernel. The second applies the inverse permutation to restore the attention outputs to their original row order. Both operators are composed from PyTorch tensor primitives and registered in vLLM-Omni, allowing them to be invoked transparently throughout the inference pipeline. 
+
+FlashInfer per-head scheduling. On the A40 platform, we use FlashInfer [47] as the backend kernel. Its native scheduler prioritizes the K/V-head dimension, allowing Q-block compu-tations from different heads to run concurrently across SMs. Because each head accesses a separate set of K/V blocks with-out cross-head overlap, concurrent execution only increases contention in the shared L2 cache. Following FlashAtten-tion4 [48], we instead prioritize the query-sequence dimension and execute K/V heads sequentially. This exposes only one head’s K/V working set at a time, reducing L2 contention and improving intra-head locality. Section VI-B and VI-C evaluate the effectiveness of this scheduling modification. VI. E VALUATION 
+
+A. Experimental Setup 
+
+Hardware and software platforms. We evaluate WaveAlign on two NVIDIA GPU platforms. The H100 GPU provides 80GB of HBM3 memory and 50MB L2 cache shared by 132 SMs. The A40 GPU provides 48GB of GDDR6 memory and 6MB L2 cache shared by 84 SMs. The primary software stack includes CUDA 13.0 [25], PyTorch 2.11 [29], Nsight-Compute 2025.3.1 [26], vLLM-Omni 0.20.0 [32]. We use FlashAttention4 [48] as the backend kernel on H100 GPU and FlashInfer [47] on A40 GPU, as FlashAttention4 depends on the Hopper and Blackwell architecture and does not support Ampere GPUs. 
+
+Models. We evaluate WaveAlign on two representative open-source Text-to-Video (T2V) model families, Wan2.1 [35] and LTX2.3 [12]. Our H100 experiments use Wan2.1-T2V-14B [34] and LTX2.3-22B, whereas A40 uses the smaller Wan2.1-T2V-1.3B [33] due to the limited memory capacity. 
+
+Workloads. We use prompts from the Penguin Video Bench-mark [15] to evaluate video generation. To construct workloads with different sequence lengths, we vary the number of frames while keeping the resolution fixed. For Wan2.1-T2V-14B, we use a resolution of 720 ×1280 and vary the frames from 161 to 481, yielding sequences of 148K–436K tokens. For LTX2.3-22B, the resolution is 1216 ×1920 , and we vary the range of frames from 601 to 1401, yielding sequences of 173K–401K. For Wan2.1-T2V-1.3B, we set resolution as 720 ×1280 and frames from 121 to 241, yielding sequences of 112K–220K. 
+
+Baselines and configurations. Our baselines are four sparse-attention methods without applying WaveAlign under default 7148 220 292 364 436                         
+
+> Sequence length (K)
+> 0510 15
+> Wan2.1-T2V-14B (XAttn)
+> 148 220 292 364 436
+> Sequence length (K)
+> 0510 15
+> Wan2.1-T2V-14B (Sparge)
+> 173 230 287 344 401
+> Sequence length (K)
+> 02.5 57.5
+> LTX2.3 (XAttn)
+> 173 230 287 344 401
+> Sequence length (K)
+> 01.5 34.5 LTX2.3 (Sparge)
+> E2E Time (10 3 s)  Original WaveAlign Fig. 8. End-to-end video generation latency with and without WaveAlign on Wan2.1-T2V-14B and LTX2.3 across various sequence lengths atop H100. 112 148 184 220 Sequence length (K) 0246E2E Time (10 3 s)  Wan2.1-T2V-1.3B (XAttn)
+> 112 148 184 220 Sequence length (K) 0.0 1.5 3.0 4.5 Wan2.1-T2V-1.3B (Sparge)
+> Original O + Seq O + WA O + Seq + WA
+> Fig. 9. E2E video generation latency of Wan2.1-T2V-1.3B on A40/FlashInfer under different combinations of head scheduling and WaveAlign.
+
+sparse configurations: XAttention [42] with threshold 0.9, SpargeAttn [49] and MInference [16] with pre-autotuned con-fig and FlexPrefill [18] with g = 0 .60 . We use these config-urations for the kernel-level evaluation of four methods. For the end-to-end evaluation, however, we exclude MInference and FlexPrefill because their overhead of mask construction is prohibitively high in our T2V workloads. For FlashAttention4 on H100, we use a block size of 128 ×128 tokens and one resident cooperative thread array (CTA) per SM across 132 SMs, yielding a wave size of 132. For FlashInfer on A40, we use a block size of 64 ×64 tokens and two resident CTAs per SM across 84 SMs, yielding a wave size of 168. 
+
+Metrics. We report end-to-end generation latency and sparse-attention kernel latency, together with speedup relative to the corresponding baselines. We separately measure the total re-ordering overhead, including permutation construction, query and mask gathering, and inverse for output. To explain the latency reduction, we report L2 cache hit ratio and HBM read traffic. Finally, to verify that WaveAlign preserves the sparse-attention semantics and generated video quality, we report PSNR, SSIM, LPIPS, and the VBench [14] metrics Imaging Quality and Subject Consistency. 
+
+B. End-to-End Video Generation Latency 
+
+H100 results. Figure 8 reports the end-to-end video genera-tion latency of XAttention and SpargeAttn with and without WaveAlign on Wan2.1-T2V-14B and LTX2.3-22B. In the original baselines, sparse attention dominates end-to-end la-tency, accounting for 65.8%–88.0% on Wan2.1-T2V-14B and 58.1%–84.4% on LTX2.3-22B. Consequently, WaveAlign’s kernel-level improvements translate into consistent end-to-end speedups across both models, both sparse-attention methods, and all evaluated sequence lengths, reaching up to 1.17 ×
+
+on Wan2.1-T2V-14B and 1.14 × on LTX2.3-22B. The gains generally increase with sequence length because the growing K/V working set increasingly exceeds the fixed L2 cache capacity, leading to more severe cache thrashing and heavy HBM accesses under the original row order. 
+
+A40 results. Figure 9 reports the end-to-end generation la-tency of XAttention and Sparge on Wan2.1-T2V-1.3B under four configurations: FlashInfer’s native concurrent-head ex-ecution ( Original ), the sequential-head scheduler described in Section V (O+Seq ), WaveAlign applied to the native scheduler ( O+WA ), and the combination of both optimiza-tions ( O+Seq+WA ). Compared with Original , O+Seq alone achieves a speedup of up to 1.09 ×, demonstrating the benefit of our sequential-head implementation. Applying WaveAlign directly to Original yields a speedup of up to 1.29 ×. Com-bining the two optimizations further improves upon O+WA 
+
+by up to 11.0%, with O+Seq+WA consistently achieving the lowest latency. The two optimizations improve cache behavior in complementary ways: sequential-head execution prevents different heads from simultaneously competing for the A40’s 6MB L2 cache, while WaveAlign further increases the L2 hit ratio by improving intra-head K/V reuse. At comparable sequence lengths, the gains on A40 are larger than those on H100 because the A40’s much smaller L2 cache becomes capacity-constrained earlier, making cache locality important even for shorter sequences. 
+
+C. Kernel Latency Breakdown 
+
+WaveAlign optimizes only sparse attention, so its end-to-end speedup comes entirely from reduced attention latency. We next isolate the attention computation and analyze its kernel-level latency on H100 and A40. 
+
+H100 results. Figure 10 illustrates the H100 sparse-attention kernel latency of MInference, FlexPrefill, XAttention, and SpargeAttn using real QKV tensors captured from Wan2.1-T2V-14B. Each WaveAlign bar separates the optimized kernel latency from the complete reordering overhead. Including this overhead, WaveAlign consistently outperforms the original kernel across all four methods and sequence lengths, achieving speedups of 1.092 ×–1.181 × for MInference, 1.088 ×–1.179 ×
+
+for FlexPrefill, 1.124 ×–1.252 × for XAttention, and 1.125 ×–
+
+1.234 × for SpargeAttn. Reordering accounts for only 1.1%– 8148 220 292 364 436                                
+
+> Sequence length(K)
+> 01.5 3
+> Attention latency (s)
+> MInference (H100)
+> 148 220 292 364 436
+> Sequence length(K)
+> 024
+> FlexPrefill (H100)
+> 148 220 292 364 436
+> Sequence length(K)
+> 024
+> XAttention (H100)
+> 148 220 292 364 436
+> Sequence length(K)
+> 024
+> SpargeAttn (H100)
+> 112 148 184 220
+> Sequence length(K)
+> 012
+> Attention latency (s)
+> MInference (A40)
+> 112 148 184 220
+> Sequence length(K)
+> 00.4 0.8 FlexPrefill (A40)
+> 112 148 184 220
+> Sequence length(K)
+> 01.5 3
+> XAttention (A40)
+> 112 148 184 220
+> Sequence length(K)
+> 01.5 3
+> SpargeAttn (A40)
+> Original WaveAlign Reorder overhead Original O + Seq O + WA O + Seq + WA Reorder overhead Fig. 10. Sparse-attention kernel latency on H100 (top) and A40 (bottom). For WaveAlign configurations, the complete reordering overhead is shown separately above the kernel latency.
+
+3.2% of the total WaveAlign attention latency and is consis-tently outweighed by the kernel-time reduction. The gains increase with sequence length as the growing K/V working set exceeds L2 capacity, amplifying cache evictions and repeated HBM accesses that WaveAlign mitigates through shorter reuse distances. The gains are also larger for XAt-tention and SpargeAttn because their fully content-dependent masks produce more irregular K/V accesses than the structured masks of MInference and FlexPrefill. 
+
+A40 results. The A40 panels in Figure 10 report the kernel latency of the same four methods using real QKV tensors captured from Wan2.1-T2V-1.3B. We evaluate parallel- and sequential-head execution, each with and without WaveAlign, using FlashInfer’s native parallel-head scheduler as the base-line. The legend follows the naming convention in Sec-tion VI-B, and all reported WaveAlign speedups include the complete reordering overhead. Across the four sequence lengths, O+WA achieves maximum speedups over Original 
+
+of 1.104 ×, 1.090 ×, 1.599 ×, and 1.520 × for MInference, FlexPrefill, XAttention, and SpargeAttn, respectively. Rela-tive to O+Seq , O+Seq+WA achieves maximum speedups of 
+
+1.133 ×, 1.077 ×, 1.614 ×, and 1.556 ×, respectively. Com-pared with Original , O+Seq+WA achieves maximum speedups of 1.158 ×, 1.090 ×, 1.635 ×, and 1.601 ×, and consistently provides the lowest total attention latency. WaveAlign im-proves both parallel- and sequential-head execution across all four methods, with its 7.5–29.7ms reordering over-head consistently outweighed by the kernel-time reduction. Sequential-head scheduling reduces cross-head L2 contention, while WaveAlign improves intra-head K/V locality, making 
+
+O+Seq+WA the most effective configuration. Compared with H100, A40 is more sensitive to row or-dering. While WaveAlign achieves up to 1.252 × speedup on H100, O+WA reaches 1.599 × and 1.520 × for XAttention and XAttn Sparge MInf Flex 050 100     
+
+> L2 hit ratio (%)
+> (a) L2 hit ratio
+> XAttn Sparge MInf Flex 0.0 0.5 1.0
+> Norm. HBM read
+> (b) HBM read
+> Original WaveAlign
+> Fig. 11. L2 cache hit ratio and HBM read traffic on H100/FlashAttention-4 with and without WaveAlign across four sparse-attention methods. HBM reads are normalized to the corresponding no-reorder baseline, and all results report the median of three NCU runs.
+
+SpargeAttn on A40, respectively, even at shorter sequence lengths. This is because the A40’s smaller L2 cache (6MB versus 50MB on H100) becomes capacity-constrained earlier, amplifying the benefits of row reordering for irregular, content-dependent masks. 
+
+D. L2 Cache Locality and HBM Traffic 
+
+To identify the source of the kernel speedup, we use NVIDIA Nsight Compute (NCU) [26] to profile FlashAt-tention4 on H100 using a Wan2.1-T2V-14B workload with 401 frames at 720 ×1280 , corresponding to 364K visual to-kens. Figure 11 shows consistent locality improvements across all four sparse methods: the L2 cache hit ratio increases from 28.48%–36.35% to 79.38%–89.06%, while HBM reads decrease by 80.71%–92.11%. In particular, XAttention and SpargeAttn have the lowest baseline hit ratios because their fully content-dependent masks produce more dynamic and irregular K/V access patterns. WaveAlign raises their hit ratios from 36.35% and 28.48% to 84.17% and 80.04%, respectively. Since WaveAlign preserves both the sparse mask and com-putation, these results show that its speedup comes from 9XAttn Sparge MInf Flex           
+
+> 0.0 0.5 1.0
+> Kernel time
+> (a) Kernel time
+> XAttn Sparge MInf Flex
+> 050 100
+> L2 hit ratio (%)
+> (b) L2 hit ratio
+> XAttn Sparge MInf Flex
+> 0.0 0.5 1.0
+> Norm. HBM read
+> (c) HBM read
+> Original O + S1 O + S2 O + S1 + S2 Fig. 12. Ablation of WaveAlign’s two-stage reorder across four sparse-attention methods under four cumulative configurations: Original, O+S1, O+S2 and O+S1+S2. S1 and S2 denote global spatial ordering and intra-wave temporal alignment, respectively. Kernel time and HBM reads are normalized to Original.
+
+improved K/V reuse: shorter reuse distances keep more K/V blocks in L2 and avoid repeated HBM accesses. 
+
+E. Ablation Study 
+
+Figure 12 evaluates the two stages of WaveAlign on H100 with FlashAttention4 using a Wan2.1-T2V-14B workload of 401 frames at 720 ×1280 , corresponding to 364K visual to-kens. We evaluate XAttention, SpargeAttn, MInference, and FlexPrefill under four cumulative configurations: Original ,
+
+O+S1 , O+S2 , and O+S1+S2 . Stage 1 applies the global spatial row ordering described in Section IV-C, while Stage 2 adds the intra-wave NNZ-based refinement described in Section IV-D. We use an execution-wave size of 132 rows, matching the number of SMs on H100. Stage 1 alone provides modest improvements, achieving up to 1.0319 × kernel speedup, increasing the L2 hit ratio from 28.48%–36.35% to 34.88%–44.47%, and reducing HBM read traffic by 8.71%–18.61%. Stage 2 alone delivers substantially larger gains. Across the four methods, O+S2 achieves 1.091 ×–
+
+1.147 × kernel speedup, increases the L2 hit ratio to 68.35%– 78.71%, and reduces HBM read traffic by 68.89%–83.67% rel-ative to Original . Combining both stages consistently produces the best results. Relative to Original , O+S1+S2 accelerates the kernel by up to 1.17 ×, raises the L2 hit ratio to 79.38%– 89.06%, and reduces HBM traffic by up to 92.11%. The two stages improve L2 reuse along complementary dimensions. Stage 1 groups rows with similar K/V access patterns into nearby waves, increasing the likelihood that different SMs request the same blocks. However, uneven row workloads can separate these requests in time and prevent cache reuse. Stage 2 sorts rows by descending NNZ to align CTA progress and shorten reuse distances, keeping shared K/V blocks in L2 for subsequent accesses. Stage 1 establishes spatial overlap, while Stage 2 converts it into temporal reuse; both are therefore necessary for effective L2 reuse. 
+
+F. Other Factors 
+
+Adaptive reordering skip. Figure 13 demonstrates the ne-cessity of adaptive reordering proposed in Section IV-E by re-porting kernel-level latency, including the reordering overhead, for XAttention on Wan2.1-T2V-14B with FlashAttention4. At short sequence lengths of 25K, 49K, and 98K, the kernel-time reduction is insufficient to amortize the reordering cost, 25 49 98 197 364 Sequence length (K) 0.0 0.5 1.0 Normalized latency  Density = 28.8%                 
+
+> Skip Skip Skip 1.09× 1.18×
+> 1.7 6.7 14.5 28.8 57.4 Retained density (%)
+> Sequence length = 364K
+> Skip Skip 1.14× 1.18× 1.20×
+> Original Adaptive path Reorder overhead
+> Fig. 13. Adaptive reordering skip for XAttention with FlashAttention4 on Wan2.1-T2V-14B under different sequence lengths and retained densities. Original WaveAlign Original WaveAlign
+
+XAttention SpargeAttn   
+
+> Head 0 mask 132×132 zoom
+> Fig. 14. Head-0 sparse masks of XAttention and SpargeAttn before and after WaveAlign. The top row shows the full masks, with local regions marked in red; the bottom shows the corresponding 132 ×132 zoomed windows.
+
+so WaveAlign skips reordering and falls back to the default sparse-attention path, corresponding to a 1.0× speedup over the baseline. From 197K onward, the growing K/V working set makes cache locality increasingly important, and reordering becomes profitable, delivering up to 1.18 × speedup. Retained density exhibits a similar trend: WaveAlign skips reordering at 1.7% and 6.7% density, but enables it from 14.5% onward, achieving 1.14 ×–1.20 × speedup. These results show that adaptive skipping prevents reordering overhead from causing regressions while preserving its benefits in profitable regimes. 
+
+Visualization of sparse mask. Figure 14 visualizes the head-0 sparse masks of XAttention and SpargeAttn on Wan2.1-T2V-14B before and after WaveAlign reordering. Each zoomed region spans 132 query rows, corresponding to one execu-10 TABLE II COMPARISON WITH OTHER REORDERING ALGORITHMS .                                         
+
+> Method Time (ms) Speedup w/o overhead Speedup w/ overhead Overhead (ms) HBM SOL (%) L2 Hit (%) Original 2723.99 1.000 1.000 0.00 83.98 17.57 WaveAlign 2234.37 1.221 1.210 19.85 15.37 76.72 Hypergraph 2198.40 1.236 0.005 535435.34 10.38 83.36 MinHash 2257.93 1.208 0.715 1556.40 19.24 72.26 LSH 2259.70 1.203 0.715 1540.98 20.90 70.30 Clustering 2707.63 1.008 0.961 133.07 81.65 19.29 100 150 300 700 2000 Operational intensity (FLOP/B) 450 600 800 1000 Achieved Arithmetic Rate (TFLOP/s)
+> ridge point
+> H100 peak (990)
+> MInference FlexPrefill XAttention SpargeAttn
+> Memory-bound Compute-bound
+
+Fig. 15. Roofline analysis on attention kernels with WaveAlign of Wan2.1-14B model with 364K tokens on H100. 
+
+tion wave on H100, and 132 K/V-block columns. Before reordering, the masks are dominated by diagonal patterns, and rows within the same wave exhibit little column-wise overlap, indicating that different SMs rarely access the same K/V blocks. After reordering, more vertically aligned nonzero blocks appear, showing that rows executed within the same wave are more likely to share K/V accesses. Since WaveAlign preserves each row’s selected blocks and changes only the execution order, this increased column-wise overlap directly improves cross-SM L2 reuse. 
+
+Compare with other reorder algorithms. Table II compares WaveAlign with four representative locality-aware sparse ma-trix multiplication reordering methods reviewed in Section VII, using the configuration in Section VI-D. These methods ex-pose a trade-off between locality and overhead. Clustering has the lowest overhead among these baselines but barely raises the L2 hit ratio from 17.57% to 19.29%. Hypergraph, MinHash, and LSH substantially improve L2 locality, but their preprocessing costs outweigh the kernel savings, resulting in inference slowdowns. In contrast, WaveAlign raises the L2 hit ratio to 76.72% with only 19.85ms of overhead, retaining a 
+
+1.210 × net speedup. It is therefore the only evaluated method that combines effective locality improvement with practical online overhead. 
+
+Roofline analysis. Compared with Figure 3, Figure 15 shows that WaveAlign increases operational intensity and achieved arithmetic rate, moving all four sparse-attention kernels across the ridge point from memory-bandwidth-bound to compute-bound execution. 
+
+Video generation accuracy. Table III evaluates video gen-eration quality on the Penguin Video Benchmark [15] us-
+
+TABLE III QUALITY AND CONSISTENCY METRICS BEFORE AND AFTER WAVE ALIGN .                                                                     
+
+> Model Sparse method Density PSNR SSIM LPIPS ImgQual SubCons Wan2.1-T2V-14B Dense 1.000 –––0.695 0.963 XAttn 0.507 17.498 0.581 0.284 0.686 0.839 XAttn+WaveAlign 0.507 17.498 0.581 0.284 0.686 0.839 Sparge 0.559 19.161 0.675 0.224 0.694 0.956 Sparge+WaveAlign 0.559 19.161 0.675 0.224 0.694 0.956 LTX2.3-22B Dense 1.000 –––0.581 0.912 XAttn 0.599 27.683 0.910 0.094 0.594 0.899 XAttn+WaveAlign 0.599 27.683 0.910 0.094 0.594 0.899 Sparge 0.588 26.485 0.885 0.115 0.589 0.898 Sparge+WaveAlign 0.588 26.485 0.885 0.115 0.589 0.898
+
+ing Wan2.1-T2V-14B and LTX2.3-22B with XAttention and SpargeAttn. All videos are generated at 480p with 81 frames. Across both models and sparse attention methods, the original and WaveAlign variants achieve identical results on all re-ported metrics. This is because WaveAlign only reorders the mask rows and their corresponding queries, while preserving the selected K/V blocks and the backend kernel’s per-row computation. The outputs are then restored to their original order, leaving the sparse attention semantics and inference accuracy unchanged. VII. R ELATED WORK 
+
+Sparse attention for video generation. This topic has at-tracted growing interest. Fixed-pattern methods reuse prede-fined layouts across inputs and denoising steps. Rule-based approaches, including LongNet [7], LogSparse [19], STA [51], Radial Attention [20], and LVSA [10], exploit spatiotemporal locality, whereas profile-guided methods, such as SVG [39] and Sparse-vDiT [3], select head- or layer-specific patterns from representative attention profiles. Content-adaptive meth-ods , such as AdaSpa [40] and SVG2 [45], identify important blocks or tokens from the current input to balance sparsity and generation quality. Complementary to these methods, WaveAlign reorders rows after mask construction to improve kernel efficiency without changing the selected blocks. 
+
+GPU kernels for sparse attention. To accelerate atten-tion, prior kernel optimizations fall into two groups. The FlashAttention series [5], [6], [48] improve kernel efficiency through IO-aware tiling, online softmax, and GPU pipelining. Sparse or flexible attention kernels, including FlashInfer [47], FlexAttention [8], FlashMask [36], Block Sparse FlashAtten-tion [27], and FSA [44], further support diverse sparse masks. WaveAlign complements these backends by reordering the mask to unlock their full performance. 
+
+Locality-aware sparse matrix reordering. Reordering is widely used to improve locality in sparse matrix multipli-cation, with representative approaches based on LSH-based row reordering [17], hypergraph partitioning [1], MinHash-based ordering [4], and clustering [43]. However, our prior evaluation shows that the high preprocessing overhead makes them unsuitable for runtime-generated sparse attention masks. To the best of our knowledge, WaveAlign provides a fast and effective reordering method tailored to sparse attention. 11 VIII. CONCLUSION WaveAlign is an efficient reordering framework for acceler-ating dynamic sparse attention in long-video generation. By jointly improving spatial KV locality and temporal workload alignment, it increases L2 cache reuse and reduces HBM traffic without modifying the sparse attention algorithm. WaveAlign reduces end-to-end video generation latency by up to 1.17 ×
+
+and sparse attention latency by up to 1.25 × over strong baselines across multiple models and algorithms. REFERENCES [1] G. Ballard, A. Druinsky, N. Knight, and O. Schwartz, “Hypergraph partitioning for sparse matrix-matrix multiplication,” ACM Transactions on Parallel Computing , vol. 3, no. 3, pp. 18:1–18:34, 2016. [2] J. Chen, W. He, Y. Gu, Y. Zhao, J. Yu, J. Chen, D. Zou, Y. Lin, Z. Zhang, M. Li, H. Xi, L. Zhu, E. Xie, S. Han, and H. Cai, “DC-VideoGen: Efficient video generation with deep compression video autoencoder,” arXiv preprint arXiv:2509.25182, 2025. [3] P. Chen, X. Zeng, M. Zhao, P. Ye, M. Shen, W. Cheng, G. Yu, and T. Chen, “Sparse-vDiT: Unleashing the power of sparse attention to accelerate video diffusion transformers,” in Proceedings of the AAAI Conference on Artificial Intelligence , vol. 40, no. 4, 2026, pp. 2957– 2965. [4] F. Chierichetti, R. Kumar, S. Lattanzi, M. Mitzenmacher, A. Panconesi, and P. Raghavan, “On compressing social networks,” in Proceedings of the 15th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining , 2009, pp. 219–228. [5] T. Dao, “FlashAttention-2: Faster attention with better parallelism and work partitioning,” in International Conference on Learning Represen-tations , 2024. [6] T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. R´ e, “FlashAttention: Fast and memory-efficient exact attention with IO-awareness,” in Advances in Neural Information Processing Systems , vol. 35, 2022, pp. 16 344– 16 359. [7] J. Ding, S. Ma, L. Dong, X. Zhang, S. Huang, W. Wang, N. Zheng, and F. Wei, “LongNet: Scaling transformers to 1,000,000,000 tokens,” arXiv preprint arXiv:2307.02486, 2023. [8] J. Dong, B. Feng, D. Guessous, Y. Liang, and H. He, “FlexAttention: A programming model for generating fused attention variants,” in 
+
+Proceedings of Machine Learning and Systems , vol. 7, 2025. [9] C. Eckart and G. Young, “The approximation of one matrix by another of lower rank,” Psychometrika , vol. 1, no. 3, pp. 211–218, 1936. [10] G. Glorian, I. Lamprou, Z. Zhang, Y. Yuan, and H. Liu, “LVSA: Training-free sparse attention for long video diffusion,” arXiv preprint arXiv:2605.31057, 2026. [11] G. H. Golub and C. F. Van Loan, Matrix computations . JHU press, 2013. [12] Y. HaCohen, N. Chiprut, B. Brazowski, D. Shalem, D. Moshe, E. Richardson, E. Levin, G. Shiran, N. Zabari, O. Gordon, P. Panet, S. Weissbuch, V. Kulikov, Y. Bitterman, Z. Melumian, and O. Bibi, “LTX-Video: Realtime video latent diffusion,” arXiv preprint arXiv:2501.00103, 2025. [13] J. Ho, A. Jain, and P. Abbeel, “Denoising diffusion probabilistic models,” in Advances in Neural Information Processing Systems , vol. 33, 2020, pp. 6840–6851. [14] Z. Huang, Y. He, J. Yu, F. Zhang, C. Si, Y. Jiang, Y. Zhang, T. Wu, Q. Jin, N. Chanpaisit, Y. Wang, X. Chen, L. Wang, D. Lin, Y. Qiao, and Z. Liu, “VBench: Comprehensive benchmark suite for video generative models,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024, pp. 21 807–21 818. [15] Hunyuan Foundation Model Team, “Penguin video benchmark,” GitHub repository, 2025, accessed: Jul. 27, 2026. [On-line]. Available: https://github.com/Tencent-Hunyuan/HunyuanVideo/ blob/main/assets/PenguinVideoBenchmark.csv [16] H. Jiang, Y. Li, C. Zhang, Q. Wu, X. Luo, S. Ahn, Z. Han, A. H. Abdi, D. Li, C.-Y. Lin, Y. Yang, and L. Qiu, “MInference 1.0: Accelerating pre-filling for long-context LLMs via dynamic sparse attention,” in Advances in Neural Information Processing Systems , vol. 37, 2024. [17] P. Jiang, C. Hong, and G. Agrawal, “A novel data transformation and execution strategy for accelerating sparse matrix multiplication on GPUs,” in Proceedings of the 25th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming , 2020, pp. 376–388. [18] X. Lai, J. Lu, Y. Luo, Y. Ma, and X. Zhou, “FlexPrefill: A context-aware sparse attention mechanism for efficient long-sequence inference,” in 
+
+International Conference on Learning Representations , 2025. [19] S. Li, X. Jin, Y. Xuan, X. Zhou, W. Chen, Y.-X. Wang, and X. Yan, “Enhancing the locality and breaking the memory bottleneck of trans-former on time series forecasting,” in Advances in Neural Information Processing Systems , vol. 32, 2019. [20] X. Li, M. Li, T. Cai, H. Xi, S. Yang, Y. Lin, L. Zhang, S. Yang, J. Hu, K. Peng, M. Agrawala, I. Stoica, K. Keutzer, and S. Han, “Radial attention: o(n log n) sparse attention with energy decay for long video generation,” in Advances in Neural Information Processing Systems ,vol. 38, 2025. [21] LTX Team, “LTX-2.3,” LTX Documentation, Mar. 2026, accessed: Jul. 27, 2026. [Online]. Available: https://docs.ltx.video/models [22] X. Ma, Y. Wang, X. Chen, G. Jia, Z. Liu, Y.-F. Li, C. Chen, and Y. Qiao, “Latte: Latent diffusion transformer for video generation,” Transactions on Machine Learning Research , 2025. [23] L. Mirsky, “Symmetric gauge functions and unitarily invariant norms,” 
+
+The Quarterly Journal of Mathematics , vol. 11, no. 1, pp. 50–59, 1960. [24] NVIDIA Corporation, “NVIDIA Nsight Compute Profiling Guide,” https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html# compute-model, accessed: Jul. 29, 2026. [25] NVIDIA Corporation, “CUDA Toolkit 13.0 Documentation,” https: //docs.nvidia.com/cuda/archive/13.0.0/, 2025, accessed: Jul. 30, 2026. [26] NVIDIA Corporation, “NVIDIA Nsight Compute 2025.3.1 Release Notes,” https://docs.nvidia.com/nsight-compute/ReleaseNotes/topics/ updates-2025-3-1.html, 2025, accessed: Jul. 30, 2026. [27] D. Ohayon, I. Lamprecht, I. Hubara, I. Cohen, D. Soudry, and N. Elata, “Block sparse FlashAttention,” arXiv preprint arXiv:2512.07011, 2025. [28] W. Peebles and S. Xie, “Scalable diffusion models with transformers,” in Proceedings of the IEEE/CVF International Conference on Computer Vision , 2023, pp. 4195–4205. [29] PyTorch Foundation, “PyTorch 2.11 Release Blog,” https://pytorch.org/ blog/pytorch-2-11-release-blog/, Mar. 2026, accessed: Jul. 30, 2026. [30] Y. Sun, Z. Li, Y. Zhang, T. Pan, B. Dong, Y. Guo, and J. Wang, “Efficient attention mechanisms for large language models,” Patterns , p. 101594, 2026. [31] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin, “Attention is all you need,” in Advances in Neural Information Processing Systems , vol. 30, 2017, pp. 5998–6008. [32] vLLM Project, “vLLM-Omni,” GitHub repository, 2026, accessed: Jul. 27, 2026. [Online]. Available: https://github.com/vllm-project/vllm-omni [33] Wan-AI, “Wan2.1-T2V-1.3B model card,” https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B, 2025, hugging Face, accessed: Jul. 30, 2026. [34] Wan-AI, “Wan2.1-T2V-14B model card,” https://huggingface.co/Wan-AI/Wan2.1-T2V-14B, 2025, hugging Face, accessed: Jul. 30, 2026. [35] Wan-Video, “Wan2.1: Open and advanced large-scale video generative models,” GitHub repository, 2025, [Online]. Available: https://github. com/Wan-Video/Wan2.1. Accessed: Jul. 30, 2026. [36] G. Wang, J. Zeng, X. Xiao, S. Wu, J. Yang, L. Zheng, Z. Chen, J. Bian, D. Yu, and H. Wang, “FlashMask: Efficient and rich mask extension of FlashAttention,” in International Conference on Learning Representations , 2025. [37] Y. Wang, X. Liu, W. Pang, L. Ma, S. Yuan, P. E. Debevec, and N. Yu, “Survey of video diffusion models: Foundations, implementations, and applications,” arXiv preprint arXiv:2504.16081 , 2025. [38] S. Williams, A. Waterman, and D. A. Patterson, “Roofline: An insightful visual performance model for multicore architectures,” Communications of the ACM , vol. 52, no. 4, pp. 65–76, 2009. [39] H. Xi, S. Yang, Y. Zhao, C. Xu, M. Li, X. Li, Y. Lin, H. Cai, J. Zhang, D. Li, J. Chen, I. Stoica, K. Keutzer, and S. Han, “Sparse Video-Gen: Accelerating video diffusion transformers with spatial-temporal sparsity,” in Proceedings of the 42nd International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, vol. 267, 2025, pp. 68 208–68 224. [40] Y. Xia, S. Ling, F. Fu, Y. Wang, H. Li, X. Xiao, and B. Cui, “Training-free and adaptive sparse attention for efficient long video generation,” in Proceedings of the IEEE/CVF International Conference on Computer Vision , 2025, pp. 15 982–15 993. 
+
+12 [41] Z. Xing, Q. Feng, H. Chen, Q. Dai, H. Hu, H. Xu, Z. Wu, and Y.-G. Jiang, “A survey on video diffusion models,” ACM Computing Surveys ,vol. 57, no. 2, 2025. [42] R. Xu, G. Xiao, H. Huang, J. Guo, and S. Han, “XAttention: Block sparse attention with antidiagonal scoring,” in Proceedings of the 42nd International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, vol. 267, 2025, pp. 69 819–69 831. [43] S. Yadav and B. Asgari, “Bo¨ otes: Boosting the efficiency of sparse accelerators using spectral clustering,” in Proceedings of the 58th Annual IEEE/ACM International Symposium on Microarchitecture , 2025. [44] R. Yan, Y. Jiang, and B. Yuan, “Flash sparse attention: An alternative efficient implementation of native sparse attention kernel,” arXiv preprint arXiv:2508.18224, 2025. [45] S. Yang, H. Xi, Y. Zhao, M. Li, J. Zhang, H. Cai, Y. Lin, X. Li, C. Xu, K. Peng, J. Chen, S. Han, K. Keutzer, and I. Stoica, “Sparse VideoGen2: Accelerate video generation with sparse attention via semantic-aware permutation,” in Advances in Neural Information Processing Systems ,vol. 38, 2025. [46] Z. Yang, J. Teng, W. Zheng, M. Ding, S. Huang, J. Xu, Y. Yang, W. Hong, X. Zhang, G. Feng, D. Yin, Y. Zhang, W. Wang, Y. Cheng, B. Xu, X. Gu, Y. Dong, and J. Tang, “CogVideoX: Text-to-video dif-fusion models with an expert transformer,” in International Conference on Learning Representations , 2025. [47] Z. Ye, L. Chen, R. Lai, W. Lin, Y. Zhang, S. Wang, T. Chen, B. Kasikci, V. Grover, A. Krishnamurthy, and L. Ceze, “FlashInfer: Efficient and customizable attention engine for LLM inference serving,” in Proceed-ings of Machine Learning and Systems , vol. 7, 2025. [48] T. Zadouri, M. Hoehnerbach, J. Shah, V. Thakkar, and T. Dao, “FlashAttention-4: Algorithm and kernel pipelining co-design for asym-metric hardware scaling,” in Proceedings of Machine Learning and Systems , vol. 8, 2026. [49] J. Zhang, C. Xiang, H. Huang, J. Wei, H. Xi, J. Zhu, and J. Chen, “SpargeAttention: Accurate and training-free sparse attention acceler-ating any model inference,” in Proceedings of the 42nd International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, vol. 267, 2025, pp. 76 397–76 413. [50] L. Zhang, J. S. Marron, H. Shen, and Z. Zhu, “Singular value decom-position and its visualization,” Journal of Computational and Graphical Statistics , vol. 16, no. 4, pp. 833–854, 2007. [51] P. Zhang, Y. Chen, R. Su, H. Ding, I. Stoica, Z. Liu, and H. Zhang, “Fast video generation with sliding tile attention,” in Proceedings of the 42nd International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, vol. 267, 2025, pp. 74 714–74 731. 
+
+AI U SE 
+
+ChatGPT-5.6 Extra High was used solely to polish the manuscript’s language and improve readability. All other as-pects of the work, including problem identification, algorithm and system design, implementation, experimental evaluation, and analysis of results, were conducted independently by the authors without AI assistance. 13
