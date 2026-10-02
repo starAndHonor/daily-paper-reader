@@ -1,0 +1,233 @@
+Title: ParaAnya: Accelerating Parallel Diffusion Sampling with Plug-and-Play Output Caching
+
+URL Source: https://arxiv.org/pdf/2609.36522v1
+
+Published Time: Wed, 30 Sep 2026 00:43:18 GMT
+
+Number of Pages: 5
+
+Markdown Content:
+# PARAANYA: ACCELERATING PARALLEL DIFFUSION SAMPLING WITH PLUG-AND-PLAY OUTPUT CACHING 
+
+# Chee-En Yu 1∗, Xiao-Xi Tan 1∗, Yi-Cheng Lin 1, Yun-Shao Tsai 1, Chee-An Yu 2, Hung-yi Lee 1,31National Taiwan University, Taiwan 
+
+> 2
+
+# University of Southern California, USA 
+
+> 3
+
+# Artificial Intelligence Center of Research Excellence, National Taiwan University, Taiwan 
+
+ABSTRACT 
+
+Diffusion models have achieved remarkable success in generative tasks, but their inherently sequential sampling process introduces a severe computational bottleneck. Recent Parallel-in-Time (PinT) solvers attempt to mitigate this by parallelizing generation across a sliding window of timesteps, advancing the window only when step-wise changes stabilize. However, this overlapping window mecha-nism forces the network to repeatedly evaluate the same timesteps. When the input variations between iterations are minimal, these re-dundant evaluations lead to significant computational waste. To ad-dress this inefficiency, we propose ParaAnya, an output cache mech-anism agnostic to the parallel sampling algorithm that can reduce the number of function evaluations (NFE). ParaAnya caches input-output pairs of diffusion models and reuses the cached output at overlapping timesteps. By dispatching only cache-miss timesteps to GPU workers, our approach eliminates redundant computation while preserving the structure of the underlying algorithms’ update rules. We integrate ParaAnya into four representative parallel sampling algorithms and evaluate its performance on Stable Diffusion v1.5. Across four parallel samplers evaluated with DDIM on eight GPUs, ParaAnya provides 1.30 –2.43 × speedups over their uncached coun-terparts and reduces NFE by up to 70.1%, reaching up to a 5.62 ×
+
+speedup over single-GPU serial sampling while maintaining compa-rable CLIP scores. Code is available at https://github.com/ XXIIIII/ParaAnya 
+
+Index Terms — Diffusion Models, Parallel-in-Time, Inference Acceleration 
+
+1. INTRODUCTION 
+
+While diffusion models achieve state-of-the-art performance in im-age and audio generation [1–5], their sampling process is inherently sequential, as each denoising step depends on the result of the pre-vious timestep. Moreover, generation quality is closely tied to the number of denoising steps, with more steps often yielding better samples at the cost of increased inference time [6]. Consequently, the length of the denoising trajectory becomes a major bottleneck for diffusion sampling. With multiple GPUs, conventional batch in-ference can improve throughput by generating multiple samples in parallel, but it does not shorten the sequential denoising trajectory of an individual sample and therefore cannot reduce single-sample latency . To address this bottleneck, Parallel-in-Time (PinT) meth-ods [7] expose parallelism along the temporal dimension of the dif-fusion trajectory, allowing multiple timesteps of a single sample to 
+
+> *Equal Contribution.
+
+Fig. 1 . (a) Overall Parallel sampling of Diffusion models with Picard iteration. Blue steps mean converged steps. (b) Caching mechanism of ParaAnya. Cache hits reuse the stored network output, while only cache misses are dispatched to GPU workers for batched evaluation. The solver then receives the complete set of drift values and proceeds with its original update rule. be processed concurrently. In this work, we aim to further improve the efficiency of PinT-based diffusion sampling without retraining the underlying diffusion model. To overcome this inherently serial bottleneck, PinT methods parallelize diffusion sampling along the time dimension. Existing approaches can be broadly categorized into Picard-based methods, including ParaDiGMS [8], ParaTAA [9], and ParaSolver [10], and Parareal-based methods such as SRDS [11], which build on Picard iteration [12] and Parareal [13], respectively. Despite their different formulations, these methods share a common principle: they first estimate the latent states at multiple timesteps in parallel and then iteratively refine these estimates across iterations. When the latent state at a timestep changes sufficiently little between arXiv:2609.36522v1 [cs.DC] 29 Sep 2026 consecutive iterations, that timestep is considered converged and its state can be finalized. However, this iterative refinement introduces substantial redundant computation. Before convergence, the same timestep may be evaluated repeatedly across successive iterations, even when its input latent changes only slightly. Our preliminary study confirms that such cases occur frequently: profiling 100-step DDIM [14] sampling over 30 prompts, we find that 39.93% of all re-quested drift evaluations revisit a timestep with a mean latent change below 0.05. This observation motivates us to reuse previously com-puted outputs for similar latent inputs. Unlike prior caching methods such as DeepCache [15], which reuse information across adjacent denoising timesteps, our approach exploits redundancy across dif-ferent PinT iterations at the same timestep. We introduce ParaAnya, a caching mechanism that can be ap-plied to the aforementioned PinT methods. ParaAnya stores an input-output pair for each timestep and directly reuses the cached output when the current input latent remains sufficiently close to the cached input. A new network evaluation is performed and the cache is updated only when the latent change exceeds a predefined threshold. Experiments on Stable Diffusion v1.5 demonstrate con-sistent improvements across four representative PinT samplers and all evaluated DDIM step counts, reducing network evaluations by up to 70.1% and providing up to a 2.43 × additional speedup over their uncached counterparts. With eight GPUs, ParaAnya achieves up to a 5.62 × speedup over single-GPU sequential sampling while maintaining comparable CLIP scores [16–18], demonstrating the substantial performance gains enabled by caching within parallel diffusion sampling. 
+
+2. METHOD 2.1. Parallel Sampling Preliminaries 
+
+Parallel-in-time (PinT) diffusion algorithms accelerate inference by evaluating the network at multiple timesteps concurrently. Starting from an initial trajectory estimate, they iteratively refine the states at different timesteps until convergence. Picard-based methods, such as ParaDiGMS, ParaTAA, and ParaSolver, perform this refinement using a discretized Picard iteration: 
+
+xk+1  
+
+> t
+
+= x0 + 1
+
+T
+
+> t−1
+
+X
+
+> i=0
+
+sθ (xki , i/T ). (1) where k denotes the refinement iteration and sθ (x, u ) denotes the probability-flow ODE drift [19], which combines the current latent 
+
+x and the noise prediction εθ (x, u ) with coefficients determined by the noise schedule [20]. Since all drift evaluations sθ (xki , i/T ) de-pend only on states from the previous iteration, they can be evaluated in parallel across timesteps. Although individual methods employ different refinement strategies, they share an important characteris-tic: the network is repeatedly evaluated at the same timesteps as the trajectory is progressively refined. In practice, GPU memory constraints often prevent the entire trajectory from being processed simultaneously. Parallel samplers therefore operate on a sliding window W containing P active timesteps. As the refinement proceeds, the window advances once the leading states satisfy a convergence criterion, e.g., 
+
+1
+
+D || xkt − xk−1 
+
+> t
+
+|| 2 ≤ τ, (2) where D is the dimensionality of the state and τ is a convergence threshold. For Parareal-based algorithms such as SRDS [11], they have coarse solvers and fine solvers. The algorithm uses coarse solvers to run an initialization and uses fine solvers to get more fine-grained results. Although their update structure differs from Picard iteration, they also revisit network evaluation points as trajectory estimates are refined. Therefore, both Picard-based and Parareal-based parallel sam-plers repeatedly perform network evaluations at the same timesteps across refinement iterations. Moreover, as the trajectory converges, successive inputs to these evaluations can become increasingly simi-lar. This repeated computation creates an opportunity to reuse previ-ously computed network outputs through caching, thereby reducing redundant evaluations and improving inference efficiency. 
+
+2.2. ParaAnya: An Output Caching for PinT diffusion solvers 
+
+To eliminate redundant computation for latents that are near conver-gence, we introduce P ARA ANYA , an output cache placed before the drift evaluation. The coordinator maintains a cache C that associates each timestep t with the most recently evaluated network input and its corresponding output: 
+
+C : t 7 → ( ˆ xt, ˆεt) , ˆεt = εθ ( ˆ xt, t ) . (3) Before evaluating the network, the coordinator measures how much the current latent xkt has changed from the cached input ˆxt using the mean absolute deviation: 
+
+δkt = 1
+
+D xkt − ˆxt 1
+
+, (4) where ∥ · ∥ 1 is the entrywise ℓ1 norm. Dividing by the latent dimen-sion D makes δkt a per-coordinate mean, allowing the cache thresh-old τcache to remain comparable across different latent resolutions. A timestep entering the window for the first time is treated as a cache miss. Otherwise, the current window W is partitioned into cache hits 
+
+H and misses M:
+
+Hk =
+
+n
+
+t ∈ W : δkt < τ cache 
+
+o
+
+,
+
+Mk = W \ H k , (5) The drift output ε used by the solver is then assembled as 
+
+εkt =
+
+( ˆεt t ∈ H k ,
+
+εθ
+
+ xkt , t  t ∈ M k , (6) Only the misses are dispatched to the workers, and all misses are evaluated together in a single batched forward pass. After the evalu-ation, the cache is updated only for the misses: 
+
+C[t] ←
+
+
+
+xkt , εkt
+
+
+
+, ∀ t ∈ M k , (7) Therefore, whenever an entry C[t] = ( ˆ xt, ˆεt) exists, its stored out-put always satisfies ˆεt = εθ ( ˆ xt, t ), preserving the cache invariant. The cached or freshly computed network outputs εkt are then used to compute the drift values at the current latent states. The sampler sub-sequently follows its original trajectory update, convergence check, and window advancement rules. Parareal-based samplers such as SRDS also repeatedly evaluate the network within their coarse and fine solvers across refinement iterations. ParaAnya applies the same caching mechanism to these evaluations, reusing cached network outputs when the current latent is sufficiently close to the cached input at the same timestep. This reduces redundant network evaluations while leaving the Parareal update rule unchanged. Table 1 . Main results on COCO2017 using DDIM ( P = 16 ) on 8 NVIDIA Tesla V100-SXM2 32GB GPUs. ParaAnya variants achieve the fastest inference in all settings. ( bold ) while preserving quality ( ∆CLIP, 95% CI). NFE is reported per generated sample. DDIM 
+
+N = 25 N = 50 N = 100 
+
+Base method Variant NFE/img ∆CLIP Speedup NFE/img ∆CLIP Speedup NFE/img ∆CLIP Speedup Serial — 25 31.24 1.00 × 50 31.25 1.00 × 100 31.26 1.00 ×
+
+ParaDiGMS base 191 31.21 0.88 × 271 31.23 1.27 × 345 31.21 2.05 ×
+
+ParaAnya 79 +0 .06 ± 0.12 1.80 × 81 +0 .02 ± 0.12 3.09 × 120 +0 .07 ± 0.11 4.12 ×
+
+ParaSolver base 123 31.23 1.29 × 176 31.27 1.90 × 215 31.25 3.18 ×
+
+ParaAnya 68 +0 .02 ± 0.09 2.27 × 70 +0 .01 ± 0.10 3.71 × 104 −0.03 ± 0.08 4.98 ×
+
+ParaTAA base 98 31.32 1.63 × 143 31.43 2.37 × 175 31.33 3.95 ×
+
+ParaAnya 72 −0.13 ± 0.08 2.36 × 75 −0.32 ± 0.10 3.96 × 101 +0 .07 ± 0.09 5.62 ×
+
+SRDS base 36 31.10 1.76 × 64 31.18 2.29 × 120 31.26 2.71 ×
+
+ParaAnya 25 −0.01 ± 0.01 2.66 × 50 −0.00 ± 0.00 3.18 × 100 −0.00 ± 0.00 3.53 ×
+
+3. EXPERIMENTAL SETUP 3.1. Metrics 
+
+We explore widely used metrics for our proposed ParaAnya: the number of function evaluations (NFE), and CLIP score. 
+
+3.2. Models and Testing Prompts 
+
+We evaluate text-to-image generation with Stable Diffusion v1.5 [3] at 512 × 512 resolution, using a half-precision UNet with xFormers attention [21]. All experiments use the same 1,000 prompts, ob-tained by shuffling the COCO 2017 validation images [22] with a fixed seed. All methods share the same per-prompt generation seed and initial noise, enabling paired comparisons. 
+
+3.3. Algorithms 
+
+We sweep the number of denoising steps N ∈ { 25 , 50 , 100 } un-der the DDIM schedulers. The parallel sliding-window size P is fixed to 16 . Per-method convergence tolerances and solver hyper-parameters are held fixed across step counts; each fixed-point itera-tion terminates once the per-step update residual falls below its tol-erance τ . For all ParaAnya variants, the cache tolerance is set to 
+
+τcache = 0 .05 ; its effect is analyzed in Section 4.2. 
+
+3.4. Implementation Details 
+
+The main comparison (Table 1) and the GPU-scaling experiment (Table 4) are conducted on a single node equipped with eight NVIDIA Tesla V100-SXM2 32GB GPUs and 16 CPU cores. The window-size and cache-tolerance ablations (Tables 2 and 3) are con-ducted on a single node equipped with eight NVIDIA H100 80GB HBM3 GPUs. Every parallel method uses all eight GPUs and the serial baseline uses one GPU. Before the timed loop, each method performs one untimed warm-up generation to exclude one-time CUDA and kernel setup costs. 
+
+4. RESULTS 
+
+Table 1 reports the main results, with the serial single-GPU sampler as the 1.00 × reference. 
+
+The cache matches or improves wall-clock speedup in ev-ery configuration. The proposed cache mechanism (ParaAnya) consistently improves wall-clock speedups across all evaluated configurations. As shown in the Table 1, integrating the cache into existing baseline methods, including ParaDiGMS, ParaSolver, ParaTAA, and SRDS, increases the speedup for every tested DDIM step count. Notably, ParaAnya achieves up to a 5.62 × wall-clock speedup when integrated with ParaTAA. This universal improve-ment is driven by a reduction in the Number of Function Evaluations per image (NFE/img) in the ParaAnya rows, demonstrating that the caching mechanism successfully eliminates redundant computations and delivers consistent wall-clock speedups. 
+
+Quality is preserved. These performance gains come with neg-ligible changes in CLIP scores across all evaluated configurations, suggesting that caching preserves text-image alignment while accel-erating sampling. The differences are particularly small for SRDS, remaining effectively zero across all step counts. 
+
+4.1. The Effect of Window Size 
+
+We evaluate how the window size ( P ) affect the efficiency of Para-Solver with and without ParaAnya on 8 GPUs, using DDPM ( T =1000 ) and DDIM ( T = 50 ). Table 2 shows that increasing the window size does not always improve speedup, reflecting a trade-off between parallelism and convergence cost. Small windows limit the work available for parallel execution, potentially leaving GPU throughput underutilized. Conversely, overly large windows extend the prediction horizon of Picard iteration and may require more it-erations to converge, offsetting the benefit of increased parallelism. For DDPM, both methods achieve their highest speedup at P = 64 
+
+and slow down at P = 128 . For DDIM, the best window size is 
+
+P = 8 for ParaSolver and P = 16 for ParaAnya, with both showing lower speedups at P = 32 . These results highlight the importance of choosing a window size that balances parallel execution with con-vergence efficiency. 
+
+4.2. The Effect of Cache Tolerance 
+
+We investigate how the cache tolerance τcache affects the efficiency and generation quality of ParaSolver on COCO2017. A larger toler-ance permits more cached results to be reused, reducing fresh model Table 2 . Window-size speedup sweep on COCO2017 (1,000 cap-tions) using 8 NVIDIA H100 80GB HBM3 GPUs. The 1-GPU se-rial baselines are 21.920 s/img (DDPM) and 1.065 s/img (DDIM). 
+
+Bold marks the best speedup per row; underlining marks ParaAnya speedups above uncached ParaSolver at the same P .                                        
+
+> DDPM, T= 1000
+> Method P= 8 P= 16 P= 32 P= 64 P= 128
+> ParaSolver 4.46 ×7.63 ×11.05 ×12.41 ×9.76 ×
+> ParaSolver+ParaAnya 4.49 ×7.69 ×11.09 ×13.76 ×13.38 ×
+> DDIM, T= 50
+> Method P= 8 P= 16 P= 32 ––ParaSolver 1.98 ×1.93 ×1.52 ×––ParaSolver+ParaAnya 2.80 ×3.08 ×2.60 ×––
+
+Table 3 . Cache-tolerance sweep on COCO2017 using 8 NVIDIA H100 80GB HBM3 GPUs. “None” is uncached ParaSolver. Speedup uses this sweep’s 1-GPU serial baseline (1.065 s/img, NFE 50). Bold marks the best speedup; underlining marks speedups above uncached ParaSolver. 
+
+τcache Iters NFE Hits Time CLIP ↑ Speedup None 14.2 176 — 0.551 31.26 1.93 ×
+
+0.001 14.2 175 0.2 0.579 31.26 1.84 ×
+
+0.005 13.6 169 3.9 0.582 31.26 1.83 ×
+
+0.01 12.5 152 11.5 0.529 31.26 2.01 ×
+
+0.05 9.0 70 41.1 0.346 31.29 3.08 ×
+
+0.1 8.8 57 52.1 0.299 31.19 3.56 ×
+
+evaluations but potentially introducing greater approximation error. Table 3 reports iteration counts, NFE, cache hits, average runtime, CLIP score, and speedup. All speedups are measured against the same 1-GPU serial baseline, which requires 1.065 s per image with NFE 50. Increasing τcache consistently increases cache hits and reduces both iteration counts and NFE across the tested settings. However, these reductions do not always translate into lower runtime at small tolerances. At τcache = 0 .001 and 0.005 , cache reuse is limited, and runtimes of 0.579 and 0.582 s per image are slightly higher than the uncached runtime of 0.551 s. Caching first improves runtime over uncached ParaSolver at τcache = 0 .01 , achieving a 2.01 × speedup. Larger tolerances yield more substantial gains: at τcache = 0 .1, NFE decreases from 176 to 57 and runtime falls to 0.299 s per image, giving the highest speedup in this sweep, 3.56 ×. The reduction in iteration count becomes smaller between τcache = 0 .05 and 0.1 (9.0 to 8.8), although NFE and runtime continue to decrease. CLIP scores remain close to the uncached value throughout the sweep. The score is unchanged at 31.26 for tolerances up to 0.01 and reaches 31.29 at 0.05, before decreasing slightly to 31.19 at 0.1. Thus, cache tolerance provides a tunable trade-off between com-putational efficiency and generation quality as measured by CLIP. Among the tested settings, τcache = 0 .05 offers a favorable balance, achieving a 3.08 × speedup without a decrease in CLIP score, while 
+
+τcache = 0 .1 provides the fastest generation with a small reduction in this quality metric. 
+
+Table 4 . Speedup vs. the number of NVIDIA Tesla V100-SXM2 32GB GPUs for DDIM ( T = 50 , P = 16 ) on 1,000 COCO2017 cap-tions. Baseline is 1-GPU serial generation (2.658 s/img). ParaAnya results that outperform the corresponding base method are in bold .Method 1 GPU 2 GPUs 4 GPUs 8 GPUs ParaDiGMS 0.26 × 0.48 × 0.83 × 1.25 ×
+
+ParaDiGMS+ParaAnya 0.83 × 1.42 × 2.14 × 3.13 ×
+
+ParaSolver 0.41 × 0.74 × 1.28 × 1.90 ×
+
+ParaSolver+ParaAnya 1.02 × 1.71 × 2.75 × 3.70 ×
+
+ParaTAA 0.49 × 0.90 × 1.57 × 2.31 ×
+
+ParaTAA+ParaAnya 0.92 × 1.60 × 2.73 × 3.79 ×
+
+SRDS 0.99 × 1.45 × 1.79 × 2.26 ×
+
+SRDS+ParaAnya 1.24 × 1.91 × 2.38 × 3.19 ×
+
+4.3. The effect of the number of GPUs 
+
+Table 4 evaluates the scaling behavior of various parallelization methods on DDIM ( T = 50 ) across 1, 2, 4, and 8 GPUs. The empirical results establish two primary conclusions regarding hard-ware scalability and the algorithmic efficiency of ParaAnya. First, the generation speedup increases with the number of GPUs for all evaluated methods. For example, the base ParaTAA method scales from a 0.49 × speedup on a single GPU to 2.31 × on 8 GPUs. While several base methods, including ParaDiGMS and ParaSolver, incur severe overhead on smaller GPU clusters (yielding sub-1.0 × perfor-mance on 1 or 2 GPUs), scaling to 8 GPUs results in net-positive acceleration across all baselines. Second, integrating ParaAnya improves performance across all evaluated base methods and GPU configurations, as shown by the bolded results in Table 4. On 8-GPUs, ParaAnya increases the speedup of ParaDiGMS from 1.25 ×
+
+to 3.13 ×, ParaSolver from 1.90 × to 3.70 ×, and ParaTAA from 2.31 × to 3.79 ×. These benefits also extend to configurations with fewer GPUs, where the base methods often underperform the refer-ence baseline. For instance, on a single GPU, ParaAnya improves ParaSolver from 0.41 × to 1.02 ×, turning a substantial slowdown into a modest speedup. Together, these results demonstrate that ParaAnya provides consistent performance improvements across the tested hardware configurations. 
+
+5. CONCLUSION 
+
+We introduced ParaAnya, an output cache that is agnostic to the parallel sampling algorithm. It reuses cached network outputs when the current input latent is sufficiently close to the corresponding cached input, without modifying the underlying algorithm’s update rule. In the evaluated settings, the cached iteration produces solu-tions close to those of the uncached baseline. Integrated into four parallel-in-time algorithms, ParaAnya matches or improves wall-clock speedup in every tested configuration, reaching 5.62 × on 8 GPUs while maintaining CLIP scores comparable to the uncached baselines. ParaAnya delivers substantial speedups over the serial baseline when paired with parallel sampling algorithms on eight GPUs. These results show that the excess network evaluations in parallel-in-time sampling are not solely an unavoidable cost of par-allelism: a substantial portion is redundancy that a systems-level cache can eliminate while preserving the underlying update rules. Natural extensions include online adaptation of τcache , support for higher-order solvers, and applications to video and audio diffusion. 6. REFERENCES 
+
+[1] Jonathan Ho, Ajay Jain, and Pieter Abbeel, “Denoising dif-fusion probabilistic models,” Advances in neural information processing systems , vol. 33, pp. 6840–6851, 2020. [2] Prafulla Dhariwal and Alexander Nichol, “Diffusion models beat gans on image synthesis,” Advances in neural information processing systems , vol. 34, pp. 8780–8794, 2021. [3] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer, “High-resolution image synthesis with latent diffusion models,” in Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , 2022, pp. 10684–10695. [4] Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro, “Diffwave: A versatile diffusion model for audio synthesis,” arXiv preprint arXiv:2009.09761 , 2020. [5] Haohe Liu, Zehua Chen, Yi Yuan, Xinhao Mei, Xubo Liu, Danilo Mandic, Wenwu Wang, and Mark D Plumbley, “Audi-oldm: Text-to-audio generation with latent diffusion models,” 
+
+arXiv preprint arXiv:2301.12503 , 2023. [6] Alexander Quinn Nichol and Prafulla Dhariwal, “Improved de-noising diffusion probabilistic models,” in International con-ference on machine learning . PMLR, 2021, pp. 8162–8171. [7] Martin J Gander, “50 years of time parallel time integration,” in 
+
+Multiple Shooting and Time Domain Decomposition Methods: MuS-TDD, Heidelberg, May 6-8, 2013 , pp. 69–113. Springer, 2015. [8] Andy Shih, Suneel Belkhale, Stefano Ermon, Dorsa Sadigh, and Nima Anari, “Parallel sampling of diffusion models,” Ad-vances in Neural Information Processing Systems , vol. 36, pp. 4263–4276, 2023. [9] Zhiwei Tang, Jiasheng Tang, Hao Luo, Fan Wang, and Tsung-Hui Chang, “Accelerating parallel sampling of diffusion mod-els,” in Forty-first International Conference on Machine Learn-ing , 2024. [10] Jianrong Lu, Zhiyu Zhu, and Junhui Hou, “Parasolver: A hier-archical parallel integral solver for diffusion models,” in Inter-national Conference on Learning Representations , 2025. [11] Nikil R Selvam, Amil Merchant, and Stefano Ermon, “Self-refining diffusion samplers: Enabling parallelization via parareal iterations,” Advances in Neural Information Process-ing Systems , vol. 37, pp. 5429–5453, 2024. [12] Edward L Ince, Ordinary differential equations , Courier Cor-poration, 1956. [13] Jacques-Louis Lions, Yvon Maday, and Gabriel Turinici, “Ré-solution d’edp par un schéma en temps “pararéel”,” Comptes Rendus de l’Académie des Sciences-Series I-Mathematics , vol. 332, no. 7, pp. 661–668, 2001. [14] Jiaming Song, Chenlin Meng, and Stefano Ermon, “Denoising diffusion implicit models,” arXiv preprint arXiv:2010.02502 ,2020. [15] Xinyin Ma, Gongfan Fang, and Xinchao Wang, “Deepcache: Accelerating diffusion models for free,” in Proceedings of the IEEE/CVF conference on computer vision and pattern recog-nition , 2024, pp. 15762–15772. [16] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al., “Learning trans-ferable visual models from natural language supervision,” in 
+
+International conference on machine learning . PmLR, 2021, pp. 8748–8763. [17] Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras, and Yejin Choi, “Clipscore: A reference-free evaluation metric for image captioning,” in Proceedings of the 2021 conference on empirical methods in natural language processing , 2021, pp. 7514–7528. [18] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen, “Hierarchical text-conditional image genera-tion with clip latents,” arXiv preprint arXiv:2204.06125 , vol. 1, no. 2, pp. 3, 2022. [19] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Ab-hishek Kumar, Stefano Ermon, and Ben Poole, “Score-based generative modeling through stochastic differential equations,” 
+
+arXiv preprint arXiv:2011.13456 , 2020. [20] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu, “Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps,” Advances in neural information processing systems , vol. 35, pp. 5775– 5787, 2022. [21] Benjamin Lefaudeux, Francisco Massa, Diana Liskovich, Wenhan Xiong, Vittorio Caggiano, Sean Naren, Min Xu, Jieru Hu, Marta Tintore, Susan Zhang, et al., “xformers: A modular and hackable transformer modelling library,” 2022. [22] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays, Pietro Perona, Deva Ramanan, Piotr Dollár, and C Lawrence Zitnick, “Microsoft coco: Common objects in context,” in 
+
+European conference on computer vision . Springer, 2014, pp. 740–755.

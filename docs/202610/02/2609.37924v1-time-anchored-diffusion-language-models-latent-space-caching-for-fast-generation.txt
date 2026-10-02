@@ -1,0 +1,2195 @@
+Title: Time-Anchored Diffusion Language Models: Latent-Space Caching for Fast Generation
+
+URL Source: https://arxiv.org/pdf/2609.37924v1
+
+Published Time: Wed, 30 Sep 2026 02:17:25 GMT
+
+Number of Pages: 33
+
+Markdown Content:
+# TIME -A NCHORED DIFFUSION LANGUAGE MODELS :LATENT -S PACE CACHING FOR FAST GENERATION 
+
+TECHNICAL REPORT 
+
+Joel Anto Paul 
+
+UT Austin 
+
+joelanto@utexas.edu 
+
+Litu Rout 
+
+UT Austin 
+
+litu.rout@utexas.edu 
+
+Aditya Akella 
+
+UT Austin 
+
+akella@cs.utexas.edu 
+
+Sanjay Shakkottai 
+
+UT Austin 
+
+sanjay.shakkottai@utexas.edu 
+
+September 30, 2026 
+
+## ABSTRACT 
+
+Recent work on anchored diffusion language models improves denoising by shaping an intermediate latent space with supervised important-token targets. In this work, we introduce time-based (self-supervised) anchoring , which learns and reuses latent anchors without requiring such targets. Our key observation is that anchors encode persistent properties of the clean sequence, such as its semantic intent, global structure, or intermediate plan. Although their hidden representations become stale as the token canvas evolves, their semantic content remains useful across nearby diffusion times. This is implemented through a two-stage architecture consisting of a relatively expensive anchor network that generates the latent cache state and a lightweight denoising network that intelligently combines the cached latent state with the current state at each reverse step using a fusion module. This gives anchoring a latent-space caching interpretation: the anchor network is evaluated periodically, while its cached representation is reused across multiple reverse steps. We instantiate this framework as TADM:Post-train, which time-anchorizes pretrained DLMs, and TADM:Pretraining, which learns time-based anchors during pretraining. Applied to DiffusionGemma-26B, TADM:Post-train improves throughput by approximately 49% to 79% on several math, code, and STEM benchmarks (GSM8K, AIME26, GPQA-Diamond, LiveCodeBench-v6, HumanEval, MMLU-Pro). TADM:Pretraining reduces Transformer-layer computation by up to 38% relative to a standard single-stage DLM, achieves up to 73% higher measured throughput than ADLM. 
+
+## 1 Introduction 
+
+Diffusion Language Models (DLMs) iteratively refine an entire sequence, enabling bidirectional attention and parallel token generation [Austin et al., 2021, Lou et al., 2024, Sahoo et al., 2024, Shi et al., 2024]. This iterative formulation enables revision and error correction during generation [Wang et al., 2025, Sahoo et al., 2025, Schiff et al., 2025], and has recently been scaled to large language models such as LLaDA [Nie et al., 2025], Dream [Ye et al., 2025], and DiffusionGemma [Team et al., 2026], demonstrating that diffusion-based generation can support competitive reasoning, coding, and instruction following at scale. Block diffusion models provide another direction, combining autoregressive generation across blocks with parallel denoising within each block to improve generation flexibility and efficiency [Arriola et al., 2025, Team et al., 2026]. Despite these advances, DLMs still require repeated model evaluations across denoising steps, making inference substantially more expensive than autoregressive decoding. In recent work, the Anchored Diffusion Language Model (ADLM) showed that denoising can be improved by first predicting informative anchor tokens that reduce the conditional uncertainty of the remaining sequence, and thus guide the denoiser [Rout et al., 2025]. In this work, we introduce time-based (self-supervised) anchoring , which learns and reuses latent anchors without requiring such targets. The key observation is that anchors describe persistent properties arXiv:2609.37924v1 [cs.LG] 29 Sep 2026 Time-Anchored Diffusion Language Models TECHNICAL REPORT Anchor refresh once every K steps     
+
+> Anchor Transformer
+> A_{θ_A}
+> Latent
+> Cache
+> h_{t′}
+> Main Generation and Denoising cached anchor h_{t′} Generator Model
+> Encoder
+> Decoder
+> z_t
+> Shared
+> Network
+> S_{θ_S}
+> c_t Gated
+> Fusion
+> F_ϕ
+
+h̃_{t|t′} Denoising   
+
+> Transformer
+> D_{θ_D}
+> x_θ(z_t, z_{t′}) LM
+> Head
+> Reverse
+> Sampler z_{t−Δ}
+
+h̃_{t|t′} = h_t + g_ϕ(c_t, h_{t′}) ⊙ Δ_ϕ(c_t, h_{t′})   
+
+> Next Time Step (t-1)
+> Anchor data path Primary data path Control path
+
+Figure 1: Time-Anchored Diffusion Model (TADM). The expensive anchor pathway is evaluated once every K
+
+reverse steps to produce a latent anchor ht′ , which is cached and reused. At each subsequent step, the lightweight shared network encodes the evolving state zt, and a gated fusion module combines its current representation ct with the cached anchor before denoising. TADM therefore replaces repeated evaluation of the expensive anchor network with learned latent-space reuse. of the clean sequence, such as its semantic intent, global structure, or intermediate plan. Their semantic content should therefore remain useful across nearby diffusion times, even though their hidden representations become stale as the token canvas evolves. We exploit this persistence by decomposing the model into four components: a lightweight shared network, an expensive anchor network, a fusion module, and a lightweight denoiser. The anchor representation changes slowly across nearby diffusion times and is therefore computed only at anchor-refresh steps and reused thereafter. At each reverse step, the shared network encodes the current canvas, and the fusion module combines this representation with the cached anchor before denoising. The anchor refresh interval therefore provides a tunable quality–compute trade-off by controlling how long the expensive anchor computation is reused (Figure 1). This construction also turns anchoring into a form of latent-space caching . Existing methods reuse key-value states because consecutive diffusion states are similar [Ma et al., 2025, Jiang et al., 2026, Nguyen-Tri et al., 2026], but these local, layer-specific representations are not trained for temporal reuse. We instead train the model to produce a latent representation that can be reused for several denoising steps and corrected using the current state. This shifts the problem from detecting unchanged key-value states to learning the state that can be reused. 
+
+Results. Depending on whether a DLM is adapted after pretraining or trained from scratch, we instantiate time-based anchoring in two forms: TADM:Post-train and TADM:Pretraining . TADM:Post-train enables existing pretrained DLMs to acquire latent-cache reuse without repeating pretraining; on DiffusionGemma-26B, by training only a 3.1M-parameter fusion module while keeping the pretrained backbone frozen, it achieves 49% –79% higher throughput while preserving task accuracy of the corresponding baseline across the evaluated math, code, and STEM benchmarks. TADM:Pretraining instead learns cacheable latent representations directly during pretraining, reducing Transformer-layer computation by up to 38% and achieving up to 73% higher measured throughput than ADLM. At T = 2048 ,it attains a MAUVE score of 0.650 compared with 0.610 for ReMDM while using 25% fewer Transformer-layer evaluations than MDLM. 
+
+## 2 Preliminaries 
+
+Let V denote the vocabulary space with V unique discrete tokens. Let x = ( x1, x 2, · · · , x L) where xl ∈ V , l ∈ [L] be the sample sequence. We denote each element of the sample sequence as a one-hot vector; thus the input sequence can be denoted by x = ( x1, x2, · · · , xL) where xl is a V -dimensional one-hot vector with xl[i] = 1 when xl = i,2Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+otherwise 0. We assume that the input sequence is sampled from an unknown distribution q(·) supported on VL. We denote the Hadamard product of two vectors a and b as a ⊙ b and dot product as ⟨a, b⟩.
+
+2.1 Discrete Diffusion Models 
+
+Discrete Diffusion Language Models (DLMs) [Sohl-Dickstein et al., 2015, Austin et al., 2021] define a forward corruption process that gradually transforms a clean sequence x into noise. Let T denote the number of discrete diffusion steps, with t(i) = i/T and s(i) = ( i − 1) /T . For simplicity, we write t = t(i) and s = s(i). The forward process independently corrupts each token according to 
+
+q(zt|x) = 
+
+> L
+
+Y
+
+> l=1
+
+q(zlt|x), q(zlt|x) = Cat  zlt; αtxl + (1 − αt)π , l ∈ { 1, 2, · · · , L }, (1) where αt ∈ [0 , 1] is a monotonically decreasing noise schedule satisfying α0 = 1 and α1 = 0 , and π denotes the limiting noise distribution. Defining αt|s = αt/α s, the corresponding one-step forward transition is q(zlt|zls) = Cat( zlt; αt|szls + (1 − αt|s)π).Because the clean token xl is known during training, the posterior distribution of the preceding diffusion state has a closed form: 
+
+q(zls | zlt, xl) = Cat zls;
+
+αt|szlt +  1 − αt|s
+
+ 1π⊤zlt
+
+ ⊙ αsxl + (1 − αs) π
+
+αtzl⊤ 
+
+> t
+
+xl + (1 − αt) zl⊤ 
+
+> t
+
+π
+
+!
+
+. (2) At inference time, however, the clean sequence x is unknown. A neural denoiser therefore predicts a distribution over the clean token, xlθ (zt), and substitutes this prediction into the analytic posterior: 
+
+pθ (zls|zt) = q zls | zlt, xlθ (zt) . (3) The complete learned reverse process consequently factorizes as pθ (x, z0:1 ) = pθ (z1)pθ (x|z0) QTi=1 pθ (zs(i)|zt(i)).The denoising model is trained by minimizing the discrete-time negative evidence lower bound (NELBO): 
+
+LNELBO (x, θ ) = Eq
+
+− log pθ (x | zt(0) ) +
+
+> T
+
+X
+
+> i=1
+
+Eq
+
+DKL 
+
+ q(zs(i) | zt(i), x) ∥ pθ (zs(i) | zt(i)) 
+
++ DKL 
+
+ q(zt(T ) | x) ∥ pθ (zt(T )) . (4) 
+
+2.2 Anchored Diffusion Language Models 
+
+A key limitation of standard masked diffusion models is that the corruption and reverse processes do not explicitly prioritize tokens according to their informativeness. Consequently, important tokens may remain masked until late in the reverse process, leaving the denoiser with insufficient context to accurately predict the remaining tokens. In particular, missing informative tokens can induce high conditional uncertainty over the rest of the sequence, making the denoising problem harder(See Appendix B.2 for more details). To address this limitation, Rout et al. [2025] introduced the Anchored Diffusion Language Model (ADLM), which explicitly encourages the model to reason through a small set of informative tokens, referred to as anchor tokens .
+
+Two-stage Parameterization. ADLM decomposes the standard denoising network into two stages: an anchor network 
+
+and a denoiser network . Given a noisy sequence zt, the anchor network first predicts a probability mixture yθA (zt)
+
+over important tokens. The denoiser network then predicts the clean-token distribution conditioned on these anchored predictions. Thus, the output prediction is parameterized as 
+
+xθ (zt) = xθD
+
+ yθA (zt), (5) where θ = [ θA, θ D ] denotes the parameters of the anchor and denoiser networks, respectively. 
+
+Training Objective. ADLM jointly trains the anchor and denoiser networks using an Anchored Negative Evidence Lower Bound (ANELBO) (44). The objective is split as 
+
+LANELBO (x; θA, θ D ) := Ldif f usion (x, θ ) + γLAnchor (x, θ ) (6) where γ controls the strength of anchor supervision. The first term trains the denoiser to reconstruct the clean sequence conditioned on the anchor-network output, while the auxiliary anchor loss directly encourages the anchor network to predict informative tokens. 3Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+## 3 Time-Anchored Diffusion Framework 
+
+ADLM demonstrates that anchoring on important tokens can simplify denoising by reducing the uncertainty of the remaining sequence. However, its training requires a task-dependent specification of which tokens should serve as anchors, and such supervision may not always be available. We introduce time-based anchoring , where anchors are instead learned as latent representations that captures information persistent across diffusion time, such as the global structure or underlying parent variables governing the sequence. These latent anchors are learned directly from the denoising objective and reused across multiple diffusion steps, without requiring explicit anchor targets. This naturally enables latent-space caching , where an informative representation computed at one diffusion state can be retained and reused as the state evolves. We realize time-based anchoring by decomposing the model into four components: a shared embedding network , an expensive anchor network , a lightweight denoiser network , and a learned fusion module . The shared network first maps the current diffusion state into a common representation space. The anchor network processes this representation to produce an expensive latent anchor, which is computed once, cached, and reused across multiple reverse-diffusion steps. At each subsequent step, the shared network encodes the current diffusion state, and the fusion module combines this current representation with the cached anchor before passing the result to the denoiser. Training under this reuse pattern teaches the fusion and denoising components to operate with temporally stale anchor representations, enabling the expensive anchor computation to be cached across diffusion time. 
+
+Remark 3.1. A motivation behind anchoring is that not all tokens provide equal information during the reconstruction of a sequence. ADLM describes anchor tokens as a set of tokens, denoted by XA, conditioned on which the uncertainty of estimating the remaining tokens X ¯A is minimized. Given an anchor budget d, these anchor tokens can therefore be viewed as: A⋆ ∈ arg min A⊆[L], |A|≤ d H(X ¯A | XA) . Hence, revealing or accurately predicting XA makes the remaining variables easier to estimate. In an idealized two-tier graphical model motivating anchoring (see Rout et al. [2025]), a small set of invariant upper-tier parent variables renders the lower-tier token variables conditionally independent, so that p(x ¯A | xA) = Q  
+
+> i∈¯A
+
+p(xi |
+
+xA) [Koller and Friedman, 2009]. Diffusion changes the observed corruption state but not these underlying parent variables; consequently, their semantic content, which are these parent variables, is invariant across diffusion time, although the learned representation may become stale and require correction, which is where the time-based anchoring comes into the picture. Our time-anchored framework exploits this invariance by training the denoiser with stale anchors and refining them using the current state. This encourages the anchor representation to capture information that remains useful across diffusion time, corresponding in the idealized graphical model to the persistent upper-tier parent variables. 
+
+We next introduce the framework for time-based anchoring. 
+
+3.1 Model Decomposition 
+
+We decompose the denoising network into four components: a lightweight shared network SθS , an expensive anchor network AθA , a tiny fusion module Φϕ and a lightweight denoiser network DθD . For a noisy sequence zt, a standard fresh forward pass can be written as 
+
+ct = SθS (zt) ht = AθA (ct) xθ (zt, t ) = DθD (ht). (7) where ct denotes the current-state representation and ht denotes the deep contextual representation produced by the anchor network. The decomposition is chosen such that the anchor network contains a large fraction of the total model computation and is evaluated only periodically. The shared network and denoiser remain inexpensive enough to be evaluated at every denoising step. Importantly, the precise decomposition is architecture-dependent: SθS may consist only of an embedding/current-state pathway or may additionally contain several Transformer layers as in case of TADM:Post-train. At an anchor-refresh step t′, we compute and cache the anchor representation ht′ = AθA (SθS (zt′ )) . At a later reverse step t < t ′, before the next refresh, the anchor network is skipped; instead, the current state is encoded, fused with the cached anchor, and passed to the denoiser: 
+
+ct = SθS (zt) ht′ = AθA (SθS (zt′ )) eht|t′ = Φ ϕ(ct, ht′ ) xθ (zt, zt′ ) = DθD (eht|t′ ) (8) Thus, at intermediate reverse steps, only the shared network, fusion module, and denoiser are evaluated, while the expensive cached anchor ht′ is reused until the next refresh. 
+
+3.2 Fusion network 
+
+Replacing the input to the denoiser with the stale representation ht′ is not sufficient as this does not have information about the current state ct. Therefore, we introduce a tiny Fusion module Φϕ which combines ct with ht′ . This module 4Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+is very small in comparison to the Shared network, Anchor Network and the Denoiser network. The fusion module computes the corrected anchor representation as follows: 
+
+eht|t′ = ht′ + gϕ(ct, ht′ ) ⊙ ∆ϕ(ct, ht′ ). (9) Viewing the complete time-anchored model as a function of the current state zt and the stale anchor state zt′ , we denote its clean-sequence prediction by xθ (zt, zt′ ). Since ht′ = AθA (SθS (zt′ )) , the prediction is 
+
+xθ (zt, zt′ ) = DθD
+
+eht|t′
+
+
+
+. (10) 
+
+3.3 Anchor-Cache inference 
+
+During inference, the anchor cache is refreshed once in every K steps using the anchor network, whereas the shared and denoiser networks are evaluated at each step. The inference policy is summarized in Algorithm 1. If LS , LA, and LD denote the numbers of shared, anchor, and denoiser Transformer layers, respectively, then the full and cached inference costs are 
+
+Cfull = T (LS + LA + LD ), Ccache = T (LS + LD ) + 
+
+ TK
+
+
+
+LA. (11) Thus, ignoring the ceiling term, the relative Transformer-layer cost is 
+
+Ccache 
+
+Cfull 
+
+≈ LS + LD + LA/K LS + LA + LD
+
+,
+
+showing that increasing the anchor refresh interval K reduces computation by amortizing the expensive anchor network across multiple reverse steps. 
+
+3.4 Cache-induced distribution 
+
+Let πK denote the anchor-refresh policy and let dθ,π K denote the joint distribution over current states, and cached anchor representations induced by executing the target model under this policy. Ideally, training for cached inference would minimize Lcache = E(t,t ′)∼πK E(zt,ht′ )∼dθ,π K (·| t,t ′) [ℓ (xθ (zt, zt′ ) , x)] . (12) Sampling from dθ,π K would require the reverse generation process during training, which introduces additional computation. In the following sections, we will introduce two ways of minimizing Eq. 12 depending on whether the model is pretrained from scratch or adapted through post-training. 
+
+## 4 TADM:Post-train 
+
+TADM:Post-train is a post-training method using DiffusionGemma [Team et al., 2026] as the base model, which is a USDM. It uses the framework developed in Sec 3 for pre-trained DLMs. It approximates dθ,π K by generating the next denoising states via the rollout of the model during training. Simply sampling the noisy states zt and zt′ using the forward processes in Eq. 1 and Eq. 15, then computing ht′ = AθA (SθS (zt′ )) would introduce a mismatch as the distribution dθ,π K encountered during inference would be different from the distribution induced by Eq. 1 because we are using a pretrained model. Therefore, to minimize this mismatch to an extent, we do the following: 
+
+Rollout Construction. For a clean response canvas x0, we sample a rollout age k ∈ Ktrain = {0, 1, 2} and a noisy state zt′ using Eq. 1, where t′ ∼ U (0 , 1) and we use uniform noise. We then project t′ onto the T -step sampling grid. ia = clip   t′T + 12
+
+ , k + 1 , T . Let is = ia − k. The anchor is evaluated once at this state, and then cached. 
+
+ht′ = AθA (SθS (zt′ )) . Starting from ezia = zt′ , the current model performs k reverse transitions using the same denoising and sampling operations as Algorithm 1, while keeping the cached anchor ht′ fixed throughout the rollout. Note that the sampler is of your choice and in this specific case we use the sampler used by Diffusion Gemma. 
+
+ezj−1 ∼ S (pθ (· | ezj , ht′ ) , j ) , j = ia, . . . , i s + 1 . (13) Therefore, in TADM:Post-train, the end point ezis is sampled from the student rather than synthesized from the clean target, and is equivalent to zt.
+
+Training Objective. The discrete rollout in Eq 13 is stop-gradient. After sampling its endpoint, we recompute the prompt, cached-anchor, and terminal-state paths with automatic differentiation. This preserves the on-policy terminal state without backpropagating through discrete token sampling and allows supervision to reach the trainable parameters in the shared, anchor, fusion, and denoising pathways. 5Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+For each training example, we sample an anchor time t′ and a cache age k ∈ { 0, 1, 2}. The corresponding current diffusion time is t = t′ − kT , so that the cached anchor is computed k reverse steps before the current state. TADM:Post-train minimizes 
+
+Lcache = Et′,k E(ezt,ht′ )∼dθ,π K (·| t′,k )
+
+LCE + λKD DKL 
+
+ p lθ0 (· | ezt) ∥ bx l , t = t′ − kT , (14) where λKD = 1 in our experiments, θ0 is the frozen pretrained model and bx is the output prediction of the denoiser using ezt as the input. The outer expectation averages over the sampled anchor time and cache age, while the inner expectation is over the model-generated current state and cached anchor induced by the rollout policy. The second term is the knowledge distillation loss to prevent unnecessary corruption of the output distribution. 
+
+## 5 TADM:Pretraining 
+
+Although rollout training provides a close approximation to the inference distribution, applying multiple model forwards during pretraining is quite expensive. Moreover, when training from scratch, the model generated trajectories would be poor. Therefore, we use analytically generated noisy states using the forward Eq. 1. Our pretraining experiment is derived from the two-stage architecture described in Sec. 2.2 parameterized by θ = [ θD , θ A, θ S , ϕ ]. We first sample zt
+
+and then further corrupt it to get zt′ which produces ht′ .
+
+q(zlt′ |zlt) = Cat 
+
+
+
+zlt′ ; αt′
+
+αt
+
+zlt +
+
+
+
+1 − αt′
+
+αt
+
+
+
+m
+
+
+
+. (15) 
+
+TADM Parametrization. The forward process follows the standard masked diffusion model formulation (1) with 
+
+π = m and we use the ReMDM’s [Wang et al., 2025] reverse posterior as the reference distribution (28). To introduce anchor caching in the pretraining, we postulate a new parametrization. The cached reverse process factorizes as: 
+
+pθ (x, z0:1 ) = pθ (z1)pθ (x|z0)
+
+> T
+
+Y
+
+> i=1
+
+pθ
+
+ zs(i) | zt(i), zt′(i)
+
+ . (16) where t′(i) denotes the most recent refresh time of the anchor cache available to the denoising step t(i).The one-step reverse transition uses the fused prediction xθ (zt, zt′ ) (10) in the remasking posterior used by ReMDM [Wang et al., 2025] 
+
+q(zls|zlt, xlθ (zt, zt′ )) = 
+
+(Cat( zls; (1 − σt)zlt + σtm), zlt̸ = m,
+
+Cat( zls; αs−(1 −σt)αt 
+
+> 1−αt
+
+xlθ (zt, zt′ ) + 1−αs−αtσt 
+
+> 1−αt
+
+m), zlt = m, (17) where σt denotes the remasking probability at time t.
+
+Training objective. We optimize the objective defined in Theorem 5.1 with σt = 0 , which trains the current prediction using the stale anchor sampled at time t′.
+
+Anchor token selection We choose the anchor tokens as the clean-token targets at positions masked in z′ 
+
+> t
+
+so that the anchor network is able to produce good latent representations persistent across time. 
+
+Time-Anchored Negative Evidence Lower Bound (T-ANELBO). Following ReMDM [Wang et al., 2025], we define the variational path distribution over the latent trajectory as 
+
+qσ (z0:1 | x) = qσ (z1 | x)
+
+> T
+
+Y
+
+> i=1
+
+qσ
+
+ zs(i) | zt(i), x , (18) where qσ (zs(i) | zt(i), x) is the remasking posterior in Eq. 28. Although this process is non-Markovian because the transition is additionally conditioned on x, its marginals qσ (zt | x) coincide with those of the standard absorbing-state diffusion process [Wang et al., 2025]. We use qσ (z0:1 | x) as the variational distribution in the following T-ANELBO. 
+
+Theorem 5.1 (T-ANELBO) . Suppose the latent trajectory follows the variational path distribution qσ (z0:1 | x) in Eq. 18, with learned reverse transition parameterized as in Eq. 17. Denote by θ the collection of parameters for the networks. Given a sequence x = ( xl)Ll=1 , let the anchor tokens be denoted by y = ( yl)Ll=1 obtained through an operator A(·). Then, the time-anchored negative log-likelihood is bounded by: 
+
+− log pθ (x) + γLAnchor (x; θ) ≤ L T−ANELBO (x; θ), where 
+
+6Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+LT−ANELBO (x; θ) := Eqσ (z0:1 |x) [− log pθ (x|z0)] + 
+
+> T
+
+X
+
+> i=1
+
+Eqσ (zt(i),zt′(i)|x)
+
+" LX
+
+> l=1
+
+λt(i) log ⟨xlθ (zt(i), zt′(i)), xl⟩ + γλ t′(i) log ⟨ylAθA
+
+(zt′(i)), yl⟩
+
+#
+
+with λt(i) = (1 −σt(i))αt(i)−αs(i) 
+
+> 1−αt(i)
+
+and γ ≥ 0.
+
+The first cross entropy term trains the denoiser for explicit reuse of latent representations through time, whereas the second term provides optional anchor supervision when anchor tokens are available. Setting γ = 0 yields fully self-supervised time-based anchoring. 
+
+## 6 Experiments 
+
+6.1 TADM:Post-train Setup. We finetune DiffusionGemma [Team et al., 2026] using our framework on math, code and STEM sequences derived from UltraData-SFT-2605 [OpenBMB, 2026] dataset and Nemotron-Post-Training-Dataset-v2 [Nathawani et al., 2025]. We trained our model on sequences without reasoning traces and therefore evaluate our model using the no-think mode. We train for 18750 steps using batch size 16. We freeze the base model during training. The Shared network is the embedding layer and the first two text layers. The next 20 layers act as the Anchor network and the final 8 layers, along with the LM-Head acts as the Denoiser network. We set γ = 0 . The fusion module uses attention to fuse the current state with the stale anchor state. It starts with 0 output so that the model begins from the frozen backbone. For evaluation, we used a canvas size of 256 and fixed-budget sampler with 48 denoising steps per canvas. For more details, refer to C.1. 
+
+Benchmarks. We use the following few-shot settings and maximum generation lengths: GSM8K [Cobbe et al., 2021] (5-shot, 1,024), HumanEval [Chen et al., 2021] (0-shot, pass@1, 1,024), GPQA-Diamond [Rein et al., 2024] (0-shot, 2,048), MMLU-Pro [Wang et al., 2024] (5-shot, 2,048), LiveCodeBench-v6 [Jain et al., 2024] (0-shot, pass@1, 2,000), and AIME26 [Dekoninck et al., 2026] (0-shot, 4,096 tokens). 
+
+Metrics. We evaluate the model accuracy over the benchmarks, tokens per seconds generated by the model and the transformer call reduction averaged over 3 seeds. These are reported in Table 1. 
+
+Results. Table 1 shows that pretrained DLMs can be effectively time-anchorized with TADM:Post-train, by training only on 3.1M parameters of the fusion module, substantially improving inference throughput while largely preserving task accuracy. At K = 3 , throughput improves by 1.49 ×–1.79 × across the evaluated benchmarks. Importantly, this behavior also holds on harder reasoning and coding tasks such as AIME26, GPQA-Diamond, and LiveCodeBench-v6, where we obtain 1.49 ×, 1.56 ×, and 1.79 × throughput, respectively, with only minor changes in accuracy. These results suggest that reusing learned latent representations across nearby diffusion steps is an effective way to reduce repeated computation in pretrained DLMs. 
+
+6.2 TADM:Pretraining Setup We pre-train TADM on OpenWebText (OWT) [Gokaslan and Cohen, 2019] for 1M optimization steps, chosen to match the training-token budget of the main comparison models. The 12-layer anchor and 6-layer denoiser use the Diffusion Transformer (DiT) architecture [Peebles and Xie, 2023]; they share the token embedding table, and the gated residual fusion module connects the anchor hidden states to the denoiser. The inference graph contains 224M unique parameters, including the fusion gate and excluding the training-only anchor LM head (38.85M parameters). We use the GPT-2 tokenizer and the ReMDM sampler [Wang et al., 2025]. We evaluate 1,024-token unconditional generations and report MAUVE, generative perplexity (Gen PPL), entropy, compute, and throughput. Higher is better except for Gen PPL and compute. GPT-2 Large is the evaluator for Gen PPL and MAUVE [Pillutla et al., 2021]. The anchor refresh interval K specifies the number of reverse steps between anchor updates: K = 1 refreshes the anchor at every step. TADM:Pretraining † represents γ = 0 , whereas TADM:Pretraining ‡ uses the optional anchor supervision using 
+
+γ = 3 e − 3. We report the inference parameter count, which excludes the 38.85M Anchor LM Head which is not used during inference. 
+
+Baselines We compare our method to ADLM [Rout et al., 2025], MDLM [Sahoo et al., 2024], ReMDM [Wang et al., 2025], SEDD [Lou et al., 2024], and MDLM with DFM [Gat et al., 2024] and Forward-Backward (FB) [Campbell et al., 2022] sampling techniques. 7Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Table 1: TADM:Post-train performance. Results are averaged over three seeds across math, code, and STEM benchmarks and compared with the DiffusionGemma baseline under the same fixed-step evaluation setting. Increasing the anchor refresh interval enables progressively greater reuse of the cached latent representation, yielding substantial inference speedups. TADM preserves essentially the same task accuracy across benchmarks while achieving up to 
+
+1.79 × higher generation throughput. Benchmark Method K Acc. (%) ∆ Acc. (pp) Tok./s Throughput Compute ( × Base) GSM8K DiffusionGemma - 94.79 – 33.80 1.00 × 1.00 ×
+
+GSM8K TADM 1 94.79 0.00 35.72 1.06 × 1.00 ×
+
+GSM8K TADM 2 94.79 0.00 51.51 1.52 × 0.67 ×
+
+GSM8K TADM 3 94.95 +0 .16 59.53 1.76 × 0.56 ×
+
+GPQA-D DiffusionGemma - 67.00 – 60.31 1.00 × 1.00 ×
+
+GPQA-D TADM 1 67.00 0.00 55.30 0.92 × 1.00 ×
+
+GPQA-D TADM 2 66.16 −0.84 79.89 1.32 × 0.67 ×
+
+GPQA-D TADM 3 66.16 −0.84 93.90 1.56 × 0.56 ×
+
+HumanEval DiffusionGemma - 95.12 – 41.84 1.00 × 1.00 ×
+
+HumanEval TADM 1 95.12 0.00 37.96 0.91 × 1.00 ×
+
+HumanEval TADM 2 95.53 +0 .41 58.22 1.39 × 0.67 ×
+
+HumanEval TADM 3 94.72 −0.40 63.85 1.53 × 0.56 ×
+
+LCB-v6 DiffusionGemma - 50.29 – 58.35 1.00 × 1.00 ×
+
+LCB-v6 TADM 1 50.29 0.00 56.65 0.97 × 1.00 ×
+
+LCB-v6 TADM 2 52.38 +2 .09 78.66 1.35 × 0.67 ×
+
+LCB-v6 TADM 3 50.10 −0.19 104.44 1.79 × 0.56 ×
+
+AIME26 DiffusionGemma - 47.78 – 62.79 1.00 × 1.00 ×
+
+AIME26 TADM 1 47.78 0.00 57.48 0.92 × 1.00 ×
+
+AIME26 TADM 2 46.67 −1.11 83.41 1.33 × 0.67 ×
+
+AIME26 TADM 3 48.89 +1 .11 93.50 1.49 × 0.56 ×
+
+MMLU-Pro DiffusionGemma - 77.15 – 48.75 1.00 × 1.00 ×
+
+MMLU-Pro TADM 1 77.15 +0 .00 45.45 0.93 × 1.00 ×
+
+MMLU-Pro TADM 2 76.89 −0.26 63.79 1.31 × 0.67 ×
+
+MMLU-Pro TADM 3 76.58 −0.57 77.33 1.59 × 0.56 ×
+
+Inference Speed-up: Table 2 reports both the analytical Transformer-call reduction and measured total throughput for TADM:Pretraining. Total throughput counts all 1,024 generated positions per sample, including positions after the first end-of-text token. We normalize speed-up with respect to ADLM. 
+
+Compute Cost: We count Transformer-layer calls during inference: C = DT · T + AT · T /K , where DT and AT are the numbers of denoiser and anchor Transformer layers. TADM:Pretraining, and ADLM use DT = 6 and AT = 12 ,while MDLM and SEDD use DT = 12 and AT = 0 . We normalize compute to MDLM. This layer-call measure does not include the relatively smaller embedding, output-head, or fusion-gate operations. 
+
+Results. Table 2 shows that TADM achieves a favorable quality–compute trade-off. At larger sampling budgets, TADM matches or improves upon ReMDM in Gen PPL while remaining competitive with ADLM, but with substantially higher throughput; its MAUVE scores also remain competitive with ReMDM. Although TADM contains 224M unique parameters, time anchoring reduces the amount of Transformer computation executed at each reverse step. With 12 anchor and 6 denoiser layers, K = 2 gives an effective cost of 6 + 12 /2 = 12 Transformer layers per step, matching the 12-layer ReMDM backbone, with only the lightweight fusion module as additional computation. Larger 
+
+K further reduces the number of Transformer-layer evaluations, yielding up to a 38% compute reduction and 1.73 × the measured throughput of ADLM. These gains arise from reusing latent representations across diffusion steps rather than recomputing the full model at every step. A detailed refresh-interval sweep is provided in Table 4. 
+
+## 7 Conclusion 
+
+We introduced time-based anchoring, which makes the latent space of a DLM cacheable by learning representations whose semantic content persists across diffusion time. A relatively more expensive anchor network is evaluated 8Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Table 2: We compare TADM diffusion baselines across sampling budgets. For TADM, we use refresh intervals 
+
+K = {2, 2, 2, 8, 4, 4} for T = {128 , 256 , 512 , 1024 , 2048 , 4096 }, respectively. We report MAUVE, generative perplexity (Gen PPL), entropy, Transformer-layer evaluations normalized to MDLM over 5000 samples, and measured generation throughput over 20 generations of length 1,024. TADM periodically reuses its cached anchor representation, reducing Transformer computation while maintaining competitive generation quality. Method MAUVE ( ↑) Gen PPL ( ↓) Entropy ( ↑) Compute ( ↓) Throughput ( ↑)Data 1.00 14.8 5.44 - -AR (T=1024) 0.760 12.1 5.22 - -
+
+T=2048 T=4096 T=2048 T=4096 T=2048 T=4096 T=2048 T=4096 T=2048 T=4096 
+
+SEDD (absorb, 170M) 0.008 0.009 103.2 102.5 5.61 5.61 24576 (1.00x) 49152 (1.00x) 37.47 (1.54x) 18.79 (1.34x) MDLM (170M) 0.037 0.035 51.3 50.9 5.46 5.45 24576 (1.00x) 49152 (1.00x) 63.00 (2.59x) 46.39 (3.31x) MDLM+FB (170M) 0.197 0.243 28.6 22.8 5.28 5.18 24576 (1.00x) 49152 (1.00x) 37.01 (1.52x) 25.28 (1.80x) MDLM+DFM (170M) 0.294 0.269 21.0 20.7 5.19 5.17 24576 (1.00x) 49152 (1.00x) 29.98 (1.23x) 15.48 (1.10x) ReMDM (170M) 0.610 0.656 22.8 17.6 5.30 5.20 24576 (1.00x) 49152 (1.00x) 35.07 (1.44x) 20.00 (1.43x) ADLM (293M) 0.788 0.791 20.3 15.9 5.28 5.19 36864 (1.50x) 73728 (1.50x) 24.32 (1.00x) 14.01 (1.00x) TADM † (224M) 0.650 0.618 21.77 17.22 5.314 5.226 18432 (0.75x) 36864 (0.75x) 37.42 (1.54x) 20.94 (1.49x) TADM ‡ (224M) 0.646 0.637 21.70 17.19 5.293 5.221 18432 (0.75x) 36864 (0.75x) 37.35 (1.54x) 20.94 (1.49x) Method MAUVE ( ↑) Gen PPL ( ↓) Entropy ( ↑) Compute ( ↓) Throughput ( ↑)
+
+T=512 T=1024 T=512 T=1024 T=512 T=1024 T=512 T=1024 T=512 T=1024 
+
+SEDD (absorb, 170M) 0.008 0.008 107.2 104.7 5.62 5.62 6144 (1.00x) 12288 (1.00x) 149.40 (1.83x) 74.91 (1.73x) MDLM (170M) 0.031 0.042 53.0 51.3 5.48 5.46 6144 (1.00x) 12288 (1.00x) 134.91 (1.66x) 87.74 (2.03x) MDLM+FB (170M) 0.100 0.133 37.1 33.8 5.38 5.35 6144 (1.00x) 12288 (1.00x) 119.26 (1.46x) 62.26 (1.44x) MDLM+DFM (170M) 0.211 0.254 23.3 21.7 5.23 5.20 6144 (1.00x) 12288 (1.00x) 119.02 (1.46x) 59.73 (1.38x) ReMDM (170M) 0.350 0.403 21.1 28.6 5.21 5.38 6144 (1.00x) 12288 (1.00x) 116.94 (1.44x) 62.37 (1.44x) ADLM (293M) 0.573 0.699 31.6 25.4 5.40 5.35 9216 (1.50x) 18432 (1.50x) 81.44 (1.00x) 43.19 (1.00x) TADM † (224M) 0.339 0.405 21.38 28.65 5.230 5.383 6144 (1.00x) 7680 (0.62x) 111.95 (1.37x) 74.54 (1.73x) TADM ‡ (224M) 0.363 0.441 21.74 28.41 5.233 5.344 6144 (1.00x) 7680 (0.62x) 111.50 (1.37x) 74.34 (1.72x) Method MAUVE ( ↑) Gen PPL ( ↓) Entropy ( ↑) Compute ( ↓) Throughput ( ↑)
+
+T=128 T=256 T=128 T=256 T=128 T=256 T=128 T=256 T=128 T=256 
+
+SEDD (absorb, 170M) 0.007 0.007 119.2 110.1 5.65 5.63 1536 (1.00x) 3072 (1.00x) 588.31 (1.83x) 299.94 (1.86x) MDLM (170M) 0.015 0.023 61.5 55.8 5.52 5.49 1536 (1.00x) 3072 (1.00x) 470.07 (1.47x) 242.39 (1.50x) MDLM+FB (170M) 0.064 0.084 42.8 39.6 5.44 5.41 1536 (1.00x) 3072 (1.00x) 469.90 (1.47x) 238.85 (1.48x) MDLM+DFM (170M) 0.041 0.144 37.9 26.5 5.31 5.26 1536 (1.00x) 3072 (1.00x) 455.31 (1.42x) 236.80 (1.47x) ReMDM (170M) 0.057 0.216 42.5 30.5 5.43 5.34 1536 (1.00x) 3072 (1.00x) 461.76 (1.44x) 234.84 (1.46x) ADLM (293M) 0.140 0.349 52.5 39.85 5.52 5.46 2304 (1.50x) 4608 (1.50x) 320.62 (1.00x) 161.31 (1.00x) TADM:Pretraining † (224M) 0.084 0.239 41.56 29.86 5.433 5.339 1536 (1.00x) 3072 (1.00x) 445.23 (1.39x) 222.28 (1.38x) TADM:Pretraining ‡ (224M) 0.070 0.220 43.06 30.59 5.433 5.337 1536 (1.00x) 3072 (1.00x) 447.20 (1.39x) 223.68 (1.39x) periodically, while a lightweight denoising network combines the cached latent state with the current state at every reverse step. The framework supports self-supervised anchors when γ = 0 and combines self-discovered information with supervised important tokens when γ > 0. We instantiate it through TADM:Post-train, which time-anchorizes pretrained DLMs, and TADM:Pretraining, which learns cacheable latent states during pretraining. TADM:Post-train improves DiffusionGemma throughput by approximately 49% to 79% across the evaluated benchmarks while largely preserving task accuracy. TADM:Pretraining reduces Transformer-layer computation by up to 38% and achieves up to 73% higher measured throughput than ADLM. Together, these results establish time-based anchoring as a general approach to caching latent computation and accelerating diffusion language models. 
+
+Limitations. TADM’s generation quality degrades at larger anchor refresh intervals, limiting the duration of effective cache reuse. The accuracy of TADM:Post-train is also constrained by the capabilities of its frozen pretrained backbone. 
+
+## Acknowledgments 
+
+This work was supported in part by NSF Grants 2112471 (NSF AI EDGE), 2505865 (NSF IFML), and 2326576 (NSF LDOS), and by the UT Austin InfraAI Center. We are grateful for computing support on the Vista GPU Cluster through the Center for Generative AI (CGAI) and the Texas Advanced Computing Center (TACC) at the University of Texas at Austin. 
+
+## References 
+
+Jacob Austin, Daniel D. Johnson, Jonathan Ho, Daniel Tarlow, and Rianne van den Berg. Structured denoising diffusion models in discrete state-spaces. In A. Beygelzimer, Y. Dauphin, P. Liang, and J. Wortman Vaughan, editors, Advances in Neural Information Processing Systems , 2021. URL https://openreview.net/forum?id=h7-XixPCAL .9Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Aaron Lou, Chenlin Meng, and Stefano Ermon. Discrete diffusion modeling by estimating the ratios of the data distribution. In Forty-first International Conference on Machine Learning , 2024. URL https://openreview.net/ forum?id=CNicRIVIPA .Subham Sekhar Sahoo, Marianne Arriola, Aaron Gokaslan, Edgar Mariano Marroquin, Alexander M Rush, Yair Schiff, Justin T Chiu, and Volodymyr Kuleshov. Simple and effective masked diffusion language models. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview. net/forum?id=L4uaAR4ArM .Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis Titsias. Simplified and generalized masked diffusion for discrete data. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL 
+
+https://openreview.net/forum?id=xcqSOfHt4g .Guanghan Wang, Yair Schiff, Subham Sekhar Sahoo, and Volodymyr Kuleshov. Remasking discrete diffusion models with inference-time scaling. arXiv preprint arXiv:2503.00307 , 2025. URL https://arxiv.org/abs/2503. 00307 .Subham Sekhar Sahoo, Justin Deschenaux, Aaron Gokaslan, Guanghan Wang, Justin Chiu, and Volodymyr Kuleshov. The diffusion duality. Proceedings of machine learning research , 267:52584, 2025. Yair Schiff, Subham Sahoo, Hao Phung, Guanghan Wang, Sam Boshar, Hugo Dalla-Torre, Bernardo Almeida, Alexander Rush, Thomas Pierrot, and Volodymyr Kuleshov. Simple guidance mechanisms for discrete diffusion models. In 
+
+International Conference on Learning Representations , volume 2025, pages 43776–43821, 2025. Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. Large language diffusion models. arXiv preprint arXiv:2502.09992 , 2025. Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. Dream 7b: Diffusion large language models, 2025. URL https://arxiv.org/abs/2508.15487 .DiffusionGemma Team, Adrien Ali Taïga, James Assiene, Daniele Calandriello, Rahma Chaabouni, João Gante, Tamara von Glehn, Nate Keating, Chris Knutsen, Martin Kukla, Tianlin Liu, Ivan Lobov, Ofir Nabati, João Gabriel Oliveira, Nicolas Perez-Nieves, Nastasia Prutianova, Bobak Shahriari, Jean Tarbouriech, Pavel Tyletski, Ça˘ glar Ünlü, Cindy Wu, Glenn Cameron, Jerome Connor, Sertan Girgin, Maarten Grootendorst, Alon Levkovitch, Eliya Nachmani, Omar Sanseviero, Piotr Stanczyk, Quentin Berthet, Andrew Campbell, Clément Crepy, Valentin De Bortoli, Arnaud Doucet, Romuald Elie, Alexandre Galashov, Klaus Greff, Alexis Jacq, David Ruhe, Yu-Han Wu, Sebastian Flennerhag, Brendan O’Donoghue, George Scrivener, and Shantanu Thakoor. Diffusiongemma technical report, 2026. URL 
+
+https://arxiv.org/abs/2608.00146 .Marianne Arriola, Subham Sekhar Sahoo, Aaron Gokaslan, Zhihan Yang, Zhixuan Qi, Jiaqi Han, Justin T Chiu, and Volodymyr Kuleshov. Block diffusion: Interpolating between autoregressive and diffusion language models. In 
+
+The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/ forum?id=tyEyYT267x .Litu Rout, Constantine Caramanis, and Sanjay Shakkottai. Anchored Diffusion Language Model. In The Thirty-Ninth Conference on Neural Information Processing Systems (NeurIPS) , 2025. URL https://openreview.net/pdf? id=E8adS5srds .Xinyin Ma, Runpeng Yu, Gongfan Fang, and Xinchao Wang. dKV-cache: The cache for diffusion language models. In 
+
+The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview. net/forum?id=Gppo2JImHs .Yuchu Jiang, Yue Cai, Xiangzhong Luo, Jiale Fu, Jiarui Wang, Chonghan Liu, and Xu Yang. d$^2$cache: Acceler-ating diffusion-based LLMs via dual adaptive caching. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id=SjInfpK5RM .Quan Nguyen-Tri, Mukul Ranjan, and Zhiqiang Shen. Attention is all you need for kv cache in diffusion llms. In C. Vondrick, B. Hariharan, C. Raffel, L. Pinto, D. Yang, and A. Faust, editors, International Conference on Learning Representations , volume 2026, pages 34915–34946, 2026. URL https://proceedings.iclr.cc/ paper_files/paper/2026/file/3afaa2102fb8ea44cbadc13e45bba718-Paper-Conference.pdf .Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In Francis Bach and David Blei, editors, Proceedings of the 32nd International Conference on Machine Learning , volume 37 of Proceedings of Machine Learning Research , pages 2256–2265, Lille, France, 07–09 Jul 2015. PMLR. URL https://proceedings.mlr.press/v37/sohl-dickstein15.html .Daphne Koller and Nir Friedman. Probabilistic graphical models: principles and techniques . MIT Press, 2009. OpenBMB. Ultradata-sft-2605, 2026. URL https://huggingface.co/datasets/openbmb/ UltraData-SFT-2605 .10 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Dhruv Nathawani, Shuoyang Ding, Vitaly Lavrukhin, Igor Gitman, Somshubra Majumdar, Evelina Bakhturina, Boris Ginsburg, and Jane Polak Scowcroft. Nemotron-Post-Training-Dataset-v2, August 2025. URL https: //huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v2 .Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri, Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders, Christopher Hesse, Andrew N. Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan Morikawa, Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language models trained on code. 2021. David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R. Bowman. GPQA: A graduate-level google-proof q&a benchmark. In First Conference on Language Modeling , 2024. URL https://openreview.net/forum?id=Ti67584b98 .Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni, Abhranil Chandra, Shiguang Guo, Weiming Ren, Aaran Arulraj, Xuan He, Ziyan Jiang, et al. Mmlu-pro: A more robust and challenging multi-task language understanding benchmark. 
+
+arXiv preprint arXiv:2406.01574 , 2024. Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Armando Solar-Lezama, Koushik Sen, and Ion Stoica. Livecodebench: Holistic and contamination free evaluation of large language models for code, 2024. URL https://arxiv.org/abs/2403.07974 .Jasper Dekoninck, Nikola Jovanovi´ c, Tim Gehrunger, Kári Rögnvaldsson, Ivo Petrov, Chenhao Sun, and Martin Vechev. Beyond benchmarks: Matharena as an evaluation platform for mathematics with llms. 2026. URL 
+
+https://arxiv.org/abs/2605.00674 .Aaron Gokaslan and Vanya Cohen. Openwebtext corpus. http://Skylion007.github.io/OpenWebTextCorpus ,2019. William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision , pages 4195–4205, 2023. Krishna Pillutla, Swabha Swayamdipta, Rowan Zellers, John Thickstun, Sean Welleck, Yejin Choi, and Zaid Harchaoui. MAUVE: Measuring the gap between neural text and human text using divergence frontiers. In A. Beygelzimer, Y. Dauphin, P. Liang, and J. Wortman Vaughan, editors, Advances in Neural Information Processing Systems , 2021. URL https://openreview.net/forum?id=Tqx7nJp7PR .Itai Gat, Tal Remez, Neta Shaul, Felix Kreuk, Ricky T. Q. Chen, Gabriel Synnaeve, Yossi Adi, and Yaron Lipman. Discrete flow matching. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview.net/forum?id=GTDKo3Sv9p .Andrew Campbell, Joe Benton, Valentin De Bortoli, Tom Rainforth, George Deligiannidis, and Arnaud Doucet. A continuous time framework for discrete denoising models. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural Information Processing Systems , 2022. URL https://openreview. net/forum?id=DmT862YAieY .Qwen Team. Qwen3 technical report, 2025. URL https://arxiv.org/abs/2505.09388 .11 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+## A Additional Theory 
+
+We provide the proof for the Time-Anchored NELBO Loss formulated as the training objective in TADM:Pretraining here. 
+
+Theorem A.1 (T-ANELBO) . Suppose the latent trajectory follows the variational path distribution qσ (z0:1 | x) in Eq. 18, with learned reverse transition parameterized as in Eq. 17. Denote by θ the collection of parameters for the networks. Given a sequence x = ( xl)Ll=1 , let the anchor tokens be denoted by y = ( yl)Ll=1 obtained through an operator A(·). Then, the time-anchored negative log-likelihood is bounded by: 
+
+− log pθ (x) + γLAnchor (x; θ) ≤ L T−ANELBO (x; θ), where 
+
+LT−ANELBO (x; θ) := Eqσ (z0:1 |x) [− log pθ (x|z0)] + 
+
+> T
+
+X
+
+> i=1
+
+Eqσ (zt(i),zt′(i)|x)
+
+" LX
+
+> l=1
+
+λt(i) log ⟨xlθ (zt(i), zt′(i)), xl⟩ + γλ t′(i) log ⟨ylAθA
+
+(zt′(i)), yl⟩
+
+#
+
+with λt(i) = (1 −σt(i))αt(i)−αs(i) 
+
+> 1−αt(i)
+
+and γ ≥ 0.Proof. We show for L=1, the proof can be easily generalized to L tokens. Starting from the standard negative log-likelihood: 
+
+− log pθ (x) = − log 
+
+Z
+
+pθ (x, z 0:1 ) d(z0:1 )= − log 
+
+Z pθ (x, z 0:1 )
+
+qσ (z0:1 |x) qσ (z0:1 |x) d(z0:1 )
+
+Applying Jensen’s inequality and using Eq. 16 to factorize the joint distribution, we get: 
+
+− log pθ (x) ≤ Eqσ (z0:1 |x)
+
+"
+
+− log pθ (x|z0) + log qσ (z1|x)
+
+pθ (z1) +
+
+> T
+
+X
+
+> i=1
+
+log qσ (zs(i)|zt(i), x)
+
+pθ (zs(i)|zt(i), z t′(i))
+
+#
+
+:= LNELBO (x; θ).
+
+Combining NELBO with LAnchor , we get LT-ANELBO .
+
+LT-ANELBO (x; θ) = Eqσ (z0:1 |x) [− log pθ (x|z0)] + DKL (qσ (z1|x) ∥ pθ (z1)) +
+
+> T
+
+X
+
+> i=1
+
+Eqσ (z0:1 |x)
+
+DKL 
+
+ qσ (zs(i)|zt(i), x) ∥ pθ (zs(i)|zt(i), zt′(i)) + γLAnchor (x; θ). (19) where, 
+
+LAnchor (x; θ) = 
+
+> T
+
+X
+
+> i=1
+
+Eqσ (z0:1 |x)
+
+h
+
+DKL 
+
+
+
+r ys′(i) | zt′(i), y ∥ rθA
+
+
+
+ys′(i) | zt′(i), yAθA (zt′(i))
+
+i 
+
+. (20) Here s′(i) = t′(i) − 1 
+
+> T
+
+.Thus, the T-ANELBO naturally decomposes into three terms: • Reconstruction loss: Eqσ (z0:1 |x) [− log pθ (x|z0)] , corresponding to reconstruction at the final reverse step. • Prior term: DKL (qσ (z1|x) ∥ pθ (z1)) . This term vanishes when the terminal forward distribution matches the reverse-process prior, e.g., the all-mask state for absorbing diffusion. • Time-anchored diffusion and anchor loss: 
+
+> T
+
+X
+
+> i=1
+
+Eqσ (z0:1 |x)
+
+DKL 
+
+ qσ (zs(i)|zt(i), x) ∥ pθ (zs(i)|zt(i), zt′(i)) + γLAnchor (x; θ).
+
+The diffusion term trains the model to denoise the current state using an anchor obtained from the earlier, noisier state 
+
+zt′(i) helping in latent caching, while LAnchor optionally supervises the anchor network’s predicted anchor-token mixture. 12 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Analyzing the diffusion and anchor losses together, we obtain: 
+
+Ldiffusion (x; θ) + γLAnchor (x; θ)=
+
+> T
+
+X
+
+> i=1
+
+Eqσ (z0:1 |x)
+
+DKL 
+
+ qσ (zs(i)|zt(i), x) ∥ pθ (zs(i)|zt(i), zt′(i)) 
+
++ γ
+
+> T
+
+X
+
+> i=1
+
+Eqσ (z0:1 |x)
+
+h
+
+DKL 
+
+
+
+r ys′(i)|zt′(i), y ∥ rθA
+
+
+
+ys′(i)|zt′(i), yAθA (zt′(i))
+
+i 
+
+=
+
+> T
+
+X
+
+> i=1
+
+Eqσ (zt(i),zt′(i)|x)Eqσ (zs(i)|zt(i),x)
+
+
+
+log qσ (zs(i)|zt(i), x)
+
+pθ (zs(i)|zt(i), zt′(i))
+
+
+
++ γ
+
+> T
+
+X
+
+> i=1
+
+Eqσ (zt′(i)|x)Er(ys′(i)|zt′(i),y)
+
+log r ys′(i)|zt′(i), y
+
+rθA
+
+
+
+ys′(i)|zt′(i), yAθA (zt′(i))
+
+ .
+
+We use the conditional independence step for the forward process that 
+
+qσ (zs|zt(i), zt′(i), x) = qσ (zs(i)|zt(i), x)
+
+for s < t ≤ t′ to arrive at the above equality. We apply the two-case calculation in the proof of Theorem 4.1 (Anchored Negative Evidence Lower Bound) of Rout et al. [2025], given in Appendix A.1 and restated there as Theorem A.1. For both the diffusion and anchor transitions, that calculation shows that the KL contribution vanishes at unmasked positions and reduces to a weighted cross-entropy at masked positions. Applying this calculation to the diffusion transition at (s(i), t (i)) , with the denoiser conditioned additionally on zt′(i),gives 
+
+Eqσ (zs(i)|zt(i),x)
+
+
+
+log qσ (zs(i)|zt(i), x)
+
+pθ (zs(i)|zt(i), zt′(i))
+
+
+
+= λt(i)
+
+> L
+
+X
+
+> l=1
+
+1{zlt(i)=m} log xlθ (zt(i), zt′(i)), xl .
+
+The additional conditioning changes the predicted clean-token distribution, while preserving the algebraic form of the transition-level KL calculation. Similarly, applying the anchor-transition calculation at (s′(i), t ′(i)) yields 
+
+Er(ys′(i)|zt′(i),y)
+
+log r ys′(i)|zt′(i), y
+
+rθA
+
+
+
+ys′(i)|zt′(i), yAθA (zt′(i))
+
+
+
+= λt′(i)
+
+> L
+
+X
+
+> l=1
+
+1{zlt′(i)=m} log 
+
+D
+
+ylAθA
+
+(zt′(i)), ylE
+
+,
+
+where 
+
+λt(i) = (1 − σt(i))αt(i) − αs(i)
+
+1 − αt(i)
+
+,λt′(i) = (1 − σt′(i))αt′(i) − αs′(i)
+
+1 − αt′(i)
+
+, s′(i) = t′(i) − 1
+
+T .
+
+Since these coefficients are nonpositive, each expression is a nonnegative weight multiplying the corresponding cross-entropy. Anchor supervision is restricted to the selected anchor positions. 13 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Substituting both identities into the NELBO decomposition gives 
+
+LT-ANELBO (x; θ)= LNELBO (x; θ) + γLAnchor (x; θ)= Eqσ (z0|x) [− log pθ (x|z0)] + DKL (qσ (z1|x) ∥ pθ (z1)) +
+
+> T
+
+X
+
+> i=1
+
+Eqσ (zt(i),zt′(i)|x)
+
+"
+
+λt(i)
+
+> L
+
+X
+
+> l=1
+
+1{zlt(i)=m} log xlθ (zt(i), zt′(i)), xl
+
+#
+
++ γ
+
+> T
+
+X
+
+> i=1
+
+Eqσ (zt′(i)|x)
+
+"
+
+λt′(i)
+
+> L
+
+X
+
+> l=1
+
+1{zlt′(i)=m} log 
+
+D
+
+ylAθA
+
+(zt′(i)), ylE#
+
+.
+
+The prior term vanishes when pθ (z1) = qσ (z1|x). The mask indicators are omitted when carry-over parameterization is applied which makes the corresponding log-probability terms zero at unmasked positions. We assume carry-over parameterization and hence these are zeroed-out. Finally, the NELBO inequality gives 
+
+− log pθ (x) + γLAnchor (x; θ) ≤ L T-ANELBO (x; θ).
+
+Implications. The T-ANELBO objective highlights two aspects of time-based anchoring: • Temporal latent reuse. The term 
+
+> T
+
+X
+
+> i=1
+
+Eq(zt(i),zt′(i)|x)
+
+" LX
+
+> l=1
+
+λt(i) log xlθ (zt(i), zt′(i)), xl
+
+#
+
+trains the denoising prediction xθ (zt(i), zt′(i)) using the latent representation computed from the earlier, noisier anchor state zt′(i), where t′(i) ≥ t(i). By sampling stale anchor times during training, the objective explicitly exposes the model to temporally stale latent representations and encourages them to remain useful across multiple diffusion steps. This enables latent-space reuse and, consequently, anchor caching at inference time. • Optional anchor supervision. The term 
+
+> T
+
+X
+
+> i=1
+
+Eq(zt(i),zt′(i)|x)
+
+" LX
+
+> l=1
+
+γλ t′(i) log 
+
+D
+
+ylAθA
+
+(zt′(i)), ylE#
+
+directly supervises the anchor-network prediction yAθA (zt′(i)) when explicit anchor-token targets y are available. Its contribution is controlled by γ. Setting γ = 0 removes the need for predefined anchor targets, in which case the latent anchor is learned entirely through the temporal denoising objective; for γ > 0, known anchor tokens can additionally guide the learned anchor representation. 
+
+## B Related Work 
+
+B.1 Discrete Diffusion Models 
+
+Discrete Diffusion Language Models [Sohl-Dickstein et al., 2015, Austin et al., 2021] follow a noising process gradually corrupting the clean input sequence x = ( x1, x2, · · · , xL) to a partially noised sequence zt = ( z1 
+
+> t
+
+, z2 
+
+> t
+
+, · · · , zLt ) and finally to the noisy prior π. Let T be the number of denoising steps, we denote t(i) = iT and s(i) = i−1 
+
+> T
+
+. For the rest of the paper, we denote t(i) as t and s(i) as s. The forward noising process, as described in D3PM [Austin et al., 2021]: 
+
+q(zt|x) = 
+
+> L
+
+Y
+
+> l=1
+
+q(zlt|x), q(zlt|x) = Cat  zlt; αtxl + (1 − αt)π , l ∈ { 1, 2, · · · , L }, (21) where αt ∈ [0 , 1] is a monotonically decreasing noise schedule, with α0 = 1 and α1 = 0 . We define αt|s = αt 
+
+> αs
+
+. The one step transition probability is q(zlt|zls) = Cat( zlt; αt|szls + (1 − αt|s)π). The reverse posterior is given as: 
+
+q(zls | zlt, xl) = Cat zls;
+
+αt|szlt +  1 − αt|s
+
+ 1π⊤zlt
+
+ ⊙ αsxl + (1 − αs) π
+
+αtzl⊤ 
+
+> t
+
+xl + (1 − αt) zl⊤ 
+
+> t
+
+π
+
+!
+
+. (22) 14 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+During inference, we do not have access to the clean samples x, therefore we approximate it with a neural net-work θ which learns to predict the distribution of the clean sequence from the noisy input. The distribution pre-dicted by θ is xθ (zt) = ( x1 
+
+> θ
+
+(zt), x2 
+
+> θ
+
+(zt) · · · , xLθ (zt)) where xlθ (zt) is the probability distribution over V. We define pθ (x, z0:1 ) as the learnt joint distribution over the sequences which follows a markovian structure, that is, 
+
+pθ (x, z0:1 ) = pθ (z1)pθ (x|z0) QTi=1 pθ (zs(i)|zt(i)). Also, each token distribution in the sequence is conditionally independent given zt, i.e, pθ (zs|zt) = QLl=1 pθ (zls|zt). We can represent the probability assigned by the model corresponding to the true token at position l as pθ (xl|zt) = ⟨xlθ (zt), xl⟩. In the discrete-time setting, the denoising model is trained by minimizing the standard negative evidence lower bound (NELBO), 
+
+LNELBO (x, θ ) = Eq
+
+− log pθ (x | zt(0) ) +
+
+> T
+
+X
+
+> i=1
+
+Eq
+
+DKL 
+
+ q(zs(i) | zt(i), x) ∥ pθ (zs(i) | zt(i)) 
+
++ DKL 
+
+ q(zt(T ) | x) ∥ pθ (zt(T )) . (23) We focus on two corruption processes relevant to our methods: absorbing-state masked diffusion [Sahoo et al., 2024, Wang et al., 2025, Shi et al., 2024], which underlies our TADM pretraining experiments, and uniform-state diffusion [Schiff et al., 2025, Sahoo et al., 2025], which underlies the pretrained model used for TADM:Post-train. 
+
+B.1.1 Masked Diffusion Models 
+
+MDMs use masked token prior i.e. π = m, a one-hot vector at the special MASK token index, which simplifies Eq. 2 to 
+
+q(zls|zlt, xl) = 
+
+(Cat( zls; zlt), zlt̸ = m
+
+Cat 
+
+
+
+zls; αs−αt 
+
+> 1−αt
+
+xl + 1−αs 
+
+> 1−αt
+
+m
+
+
+
+, zlt = m. (24) 
+
+MDLM [Sahoo et al., 2024] specialize this construction by imposing two constraints on the output probability distribution. They are: zero-masking , which forces the model to assign zero probability to the mask token, i.e. 
+
+⟨xlθ (zt), m⟩ = 0 and carry-over unmasking , which states once a token is decoded, it will remain the same throughout the generation process, meaning if zlt̸ = m then ⟨xlθ (zt), zlt⟩ = 1 . Equipped with this, we can formulate the reverse generation step as: 
+
+pθ (zls|zt) = q(zls | zlt, xlθ (zt)) = 
+
+(Cat( zls; zlt), zlt̸ = m
+
+Cat 
+
+
+
+zls; αs−αt 
+
+> 1−αt
+
+xlθ (zt) + 1−αs 
+
+> 1−αt
+
+m
+
+
+
+, zlt = m. (25) The θ−parametrized model is trained on the NELBO objective. The loss for this process is formulated below: 
+
+LN ELBO (x, θ ) = EZ0∼q(·| x)
+
+h
+
+− log pθ (x|Z0)
+
+i
+
+(26) 
+
++
+
+> T
+
+X
+
+> i=1
+
+EZt(i)∼q(·| x)
+
+" αt(i) − αs(i)
+
+1 − αt(i)
+
+> L
+
+X
+
+> l=1
+
+log ⟨xlθ (Zt(i)), xl⟩
+
+#
+
+. (27) 
+
+ReMDM [Wang et al., 2025] identifies a limitation of standard absorbing-state diffusion: once a token is unmasked during inference, it cannot be changed again. Consequently, early decoding errors cannot be corrected. ReMDM introduces a remasking reverse process that assigns nonzero probability to returning an already decoded token to the mask state, enabling iterative error correction during generation. The ReMDM posterior is defined as 
+
+qσ (zls | zlt, xl) = 
+
+
+
+Cat  zls; (1 − σt)xl + σtm , zlt̸ = m,
+
+Cat 
+
+
+
+zls; αs−(1 −σt)αt 
+
+> 1−αt
+
+xl + 1−αs−σtαt 
+
+> 1−αt
+
+m
+
+
+
+, zlt = m, (28) where σt controls the probability of remasking an already decoded token. Setting σt = 0 recovers the standard masked diffusion posterior. At inference time, the clean token xl is unknown and is replaced with the denoiser prediction xlθ (zt). The learned reverse transition is therefore parameterized as 
+
+pθ (zls | zt) = qσ
+
+ zls | zlt, xlθ (zt) , (29) or explicitly, 
+
+pθ (zls | zt) = 
+
+
+
+Cat  zls; (1 − σt)xlθ (zt) + σtm , zlt̸ = m,
+
+Cat 
+
+
+
+zls; αs−(1 −σt)αt 
+
+> 1−αt
+
+xlθ (zt) + 1−αs−σtαt 
+
+> 1−αt
+
+m
+
+
+
+, zlt = m. (30) 15 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+With this parameterization, ReMDM minimizes the negative evidence lower bound 
+
+LReMDM (x; θ) = Ez0∼q(·| x) [− log pθ (x | z0)] + Et∼{ 1/T,..., 1}Ezt∼q(zt|x)
+
+
+
+T (1 − σt)αt − αs
+
+1 − αt
+
+log ⟨xθ (zt), x⟩
+
+
+
+. (31) 
+
+B.1.2 Uniform-State Diffusion Models 
+
+Alternative to MDM, USDMs set the prior to uniform noise, i.e. π = u := 1 
+
+> K
+
+1. Here K is the vocabulary size. Its reverse posterior therefore becomes: 
+
+q(zℓs | zℓt , xℓ) = Cat 
+
+
+
+zℓs; Kα tzℓt ⊙ xℓ + ( αt|s − αt)zℓt + ( αs − αt)xℓ + (αs−αt)(1 −αs) 
+
+> Kα s
+
+1
+
+Kα t⟨zℓt , xℓ⟩ + 1 − αt
+
+
+
+(32) The denoising processes uses pθ (zls|zt) = q(zls|zlt, xlθ (zt)) , with which we get the following parametrization: 
+
+pθ (zℓs | zt) = Cat 
+
+
+
+zℓs; Kα tzℓt ⊙ xℓθ + ( αt|s − αt)zℓt + ( αs − αt)xℓθ + (αs−αt)(1 −αs) 
+
+> Kα s
+
+1
+
+Kα t⟨zℓt , xℓθ ⟩ + 1 − αt
+
+
+
+(33) where xlθ = xℓθ (zt, t ). Following Schiff et al. [2025], this objective admits a tighter continuous-time formulation as 
+
+T → ∞ . For a uniform limiting distribution and a noise schedule satisfying α0 = 1 and α1 = 0 , the reconstruction and prior terms vanish, leaving only the diffusion loss. For each token position l, define 
+
+¯xlt = Kα txl + (1 − αt)1, (34) 
+
+¯xlθ,t = Kα txlθ (zt, t ) + (1 − αt)1, (35) and let il = arg max  
+
+> j∈[K]
+
+zlt[j] (36) denote the index of the observed token at position l in zt. The continuous-time USDM NELBO is then 
+
+L∞
+
+> USDM
+
+(x, θ ) = 
+
+Z 10
+
+Ezt∼q(·| x)
+
+> L
+
+X
+
+> l=1
+
+α′
+
+> t
+
+Kα t
+
+"
+
+K
+
+¯xlt[il] − K
+
+¯xlθ,t [il]
+
+− X
+
+> j∈[K]
+> zlt[j]=0
+
+¯xlt[j]¯xlt[il] log ¯xlθ,t [il] ¯ xlt[j]¯xlθ,t [j] ¯ xlt[il]
+
+! # 
+
+dt. (37) 
+
+B.2 Anchored Diffusion Language Models 
+
+MDMs have their own limitations, we do not have control over which tokens will be unmasked during the generation step and hence, its possible that the important tokens may be unmasked very late in the generation step, thereby hurting the sample quality. Here, the important tokens are those, with the help of which the model can learn to produce higher quality text. Hence, in order to deal with this, Rout et al. [2025] introduced a two stage method, known as the Anchored Diffusion Language Models (ADLM). The core intuition of ADLM is that in the presence of the important tokens which we will call the anchor tokens , the denoiser can generate higher quality text. ADLM is decomposed into two stage network, the first stage is the anchor network , which produces soft context logits. Conditioned on these, the denoiser network outputs the final clean token sequence. Therefore the output prediction is now a composition of two network: 
+
+xθ (zt) = xθD
+
+ yθA (zt), (38) Here the θ parametrized model is split into two models θ = [ θA, θ D ], corresponding to the anchor and the denoiser networks respectively. Both of them output probability distribution on the vocabulary space V.
+
+Reverse inference posterior for the main process. Following Rout et al. [2025], the reverse transition uses the clean-token prediction xlθ (zt):
+
+pθ (zls | zt) = 
+
+
+
+Cat  zls; (1 − σt)zlt + σtm , zlt̸ = m,
+
+Cat 
+
+
+
+zls; αs − (1 − σt)αt
+
+1 − αt
+
+xlθ (zt) + 1 − αs − αtσt
+
+1 − αt
+
+m
+
+
+
+, zlt = m. (39) Here t = t(i), s = s(i), and σt denotes the remasking probability. An unmasked token is carried over with probability 
+
+1 − σt and remasked with probability σt. At a masked position, the model uses the anchor-conditioned denoiser prediction. Setting σt = 0 recovers the absorbing-state reverse transition. 16 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Reverse inference posterior for the anchor transition. Let y = A(x) denote the clean anchor-token sequence. The learned anchor transition is 
+
+rθA
+
+
+
+yls | zt, yAθA (zt)
+
+
+
+=
+
+
+
+Cat  yls; (1 − σt)yl + σtm , zlt̸ = m,
+
+Cat 
+
+
+
+yls; αs − (1 − σt)αt
+
+1 − αt
+
+ylAθA
+
+(zt) + 1 − αs − αtσt
+
+1 − αt
+
+m
+
+
+
+, zlt = m. (40) For an unmasked supervised anchor position, the anchor token is known from the observed token and is carried over. At a masked position, the anchor network predicts its distribution. The corresponding target transition uses the clean anchor token: 
+
+r(yls | zlt, yl) = 
+
+
+
+Cat  yls; (1 − σt)yl + σtm , zlt̸ = m,
+
+Cat 
+
+
+
+yls; αs − (1 − σt)αt
+
+1 − αt
+
+yl + 1 − αs − αtσt
+
+1 − αt
+
+m
+
+
+
+, zlt = m. (41) The sequence-level transitions factorize over token positions: 
+
+r(ys | zt, y) = 
+
+> L
+
+Y
+
+> l=1
+
+r(yls | zlt, yl),rθA
+
+
+
+ys | zt, yAθA (zt)
+
+
+
+=
+
+> L
+
+Y
+
+> l=1
+
+rθA
+
+
+
+yls | zt, yAθA (zt)
+
+
+
+.
+
+(42) 
+
+Anchor loss. ADLM aligns the learned anchor transition with the target transition using the expected sequence-level KL divergence: 
+
+LAnchor (x; θ) = 
+
+> T
+
+X
+
+> i=1
+
+Eq(z0:1 |x)
+
+"
+
+DKL 
+
+
+
+r ys(i) | zt(i), y
+
+∥ rθA
+
+
+
+ys(i) | zt(i), yAθA (zt(i))
+
+ #
+
+.
+
+(43) The KL divergence is over the full anchor sequence. Under Eq. 42, it equals the sum of the tokenwise KL divergences. The target and learned transitions coincide at unmasked positions, yielding zero KL contribution. Anchor supervision is restricted to the selected important-token positions in practice. Our cached anchor loss in Eq. 20 evaluates these transitions at (s′(i), t ′(i)) , where s′(i) = t′(i) − 1/T . ADLM corresponds to the fresh-anchor case t′(i) = t(i). The training objective for this model is: 
+
+LANELBO (x; θA, θ D ) := EZ0∼q(·| x) [− log pθD (x|yθA (Z0))] (44) 
+
++
+
+> T
+
+X
+
+> i=1
+
+EZt(i)∼q(·| x)
+
+" αt(i) − αs(i)
+
+1 − αt(i)
+
+> L
+
+X
+
+> l=1
+
+ log ⟨xlθD (yθA (Zt(i))) , xl⟩ + γ log ⟨ylθA (Zt(i)), yl⟩#
+
+, (45) Here γ is an hyperparameter which controls the anchor supervision factor. The network is trained on the standard NELBO according to 4 in addition to an extra loss which is coined as the anchor loss to train the anchor network produce better anchor tokens. 
+
+Anchoring and Conditional Uncertainty. The motivation behind anchoring is that not all tokens provide equal information for reconstructing a sequence. Let XA denote a subset of anchor tokens and X ¯A denote the remaining tokens. Given an anchor budget d, an ideal set of anchors can be viewed as one that minimizes the uncertainty of the remaining sequence, 
+
+A⋆ ∈ arg min  
+
+> A⊆[L],|A|≤ d
+
+H(X ¯A | XA) . (46) Hence, revealing or accurately predicting XA makes the remaining variables easier to estimate. ADLM realizes this principle by training the anchor network to predict informative tokens early and allowing the denoiser to condition on these predictions. This reduction in conditional uncertainty also motivates the statistical benefit of anchoring. Under the graphical-model analysis of Rout et al. [2025], suppose each token is categorical and each masked token depends on an anchor set of 17 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+bounded size |πl| ≤ d, with d ≪ L. A standard diffusion model may condition a token on the remaining sequence, requiring O(V L) parameters per conditional in the corresponding tabular model and a total sample complexity of 
+
+O(LV L). Conditioning instead on a bounded set of anchors reduces the per-token complexity to O(V d+1 ), yielding 
+
+O(LV L) −→ O(LV d+1 ). (47) Thus, when a small set of informative anchors captures the relevant dependencies of the sequence, anchoring reduces the effective conditioning dimension and can substantially reduce the samples required to learn the corresponding conditional distributions. 
+
+## C Experimental Setup 
+
+In this section, we report the experimental setup used for TADM:Post-train and TADM:Pretraining along with their hyperparameters. 
+
+C.1 TADM:Post-train 
+
+We used the DiffusionGemma [Team et al., 2026], a 26B MoE Uniform-State Block Diffusion Language Model as the base model to demonstrate the capability of our framework. 
+
+Architecture Details. Diffusion Gemma consists of 30 text layers, along with an embedding and output head. It also has a vision backbone which is frozen throughout the experiment. The model acts as an encoder and decoder, with most of the weights shared between them. The encoder stage prefills the context using causal attention. It first runs on the prompt and builds the KV cache, which acts as a context during the denoising process. The decoder iteratively denoises the canvas and uses bidirectional attention and once finalized is appended into the context by the encoder. For our experiment, we split the base model into three components and introduce a fusion module. • Shared Network. It consists of the embedding and the first two text layer. This network is computed every step producing the current state ct. Its purpose is to introduce an alignment of the latent space of the current state features with the anchor cache. • Anchor Network. This is the next 20 text layers. It is the expensive network which contains the deep latent representations which will be stored as the anchor cache h′
+
+> t
+
+.• Fusion Module. The post-training fusion module uses paired attention . In addition to the cached deep anchor H0,we retain the shallow representation C0 computed at the same anchor-refresh step. This cached shallow state is an implementation detail omitted from the general formulation in Sec. 3; it provides a reference for the change in the current canvas and ensures that the fusion correction vanishes exactly when the current and cached shallow states coincide. For a sequence of length L, let C, C0, H0 ∈ RL×d denote the current shallow representation, cached shallow representation, and cached deep anchor, respectively. We first compute tokenwise RMS scales 
+
+sC,i =
+
+vuut 1
+
+d
+
+> d
+
+X
+
+> j=1
+
+C20,ij + ϵ, sH,i =
+
+vuut 1
+
+d
+
+> d
+
+X
+
+> j=1
+
+H20,ij + ϵ, (48) with ϵ = 10 −6, and project to rank r:
+
+Z = ( C/sC )WC , Z0 = ( C0/sC )WC , U = ( H0/sH )WH . (49) Both shallow branches use the cached-state scale sC and the same projection WC .We define a shared mixer ϕ by first concatenating the shallow and anchor features, 
+
+J = [ Z, U], Q = JWQ, K = JWK , V = JWV , (50) and applying multi-head self-attention followed by a residual FFN: 
+
+R = Z + MHA( Q, K, V)WO , ϕ(Z, U) = R + SiLU( RW1)W2. (51) The attention is bidirectional over the current canvas; in our experiments r = 256 with four heads, and the FFN expands r → 2r → r.The paired-attention correction is the difference between two evaluations of the same mixer under identical anchor context: 
+
+Mt,t ′ = ϕ(Z, U) − ϕ(Z0, U) . (52) 18 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Algorithm 1: Anchor-Cache Inference 
+
+Input: Initial noisy state zT ; number of reverse steps T ; anchor refresh interval K; shared network SθS ; anchor network AθA ; denoiser DθD ; fusion module Φϕ; diffusion sampler P
+
+Output: Generated sequence z0 
+
+> 1
+
+hcache ← ∅; 
+
+> 2
+
+j ← ∅; 
+
+> 3
+
+for i ← T to 1 do  
+
+> 4
+
+ci ← SθS (zi); 
+
+> 5
+
+if (T − i) mod K = 0 then  
+
+> 6
+
+hcache ← AθA (ci); 
+
+> 7
+
+j ← i; 
+
+> 8
+
+end  
+
+> 9
+
+ehi ← Φϕ
+
+ ci, hcache ; 
+
+> 10
+
+bxi ← DθD
+
+ehi
+
+
+
+; 
+
+> 11
+
+zi−1 ∼ P (zi, bxi, i ); 
+
+> 12
+
+end  
+
+> 13
+
+return z0;We then form 
+
+F = [ U; Z0; Z − Z0; Mt,t ′ ], g = σ(SiLU( FWg1)Wg2 + bg ) , (53) where g ∈ RL×1 is a scalar gate for each token. The fused deep representation is 
+
+eHt|t′ = H0 + g ⊙ sH ⊙ (Mt,t ′ Wup ) . (54) Importantly, when C = C0, the shared normalization and projection imply Z = Z0. Because both branches use the same mixer parameters and the same anchor context U,
+
+C = C0 =⇒ ϕ(Z, U) = ϕ(Z0, U) = ⇒ Mt,t ′ = 0, (55) and therefore eHt|t′ = H0. (56) Thus, at a fresh anchor the fusion module exactly preserves the cached deep representation, while for stale anchors it learns the change induced by the evolving current canvas. • Denoiser Network. This is the final 8 text layers and the output head of Diffusion Gemma. It takes in the fused output eht|t′ and then predicts the output distribution of the tokens. The post training method does not have γ supervision as attaching a LM-Head to the output of anchor network requires expensive training. 
+
+Sampler Details. We use Algorithm 1 together with the official DiffusionGemma entropy-bound sampler, summarized in Algorithm 2. At each denoising step, the sampler ranks token positions by predictive entropy, accepts the most confident positions subject to the entropy bound, and re-noises the remaining positions for further refinement. The sampler configuration is: • Entropy bound: η = 0 .1.• Temperature schedule: annealed from 0.8 to 0.4.• Maximum denoising steps: 48. • Canvas block size: 256 tokens. • Anchor refresh interval: K ∈ { 1, 2, 3}, where K = 1 refreshes the anchor at every reverse step. • Self-conditioning: enabled between reverse steps. • Adaptive early stopping: disabled in our experiments. • Evaluation mode: all benchmark evaluations use DiffusionGemma’s no-think mode. Although the released DiffusionGemma sampler supports adaptive early stopping, we disable it in all evaluations. DiffusionGemma reports using sampler distillation with reinforcement learning (SD-RL) to compress the denoising trajectory, this greatly helps in the adaptive stopping aspect of the sampler, whereas our objective is complementary: 19 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Algorithm 2: DiffusionGemma Entropy-Bound Sampling 
+
+Input: Initial canvas zT ; maximum denoising steps T ; entropy bound η; temperature limits τmax , τ min ;embedding matrix E
+
+Output: Final denoised canvas bx 
+
+> 1
+
+s ← 0 ; // initial self-conditioning signal  
+
+> 2
+
+for n ← T to 1 do  
+
+> 3
+
+Ln ← Decoder( zn, s); 
+
+> 4
+
+τn ← τmin + ( τmax − τmin ) nT ; 
+
+> 5
+
+pln ← softmax( Lln/τ n) for each position l; 
+
+> 6
+
+bxln ← arg max v∈V pln(v); 
+
+> 7
+
+Hl ← − P 
+
+> v∈V
+
+pln(v) log pln(v); 
+
+> 8
+
+s ← pnE ; // self-conditioning for next step  
+
+> 9
+
+if n > 1 then  
+
+> 10
+
+exln ∼ Cat( pln); 
+
+> 11
+
+π ← argsort( H) ; // ascending entropy  
+
+> 12
+
+Cm ← Pmr=1 Hπr , Mm ← max 1≤r≤m Hπr ; 
+
+> 13
+
+A ← { πm : Cm − Mm ≤ η}; 
+
+> 14
+
+for l ← 1 to L do  
+
+> 15
+
+if l ∈ A then  
+
+> 16
+
+zln−1 ← exln; 
+
+> 17
+
+else  
+
+> 18
+
+zln−1 ∼ Unif( V); 
+
+> 19
+
+end  
+
+> 20
+
+end  
+
+> 21
+
+end  
+
+> 22
+
+end  
+
+> 23
+
+bx ← (bx11, . . . , bxL 
+
+> 1
+
+) ; // final argmax canvas  
+
+> 24
+
+return bx;we study whether the cost of a fixed-step diffusion sampler can be reduced by reusing stale latent representations. We therefore evaluate both DiffusionGemma and TADM:Post-train with adaptive stopping disabled and a fixed denoising-step budget, isolating the speedup attributable to latent-cache reuse. 
+
+Training Details. We train only the fusion module while keeping the pretrained model frozen. For the fusion module we use the low rank space r = 256. The gate bias is initialized to -3, but the up projection is 0 initialized so that at the start of training, we get the unchanged anchor output. Overall we train approximately 3.1M fusion parameters. 
+
+SFT Data. We post-train on a 300K-example no-think mixture constructed from UltraData-SFT-2605 [OpenBMB, 2026] and Nemotron-Post-Training-Dataset-v2 [Nathawani et al., 2025]. The mixture contains 100K math, 100K code, 50K knowledge, 25K instruction-following, and 25K STEM examples. We retain only samples marked as no-think or reasoning-off in their source datasets. Each example is converted into eight diffusion canvases during preprocessing. The training configuration is: • Training strategy: Fusion training, DDP • Rollout cache age: k ∈ { 0, 1, 2} with sampling probabilities (0 .34 , 0.33 , 0.33) and equal loss weights. • Model split: 2 shared layers, 20 anchor layers, and 8 denoiser layers. • Max response tokens: 2048 • Max Prompt length: 2048 • Loss weights: cache/decoder loss 1.0, and KD loss 1.0 with teacher temperature 1.0.• Teacher: frozen pretrained DiffusionGemma. • Self-conditioning: probability 0.5.• Time sampling: antithetic time sampling enabled. • Gradient flow: gradients from the denoiser to the encoder pathway are retained. • Optimization steps: 18,750. • Batching: per-device batch size 1 with gradient accumulation over 4 steps. 20 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+• Optimizer: AdamW with learning rate 1.5 × 10 −4, β = (0 .95 , 0.99) , ϵ = 10 −8, and weight decay 10 −4.• Learning-rate schedule: cosine decay with 100 warmup steps and minimum learning-rate ratio 0.1.• Precision: BF16 mixed precision. • Gradient clipping: maximum norm 1.0.• Training seed: 42 .
+
+Hardware. Training was performed with distributed data parallelism (DDP) on four GB200 nodes, each with 189 GB of GPU memory. Evaluation was performed on a single GH200 node with 96 GB of GPU memory. 
+
+Benchmark Details. We evaluate TADM:Post-train on six reasoning, knowledge, and coding benchmarks using the same decoding configuration for DiffusionGemma and TADM. Since the post-training data contains no explicit reasoning traces, all evaluations are performed in the model’s no-think mode. We report mean accuracy and generation throughput over three random seeds. • GSM8K [Cobbe et al., 2021]: grade-school mathematical reasoning; 5-shot prompting; maximum generation length 1,024 tokens; final-answer exact-match accuracy. • HumanEval [Chen et al., 2021]: functional Python code generation from natural-language specifications; 0-shot prompting; maximum generation length 1,024 tokens; execution-based pass@1. • GPQA-Diamond [Rein et al., 2024]: expert-level multiple-choice questions in biology, physics, and chemistry; 0-shot prompting; maximum generation length 2,048 tokens; multiple-choice accuracy. • MMLU-Pro [Wang et al., 2024]: challenging multiple-choice knowledge and reasoning benchmark with up to ten answer choices; 5-shot prompting; maximum generation length 2,048 tokens; multiple-choice accuracy. • AIME26 [Dekoninck et al., 2026]: 30 problems from the 2026 American Invitational Mathematics Examination; 0-shot prompting; maximum generation length 4,096 tokens; final-answer exact-match accuracy. • LiveCodeBench-v6 [Jain et al., 2024]: recent competitive-programming problems evaluated with execution-based correctness tests; 0-shot prompting; maximum generation length 2,000 tokens; pass@1. For throughput, we measure the number of generated tokens divided by end-to-end generation time under the same hardware and decoding configuration. DiffusionGemma evaluates all 30 text layers at every reverse step. TADM:Post-train uses a 2/20 /8 shared/anchor/denoiser split with refresh interval K = 2 , so the 20-layer anchor network is evaluated once every two reverse steps while the shared and denoiser networks are evaluated at every step. This corresponds to 0.67 × the Transformer-layer evaluations of the baseline, or a 33 .3% reduction. The thing to note is that for the post-training experiment, we only train the fusion module which is very tiny in comparison to the entire network and we are able to achieve largely preserved task accuracy along with speedups at fixed denoising budget. Thus, demonstrating that we only require a small standalone module to achieve a modest speedup during inference. 
+
+C.2 TADM:Pretrain Architecture Details. TADM:Pretraining builds on the two-stage ADLM architecture [Rout et al., 2025], replacing explicit anchor-token conditioning with the time-anchored latent-cache formulation described in Sec. 3. We use Diffusion Transformer (DiT) blocks for both the anchor and denoising networks. Following the ADLM small-model configuration, each Transformer operates at hidden dimension d = 768 with 12 attention heads and a maximum sequence length of 1,024. We use the GPT-2 tokenizer with vocabulary size V = 50 ,257 .The model is decomposed as follows: • Shared network: the token embedding layer, evaluated for both the current state zt and stale anchor state zt′ . The embedding parameters are shared by the anchor and denoising pathways. • Anchor network: 12 DiT blocks which transform S(zt′ ) into the cached deep representation ht′ .• Denoiser network: 6 DiT blocks which consume the fused representation and predict the clean-token distribution. • Fusion module: a gated residual MLP that combines the shallow current representation ct = S(zt) with the stale anchor ht′ . No explicit time conditioning is used in the fusion module. Specifically, defining 
+
+st = LN( ct), at′ = LN( ht′ ), ut,t ′ = [ st; at′ ],
+
+21 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+the fusion module computes 
+
+gt,t ′ = σ(Wg ut,t ′ + bg ) , (57) 
+
+∆t,t ′ = W2 GELU ( W1ut,t ′ + b1) + b2, (58) 
+
+eht|t′ = LN( ht′ + gt,t ′ ⊙ ∆t,t ′ ) , (59) where W1 : R2d → R4d, W2 : R4d → Rd, and gt,t ′ ∈ [0 , 1] d is a per-token, per-hidden-dimension gate. The final update projection W2 and bias b2 are initialized to zero, so the fusion module initially uses stale anchor as the primary input to the denoiser without any added correction. Adding the output layer norm is an implementation choice. 
+
+Dataset. We pretrain TADM on OpenWebText (OWT) [Gokaslan and Cohen, 2019], using the same 1,024-token se-quence length and GPT-2 tokenization setup as ADLM. Training is performed for 1M optimization steps, corresponding to the same training-step budget used for the 1M-step ADLM comparison. 
+
+Training Details. We train the full TADM:Pretraining model from scratch using absorbing-state masked diffusion with a log-linear noise schedule. The current diffusion time t is sampled continuously, while the stale anchor time t′
+
+is constructed by sampling a discrete cache age aligned with the reverse sampling budgets used at inference. Time conditioning is disabled. We set σt = 0 , the remasking probability in the reverse posterior during training. Hence, the forward corruption from zt to zt′ is valid. Experimentally, we sample t continuously as t ∼ U (ϵ, 1) . We independently sample an anchor refresh interval K ∈ { 1, 2, 4, 8} and a sampling-step budget T ∈ { 128 , 256 , 512 , 1024 , 2048 , 4096 }.Conditioned on K, the cache age is sampled as k ∼ U{ 0, . . . , K − 1}, and t′ = min  1, t + kT
+
+. Thus t is continuous, while the offset between t and t′ is aligned with the discrete cache ages encountered at inference time. The training configuration is: • Optimization steps: 1,000,000. • Global batch size: 512. • Sequence length: 1,024 tokens. • Hardware: 32 NVIDIA GH200 GPUs using DDP. • Precision: BF16. • Optimizer: AdamW with learning rate 3 × 10 −4, β1 = 0 .9, β2 = 0 .999 , ϵ = 10 −8, and zero weight decay. • Gradient clipping: maximum norm 1.0.• EMA: 0.9999 .• Noise schedule: log-linear absorbing-state diffusion. • Time conditioning: disabled. • Time sampling: continuous t with antithetic sampling. • Sampling-step budgets used to construct cache ages: T ∈ { 128 , 256 , 512 , 1024 , 2048 , 4096 }.• Anchor refresh intervals during training: sampled across multiple cache ages so that the model observes both fresh and stale anchors. 
+
+Sampler Details. We use the ReMDM remasking sampler [Wang et al., 2025], following the released ReMDM sampling configuration, along with the anchor cache inference (Alg 1). Although, we set σt = 0 during training, we still use remasking samplers as its already established in ReMDM [Wang et al., 2025] that the same weights can be used for remasking samplers as well. Let L = 1024 denote the generation length. For sampling budgets T < L , we use the ReMDM-Cap sampler, whereas for T ≥ L we use ReMDM-Loop. We evaluate T ∈ { 128 , 256 , 512 , 1024 , 2048 , 4096 }
+
+and vary the anchor refresh interval K to control the amount of latent-cache reuse. The sampling configuration is: • Generation length: L = 1024 tokens. • Sampling budgets: T ∈ { 128 , 256 , 512 , 1024 , 2048 , 4096 }.• Timestep schedule: linear. • Nucleus sampling: p = 0 .9.• ReMDM-Loop ( T ≥ 1024 ): η = 0 .02 , ton = 0 .55 , toff = 0 .05 , and αon = 0 .9.• ReMDM-Cap ( T < 1024 ): η = 0 .04 , with the remaining remasking parameters unchanged. • Anchor refresh intervals: K ∈ { 1, 2, 4, 8} for the reported refresh-interval sweep, where K = 1 recomputes the anchor at every reverse step. 22 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+• Batch Size: 1
+
+Hardware. Training was performed with distributed data parallelism (DDP) on 32 GH200 nodes, each with 96 GB of GPU memory. Evaluation was performed on a single GH200 node with 96 GB of GPU memory. 
+
+Evaluation. We evaluate unconditional 1,024-token generation on OpenWebText over multiple reverse-step budgets and anchor refresh intervals. For each configuration, we generate 5,000 samples and evaluate generation quality using MAUVE, generative perplexity (Gen PPL), and token entropy. Gen PPL and MAUVE use GPT-2 Large as the reference evaluator. We additionally report Transformer-layer evaluations and measured generation throughput to quantify the quality–compute trade-off induced by latent-cache reuse. • Generation setting: unconditional generation. • Generated sequence length: 1,024 tokens. • Quality evaluation: 5,000 generated samples per configuration. • Metrics: MAUVE, Gen PPL, entropy, Transformer-layer compute, and tokens/s. • Gen PPL/MAUVE evaluator: GPT-2 Large. • Sampling budgets: T ∈ { 128 , 256 , 512 , 1024 , 2048 , 4096 }.• Cache sweep: K ∈ { 1, 2, 4, 8}.
+
+Token Budget: We train our diffusion language model upto 1M steps and therefore as per the token budget calculation for a standard masked Diffusion Language model as stated by MDLM [Sahoo et al., 2024], the token budget is 0.5 * 1M * 1024 * 512 = 262B tokens. 
+
+## D Additional Experiments 
+
+We provide additional experiments examining four aspects of time-based anchoring: (i) zero-shot likelihood generaliza-tion of the pretrained models, (ii) the effect of anchor refresh interval on the quality–throughput trade-off, (iii) whether an ADLM trained without temporal reuse can tolerate stale anchors, and (iv) the corresponding quality–compute trade-off for TADM:Post-train. We additionally provide qualitative generations illustrating model behavior at different cache ages. 
+
+Zero-Shot Likelihood Evaluation. Table 3 evaluates the zero-shot likelihood generalization of TADM:Pretraining on datasets that are unseen during training. Although TADM is slightly behind ADLM on several benchmarks, its perplexity remains competitive with MDLM and the other diffusion baselines across domains. In particular, TADM matches or improves upon MDLM on several datasets, including Lambada, LM1B, AG News, PubMed, and ArXiv, while remaining comparable on Wikitext and PTB. These results indicate that training the model to operate with temporally stale latent representations does not restrict the learned representation to the OpenWebText training distribution or to a particular sampling trajectory. Instead, the latent structure learned under temporal reuse continues to support likelihood modeling on unseen text domains. This suggests that the cacheable representations learned by TADM capture features that generalize across datasets, rather than merely memorizing dataset-specific correlations required for stale-anchor reuse. 
+
+Effect of Anchor Refresh Interval. Table 4 isolates the effect of cache staleness by sweeping K ∈ { 1, 2, 4, 8} while holding the sampling budget T fixed. Increasing K monotonically improves throughput because the 12-layer anchor network is evaluated less frequently. At small sampling budgets ( T = 128 and T = 256 ), this comes with a noticeable degradation in generation quality, reflected by lower MAUVE and higher Gen PPL. In contrast, at larger T , Gen PPL remains nearly unchanged across cache ages, indicating substantially greater tolerance to stale anchors. For example, at T = 2048 , TADM:Pretraining † changes only from Gen PPL 21 .49 at K = 1 to 22 .34 at K = 8 , while throughput increases from 26 .59 to 41 .19 Tok/s. At T = 4096 , Gen PPL remains between 17 .21 and 17 .36 across the full sweep. The two TADM variants exhibit very similar trends across cache ages. Thus, the ability to reuse stale latent representa-tions is primarily learned through the temporal denoising objective itself, while the optional anchor supervision has only a modest effect on generation quality in this ablation. 
+
+Stale-anchor reuse in ADLM. Table 5 compares stale-anchor reuse in ADLM against TADM:Pretraining, with each configuration averaged over 20 generations to provide a direct diagnostic of generation quality and throughput as the anchor refresh interval K increases. ADLM is trained only with fresh anchors and therefore tests whether latent representations can be reused without explicitly learning temporal reuse. As K increases, ADLM degrades rapidly, whereas TADM remains substantially more stable. For example, at T = 1024 , increasing K from 1 to 8 raises ADLM 23 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Table 3: Zero-shot validation perplexities ( ↓) on OWT-trained models with 1,024 NFEs. TADM:Pretraining † is the 
+
+γ = 0 variant and TADM:Pretraining ‡ is γ = 3 e − 3.
+
+Model Lambada PTB Wikitext LM1B AG News PubMed ArXiv AR 51.28 82.05 25.75 51.25 52.09 49.01 41.73 
+
+AR+Diffusion 
+
+BD3-LM ( L′ = 4 ) 50.03 96.81 31.31 60.88 61.67 42.52 39.20 
+
+Diffusion 
+
+SEDD 49.86 100.09 34.28 68.20 62.09 44.53 38.38 MDLM 47.52 95.26 32.83 67.01 61.15 41.89 37.37 ADLM (262B) 44.93 98.16 32.45 65.59 57.10 38.29 35.08 ADLM (524B) 44.32 95.37 31.94 64.43 55.72 37.56 33.69 
+
+TADM:Pretraining † (262B) 46.04 106.47 35.03 65.37 59.90 40.08 35.08 TADM:Pretraining ‡ (262B) 45.48 100.92 33.77 64.27 59.09 40.32 35.48 
+
+Gen PPL from 25 .97 to 144 .97 , while TADM:Pretraining † changes only from 23 .18 to 30 .52 and increases throughput from 47 .02 to 74 .54 Tok/s. This comparison also clarifies the complementary roles of stale-anchor training and fusion. Stale-anchor training exposes the model to the temporal mismatch created by reusing an anchor from an earlier diffusion state; without it, as illustrated by ADLM, increasing anchor age rapidly degrades generation. The fusion module addresses the complementary problem: the stale anchor does not contain the latest information in the evolving canvas, so fusion incorporates the current-state representation before denoising. Thus, stale-anchor training teaches the model to operate under temporal reuse, while fusion provides the mechanism for correcting the cached representation using current information. Without stale-anchor training the model is not optimized for reuse, while without fusion the current canvas cannot effectively update the stale anchor. Together, these components enable stable latent-cache reuse across multiple reverse steps. 
+
+Stale-anchor reuse in DiffusionGemma. Table 6 compares naive stale-anchor reuse in DiffusionGemma with TADM:Post-train. For the baseline, we follow Algorithm 1 but disable fusion, so that the denoiser directly receives the stale anchor representation for the next K steps. Corruption is measured using Qwen3-30B-A3B-Instruct-2507 [Team, 2025] as a judge for incoherence or repetition, with results averaged over seeds {0, 1, 2}. On relatively easier benchmarks such as GSM8K and HumanEval, both accuracy and corruption remain largely stable under increasing reuse. In contrast, the harder reasoning and coding benchmarks are substantially more sensitive to stale representations: at K = 3 , naive reuse increases corruption to 37 .78% on AIME26, 14 .81% on GPQA-Diamond, and 32 .00% on LiveCodeBench-v6, while also reducing task accuracy. TADM:Post-train substantially mitigates this degradation, reducing the corresponding corruption rates to 20 .00% , 4.71% , and 21 .71% while preserving substantially more of the original task performance. Nevertheless, corruption at K = 3 remains higher than the fresh-anchor baseline on some difficult tasks, exposing a limitation of increasingly stale reuse. Overall, these results show that naively caching deep representations is insufficient for challenging generation tasks and support our combined use of stale-anchor training and current-state fusion to make temporal latent reuse more robust. 24 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Table 4: Ablation over the anchor refresh interval K for the 1M-step TADM:Pretraining † checkpoint and the xt′ -masked TADM:Pretraining ‡ checkpoint. Quality metrics use 5,000 OWT samples per setting, while throughput is measured over 20 samples of length 1,024. Increasing K reuses the cached anchor for more reverse steps.     
+
+> T= 128 and T= 256
+
+Method ( K) T = 128 T = 256 
+
+MAUVE ↑ Gen PPL ↓ Entropy ↑ Tok/s ↑ MAUVE ↑ Gen PPL ↓ Entropy ↑ Tok/s ↑
+
+TADM:Pretraining † (K = 1 ) 0.135 38.36 5.425 347.69 0.304 28.10 5.334 175.25 TADM:Pretraining † (K = 2 ) 0.084 41.56 5.433 445.23 0.239 29.86 5.339 222.28 TADM:Pretraining † (K = 4 ) 0.040 47.12 5.447 512.49 0.132 32.53 5.348 257.61 TADM:Pretraining † (K = 8 ) 0.016 58.33 5.465 554.59 0.052 38.22 5.364 279.42 TADM:Pretraining ‡ (K = 1 ) 0.108 39.75 5.432 348.58 0.341 29.06 5.347 176.12 TADM:Pretraining ‡ (K = 2 ) 0.070 43.06 5.433 447.20 0.220 30.59 5.337 223.68 TADM:Pretraining ‡ (K = 4 ) 0.043 48.29 5.437 515.46 0.160 33.25 5.344 258.88 TADM:Pretraining ‡ (K = 8 ) 0.017 58.48 5.451 560.19 0.084 37.70 5.338 280.44     
+
+> T= 512 and T= 1024
+
+Method ( K) T = 512 T = 1024 
+
+MAUVE ↑ Gen PPL ↓ Entropy ↑ Tok/s ↑ MAUVE ↑ Gen PPL ↓ Entropy ↑ Tok/s ↑
+
+TADM:Pretraining † (K = 1 ) 0.386 20.61 5.232 88.11 0.564 26.15 5.371 47.02 TADM:Pretraining † (K = 2 ) 0.339 21.38 5.230 111.95 0.570 26.49 5.373 58.68 TADM:Pretraining † (K = 4 ) 0.285 22.60 5.233 129.54 0.440 27.38 5.380 68.39 TADM:Pretraining † (K = 8 ) 0.181 24.79 5.230 140.60 0.405 28.65 5.383 74.54 TADM:Pretraining ‡ (K = 1 ) 0.450 20.91 5.240 88.10 0.596 26.57 5.379 46.82 TADM:Pretraining ‡ (K = 2 ) 0.363 21.74 5.233 111.50 0.546 26.82 5.373 58.39 TADM:Pretraining ‡ (K = 4 ) 0.292 22.66 5.218 129.19 0.510 27.35 5.359 67.95 TADM:Pretraining ‡ (K = 8 ) 0.225 24.17 5.183 140.35 0.441 28.41 5.344 74.34     
+
+> T= 2048 and T= 4096
+
+Method ( K) T = 2048 T = 4096 
+
+MAUVE ↑ Gen PPL ↓ Entropy ↑ Tok/s ↑ MAUVE ↑ Gen PPL ↓ Entropy ↑ Tok/s ↑
+
+TADM:Pretraining † (K = 1 ) 0.644 21.49 5.313 26.59 0.685 17.21 5.232 15.28 TADM:Pretraining † (K = 2 ) 0.626 21.56 5.315 32.29 0.659 17.28 5.237 18.32 TADM:Pretraining † (K = 4 ) 0.650 21.77 5.314 37.42 0.618 17.22 5.226 20.94 TADM:Pretraining † (K = 8 ) 0.557 22.34 5.310 41.19 0.602 17.36 5.214 22.99 TADM:Pretraining ‡ (K = 1 ) 0.669 21.58 5.319 26.45 0.689 17.29 5.233 15.22 TADM:Pretraining ‡ (K = 2 ) 0.637 21.73 5.309 32.23 0.696 17.26 5.231 18.28 TADM:Pretraining ‡ (K = 4 ) 0.646 21.70 5.293 37.35 0.637 17.19 5.221 20.94 TADM:Pretraining ‡ (K = 8 ) 0.535 22.27 5.287 41.18 0.639 17.21 5.203 23.03 
+
+D.1 Qualitative TADM:Post-train Generations 
+
+The following section shows 6 sample generations from TADM:Post-train on AIME 2026 and GPQA Diamond (3 each) for anchor refresh intervals K ∈ { 1, 2, 3}. Each benchmark uses the same prompt across the three anchor refresh intervals. Generation i — K = k means the ith generation uses K=k, it is for numbering purpose only. The first three generations 1-3 correspond to the AIME 2026 for anchor refresh K=1-3 respectively, whereas the last three generations, 4-6, are for GPQA-Diamond for anchor refresh K 1 − 3 respectively. 
+
+D.1.1 AIME-2026 Sample ID: 0 Reference answer: 277 
+
+Shared prompt 
+
+Solve the following problem. Put the final integer answer in . . . .Question: Patrick started walking at a constant rate along a straight road from school to the park. One hour after Patrick left, Tanya started running along the same road from school to the park. One hour after Tanya left, Jose started bicycling along the same road from school to the park. Tanya ran at a constant rate of 2 miles per hour faster than Patrick walked, Jose bicycled at a 
+
+25 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Table 5: Effect of stale-anchor reuse in ADLM and TADM:Pretraining. We compare anchor refresh intervals 
+
+K ∈ { 1, 2, 4, 8}, where K = 1 recomputes the anchor at every reverse step. We report throughput (Tok/s), generative perplexity (Gen PPL), and token entropy. 
+
+Method K T = 128 T = 256 T = 512 
+
+Tok/s ↑ Gen PPL ↓ Ent. Tok/s ↑ Gen PPL ↓ Ent. Tok/s ↑ Gen PPL ↓ Ent. ADLM 1 320.62 57.29 5.51 161.31 41.88 5.46 81.44 31.63 5.33 2 404.51 78.98 5.59 202.45 60.78 5.52 102.17 48.01 5.46 4 462.16 194.00 5.66 231.85 106.46 5.58 117.30 76.38 5.44 8 498.35 680.71 5.86 250.77 245.08 5.65 126.79 150.22 5.47 TADM †
+
+1 347.69 42.25 5.448 175.25 27.97 5.347 88.11 20.46 5.252 2 445.23 42.12 5.425 222.28 30.83 5.385 111.95 21.47 5.275 4 512.49 46.57 5.463 257.61 33.44 5.375 129.54 20.74 5.155 8 554.59 50.00 5.424 279.42 40.55 5.364 140.60 27.05 5.263 TADM ‡
+
+1 348.58 40.74 5.448 176.12 28.81 5.348 88.10 20.59 5.247 2 447.20 40.42 5.414 223.68 29.94 5.329 111.50 24.89 5.291 4 515.46 53.31 5.448 258.88 35.14 5.370 129.19 21.76 5.213 8 560.19 49.04 5.414 280.44 45.09 5.397 140.35 26.37 5.249 Method K T = 1024 T = 2048 T = 4096 
+
+Tok/s ↑ Gen PPL ↓ Ent. Tok/s ↑ Gen PPL ↓ Ent. Tok/s ↑ Gen PPL ↓ Ent. ADLM 1 43.19 25.97 5.25 24.32 17.82 5.11 14.01 13.54 5.15 2 53.25 38.08 5.37 29.36 32.71 5.24 16.70 26.03 4.98 4 61.43 70.99 5.31 33.75 60.95 5.13 18.92 40.08 4.73 8 66.59 144.97 5.29 36.78 111.56 5.09 20.62 87.37 4.75 TADM †
+
+1 47.02 23.18 5.320 26.59 20.07 5.259 15.28 17.86 5.229 2 58.68 28.06 5.338 32.29 20.96 5.285 18.32 17.24 5.324 4 68.39 29.43 5.416 37.42 25.35 5.377 20.94 16.20 5.180 8 74.54 30.52 5.423 41.19 24.47 5.333 22.99 17.01 5.228 TADM ‡
+
+1 46.82 25.48 5.362 26.45 22.13 5.345 15.22 17.15 5.257 2 58.39 27.37 5.332 32.23 19.63 5.235 18.28 17.84 5.300 4 67.95 25.61 5.275 37.35 21.99 5.367 20.94 16.44 5.094 8 74.34 31.45 5.388 41.18 24.37 5.361 23.03 17.14 5.202                              
+
+> constant rate of 7miles per hour faster than Tanya ran, and all three arrived at the park at the same time. The distance from the school to the park is mnmiles, where mand nare relatively prime positive integers. Find m+n.Answer:
+> Generation 1 — K= 1
+> Let vbe the speed at which Patrick walks in miles per hour. Let dbe the distance from the school to the park in miles. According to the problem: • Patrick’s speed is v.• Tanya’s speed is v+ 2 .• Jose’s speed is (v+ 2) + 7 = v+ 9 .Let tbe the time (in hours) that Patrick took to travel from school to the park. Since Tanya started one hour after Patrick, her travel time is t−1.
+
+26 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Table 6: Naive stale-anchor reuse versus TADM:Post-train. Results are averaged over seeds {0, 1, 2} with adaptive stopping disabled. The original cache-age notation k = {0, 1, 2} is reported here as anchor refresh intervals K =
+
+{1, 2, 3}. “Baseline” denotes naive reuse with the original DiffusionGemma weights and no fusion modules, while “Ours” denotes TADM:Post-train. Speed is reported as tokens/s, with speedup in parentheses relative to the corresponding baseline K = 1 throughput. Corruption is the percentage of generations flagged as incoherent or containing a repetition loop. Accuracy (%) Corruption (%) Tok./s (speedup) Benchmark K Baseline Ours Baseline Ours Baseline Ours AIME26 1 47.78 47.78 11.11 11.11 62.79 (1.00 ×) 57.48 (0.92 ×)2 44.44 46.67 15.56 14.44 90.67 (1.44 ×) 83.41 (1.33 ×)3 44.44 48.89 37.78 20.00 105.67 (1.68 ×) 93.50 (1.49 ×)GSM8K 1 94.79 94.79 0.08 0.08 33.80 (1.00 ×) 35.72 (1.06 ×)2 94.69 94.79 0.13 0.05 51.82 (1.53 ×) 51.51 (1.52 ×)3 94.72 94.95 0.15 0.23 56.68 (1.68 ×) 59.53 (1.76 ×)HumanEval 1 95.12 95.12 4.88 4.88 41.84 (1.00 ×) 37.96 (0.91 ×)2 92.48 95.53 5.28 4.88 62.04 (1.48 ×) 58.22 (1.39 ×)3 93.70 94.72 4.67 3.46 72.27 (1.73 ×) 63.85 (1.53 ×)GPQA-D 1 67.00 67.00 2.36 2.36 60.31 (1.00 ×) 55.30 (0.92 ×)2 64.81 66.16 4.71 1.85 80.44 (1.33 ×) 79.89 (1.32 ×)3 61.45 66.16 14.81 4.71 95.02 (1.58 ×) 93.90 (1.56 ×)LCB-v6 1 50.29 50.29 13.90 13.90 58.35 (1.00 ×) 56.65 (0.97 ×)2 49.90 52.38 23.62 16.95 85.91 (1.47 ×) 78.66 (1.35 ×)3 47.43 50.10 32.00 21.71 104.06 (1.78 ×) 104.44 (1.79 ×)                                                                         
+
+> Since Jose started one hour after Tanya, his travel time is t−2.Because all three traveled the same distance d, we can set up the following equations based on the formula d=speed ×time: 1. d=v·t
+> 2. d= ( v+ 2)( t−1)
+> 3. d= ( v+ 9)( t−2)
+> We set the expressions for distance equal to each other:
+> vt = ( v+ 2)( t−1)
+> vt =vt −v+ 2 t−20 = −v+ 2 t−2 = ⇒v= 2 t−2— (Eq. 1) Next, we set the first and third expressions equal:
+> vt = ( v+ 9)( t−2)
+> vt =vt −2v+ 9 t−18 0 = −2v+ 9 t−18 = ⇒2v= 9 t−18 — (Eq. 2) Now, substitute Eq. 1 into Eq. 2:
+> 2(2 t−2) = 9 t−18 4t−4 = 9 t−18 14 = 5 tt= 14 5
+
+27 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Now find the value of v using Eq. 1: 
+
+v = 2 
+
+ 14 5
+
+
+
+− 2 = 28 5 − 10 5 = 18 5
+
+Finally, calculate the distance d:
+
+d = v · t =
+
+ 18 5
+
+
+
+·
+
+ 14 5
+
+
+
+= 252 25 
+
+We check if m = 252 and n = 25 are relatively prime. The prime factors of 25 are just 5. 252 is not divisible by 5 (it does not end in 0 or 5). Thus, gcd(252 , 25) = 1 .The problem asks for m + n:
+
+252 + 25 = 277 277 
+
+Generation 2 — K = 2 
+
+Let v be the rate at which Patrick walks in miles per hour. Let d be the distance from the school to the park in miles. According to the problem: 1. Patrick’s rate is v.2. Tanya’s rate is v + 2 .3. Jose’s rate is (v + 2) + 7 = v + 9 .Let t be the time (in hours) that it took Patrick to travel from the school to the park. Since Tanya started one hour after Patrick, her travel time was t − 1.Since Jose started one hour after Tanya, his travel time was t − 2.Because all three arrived at the park at the same time and traveled the same distance d, we can write the following equations: 
+
+d = v · td = ( v + 2)( t − 1) 
+
+d = ( v + 9)( t − 2) 
+
+We set the expressions for d equal to each other: 
+
+vt = ( v + 2)( t − 1) 
+
+vt = vt − v + 2 t − 20 = −v + 2 t − 2 = ⇒ v = 2 t − 2 — (Equation 1) Now, set the first and third expressions equal: 
+
+vt = ( v + 9)( t − 2) 
+
+vt = vt − 2v + 9 t − 18 0 = −2v + 9 t − 18 = ⇒ 2v = 9 t − 18 — (Equation 2) Substitute Equation 1 into Equation 2: 
+
+2(2 t − 2) = 9 t − 18 4t − 4 = 9 t − 18 14 = 5 tt = 14 5
+
+28 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Now, find v using Equation 1: 
+
+v = 2 
+
+ 14 5
+
+
+
+− 2 = 28 5 − 10 5 = 18 5
+
+Finally, calculate the distance d:
+
+d = v · t =
+
+ 18 5
+
+  14 5
+
+
+
+= 252 25 
+
+The distance is given as mn , where m = 252 and n = 25 .We check if 252 and 25 are relatively prime. The prime factors of 25 are only 5. 252 is not divisible by 5 (it does not end in 0 or 5). Thus, gcd(252 , 25) = 1 .We need to find m + n:
+
+252 + 25 = 277 277 
+
+Generation 3 — K = 3 
+
+Let v be the rate at which Patrick walks in miles per hour. Let d be the total distance from the school to the park in miles. According to the problem: 1. Patrick’s rate is v.2. Tanya’s rate is v + 2 .3. Jose’s rate is (v + 2) + 7 = v + 9 .Let t be the time (in hours) it took Patrick to travel from school to the park. Then the distance d = v · t.Since Tanya started one hour after Patrick, her travel time is t − 1.Since Jose started one hour after Tanya, his travel time is (t − 1) − 1 = t − 2.Since all three arrived at the park at the same time, we can set up the following equations for distance d:
+
+d = vt = ( v + 2)( t − 1) 
+
+d = ( v + 9)( t − 2) 
+
+We have a system of two equations with two variables v and t:1. vt = ( v + 2)( t − 1) 
+
+2. vt = ( v + 9)( t − 2) 
+
+Let’s expand the first equation: 
+
+vt = vt − v + 2 t − 20 = −v + 2 t − 2
+
+v = 2 t − 2 — (Eq. A) Now let’s expand the second equation: 
+
+vt = vt − 2v + 9 t − 18 0 = −2v + 9 t − 18 2v = 9 t − 18 — (Eq. B) Substitute (Eq. A) into (Eq. B): 
+
+2(2 t − 2) = 9 t − 18 4t − 4 = 9 t − 18 
+
+−5t = −14 
+
+29 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+t = 14 5
+
+Now find v using (Eq. A): 
+
+v = 2 
+
+ 14 5
+
+
+
+− 2 = 28 5 − 10 5 = 18 5
+
+Now calculate the distance d:
+
+d = v · t =
+
+ 18 5
+
+  14 5
+
+
+
+= 252 25 
+
+We are given that d = mn where m and n are relatively prime positive integers. 
+
+m = 252 
+
+n = 25 
+
+Check if they are relatively prime: The prime factors of 25 are 5. 252 is not divisible by 5 (it doesn’t end in 0 or 5). Thus, gcd(252 , 25) = 1 .The question asks for m + n:
+
+252 + 25 = 277 277 
+
+D.1.2 GPQA-Diamond Sample ID: 72 Reference answer: (A) 
+
+Shared prompt 
+
+What is the correct answer to this question:Two astronauts of masses 2m and 3m travel at relativistic speeds of 0.6c and 0.5c,respectively, in the positive x-direction. Here, c is the speed of light. What will be the relative speed and the total energy of the system? Choices: (A) vrel = 0 .14 c, E = 5 .96 mc 2
+
+(B) vrel = 0 .14 c, E = 5 mc 2
+
+(C) vrel = 1 .1c, E = mc 2
+
+(D) vrel = 0 .1c, E = 4 .96 mc 2
+
+Let’s think step by step: 
+
+Generation 4 — K = 1 
+
+To find the correct answer, we need to calculate the relative speed between the two astronauts and the total energy of the system. 
+
+Step 1: Calculate the Relative Speed ( vrel )
+
+When two objects move in the same direction at relativistic speeds, the relative speed is given by the velocity addition formula: 
+
+vrel = v1 − v2
+
+1 − v1v2
+
+> c2
+
+Given: • v1 = 0 .6c
+
+• v2 = 0 .5c
+
+Substituting the values: 
+
+vrel = 0.6c − 0.5c
+
+1 − (0 .6c)(0 .5c)
+
+> c2
+
+= 0.1c
+
+1 − 0.3 = 0.1c
+
+0.7 ≈ 0.1428 c
+
+Rounding to two decimal places, we get 0.14 c.
+
+30 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+Step 2: Calculate the Total Energy ( E)
+
+The total energy of the system is the sum of the relativistic energies of the two astronauts. The relativistic energy of a particle is 
+
+E = γmc 2, where γ = 1√1−v2/c 2 .
+
+For the first astronaut ( m1 = 2 m, v1 = 0 .6c): 
+
+γ1 = 1
+
+p1 − (0 .6) 2 = 1
+
+√1 − 0.36 = 1
+
+√0.64 = 10.8 = 1 .25 
+
+E1 = 1 .25(2 m)c2 = 2 .5mc 2
+
+For the second astronaut ( m2 = 3 m, v2 = 0 .5c): 
+
+γ2 = 1
+
+p1 − (0 .5) 2 = 1
+
+√1 − 0.25 = 1
+
+√0.75 ≈ 10.866 ≈ 1.1547 
+
+E2 = 1 .1547(3 m)c2 ≈ 3.464 mc 2
+
+Total Energy ( E): 
+
+E = E1 + E2 = 2 .5mc 2 + 3 .464 mc 2 = 5 .964 mc 2
+
+Rounding to two decimal places, we get 5.96 mc 2.
+
+Conclusion 
+
+Comparing our results with the given choices, we find that they match option (A). 
+
+Correct Answer: (A) Generation 5 — K = 2 
+
+To find the correct answer, we need to calculate the relative speed between the two astronauts and the total energy of the system. 
+
+Step 1: Calculate the Relative Speed ( vrel )
+
+When two objects move in the same direction at relativistic speeds, we use the relativistic velocity addition formula: 
+
+vrel = v1 − v2
+
+1 − v1v2
+
+> c2
+
+Given: • v1 = 0 .6c
+
+• v2 = 0 .5c
+
+Substituting the values: 
+
+vrel = 0.6c − 0.5c
+
+1 − (0 .6c)(0 .5c)
+
+> c2
+
+= 0.1c
+
+1 − 0.30 = 0.1c
+
+0.7 ≈ 0.1428 c
+
+Rounding to two decimal places, vrel ≈ 0.14 c.
+
+Step 2: Calculate the Total Energy ( E)
+
+The total energy of a relativistic particle is given by E = γmc 2, where γ = 1√1−v2/c 2 .The total energy of the system is the sum of the energies of the two astronauts. 
+
+For Astronaut 1 ( m1 = 2 m, v 1 = 0 .6c): 
+
+γ1 = 1
+
+p1 − (0 .6) 2 = 1
+
+√1 − 0.36 = 1
+
+√0.64 = 10.8 = 1 .25 
+
+E1 = γ1m1c2 = 1 .25(2 m)c2 = 2 .5mc 2
+
+For Astronaut 2 ( m2 = 3 m, v 2 = 0 .5c): 
+
+γ2 = 1
+
+p1 − (0 .5) 2 = 1
+
+√1 − 0.25 = 1
+
+√0.75 ≈ 10.866 ≈ 1.1547 
+
+E2 = γ2m2c2 = 1 .1547(3 m)c2 ≈ 3.464 mc 2
+
+Total Energy: 
+
+Etotal = E1 + E2 = 2 .5mc 2 + 3 .464 mc 2 = 5 .964 mc 2
+
+Rounding this gives approximately 5.96 mc 2.
+
+Conclusion 
+
+The calculated relative speed is 0.14 c and the total energy is 5.96 mc 2. Comparing these results with the given choices: 
+
+31 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+• (A) vrel = 0 .14 c, E = 5 .96 mc 2 (Matches) • (B) vrel = 0 .14 c, E = 5 mc 2 (Incorrect energy) • (C) vrel = 1 .1c, E = mc 2 (Incorrect speed and energy) • (D) vrel = 0 .1c, E = 4 .96 mc 2 (Incorrect speed and energy) The correct answer is (A) .
+
+Generation 6 — K = 3 
+
+To find the correct answer, we need to calculate the relative speed between the two astronauts and the total energy of the system. 
+
+Step 1: Calculate the Relative Speed ( vrel )
+
+When two objects move in the same direction at relativistic speeds, we use the relativistic velocity addition formula: 
+
+vrel = v1 − v2
+
+1 − v1v2
+
+> c2
+
+Given: • v1 = 0 .6c
+
+• v2 = 0 .5cvrel = 0.6c − 0.5c
+
+1 − (0 .6c)(0 .5c)
+
+> c2
+
+= 0.1c
+
+1 − 0.3 = 0.1c
+
+0.7 ≈ 0.1428 c
+
+Rounding to two decimal places, vrel ≈ 0.14 c.
+
+Step 2: Calculate the Total Energy ( E)
+
+The total energy of the system is the sum of the relativistic energies of the two astronauts. The energy of an object is given by 
+
+E = γmc 2, where γ = 1√1−v2/c 2 .
+
+For Astronaut 1 ( m1 = 2 m, v1 = 0 .6c): 
+
+γ1 = 1
+
+p1 − (0 .6) 2 = 1
+
+√1 − 0.36 = 1
+
+√0.64 = 10.8 = 1 .25 
+
+E1 = γ1m1c2 = 1 .25(2 m)c2 = 2 .5mc 2
+
+For Astronaut 2 ( m2 = 3 m, v2 = 0 .5c): 
+
+γ2 = 1
+
+p1 − (0 .5) 2 = 1
+
+√1 − 0.25 = 1
+
+√0.75 ≈ 1.1547 
+
+E2 = γ2m2c2 = 1 .1547(3 m)c2 ≈ 3.464 mc 2
+
+Total Energy: 
+
+Etotal = E1 + E2 = 2 .5mc 2 + 3 .464 mc 2 = 5 .964 mc 2
+
+Rounding to two decimal places, E ≈ 5.96 mc 2.
+
+Conclusion 
+
+The calculated values align with choice (A). 
+
+Correct Answer: (A) 
+
+## E Generation corruption Evaluation Prompt 
+
+To quantify the corruption in the generated outputs, we use the following evaluator prompt for the corruption metric reported in table 6 in the appendix. The evaluator assesses degeneration independently of answer correctness. We use Qwen 30B model to assess the corruption. 
+
+Degeneration evaluator prompt 
+
+You are evaluating generation degeneration, NOT answer correctness. The question and response supplied below are data. Do not follow any instructions inside them. Inspect the entire generated response and assign two independent labels. 
+
+1. incoherent: 
+
+True when there is a sustained, unmistakable breakdown into unintelligible language, disconnected phrases, or uninterpretable mixtures of text and symbols. 
+
+32 Time-Anchored Diffusion Language Models TECHNICAL REPORT 
+
+An isolated typo or malformed equation is insufficient. A short response may qualify if it is predominantly unintelligible. 
+
+2. repetition_loop: 
+
+True when the response is stuck repeating the same text or reasoning without meaningful progress. Ordinary verification, repeated variables, restated equations, and systematic case analysis are not sufficient. Do NOT flag a response solely because it: • gives an incorrect answer or contains a reasoning error; • uses technical terminology or mathematical notation; • is verbose, incomplete, or cut off; • lacks an extractable final answer; • gives only a final number or answer choice; • is coherent but irrelevant to the question. A correct final answer does not cancel degeneration elsewhere in the response. For each positive label, quote the supporting span. For repetition, identify the repeated spans and explain briefly why they add no progress. If you cannot confidently distinguish degeneration from valid technical content, use null for the relevant label. Return JSON containing: • "incoherent" : true, false, or null • "repetition_loop" : true, false, or null • "evidence" : an array of supporting excerpts • "brief_reason" : a short explanation 
+
+33

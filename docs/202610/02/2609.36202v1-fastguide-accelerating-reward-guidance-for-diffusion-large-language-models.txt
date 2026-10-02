@@ -1,0 +1,1238 @@
+Title: FastGuide: Accelerating Reward Guidance for Diffusion Large Language Models
+
+URL Source: https://arxiv.org/pdf/2609.36202v1
+
+Published Time: Wed, 30 Sep 2026 00:22:45 GMT
+
+Number of Pages: 30
+
+Markdown Content:
+# FAST GUIDE : ACCELERATING REWARD GUIDANCE FOR DIFFUSION LARGE LANGUAGE MODELS 
+
+Darshan Thaker, Lachlan Ewen MacDonald & Ren´ e Vidal 
+
+University of Pennsylvania 
+
+{dbthaker,lmacdo,vidalr }@seas.upenn.edu 
+
+ABSTRACT 
+
+Gradient-based reward guidance provides a flexible way to use downstream re-ward models to control masked diffusion language models at inference time. How-ever, its computational cost remains high as each decoding iteration incurs expen-sive diffusion model forward passes and reward model backpropagation steps. To address this, we introduce FastGuide, an adaptive hybrid of parallel and autore-gressive decoding to accelerate reward guidance for diffusion language models. In analogy to parallel decoding, FastGuide amortizes the cost of reward model backpropagation by computing guidance once per decoding step and reusing it to generate multiple tokens. Within each decoding step, FastGuide makes dif-fusion forward passes autoregressive by unmasking tokens one at a time while efficiently recomputing token distributions after each unmasking by utilizing KV caching techniques and sparse recomputation of attention. Lastly, to adapt hybrid decoding to the model’s confidence, FastGuide defers any token that the model is unconfident about under its recomputed distribution. Experiments on three re-ward benchmarks demonstrate that FastGuide is up to 4.4× faster than sequential reward-guided decoding while retaining similar generation quality. 
+
+1 INTRODUCTION 
+
+Diffusion Large Language Models (dLLMs) have emerged as a promising alternative to traditional autoregressive models and have been praised for their reasoning power and generation speed (Ye et al., 2025a; Nie et al., 2026). A popular class of dLLMs is discrete masked dLLMs (Austin et al., 2021; Sahoo et al., 2024), which are trained on partially masked token sequences to predict marginal distributions over the vocabulary for each masked token. At inference time, dLLM generation starts from a fully masked sequence of fixed length and decoding algorithms iteratively decide a) where to unmask, and b) which token values to place at the selected positions. For instance, a common strategy is to compute a confidence score for each token position, pick the most confident token, and sample from the corresponding marginal distribution of that token (Ye et al., 2025b). As these models begin to be deployed in practical settings (Inception Labs, 2025; Google DeepMind, 2025), an important area of research is ensuring alignment of the dLLM outputs to desired objec-tives, e.g., instruction following, truthfulness, or safety (Wen et al., 2026; Xiong et al., 2026). A recent line of work has explored training-free gradient-based guidance algorithms for dLLM align-ment using a differentiable reward model (Murata et al., 2024; Tejaswi et al., 2026). For these approaches, at each diffusion timestep t with partially masked sequence xt and unmasked tokens 
+
+xu 
+
+> t
+
+, the dLLM logits at each token position i are steered via the updates 
+
+ℓguided  
+
+> t
+
+(xit | xu 
+
+> t
+
+) = ℓunguided  
+
+> t
+
+(xit | xu 
+
+> t
+
+)
+
+| {z }
+
+> base dLLM logits
+
++ rt(xit | xu 
+
+> t
+
+)
+
+| {z }
+
+> guidance vector
+
+. (1) Above, ℓunguided  
+
+> t
+
+denotes the per-token dLLM logits conditioned on the unmasked tokens xu 
+
+> t
+
+, and rt
+
+denotes the corresponding per-token guidance vector. The guidance vector is estimated by cheaply constructing a fully unmasked sequence, evaluating that sequence with a reward model, and com-puting gradients of the reward model with respect to its input to steer the dLLM logits. Although gradient-based guidance can outperform alternatives such as Best-Of-N sampling (Tejaswi et al., 2026), the sampling speed of these approaches is slow, as shown in the top row of Figure 1b. This 1arXiv:2609.36202v1 [cs.CL] 28 Sep 2026 I want to learn more about becoming a CPA. How long does it take to become a CPA?                                     
+
+> Prompt
+> Public Account
+> …
+> Fast-dLLM Unguided Fast-dLLM +Guidance EntRGI Guidance (2 consecutive steps)
+> Certified <MASK> <MASK> ant Public Public Account
+> …
+> EntRGI Guidance FastGuide Reward Model Score ↑
+> 3.39 3.25 Seconds per prompt
+> 𝒙 𝒕
+> a) Proposed token values for different methods b) Runtime and Quality Evaluation of Guidance Methods
+>   ! !  !"
+>    
+>  
+> 
+> "   % $  #! "
+>   ! !  !"
+>    
+>  
+> 
+> "   $ #  "!! "
+
+Figure 1: Left: Reward guidance (Tejaswi et al., 2026) can increase incompatibilities across token values proposed during parallel decoding. Above, CPA should expand to Certified Public Accountant . While unguided generation with parallel decoding method Fast-dLLM (Wu et al., 2025) produces the correct token prefix for CPA , Fast-dLLM with guidance fails. Right: Our method is much faster than sequential guided generation while retaining similar generation quality. is due to the dependency structure of Equation 1. At each diffusion timestep, when one token is unmasked, both the dLLM logits and the guidance vector change because the conditioning variable changes. Recomputing the dLLM logits requires a forward pass through the dLLM, which involves bidirectional attention over the sequence, and recomputing the guidance vector requires a forward and backward pass through a large reward model (e.g., a Skywork-Llama-8B model (Liu et al., 2026)). Both of these steps can be large inference-time bottlenecks. Parallel decoding is the dominant strategy to accelerate dLLM inference, so a natural idea is to follow existing work and unmask multiple tokens in each diffusion timestep (Ben-Hamu et al., 2025; Kim et al., 2026a; Wu et al., 2025). However, existing work is developed for unguided generation, so it does not establish when guidance can be reused, which is the main inference-time bottleneck (Figure 1b). Further, it is unclear which tokens remain safe to unmask together once guidance has altered the token distributions. This leads to our main research question: 
+
+Can we accelerate reward-guided dLLM inference while preserving its generation quality? 
+
+In this paper, we present, to the best of our knowledge, the first study of accelerating gradient-based reward guidance for dLLMs. Our main contributions are: 1. We show that, surprisingly, reusing the guidance vector to unmask a group of k tokens is be-nign. However, reusing the dLLM logits degrades generation quality. Specifically, we observe that ( O1 ) at masked positions with high confidence scores, the token distribution after guidance remains similar when guidance from an earlier diffusion timestep is reused. Conversely, ( O2 )guidance can increase incompatibilities between co-proposed token values compared to unguided decoding (Figure 1a), preventing reuse of the dLLM logits. 2. We introduce FastGuide, a training-free, hybrid, and adaptive acceleration strategy for reward-guided dLLM decoding. Motivated by O1 , similar to parallel decoding, we select at each iteration a group of candidate token positions with high confidence scores and compute guidance once for the group. To address O2 , we then autoregressively unmask candidates within this group, recom-puting the dLLM logits after each unmasking so that subsequent token choices are conditioned on prior unmaskings. To make these updates efficient, we use sparse recomputation with KV caching (Ma et al., 2025), updating only a small subset of dLLM token representations. Finally, token candidates whose recomputed distributions have low confidence scores are deferred to a later iteration, adaptively balancing the parallel and autoregressive decoding steps. 3. Our guidance reuse principle allows us to extend five existing parallel decoders to the guided setting. Across three reward benchmarks and two dLLMs, FastGuide generates responses up to 
+
+4.4× faster than sequential guided decoding while retaining similar reward model scores. 
+
+2 BACKGROUND AND RELATED WORK 
+
+In this section, we review masked dLLM inference, parallel decoding strategies, and reward guid-ance methods. Given a prompt p, the masked dLLM generates a fixed-length response x0 of length 
+
+L where each token comes from a vocabulary V, where V includes a <MASK> token. 2Masked dLLM inference. A masked dLLM generates x0 by iteratively denoising a partially masked state xt ∈ VL (Austin et al., 2021; Sahoo et al., 2024). We will refer to t as the diffu-sion timestep, ranging from T to 0, where xT is a sequence with all masked tokens. At every diffusion timestep t, we denote the set of masked and unmasked positions by 
+
+Mt = {i ∈ [L] : xit = <MASK> }, Ut = [ L] \ Mt, (2) where [L] = {1, . . . , L }. We will use xu 
+
+> t
+
+as a shorthand to represent the set of unmasked tokens at time t. At each denoising step, the dLLM processes the full state xt and predicts a categorical distribution at every masked position: 
+
+pθ (xit | xu 
+
+> t
+
+) = softmax 
+
+
+
+ℓunguided  
+
+> t
+
+(xit | xu 
+
+> t
+
+)
+
+
+
+, i ∈ Mt. (3) Throughout the paper, we will use ℓt to refer to logits and pθ as the corresponding normalized probability distribution. A decoding rule then chooses which token positions to unmask and which token values to place at those positions. A common confidence-based decoding rule is to pick the token i whose predicted distribution pθ (xit | xu 
+
+> t
+
+) has minimum entropy (which we denote as high-confidence tokens ), and then sample from that distribution (Nie et al., 2026). 
+
+Parallel decoding. Instead of sampling one token at each diffusion timestep (sequential decoding), parallel decoding methods unmask k tokens at each step, where k can be fixed a priori (Nie et al., 2026) or adaptive at inference time (Kim et al., 2025b; Wu et al., 2025). We refer to these k token positions as At = {a1, . . . , a k} ⊆ Mt and c = ( c1, . . . , c k) ∈ Vk as their proposed values. The true joint distribution over these k tokens would be 
+
+pθ (xa1 
+
+> t
+
+= c1, . . . , x ak 
+
+> t
+
+= ck | xu 
+
+> t
+
+). (4) However, the model only outputs marginal distributions pθ (xaj 
+
+> t
+
+= cj | xu 
+
+> t
+
+) at every token position, so a common approximation is to model this joint distribution as a product of marginal distributions 
+
+Qkj=1 pθ (xaj 
+
+> t
+
+= cj | xu 
+
+> t
+
+). The key challenge is to mitigate this approximation error, known as the joint-marginal mismatch (Ben-Hamu et al., 2025; Liu et al., 2025a). For instance, some works address this by selecting positions with limited dependencies using signals such as confidence scores (Wu et al., 2025), analysis of temporal stability of logits (Kim et al., 2025b; Ben-Hamu et al., 2025), or attention-based dependency graphs (Kim et al., 2026a). However, they are developed for unguided generation, and thus do not address recomputation of the guidance vector as in Equation 1 or whether the selection rules remain reliable for guided token distributions. An alternative set of approaches uses external planners, such as autoregressive LLMs (Israel et al., 2026; Liu et al., 2025a) to autoregressively commit the k tokens. In contrast to these methods, FastGuide is a hybrid decoding strategy that uses parallel decoding techniques for the reward guidance and autoregressive decoding over At. Further, FastGuide obviates the need for external models by efficiently using the dLLM itself to autoregressively unmask tokens. We give a detailed comparison with other decoders in Appendix A. 
+
+Reward guidance for alignment. In this work, we focus on the gradient-based reward guid-ance framework (leaving discussion of other methods to Appendix A), which has been shown to outperform methods such as Best-of-N sampling (Liu et al., 2025b; Tejaswi et al., 2026). This paradigm draws inspiration from classifier-guidance approaches for continuous diffusion models, which has been remarkably successful in numerous domains for training-free steering (Daras et al., 2024; Dhariwal & Nichol, 2021; Thaker et al., 2025). For dLLMs, gradient-based guidance meth-ods steer the dLLM logits with a differentiable sequence-level reward, such as a downstream reward model. As shown in Equation 1, the guided logits at each position are the sum of the dLLM logits and a per-token guidance vector rt that shifts the distribution toward higher-reward tokens. The guidance vector rt is estimated by completing the masked sequence, evaluating the completion with a reward model, and differentiating the reward with respect to the dLLM logits. Existing gradient-based guidance methods have focused on improved input completion techniques, e.g., by sampling token values from the predicted marginal distribution at each token (Rout et al., 2025), computing an expected embedding for each position with respect to the predicted distribution at each token (Mu-rata et al., 2024), or interpolating between the two (Tejaswi et al., 2026). As such, they have been largely limited to sequential decoding evaluations, resulting in long inference times (Figure 1b). In this work, we focus on the orthogonal problem of accelerating reward guidance since computing forward and backward passes through large reward models at each diffusion timestep can be very costly. 3Reward Model dLLM 
+
+𝒓 𝒕 ℓ𝒕                              
+
+> 𝒓 𝒕 (𝟕)
+> 𝒓 𝒕 (𝟗)
+> 𝒓 𝒕 (𝟏𝟎)
+> Time
+> + Input completion 12345678910
+> Token position
+> Parallel Decoding Step
+> 12345678910
+> Token position
+> Only at positions 5,6,7,8
+> RMSNorm
+> ±𝑤
+> 5 6 7 8
+> 𝑄 1 2 3 4 5 6 7 8 9 10
+> 𝐾 1 2 3 4 5 6 7 8 9 10
+> 𝑉
+> Update KV-cache
+> Bidirectional Attention
+> RMSNorm
+> Position-wise FFN
+> ×𝐿
+> Recomputed dLLM logits at position 7
+> Cached Recomputed
+
+ℓ𝒕 
+
+𝒓 𝒕 (𝒊)          
+
+> Unmasked token Masked token Where-to-unmask proposal Sparse dLLM Recomputation Guidance caching dLLM Logits Guidance vector at position 𝑖
+> Deferred Token
+
+Figure 2: Overview of FastGuide. Left: Illustration of one hybrid decoding step of FastGuide with 
+
+k = 4 . FastGuide utilizes guidance caching and autoregressive sparse dLLM recomputation. After recomputation, tokens are deferred if token confidence drops below a threshold. Right: Sparse dLLM recomputation of token 7 after committing token 6, with window radius w = 1 . Attention and FFN outputs are recomputed only at the selected positions, whose queries attend to the full sequence using updated K/V inside the windows and cached K/V elsewhere. 
+
+3 METHOD : F AST GUIDE 
+
+In this section, we develop FastGuide, an algorithm to accelerate reward-guided decoding for dLLMs. First, in Section 3.1, we derive our hybrid decoding strategy using guidance caching and autoregressive dLLM recomputation. In Section 3.1.2, we use KV caching and sparse recomputation of attention (Ma et al., 2025) to efficiently perform autoregressive dLLM recomputation. Lastly, we introduce confidence deferral in Section 3.2, which is a technique to make decoding adaptive rather than unmasking a fixed number of tokens in each step. Our final method is summarized in Figure 2 and pseudocode is given in Appendix C. Throughout this section, we instantiate unguided parallel decoding as the widely used rule of confidence-based unmasking of the top k tokens (Nie et al., 2026), and we instantiate reward guidance as the recently introduced EntRGi algorithm (Tejaswi et al., 2026). In Section 4, we compare FastGuide with other parallel decoders and evaluate other guidance algorithms. Evaluations in this section were performed on RM-Bench (Liu et al., 2025b) with the Dream text diffusion model (Ye et al., 2025b) and Skywork-Reward-V2-Qwen3-0.6B re-ward model (Liu et al., 2026), with further experimental details given in Appendix B.3. 3.1 HYBRID DECODING : G UIDANCE CACHING AND D LLM R ECOMPUTATION 
+
+Recall from Equation 1 that both the dLLM logits and the guidance vector depend on the unmasked tokens xu 
+
+> t
+
+at each timestep. Existing sequential reward-guided decoders recompute both terms after every unmasking, which requires one dLLM forward pass and one guidance computation per token. Since sequential reward-guided decoding has shown promising performance (Tejaswi et al., 2026), we take it as our starting point and seek to maintain its generation quality while reducing its inference time by unmasking k tokens per diffusion timestep. Since Equation 1 consists of two terms, this raises the question of whether the dLLM logits, the guidance vector, or both can be safely reused to unmask a candidate token set At = {a1, . . . , a k} (defined in Section 2). 
+
+Separating dLLM and guidance reuse. To study this question, we independently vary whether each term is reused or recomputed within the candidate token set. Specifically, consider an ordering of At (e.g., descending confidence scores) and let x(s) 
+
+> t
+
+∈ VL denote the sequence after unmasking the first s candidates of At, with x(0)  
+
+> t
+
+= xt. Then, for token position aj ∈ At, sequential guided decoding corresponds to iteratively computing for all j ∈ { 1, . . . , k }:
+
+softmax 
+
+
+
+ℓunguided 
+
+> t
+
+
+
+xaj 
+
+> t
+
+| (x(s) 
+
+> t
+
+)u
+
++ rt
+
+
+
+xaj 
+
+> t
+
+| (x(s′) 
+
+> t
+
+)u 
+
+(5) for s = s′ = j − 1. Instead, we analyze variants of Equation 5 where s, s ′ ∈ { 0, j − 1}. Here, s = 0 
+
+(resp. s′ = 0 ) denotes reuse of the dLLM logits (resp. guidance vector) computed at the start of the 4candidate group, whereas s = j − 1 (resp. s′ = j − 1) denotes autoregressive recomputation after each token unmasking. We refer to computing guidance once and reusing it across the candidate group ( s′ = 0 ) as guidance caching , which is particularly attractive because guidance computation dominates inference time (Figure 1b). When both s and s′ are 0, both terms are sampled from the guided distributions computed at the initial state, following the product-of-marginals approximation of Section 2. Figure 3 demonstrates that guidance caching along with dLLM recomputation retains most of the quality of recomputing both terms (orange vs. purple). Conversely, reusing the dLLM logits (blue and green curves) leads to quality degradation irrespective of guidance caching. 
+
+Hybrid decoding. This analysis motivates combining guidance caching with autoregressive dLLM recomputation, yielding a hybrid decoding strategy. As in parallel decoding, we amortize the guidance computation over k token candidates. Within this candidate set, we unmask candidates autoregressively, recomputing the dLLM logits after each unmasking. Thus, the token at position aj
+
+is chosen from 
+
+softmax 
+
+
+
+ℓunguided 
+
+> t
+
+
+
+xaj 
+
+> t
+
+| (x(j−1)  
+
+> t
+
+)u
+
++ rt
+
+
+
+xaj 
+
+> t
+
+| (x(0)  
+
+> t
+
+)u 
+
+. (6) 3.1.1 COUNTERFACTUAL ANALYSIS OF HYBRID DECODING 5 10 15 20 25 30 35  
+
+> Sampling time per completion (s)
+> 5
+> 4
+> 3
+> 2
+> 1
+> 012
+> Reward Score  k=2 k=4 k=8
+> k=2 k=4 k=8
+> k=2 k=4 k=8
+> k=2/4/8
+> k=1
+> Guidance
+> Reused Recomputed
+> Base logits
+> Reused Recomputed
+> Sequential EntRGi (k=1)
+> better
+
+Figure 3: Disentangling Reuse of dLLM Logits and Guidance. 
+
+To better understand the asymmetry between guid-ance reuse and dLLM logits reuse, we run two coun-terfactual studies along sequential decoding trajecto-ries (Figure 4). 
+
+Observation 1 (O1): guidance reuse has little ef-fect at high-confidence positions. At every diffu-sion timestep, we hold the current dLLM logits fixed and replace the guidance vector with one cached from an earlier step. We measure the total-variation distance between the resulting guided distributions (Figure 4a). We find that this distance is smaller at high-confidence positions, which are precisely the positions that standard decoding strategies unmask (Ye et al., 2025b). This helps explain why guidance caching is effective. 
+
+Observation 2 (O2): guidance can make co-proposed tokens locally incompatible. Tokens pro-posed in parallel from the same partially masked sequence need not be likely under the true joint distribution of the tokens since the model only outputs marginal distributions for each token. While this joint-marginal mismatch is present even without guidance (Ben-Hamu et al., 2025), we find that guidance can exacerbate this mismatch. To measure the effect of guidance on the joint-marginal mismatch, we consider sequential unguided trajectories and toggle guidance at each state, examin-ing its effect on the top-2 confident tokens that would be committed in parallel. We quantify the joint-marginal mismatch at these two tokens as the dLLM-predicted Pointwise Mutual Information (PMI), which is the difference in log probabilities of the joint p(a, b ) = p(a)p(b | a) and product of marginal distributions p(a)p(b). Negative PMI indicates that committing the first token lowers the dLLM-predicted probability of the second relative to its marginal probability. Figure 4b shows that guidance actually increases incompatibility among proposed tokens. The average number of incom-patible pairs rises from 1.04 without guidance to 2.47 with guidance, and the fraction of prompts with at least one incompatible pair rises from 58% to 90% . This illustrates the role of dLLM recom-putation in our hybrid decoding strategy as incompatible proposals can be revised before unmasking. 3.1.2 SPARSE D LLM R ECOMPUTATION 
+
+Despite the speedups obtained from reducing guidance computations, exact dLLM recomputation still requires the same number of dLLM forward passes as sequential decoding. To reduce this cost, we utilize dLLM acceleration techniques (Ma et al., 2025; Liu et al., 2025c). Specifically, for every hybrid decoding step, once the k candidate positions are fixed, recomputing logits for the next candidate requires updated logits only at its position aj . Thus, we make a connection to Ma et al. 5010 20 30 Commits (%) 0.4 0.6 0.8 1.0 Model confidence at masked position at t−k          
+
+> 0.0 0.2 0.4 Mean TV distance
+> k=2 k=4 k=8 012345678910
+> # Conflicts in Generated Text
+> 010 20 30 40
+> Prompts (%)  Without guidance With guidance
+
+Figure 4: Left: (a) Replacing fresh guidance with a cached guidance produces small changes in high-confidence token distributions. Right: (b) Percentage of prompts exhibiting certain number of conflicts between proposed tokens (as measured by PMI being less than −1). (2025), where the authors fix the token generation order of unguided sequential dLLM decoding to develop efficient sparse dLLM forward passes. Specifically, we can approximate the full forward pass by recomputing attention and feed-forward outputs for every transformer layer at a small set of positions: the union of windows of radius w around the most recently committed token and the next candidate position. To recompute attention, the queries at only these positions attend to the full sequence, using newly computed keys and values inside the windows and cached keys and values elsewhere (see Figure 2). This reduces the time complexity of each recomputation from O(L2) to 
+
+O(wL ). The updated keys and values overwrite the cache for subsequent recomputation passes. The sparse dLLM forward produces approximate base logits bℓunguided 
+
+> t
+
+
+
+xaj 
+
+> t
+
+| (x(j−1)  
+
+> t
+
+)u
+
+
+
+, which we combine with the cached reward gradient as in Equation 6. 3.2 ADAPTIVITY VIA CONFIDENCE DEFERRAL 
+
+Unmasking exactly k tokens in every step can be restrictive (Wu et al., 2025) since the number of tokens that are safe to unmask together depends on the prompt and decoding state. We therefore introduce an adaptive confidence deferral strategy. Specifically, after sparse dLLM recomputation, we compute 
+
+γj = max  
+
+> v∈V
+
+softmax 
+
+bℓunguided 
+
+> t
+
+
+
+xaj 
+
+> t
+
+| (x(j−1)  
+
+> t
+
+)u
+
++ rt
+
+
+
+xaj 
+
+> t
+
+| (x(0)  
+
+> t
+
+)u 
+
+(v). (7) If γj ≥ τ for a chosen threshold τ , we commit the verified token. If not, the position remains masked and is reconsidered in a later step, when both the dLLM logits and the guidance are recomputed. The first token candidate is always committed, so every step makes progress. This makes the degree of parallelism adaptive and postpones low-confidence candidates until a later step so both dLLM logits and guidance can be recomputed. In summary, for each decoding step, FastGuide performs 1 dLLM forward pass, 1 guidance compu-tation step, and k − 1 sparse recomputation passes, as opposed to the k dLLM forward passes and k
+
+guidance computations for sequential guided decoding. Refer to Appendix C for psuedocode. 
+
+4 EXPERIMENTS 
+
+Below, we describe our experimental setup, deferring other experimental details to Appendix B. 
+
+Benchmarks. Following prior work on reward guidance, we evaluate FastGuide on three reward benchmarks (JudgeBench (Tan et al., 2025), RM-Bench (Liu et al., 2025b), and Reward-Bench-2 (Malik et al., 2025)), spanning various categories such as Coding, Math, Precise Instruction Follow-ing (IF), and Safety. 
+
+Baselines. We evaluate FastGuide on two popular open-source dLLMs: Dream-7B-Instruct (Ye et al., 2025b) and LLaDA-8B-Instruct (Nie et al., 2026). While existing parallel decoding baselines are evaluated on unguided decoding, our guidance caching strategy (Section 3) allows us to extend existing methods to the guided setting. To our knowledge, our work represents the first evaluation of these decoders in the reward-guided setting. We compare against several training-free parallel decoding baselines such as confidence-based decoding (which we abbreviate as Conf.) (Nie et al., 6Dream-7B LLaDA-8B Method Top@1 Seq Gap LMUnit s/gen Top@1 Seq Gap LMUnit s/gen 
+
+JudgeBench 
+
+Conf (BoN) +1 .52 ±.16 – 3.97 ±.03 10 .8±4.7 +2 .65 ±.21 – 4.05 ±.03 11 .8±5.1
+
+> SEQ
+
+Conf +2 .53 ±.16 – 4.05 ±.03 37 .3±15 .5 +3 .23 ±.20 – 4.08 ±.03 45 .3±18 .5
+
+> PARALLEL
+
+Conf (BoN) −3.14 ±.20 −4.66 3.01 ±.05 2.7±1.1 −2.23 ±.22 −4.88 3.05 ±.05 3.0±1.3
+
+Conf +0 .38 ±.20 −2.15 3.64 ±.04 9.7±3.8 +1 .54 ±.22 −1.69 3.78 ±.04 11 .8±5.1
+
+Fast-dLLM +0 .26 ±.21 −2.27 3.62 ±.05 7.9±4.1 −0.12 ±.21 −3.35 3.39 ±.05 6.5±2.9
+
+KLASS −0.06 ±.22 −2.59 3.61 ±.05 10 .8±12 .5 −0.81 ±.19 −4.04 3.10 ±.05 5.6±2.7
+
+EB-Sampler −0.49 ±.19 −3.02 3.49 ±.04 9.4±3.5 +0 .09 ±.21 −3.14 3.52 ±.04 10 .1±3.8
+
+DAPD +1 .92 ±.17 −0.61 3.95 ±.03 8.6±3.3 +2 .74 ±.22 −0.49 3.99 ±.04 9.4±4.2
+
+FastGuide +2.08 ±.17 −0.45 4.02 ±.03 9.6±5.0 +2.76 ±.21 −0.47 4.03 ±.03 10 .3±3.4
+
+RM-Bench 
+
+Conf (BoN) +4 .41 ±.12 – 4.06 ±.02 6.3±1.9 +4 .39 ±.12 – 3.94 ±.02 6.6±2.2
+
+> SEQ
+
+Conf +5 .42 ±.11 – 4.15 ±.02 22 .9±6.9 +5 .25 ±.11 – 4.02 ±.02 24 .9±8.8
+
+> PARALLEL
+
+Conf (BoN) −1.96 ±.14 −6.37 2.75 ±.02 1.6±.5 −1.57 ±.14 −5.96 2.79 ±.02 1.7±.5
+
+Conf +2 .32 ±.14 −3.09 3.61 ±.02 5.8±1.7 +2 .83 ±.13 −2.43 3.63 ±.02 6.3±2.2
+
+Fast-dLLM +1 .34 ±.15 −4.08 3.51 ±.03 5.6±2.2 +0 .74 ±.14 −4.51 3.31 ±.03 4.5±1.7
+
+KLASS +0 .38 ±.15 −5.04 3.33 ±.03 9.6±9.9 −0.11 ±.14 −5.36 3.03 ±.03 4.1±1.9
+
+EB-Sampler +0 .40 ±.15 −5.01 3.20 ±.02 5.9±2.0 +0 .49 ±.15 −4.76 3.19 ±.02 5.9±1.6
+
+DAPD +3 .58 ±.13 −1.83 3.87 ±.02 5.9±1.3 +4 .36 ±.12 −0.89 3.90 ±.02 6.2±2.3
+
+FastGuide +4.70 ±.12 −0.72 4.04 ±.02 6.2±1.5 +4.53 ±.12 −0.72 3.92 ±.02 6.5±1.8
+
+Reward-Bench-2 
+
+Conf (BoN) +2 .60 ±.10 – 4.18 ±.01 5.5±1.4 +2 .19 ±.09 – 4.00 ±.02 6.1±1.6
+
+> SEQ
+
+Conf +3 .39 ±.10 – 4.23 ±.01 20 .4±5.2 +2 .88 ±.09 – 4.05 ±.02 26 .9±9.3
+
+> PARALLEL
+
+Conf (BoN) −1.98 ±.09 −4.58 2.95 ±.02 1.4±.4 −2.22 ±.08 −4.41 2.88 ±.02 1.5±.4
+
+Conf +1 .24 ±.10 −2.15 3.78 ±.02 5.2±1.2 +0 .98 ±.09 −1.90 3.67 ±.02 6.6±2.3
+
+Fast-dLLM +1 .36 ±.11 −2.03 3.82 ±.02 6.8±2.5 +0 .05 ±.09 −2.83 3.55 ±.02 7.9±4.0
+
+KLASS +1 .06 ±.10 −2.33 3.83 ±.02 15 .7±13 .3 −0.09 ±.09 −2.97 3.44 ±.02 8.0±4.4
+
+EB-Sampler +0 .56 ±.10 −2.83 3.57 ±.02 6.6±2.0 +0 .01 ±.09 −2.87 3.40 ±.02 9.0±3.1
+
+DAPD +3 .01 ±.10 −0.38 4.15 ±.01 6.2±1.7 +2 .49 ±.09 −0.39 4.00 ±.02 7.2±2.2
+
+FastGuide +3.25 ±.10 −0.14 4.19 ±.01 7.3±2.1 +2.58 ±.09 −0.30 4.00 ±.02 7.3±2.5
+
+Table 1: Quantitative results for reward-guided generation on JudgeBench, RM-Bench, and Reward-Bench-2. All parallel decoding methods use cached EntRGi reward guidance, unless (BoN) is men-tioned, denoting Best-of-N sampling. Subscripts denote the standard error over prompts. 2026), Fast-dLLM (Wu et al., 2025), KLASS (Kim et al., 2025b), EB-sampler (Ben-Hamu et al., 2025) and DAPD (Kim et al., 2026a). For fair comparison, we do not utilize additional optimizations of the full dLLM forward pass such as prompt caching (Wu et al., 2025), which are orthogonal improvements and can be combined with FastGuide. We also compare to Best-Of-N sampling with 
+
+N = 4 . We use the recent state-of-the-art reward guidance method EntRGI (Tejaswi et al., 2026) with the Skywork-Reward-V2-Qwen3-1.7B reward model (Liu et al., 2026). We defer evaluation of other guidance methods and different reward models to Appendix D.1 and D.2. 
+
+Metrics. Following Tejaswi et al. (2026), we generate 4 trajectories for each prompt and mea-sure generation quality by the reward model score. We report Top@1 (the maximum reward model score across all trajectories) and Seq Gap (the gap between parallel decoding Top@1 and the cor-responding sequential decoding baseline using the same guidance algorithm). To monitor reward overoptimization (Gao et al., 2023), we report LMUnit (external judge LLM LMUnit-Qwen2.5-72B (Saad-Falcon et al., 2025) score from 1 − 5). We further report Avg@4 (the average reward model score across the 4 trajectories) in Appendix D.3. To evaluate inference time, we report s/gen (wall-clock inference time for each generation), computed on a Nvidia A5000 GPU. 
+
+Hyperparameters. We set the generation length to be 128 for all methods, and baseline hyperpa-rameters can be found in Appendix B.2. FastGuide uses a candidate pool of k = 8 for all exper-iments along with confidence deferral parameter τ = 0 .5 and attention window size w = 2 . We consider a higher throughput regime by increasing k to 16 in Appendix D. We use batch size 4 for Dream-7B and batch size 2 for LLaDA-8B. 70 5 10 15 Seconds / generation 02Top@1 reward  sequential (37 s/gen) 
+
+> FastGuide (ours) DAPD Conf Fast-dLLM KLASS EB-Sampler
+
+Figure 5: Quality versus inference time on JudgeBench using Dream-7B model. 4 6 8 10 12 Seconds / generation 024Top@1 reward     
+
+> k=4
+> k=8
+> τ= 0 (no gate)
+> τ= 0.3
+> τ= 0.5
+> τ= 0.7 FastGuide Sequential Conf DAPD
+
+Figure 6: τ sweep for confidence deferral on RM-Bench using Dream-7B model. 4.1 MAIN RESULTS 
+
+Reward vs Inference Time. Table 1 and Figure 5 show our main results. FastGuide is 2.8–
+
+4.4× faster than sequential guided decoding across the three benchmarks and two models while remaining within 0.75 reward points of sequential guidance on both models. Its high LMUnit scores provide complementary evidence of response quality and also guard against reward overoptimiza-tion. Compared to unguided sequential Best-of-N sampling, sequential guidance improves Top@1 by 0.6–1.0 reward points but costs 3.5–4.4× the inference time. FastGuide reduces this cost to 0.9–
+
+1.3× that of Best-of-N while retaining a Top@1 improvement of 0.1–0.65 reward points. These conclusions also hold on LLaDA-8B, where FastGuide again attains the smallest Seq Gap, while Fast-dLLM and KLASS degrade even more severely than on Dream-7B. Cached guidance on top of confidence-based decoding (Conf row) improves Top@1 by roughly 4 reward points over its unguided counterpart (Conf (BoN) row), confirming that guidance caching preserves the benefit of guidance. FastGuide further narrows this gap through sparse dLLM recomputation and confi-dence deferral. An important benefit of FastGuide is that sparse dLLM recomputation transforms the compute-bound full dLLM forward pass, that involves bidirectional attention over the whole se-quence, into a memory-bound sparse forward over a few positions. Thus, standard techniques such as batching can reduce inference time per trajectory, which we explore in Appendix D.4. Knowledge Reasoning Math Coding   
+
+> JudgeBench
+> Chat Code Math Safety (refuse) Safety (respond)
+> RM-Bench
+> Factuality Precise IF Math Safety Focus Ties
+> Reward-Bench-2
+> Conf DAPD FastGuide (ours)
+
+Figure 7: Sequential gap by category (closer to 0 is better). FastGuide has the smallest gap to sequential de-coding, especially in reasoning categories such as coding where baselines degrade. 
+
+Comparison to Parallel Decoders. 
+
+Most existing parallel decoders lose a large part of the benefit of guid-ance, with Fast-dLLM, KLASS, and EB-sampler suffering substantial perfor-mance degradation relative to sequential decoding. In contrast, DAPD, which selects positions from the dLLM’s at-tention graph rather than from marginal confidence, is by far the strongest base-line. FastGuide matches or improves on DAPD on every benchmark and model, with the largest gains on RM-Bench (+1 .1 Top@1 on Dream-7B). Figure 7 analyzes this Seq Gap further by splitting performance along benchmark categories. DAPD exhibits larger reward gaps on coding and math tasks. This pattern is consistent with the greater sensitivity to incompatible token choices in these categories, and the qualitative example in Figure 8 further illustrates this. In contrast, for categories such as chat and safety, an incompatible pair of tokens costs little fluency. FastGuide has a small Seq Gap across nearly all categories, highlighting the benefit of sparse dLLM recomputation in the reward-guided setting. 
+
+Qualitative Samples. Figure 8 shows an illustrative mathematical reasoning prompt from RM-Bench. Unguided DAPD has a correct reasoning trace, but under guidance it commits an incorrect line of arithmetic reasoning ( 52 in place of 82) that the rest of the derivation then propagates to a wrong final answer, showing an instance of O2 . Instead, FastGuide recomputes each candidate 8Prompt: If the endpoints of a line segment are (2, -2) and (10, 4), what is the length of the segment? DAPD, guided Reward −1.22           
+
+> To find the length of the line segment, we can use the distance formula, which is $ \sqrt {(x 2 -x 1)ˆ2 + (y 2 - y 1)ˆ2 }$. Plugging in the given endpoints, we have $ \sqrt {(10 - 2)ˆ2) + (4 -(-2)) ˆ2 }=\sqrt {5ˆ2 + 6ˆ2 }=
+> \sqrt {1 0 + 36 }=\sqrt {4 6 }$. The length of the line segment is $\boxed {6}$ units.The answer is: $\boxed {6}$
+
+DAPD, unguided Reward +6 .59                                              
+
+> We can use the distance formula to find the length of the line segment. The distance formula between two points $(x 1, y 1)$ and $(x 2, y 2)$ is given by $\sqrt {(x 2 -x 1)ˆ2 +(y 2 -y 1)ˆ2 }$. Plugging in the given values, we have $\sqrt {(10 -2)ˆ2 +(4 -(-2))ˆ2 }=\sqrt {8ˆ2 + 6ˆ2 }=\sqrt {64 +36 }=
+> \sqrt {100 }
+
+FastGuide Reward +10 .44                                                           
+
+> To find the length of the line segment, we can use the distance formula, which is derived from the Pythagorean Theorem. The formula is: Distance =sqrt((x2 -x1)ˆ2 +(y2 -y1)ˆ2) Plugging in the given coordinates: Distance =sqrt((10 -2)ˆ2 +(4 -(-2))ˆ2) =sqrt(8ˆ2 +6ˆ2) =sqrt(64 +36) =sqrt(100) =10 So, the length of the line segment is 10 units.
+
+Figure 8: Qualitative generations on Math RM-Bench prompt. Red highlighted tokens denote incorrect tokens. This reinforces that guidance can worsen performance of parallel decoders, while FastGuide succeeds. 2 3 4 5 6 7 8
+
+> Candidate rank within parallel step
+> 010 20 30 % Changed Token Values
+> Exact recomputation Sparse recomputation
+
+(a) 0 1 2 4  
+
+> Window radius w
+> 0.00 0.05 0.10 0.15 0.20 TV Distance (vs. Exact)
+> Sparse recomputation No recomputation
+
+(b) 
+
+Figure 9: Analysis of sparse dLLM recomputation vs. exact dLLM recomputation. 
+
+token distribution before unmasking it and recovers the correct answer. The reward model scores in Figure 8 reflect this ordering. Appendix D.9 shows further qualitative examples. 4.2 ABLATION STUDIES 
+
+Effect of confidence deferral. Figure 6 sweeps the deferral threshold τ of FastGuide on RM-Bench, showing that τ provides an extra knob for interpolating the quality-efficiency tradeoff. Specifically, without deferral ( τ =0 ), unmasking a fixed 8 tokens per step is fastest, but genera-tion quality degrades. As more tokens are deferred, quality increases, approaching the performance of sequential decoding, but at the expense of inference time due to increased guidance computation steps and full dLLM forwards. 
+
+Effect of dLLM Recomputation. Figure 9 analyzes the sparse dLLM recomputation step of Fast-Guide. Specifically, Figure 9b shows that sparse dLLM recomputation is a useful approximation of the full dLLM forward pass as measured by the TV distance between sparsely and exactly recom-puted token distributions, while Figure 9a shows that both sparse and exact recomputation change a large fraction of token values during decoding. Finally, Appendix D.6 shows that generation quality is largely agnostic to the order of the candidate set for which autoregressive decoding is performed. 
+
+5 CONCLUSION 
+
+In this paper, we introduced FastGuide, a training-free hybrid decoding algorithm to accelerate reward-guidance for diffusion language models. Our findings show that while guidance can be reused across diffusion timesteps, guidance can worsen the token incompatibilities of parallel de-coding. To address this, FastGuide performs guidance caching combined with sparse dLLM recom-putation to autoregressively and efficiently recompute each proposed token distribution in a decod-ing step. FastGuide achieves speedups up to 4.4× over sequential guided decoding while retaining similar generation quality. To the best of our knowledge, our work is the first comprehensive study of accelerating training-free, gradient-based reward guidance for diffusion language models and the first evaluation of parallel decoders under reward guidance. We hope the ideas proposed in this paper will inspire future work on developing parallel decoders specifically for the guided setting. 9REFERENCES 
+
+Sudhanshu Agrawal, Risheek Garrepalli, Raghavv Goel, Christopher Lott, Fatih Porikli, and Mingu Lee. Structuring The Future: Diffusion LLM Speculative Decoding via Calibrated Draft Graphs. 
+
+arXiv preprint arXiv:2509.18085 , 2025. Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg. Structured denoising diffusion models in discrete state-spaces. Advances in neural information processing systems , 34:17981–17993, 2021. Heli Ben-Hamu, Itai Gat, Daniel Severo, Niklas Nolte, and Brian Karrer. Accelerated sampling from masked diffusion models via entropy bounded unmasking. In Advances in Neural Information Processing Systems , 2025. arXiv:2505.24857. Angela Castillo, Jonas Kohler, Juan C. P´ erez, Juan Pablo P´ erez, Albert Pumarola, Bernard Ghanem, Pablo Arbel´ aez, and Ali Thabet. Adaptive Guidance: Training-free Acceleration of Conditional Diffusion Models. arXiv preprint arXiv:2312.12487 , 2023. Junxia Cui, Haotian Ye, Runchu Tian, Hongcan Guo, Jinya Jiang, Haoru Li, Chaojie Ren, Yiming Huang, Kaijie Zhu, Zhongkai Yu, Kun Zhou, and Jingbo Shang. SimSD: Simple Speculative Decoding in Diffusion Language Models. arXiv preprint arXiv:2606.02544 , 2026. Giannis Daras, Hyungjin Chung, Chieh-Hsin Lai, Yuki Mitsufuji, Jong Chul Ye, Peyman Milan-far, Alexandros G Dimakis, and Mauricio Delbracio. A survey on diffusion models for inverse problems. arXiv preprint arXiv:2410.00083 , 2024. Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis. Advances in neural information processing systems , 34:8780–8794, 2021. Anh-Dung Dinh, Daochang Liu, and Chang Xu. Compress Guidance in Conditional Diffusion Sampling. arXiv preprint arXiv:2408.11194 , 2024. Leo Gao, John Schulman, and Jacob Hilton. Scaling laws for reward model overoptimization. In 
+
+International conference on machine learning , pp. 10835–10866. PMLR, 2023. Yifeng Gao, Ziang Ji, Yuxuan Wang, Biqing Qi, Hanlin Xu, and Linfeng Zhang. Self Speculative Decoding for Diffusion Large Language Models. arXiv preprint arXiv:2510.04147 , 2025. Google DeepMind. Gemini diffusion. https://blog.google/technology/ google-deepmind/gemini-diffusion/ , 2025. Ligong Han, Hao Wang, Han Gao, Kai Xu, and Akash Srivastava. S2D2: Fast Decoding for Diffu-sion LLMs via Training-Free Self-Speculation. arXiv preprint arXiv:2603.25702 , 2026. Feng Hong, Geng Yu, Yushi Ye, Haicheng Huang, Huangjie Zheng, Ya Zhang, Yanfeng Wang, and Jiangchao Yao. Wide-In, Narrow-Out: Revokable Decoding for Efficient and Effective DLLMs. 
+
+arXiv preprint arXiv:2507.18578 , 2025. Inception Labs. Mercury: Ultra-fast language models based on diffusion. arXiv preprint arXiv:2506.17298 , 2025. Daniel Israel, Guy Van den Broeck, and Aditya Grover. Accelerating diffusion llms via adaptive parallel decoding. Advances in neural information processing systems , 38:52870–52888, 2026. Bumjun Kim, Dongjae Jeon, Moongyu Jeon, and Albert No. Dapd: Dependency-aware parallel decoding via attention for diffusion llms. arXiv preprint arXiv:2603.12996 , 2026a. Minseo Kim, Coleman Hooper, Aditya Tomar, Chenfeng Xu, Mehrdad Farajtabar, Michael W. Ma-honey, Kurt Keutzer, and Amir Gholami. Beyond next-token prediction: A performance charac-terization of diffusion versus autoregressive language models. arXiv preprint arXiv:2510.04146 ,2025a. Seo Hyun Kim, Sunwoo Hong, Hojung Jung, Youngrok Park, and Se-Young Yun. KLASS: KL-guided fast inference in masked diffusion models. In Advances in Neural Information Processing Systems , 2025b. arXiv:2511.05664. 10 Yeongmin Kim, Donghyeok Shin, Byeonghu Na, Minsang Park, Richard Lee Kim, and Il-Chul Moon. Lookahead Sample Reward Guidance for Test-Time Scaling of Diffusion Models. arXiv preprint arXiv:2602.03211 , 2026b. Younjoo Lee, Seungkyun Dan, Junghoo Lee, Jaiyoung Park, and Jung Ho Ahn. DyLLM: Efficient diffusion LLM inference via saliency-based token selection and partial attention. arXiv preprint arXiv:2603.08026 , 2026. Bolian Li, Yifan Wang, Anamika Lochab, Ananth Grama, and Ruqi Zhang. Cascade Reward Sam-pling for Efficient Decoding-Time Alignment. arXiv preprint arXiv:2406.16306 , 2024. Kaihua Liang, Xin Tan, An Zhong, Hong Xu, and Marco Canini. FOCUS: DLLMs know how to tame their compute bound. In International Conference on Machine Learning , 2026. Baohao Liao, Yuhui Xu, Hanze Dong, Junnan Li, Christof Monz, Silvio Savarese, Doyen Sahoo, and Caiming Xiong. Reward-Guided Speculative Decoding for Efficient LLM Reasoning. arXiv preprint arXiv:2501.19324 , 2025. Anji Liu, Oliver Broadrick, Mathias Niepert, and Guy Van den Broeck. Discrete copula diffusion. In 
+
+International Conference on Learning Representations , volume 2025, pp. 88953–88979, 2025a. Yantao Liu, Zijun Yao, Rui Min, Yixin Cao, Lei Hou, and Juanzi Li. Rm-bench: Benchmarking re-ward models of language models with subtlety and style. In International Conference on Learning Representations , volume 2025, pp. 44323–44355, 2025b. Yuhao Liu, Liang Zeng, Yuzhen Xiao, Jujie He, Jiacai Liu, Chaojie Wang, Rui Yan, Wei Shen, Fuxiang Zhang, Jiacheng Xu, et al. Skywork-reward-v2: Scaling preference data curation via human-ai synergy. In International Conference on Learning Representations , volume 2026, pp. 133805–133838, 2026. Zhiyuan Liu, Yicun Yang, Yaojie Zhang, Junjie Chen, Chang Zou, Qingyan Wei, Shaobo Wang, Yichen Zhu, and Linfeng Zhang. dLLM-Cache: Accelerating diffusion large language models with adaptive caching. arXiv preprint arXiv:2506.06295 , 2025c. Zhengyao Lv, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K. Wong. FasterCache: Training-Free Video Diffusion Model Acceleration with High Quality. arXiv preprint arXiv:2410.19355 , 2024. Xinyin Ma, Runpeng Yu, Gongfan Fang, and Xinchao Wang. dKV-Cache: The cache for diffusion language models. In Advances in Neural Information Processing Systems , 2025. arXiv:2505.15781. Saumya Malik, Valentina Pyatkin, Sander Land, Jacob Morrison, Noah A. Smith, Hannaneh Ha-jishirzi, and Nathan Lambert. Rewardbench 2: Advancing reward model evaluation. arXiv preprint arXiv:2506.01937 , 2025. Sidharth Mudgal, Jong Lee, Harish Ganapathy, YaGuang Li, Tao Wang, Yanping Huang, Zhifeng Chen, Heng-Tze Cheng, Michael Collins, Trevor Strohman, Jilin Chen, Alex Beutel, and Ahmad Beirami. Controlled Decoding from Language Models. arXiv preprint arXiv:2310.17022 , 2023. Naoki Murata, Chieh-Hsin Lai, Yuhta Takida, Toshimitsu Uesaka, Bac Nguyen, Stefano Ermon, and Yuki Mitsufuji. G2d2: Gradient-guided discrete diffusion for inverse problem solving. arXiv preprint arXiv:2410.14710 , 2024. Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. Large language diffusion models. Advances in Neural Information Processing Systems , 38:50608–50646, 2026. Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to fol-low instructions with human feedback. In Advances in Neural Information Processing Systems ,volume 35, 2022. 11 Chinmay Pani, Zijing Ou, and Yingzhen Li. Test-time alignment of discrete diffusion models with sequential Monte Carlo. arXiv preprint arXiv:2505.22524 , 2025. Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. In Ad-vances in Neural Information Processing Systems , volume 36, 2023. Litu Rout, Andreas Lugmayr, Yasamin Jafarian, Srivatsan Varadharajan, Constantine Caramanis, Sanjay Shakkottai, and Ira Kemelmacher-Shlizerman. Test-time anchoring for discrete diffusion posterior sampling. arXiv preprint arXiv:2510.02291 , 2025. Jon Saad-Falcon, Rajan Vivek, William Berrios, Nandita Shankar Naik, Matija Franklin, Bertie Vidgen, Amanpreet Singh, Douwe Kiela, and Shikib Mehri. Lmunit: Fine-grained evaluation with natural language unit tests. In EMNLP (Findings) , pp. 3303–3324, 2025. Subham S Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin T Chiu, Alexander Rush, and Volodymyr Kuleshov. Simple and effective masked diffusion language models. Advances in Neural Information Processing Systems , 37:130136–130184, 2024. Raghav Singhal, Zachary Horvitz, Ryan Teehan, Mengye Ren, Zhou Yu, Kathleen McKeown, and Rajesh Ranganath. A general framework for inference-time scaling and steering of diffusion models. In International Conference on Machine Learning , 2025. Marta Skreta, Tara Akhound-Sadegh, Viktor Ohanesian, Roberto Bondesan, Al´ an Aspuru-Guzik, Arnaud Doucet, Rob Brekelmans, Alexander Tong, and Kirill Neklyudov. Feynman-Kac correc-tors in diffusion: Annealing, guidance, and product of experts. In International Conference on Machine Learning , 2025. Sijun Tan, Siyuan Zhuang, Kyle Montgomery, William Y. Tang, Alejandro Cuadron, Chenguang Wang, Raluca Ada Popa, and Ion Stoica. Judgebench: A benchmark for evaluating llm-based judges. In International Conference on Learning Representations , 2025. Atula Tejaswi, Litu Rout, Constantine Caramanis, Sanjay Shakkottai, and Sujay Sanghavi. Entropy aware reward guidance for diffusion language model alignment. arXiv preprint arXiv:2602.05000 , 2026. Darshan Thaker, Abhishek Goyal, and Ren´ e Vidal. Frequency-guided posterior sampling for diffusion-based image restoration. In 2025 IEEE/CVF International Conference on Computer Vision (ICCV) , pp. 12873–12882. IEEE, 2025. Guanghan Wang, Yair Schiff, Subham Sekhar Sahoo, and Volodymyr Kuleshov. Remasking Discrete Diffusion Models with Inference-Time Scaling. arXiv preprint arXiv:2503.00307 , 2025. Zichen Wen, Jiashu Qu, Zhaorun Chen, Xiaoya Lu, Dongrui Liu, Zhiyuan Liu, Ruixi Wu, Yicun Yang, Xiangqi Jin, Haoyun Xu, et al. The devil behind the mask: An emergent safety vulnerability of diffusion llms. In International Conference on Learning Representations , volume 2026, pp. 5460–5489, 2026. Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. Fast-dllm: Training-free acceleration of diffusion llm by enabling kv cache and parallel decoding. arXiv preprint arXiv:2505.22618 , 2025. Luhuan Wu, Brian L Trippe, Christian A Naesseth, David M Blei, and John P Cunningham. Prac-tical and asymptotically exact conditional sampling in diffusion models. In Advances in Neural Information Processing Systems , volume 36, 2023. Shutong Wu and Jiawei Zhang. Free Draft-and-Verification: Toward Lossless Parallel Decoding for Diffusion Large Language Models. arXiv preprint arXiv:2510.00294 , 2025. Yanzheng Xiang, Lan Wei, Yizhen Yao, Qinglin Zhu, Hanqi Yan, Chen Jin, Philip Alexander Teare, Dandan Zhang, Lin Gui, Amrutha Saseendran, and Yulan He. Stop the Flip-Flop: Context-Preserving Verification for Fast Revocable Diffusion Decoding. arXiv preprint arXiv:2602.06161 ,2026. 12 Zhen Xiong, Yujun Cai, Zhecheng Li, and Yiwei Wang. Unveiling the potential of diffusion large language model in controllable generation. In International Conference on Learning Representa-tions , volume 2026, pp. 66670–66686, 2026. Minkai Xu, Tomas Geffner, Karsten Kreis, Weili Nie, Yilun Xu, Jure Leskovec, Stefano Ermon, and Arash Vahdat. Energy-Based Diffusion Language Models for Text Generation. arXiv preprint arXiv:2410.21357 , 2024. Feihong Yan, Qingyan Wei, Jiayi Tang, Jiajun Li, Yulin Wang, Xuming Hu, Huiqi Li, and Linfeng Zhang. LazyMAR: Accelerating Masked Autoregressive Models via Feature Caching. arXiv preprint arXiv:2503.12450 , 2025. Jiacheng Ye, Jiahui Gao, Shansan Gong, Lin Zheng, Xin Jiang, Zhenguo Li, and Lingpeng Kong. Beyond autoregression: Discrete diffusion for complex reasoning and planning. In International Conference on Learning Representations , volume 2025, pp. 77875–77898, 2025a. Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. Dream 7b: Diffusion large language models. arXiv preprint arXiv:2508.15487 , 2025b. Siyan Zhao, Devaansh Gupta, Qinqing Zheng, and Aditya Grover. d1: Scaling reasoning in diffusion large language models via reinforcement learning. arXiv preprint arXiv:2504.12216 , 2025. Stephen Zhao, Rob Brekelmans, Alireza Makhzani, and Roger Grosse. Probabilistic inference in language models via twisted sequential Monte Carlo. In International Conference on Machine Learning , 2024. Fengqi Zhu, Rongzhen Wang, Shen Nie, Xiaolu Zhang, Chunwei Wu, Jun Hu, Jun Zhou, Jianfei Chen, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. LLaDA 1.5: Variance-reduced preference optimization for large language diffusion models. arXiv preprint arXiv:2505.19223 , 2025. 13 APPENDIX CONTENTS 
+
+A Extended Related Work 14 B Experimental Details 15 
+
+B.1 Benchmarks . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 B.2 Hyperparameters . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 B.3 Experimental Details for Section 3 . . . . . . . . . . . . . . . . . . . . . . . . . . 17 
+
+C FastGuide pseudocode 18 D Additional Experiments 19 
+
+D.1 Guidance Caching with other Reward Guidance Algorithms . . . . . . . . . . . . 19 D.2 FastGuide with Different Reward Models . . . . . . . . . . . . . . . . . . . . . . 19 D.3 Measuring Average Reward Model Performance and Throughput . . . . . . . . . . 20 D.4 Effect of Batching . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 D.5 Sparse dLLM Verification Window Size Ablation . . . . . . . . . . . . . . . . . . 24 D.6 Verification Order Ablation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 D.7 Effect of Greedy Token Selection . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 D.8 Extended Computational Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . 25 D.9 Qualitative Examples . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 
+
+A EXTENDED RELATED WORK 
+
+Other reward guidance methods. Aligning dLLM outputs with a reward can be done by fine-tuning or at inference time. Training-based approaches adapt RLHF-style objectives (Ouyang et al., 2022; Rafailov et al., 2023) to dLLMs, e.g., via policy-gradient or preference optimization (Zhao et al., 2025; Zhu et al., 2025), but require retraining whenever the reward changes. Training-free approaches instead steer a frozen dLLM at inference time and split into two families. Sampling-based methods such as Best-Of-N or Sequential Monte Carlo (SMC) methods only require reward evaluations, but can require many sequences/particles to be decoded (Wu et al., 2023; Zhao et al., 2024; Singhal et al., 2025; Skreta et al., 2025; Pani et al., 2025). Gradient-based methods instead differentiate the reward model with respect to the dLLM logits and steer a single trajectory, at the cost of a forward and backward pass through the reward model at every diffusion timestep (Murata et al., 2024; Rout et al., 2025; Tejaswi et al., 2026). One of the main challenges of reward guidance is obtaining gradients since the tokens in the input sequence are discrete. To tackle this, existing methods propose to use stop-gradient approximations (Rout et al., 2025) or take gradients with respect to the continuous token embeddings (Murata et al., 2024; Tejaswi et al., 2026). 
+
+Accelerating guidance. In continuous diffusion, the cost of guidance has been reduced by only computing classifier gradients on a subset of timesteps (Dinh et al., 2024), by skipping the classifier-free guidance residual (Castillo et al., 2023; Lv et al., 2024; Yan et al., 2025), or by replacing reward backpropagation with a closed-form estimate (Kim et al., 2026b). Our guidance caching has two key differences. In continuous diffusion, the state evolves smoothly with the noise level, so guid-ance reuse is controlled by a timestep schedule. In contrast, in masked dLLMs, the effect of guidance reuse is position-dependent as well as timestep-dependent. While guidance may change across the entire sequence, O1 demonstrates that at high-confidence positions (which are precisely the posi-tions that are unmasked), the guided token distribution is stable. Second, our work provides a novel observation as to how guidance interacts with the joint-marginal mismatch ( O2 ). For traditional au-toregressive LLMs, segment-level and blockwise methods amortize reward-model evaluations over 14 several tokens (Li et al., 2024; Mudgal et al., 2023; Liao et al., 2025), but they use the reward as a score for search or rejection rather than as a gradient, and further do not face the joint-marginal mismatch since tokens are generated sequentially. 
+
+Parallel decoding. We now review other parallel decoders. The first class uses external models to supply joint structure to mitigate the joint-marginal mismatch. For instance, Israel et al. (2026), Liu et al. (2025a), and Xu et al. (2024) use the structure from an autoregressive verifier, a copula, or an energy function respectively. However, in the reward-guided setting, this requires the auxiliary model to be consistent with the guided distribution, or yield similarly high-reward results. The sec-ond class is training-free self-verification methods. Self-speculative decoders (Gao et al., 2025; Wu & Zhang, 2025; Agrawal et al., 2025; Han et al., 2026; Cui et al., 2026) perform parallel generation by drafting several tokens and verifying each draft conditioned on the earlier ones, using batched full forward passes or a single pass over a duplicated sequence. However, the goal of these methods is to remain lossless by using rejection sampling techniques, which also do not cleanly extend to the reward-guided setting. The final class of methods is revocable parallel decoders (Wang et al., 2025; Hong et al., 2025; Xiang et al., 2026), which unmask first and re-mask tokens that fail a verification step. We emphasize that these methods have not been evaluated under gradient-based reward guid-ance, which presents its own challenges of guidance recomputation and the influence of guidance on token compatibilities (Section 3). FastGuide differs from these methods in two main ways. First, FastGuide trades exactness for cost: rather than relying on an auxiliary model or on full forward passes to remain lossless, it approximates each recomputed token distribution with a sparse forward pass over a small window (Ma et al., 2025), and we validate this approximation empirically (Section 4.2). Second, FastGuide acts before unmasking: the recomputed distribution is used to re-select the token value and to defer low-confidence candidates, rather than to accept or reject a drafted token or to re-mask a token after it has already entered the context. 
+
+Inference-time speedups. Several works have accelerated dLLM inference in the unguided set-ting beyond parallel decoding methods. The main challenge of accelerating dLLMs compared to standard autoregressive models is that dLLMs utilize bidirectional attention, so each token repre-sentation depends on every other token. In contrast, the use of causal attention for autoregressive models restricts dependencies of tokens to previously generated tokens. To address this, several works such as DyLLM (Lee et al., 2026), dKV-Cache (Ma et al., 2025), and dLLM-Cache (Liu et al., 2025c) propose methods to use selective attention, diffusion model layer skipping, and KV caching to speed up diffusion model forward passes. Our sparse dLLM recomputation primitive draws inspiration from these techniques. Our work goes beyond these methods by disentangling the update of dLLM logits and the guidance vector in reward-guided decoding, resulting in our hybrid decoding strategy. As Section 4 shows, autoregressive dLLM recomputation helps recondition the dLLM after every token unmasking, reducing token incompatibilities among co-proposed tokens, which guidance makes more frequent ( O2 ). We leave further optimization of dLLM forward passes such as attention-based KV caching (Lee et al., 2026) to future work. 
+
+B EXPERIMENTAL DETAILS 
+
+B.1 BENCHMARKS 
+
+The descriptions below use high reward and low reward for the preferred and rejected responses supplied by each benchmark. In our generation experiments, we use only the benchmark prompts as conditions, generate new responses with the dLLM, and score those responses with the reward model. Thus, we do not use the preferred and rejected responses for each benchmark during gener-ation. 
+
+JudgeBench. JudgeBench (Tan et al., 2025) evaluates whether a judge can distinguish objectively correct answers from plausible but incorrect ones in four categories: general knowledge, reasoning, mathematics, and coding. Prompts are difficult multiple-choice knowledge questions, logic prob-lems, competition-style mathematics problems, or programming specifications. Each example pairs two responses produced by the same model; the objectively correct response is the high-reward 15 response, while the response containing a subtle factual, logical, mathematical, or implementation error is the low-reward response. The benchmark consists of 270 prompts. 
+
+RM-Bench. RM-Bench (Liu et al., 2025b) tests whether reward models prioritize substantive quality over response style across five domains: chat , code , math , safety-refuse , and 
+
+safety-response . Prompts range from everyday information requests to programming, mathe-matics, and safety-sensitive questions. High-reward responses are correct, helpful, and appropriately safe, whereas low-reward responses contain a small but decisive error, unsafe guidance, or an un-necessary refusal. Each response is provided in concise, detailed plain-text, and detailed Markdown forms, allowing the benchmark to test whether polished style masks lower-quality content. The benchmark consists of 1327 prompts. 
+
+Reward-Bench-2. Reward-Bench-2 (Malik et al., 2025) covers factuality, precise instruction fol-lowing, mathematics, safety, focus, and ties. Its prompts include open-ended factual questions, tightly constrained writing tasks, mathematical problems, safety scenarios, and general queries for which an answer can be relevant or merely adjacent. High-reward responses are factually correct, satisfy the stated constraints, solve the problem, respect the appropriate safety boundary, and directly address the request; low-reward responses fail one or more of these criteria. The ties subset instead contains several equally valid high-reward answers and tests whether they are all ranked above in-valid alternatives without imposing an arbitrary ordering among the valid answers. The benchmark consists of 1825 prompts. B.2 HYPERPARAMETERS 
+
+Sampling Details. We fix the generation length L = 128 for all methods (excluding the bench-mark prompt). Tokens are sampled with temperature 0.7 for all methods, mirroring the evaluation of Tejaswi et al. (2026). For FastGuide, this applies both to the first token unmasked in each step and to every subsequent candidate, which is sampled from its recomputed guided distribution (Al-gorithm 1). Appendix D.7 evaluates the deterministic variant that takes the most likely recomputed token instead. 
+
+Reward Guidance Details. We follow the protocol of EntRGi (Tejaswi et al., 2026), where guid-ance consists of 3 gradient backpropagation steps of the reward model at every diffusion timestep. This choice was found to produce high-quality samples while mitigating reward hacking (Tejaswi et al., 2026). Since LLaDA (Nie et al., 2026) has a different tokenizer than the Skywork reward models, we adopt the choice of EntRGi and set the embedding of all non-overlapping tokens to be the zero embedding. Since existing parallel decoding baselines do not consider the guided setting, we tuned the hyperpa-rameters for each method separately. We consider two regimes of FastGuide: one which achieves higher quality, lower throughput and the other which achieves lower quality, higher throughput. We refer to these as the high-quality regime and the high-throughput regime , respectively. FastGuide uses a candidate pool size of k = 8 in the first and k = 16 in the second (evaluated in Appendix D). For each regime, we picked the hyperparameters of every baseline such that it gives the highest quality at throughput comparable to FastGuide in that regime. We measured quality via Top@1, although we found that using LMUnit to measure quality also did not change the hyperparameter choice. Each baseline was swept on 64 RM-Bench prompts. Below, we describe the hyperparame-ters for each baseline and summarize the choices for each hyperparameter in Table 2. 
+
+Fast-dLLM Hyperparameters. Fast-dLLM (Wu et al., 2025) has one key parameter, which is the confidence threshold c for unmasking. In every step, all tokens with confidence score higher than c
+
+are unmasked. 
+
+KLASS Hyperparameters. KLASS (Kim et al., 2025b) has three parameters: a confidence threshold c, a KL threshold ϵ, and a history length h. In every step, a token is unmasked if its confidence score is higher than c and the KL divergence between its predicted distributions at con-secutive steps has stayed below ϵ for the last h steps; if no token qualifies, the single most confident token is unmasked. We swept c ∈ [0 .1, 0.9] , ϵ ∈ [0 .001 , 5] , and h ∈ { 1, 2}. We found that the KL stability rule of KLASS does not generalize to guided distributions: at the published settings 16 (c = 0 .9, ϵ ≤ 0.01 , h = 2 ) it often defaults to sequential decoding, since many token distributions change drastically after guidance, and both thresholds must be relaxed substantially to unmask sev-eral tokens per step. Moreover, once the remaining masked positions predict the end-of-sequence token, the rule can stop accepting tokens altogether. This explains why KLASS has much longer and more variable inference time compared to other baselines in Table 1. 
+
+EB-Sampler Hyperparameters. EB-Sampler (Ben-Hamu et al., 2025) has one key parameter, which is the entropy budget γ. In every step, masked tokens are sorted by increasing entropy of their predicted distribution, and the longest prefix whose total entropy, excluding its largest entry, is at most γ is unmasked. The lowest-entropy token is always unmasked, so γ = 0 recovers sequential decoding and larger γ unmasks more tokens per step. We swept γ ∈ [0 .1, 16] .
+
+DAPD Hyperparameters. DAPD (Kim et al., 2026a) builds a dependency graph over masked tokens, connecting two tokens if their symmetrized attention score (averaged over heads and over the top 30% of layers) exceeds a threshold, and unmasks an independent set of this graph in every step. The threshold increases linearly during decoding from τmin = 0 .005 to τmax = 0 .05 . Once fewer than half of the tokens remain masked, DAPD additionally unmasks all tokens with confidence score higher than 0.9. We sweep the threshold schedule by multiplying by a single scale s, since larger thresholds remove edges from the graph and unmask more tokens per step. We swept s ∈ [0 .5, 32] .
+
+Method High-quality regime High-throughput regime 
+
+Confidence top-4 per step top-8 per step Fast-dLLM c = 0 .8 c = 0 .6
+
+KLASS c = 0 .4, ϵ = 1 .5, h = 1 c = 0 .25 , ϵ = 1 .0, h = 1 
+
+EB-Sampler γ = 4 γ = 16 
+
+DAPD schedule scale s = 4 schedule scale s = 16 
+
+FastGuide k = 8 , τ = 0 .5, w = 2 k = 16 , τ = 0 .5, w = 2 
+
+Table 2: Operating points of all parallel decoders. The high-quality regime trades throughput for quality, and the high-throughput regime trades quality for throughput. 
+
+LMUnit Details. The LMUnit score uses a judge LLM to give a score from 1 to 5. Following Tejaswi et al. (2026), we do not treat LMUnit as the primary quality metric. Instead, it provides an independent assessment of response quality to help detect potential reward overoptimization (Gao et al., 2023). We use the prompt in Figure 10 as input to LMUnit, similar to Saad-Falcon et al. (2025) and Tejaswi et al. (2026). Each response is scored on five fixed unit tests, and we report the mean.                    
+
+> LMUnit input
+> Query: {benchmark prompt }
+> Response: {generated response }
+> Unit Test: {unit test }
+> Unit tests (each response is scored on all five; we report the mean) Relevance
+> Does the response directly and effectively address the user’s request?
+> Correctness
+> Is the information in the response correct and reliable?
+> Clarity
+> Is the response well-structured, clear, and fluent?
+> Completeness
+> Does the response appropriately address the full scope of the question?
+> Safety
+> Is the response free from harmful, biased, or inappropriate content?
+
+Figure 10: Prompts given to the LMUnit judge. We also include in the system message the phrase 
+
+rationale=No , which instructs LMUnit to output only a score for the given unit test without a written rationale as suggested by Saad-Falcon et al. (2025) B.3 EXPERIMENTAL DETAILS FOR SECTION 3All diagnostic experiments in Section 3 use Dream-7B with the smaller 
+
+Skywork-Reward-V2-Qwen3-0.6B reward model on 250 RM-Bench prompts (50 per domain), with the sampling and guidance settings of Appendix B.2. 17 Reuse versus recomputation (Figure 3). At every step, the k ∈ { 2, 4, 8} most confident positions under the guided distribution at the start of the step are fixed as the candidate set and unmasked in descending confidence. The first token is always sampled from the distribution at the start of the step. For tokens 2, . . . , k , the four variants of Equation 5 either reuse or recompute the dLLM logits (with an exact full forward pass) and the guidance vector. We generate one trajectory per prompt and report the mean reward model score. 
+
+Guidance reuse (Figure 4a). At every step t and every masked position we form two guided distributions from the current dLLM logits: one with the guidance vector computed at step t and one with the guidance vector computed at step t − (k − 1) , which is the oldest guidance that a parallel step of size k would reuse. The curves for k = 2 , 4, 8 therefore correspond to guidance that is 1, 3,and 7 steps old. We report the total-variation distance between the two distributions, binned by the confidence of the position at the time the older guidance was computed. Since guidance computation is stochastic, we fix random seeds depending on position and guidance iteration, isolating only the effect of guidance caching. 
+
+Guidance increases incompatible proposals (Figure 4b). Along a sequential decoding trajec-tory, we examine 64 evenly spaced states. At each state, we compute the token proposal candi-dates without guidance and with guidance from the same state, so the comparison changes only the guidance and not the context. For each, we take the two most confident positions a and b
+
+with proposed tokens xa and xb, which is the pair that a parallel decoder with k = 2 would unmask. We then unmask xa, run one additional unguided dLLM forward pass, and compute 
+
+PMI = log p(xb | xa) − log p(xb) under the dLLM. A pair is counted as incompatible if its PMI is less than −1, that is, if unmasking the first token lowers the dLLM log probability of the second by a factor of e. We include this margin to rule out cases where the probability only decreases by a small amount, which may not signal a true incompatibility. The figure reports, for each prompt, the number of incompatible pairs among its 64 states. Note that this experiment does not imply parallel decoding is necessarily reliable without guidance (since the joint-marginal mismatch still persists). 
+
+C FAST GUIDE PSEUDOCODE 
+
+Algorithm 1 summarizes one hybrid decoding step of FastGuide as described in Section 3. 
+
+Algorithm 1 One hybrid decoding step of FastGuide.                                                                   
+
+> Require: State xt, candidate budget k, window radius w, threshold τ
+> 1: Compute ℓt, 0and rt, 0with one full guided pass; cache all K/V states 2: Rank masked positions by decreasing guided confidence to obtain (a1, . . . , a k)
+> 3: Sample a token at a1from the guided distribution and commit it; set aprev ←a1
+> 4: for j= 2 , . . . , k do
+> 5: Wj←windows of radius waround aprev and candidate aj
+> 6: Recompute K/V states at positions in Wjin every layer and overwrite the corresponding cache entries 7: Sparsely refresh bℓaj
+> t,j −1with queries in Wjattending to the updated cache 8: ϕaj
+> t,j ←bℓaj
+> t,j −1+raj
+> t, 0;sample cj∼softmax( ϕaj
+> t,j /T )
+> 9: if max csoftmax( ϕaj
+> t,j )( c)≥τthen
+> 10: Commit cjat aj;aprev ←aj
+> 11: end if
+> 12: end for
+> 13: return Updated partially masked state
+
+For the Dream text diffusion model (Ye et al., 2025b), logits for candidate aj are produced at position 
+
+aj − 1, so we center the attention window at that location. For the LLaDA text diffusion model (Nie et al., 2026), we center the window at aj .18 D ADDITIONAL EXPERIMENTS 
+
+D.1 GUIDANCE CACHING WITH OTHER REWARD GUIDANCE ALGORITHMS 
+
+Table 3 shows the performance of FastGuide on other popular reward guidance methods on JudgeBench and RM-Bench. The first is the method of Murata et al. (2024) (titled Expectation), which uses the expected token embedding as input to the reward model. The second is the method of Rout et al. (2025) (titled APS), which samples from the token distribution to generate an input to the reward model. Table 3 demonstrates that FastGuide is robust to the reward guidance algorithm and consistently retains the performance of the corresponding sequential decoding algorithm using the same guidance method. 
+
+Dream-7B Method Top@1 Seq Gap LMUnit s/gen 
+
+JudgeBench 
+
+Conf +2 .53 ±.16 – 4.05 ±.03 37 .3±15 .5
+
+Conf (Expectation) +2 .61 ±.17 – 4.07 ±.03 37 .3±16 .4
+
+> SEQ
+
+Conf (APS) +2 .06 ±.16 – 4.04 ±.03 37 .0±15 .8
+
+> PARALLEL
+
+Conf +0 .38 ±.20 −2.15 3.64 ±.04 9.7±3.8
+
+Conf (Expectation) −0.26 ±.20 −2.88 3.53 ±.04 9.6±3.9
+
+Conf (APS) −0.75 ±.20 −2.81 3.53 ±.04 9.7±3.8
+
+FastGuide +2.08 ±.17 −0.45 4.02 ±.03 9.6±5.0
+
+FastGuide (Expectation) +1 .99 ±.18 −0.62 3.99 ±.03 10 .5±5.6
+
+FastGuide (APS) +1 .68 ±.17 −0.38 3.96 ±.03 10 .3±5.1
+
+RM-Bench 
+
+Conf +5 .42 ±.11 – 4.15 ±.02 22 .9±6.9
+
+Conf (Expectation) +5 .18 ±.11 – 4.14 ±.02 22 .4±7.0
+
+> SEQ
+
+Conf (APS) +5 .12 ±.11 – 4.13 ±.02 22 .7±6.9
+
+> PARALLEL
+
+Conf +2 .32 ±.14 −3.09 3.61 ±.02 5.8±1.7
+
+Conf (Expectation) +1 .61 ±.14 −3.56 3.46 ±.02 5.4±1.8
+
+Conf (APS) +1 .13 ±.14 −3.98 3.45 ±.02 5.5±1.7
+
+FastGuide +4.70 ±.12 −0.72 4.04 ±.02 6.2±1.5
+
+FastGuide (Expectation) +4.70 ±.12 −0.47 4.05 ±.02 6.5±2.0
+
+FastGuide (APS) +4 .25 ±.12 −0.86 4.00 ±.02 6.6±2.2
+
+Table 3: Generalization across reward-guidance objectives. FastGuide stays close to sequen-tial decoding under the Expectation and APS objectives (in parentheses), while confidence-based parallel decoding degrades under all three. D.2 FAST GUIDE WITH DIFFERENT REWARD MODELS 
+
+Table 4 tests the performance of FastGuide on different reward models in addition to the Skywork-Qwen3-1.7B reward model tested in Table 1. For the Qwen3-0.6B and Llama-3.1-8B model, Fast-Guide similarly retains the performance of sequential decoding. Guidance caching and sparse dLLM recomputation become more important for inference time since guidance computation and the as-sociated reward model backpropagation scales with the reward model size. On Skywork-Llama-3.1-8B, inference time decreases from 88.1 seconds to only 17.9 seconds, yielding a 4.9× speedup. Since the Llama-3.1-8B reward model does not fit on one A5000 GPU together with the dLLM, all methods in that block are timed with the reward model on a second GPU. The other two blocks use a single GPU. 19 Dream-7B Method Top@1 Seq Gap LMUnit s/gen 
+
+JudgeBench , Skywork-Reward-V2-Qwen3-0.6B (smaller) Conf (BoN) +1 .72 ±.13 – 3.90 ±.03 11 .3±5.4
+
+Conf (Expectation) +2 .86 ±.13 – 4.03 ±.03 29 .7±16 .8
+
+Conf (APS) +2 .46 ±.12 – 4.02 ±.03 30 .0±16 .9
+
+> SEQ
+
+Conf +2 .66 ±.12 – 3.99 ±.03 29 .9±16 .3
+
+> PAR
+
+Conf +0 .74 ±.16 −1.92 3.61 ±.04 7.6±4.1
+
+DAPD +2 .09 ±.14 −0.57 3.90 ±.03 7.2±3.9
+
+FastGuide +2.34 ±.13 −0.32 3.97 ±.03 7.5±3.5
+
+JudgeBench , Skywork-Reward-V2-Qwen3-1.7B (Table 1) Conf (BoN) +1 .52 ±.16 – 3.97 ±.03 10 .8±4.7
+
+Conf (Expectation) +2 .62 ±.17 – 4.06 ±.03 37 .3±16 .4
+
+Conf (APS) +2 .05 ±.16 – 4.04 ±.03 37 .0±15 .8
+
+> SEQ
+
+Conf +2 .52 ±.16 – 4.04 ±.03 37 .3±15 .5
+
+> PAR
+
+Conf +0 .35 ±.21 −2.17 3.63 ±.04 9.7±3.8
+
+DAPD +1 .89 ±.17 −0.63 3.96 ±.03 8.6±3.3
+
+FastGuide +2.07 ±.16 −0.45 4.02 ±.03 9.6±5.0
+
+JudgeBench , Skywork-Reward-V2-Llama-3.1-8B (larger) Conf (BoN) +7 .28 ±.32 – 3.96 ±.03 11 .2±5.5
+
+Conf (Expectation) +8 .86 ±.31 – 4.04 ±.03 86 .9±46 .5
+
+Conf (APS) +8 .68 ±.31 – 3.99 ±.03 88 .2±46 .3
+
+> SEQ
+
+Conf +9 .30 ±.32 – 4.04 ±.03 88 .1±46 .0
+
+> PAR
+
+Conf +5 .25 ±.35 −4.05 3.64 ±.04 22 .7±11 .4
+
+DAPD +7 .49 ±.36 −1.81 3.87 ±.03 19 .2±10 .0
+
+FastGuide +8.29 ±.31 −1.01 3.94 ±.03 17 .9±9.7
+
+Table 4: Robustness to the reward model on JudgeBench. 
+
+D.3 MEASURING AVERAGE REWARD MODEL PERFORMANCE AND THROUGHPUT 
+
+In this section, we evaluate the Avg@4 metric, which is the average reward model performance over 
+
+4 trajectories, as well as show the average throughput (tokens unmasked per step) for all methods. Table 5 and Table 7 show these for Dream and LLaDA text diffusion models respectively. Average reward model performance highlights the same trends as the top reward model performance. On both models and all three benchmarks, FastGuide attains the highest Avg@4 among parallel decoders and stays within 1.1 points of sequential decoding, essentially matching it on Reward-Bench-2. In contrast, the strongest baseline, DAPD, trails sequential decoding by up to 2.14 , and every other guided baseline by at least 2.4. On LLaDA, Fast-dLLM and KLASS unmask more tokens per step on JudgeBench and RM-Bench (up to 10 .8), but at a large cost in quality, showing that a high number of tokens per step alone does not translate into a better quality-efficiency tradeoff under guidance. Additionally, we consider varying throughput by increasing k for FastGuide to 16 candidate tokens per step, showing results on Dream diffusion model in Table 6. Baseline hyperparameters were adjusted accordingly (see Appendix B.2). In this regime, the gap to sequential decoding grows sub-stantially for all baselines: the Seq Gap of Confidence roughly doubles (from −2.15 to −3.09 in Table 5 to −4.26 to −5.95 ), and that of DAPD, the strongest baseline, grows from at most −1.83 to as much as −4.07 . Baselines do become faster ( 2.6–4.9 seconds per generation, excluding KLASS), but only at this cost in quality. In contrast, the Seq Gap of FastGuide remains within 1.20 on all three benchmarks. Notably, although FastGuide now considers 16 candidates per step, its throughput only increases from 4.4–5.7 to 5.5–8.0 tokens per step, and its inference time is essentially unchanged (6.2–9.6 versus 5.9–8.4 seconds per generation). This is because many of the additional candi-dates fall below the confidence threshold after recomputation and are deferred to later steps. This highlights the benefit of adaptivity. Rather than trading quality for speed at a fixed rate, FastGuide unmasks additional tokens only when they remain compatible with the tokens already unmasked in the same step. 20 Dream-7B Method Top@1 Seq Gap Avg@4 LMUnit tok/step s/gen 
+
+JudgeBench 
+
+Conf (BoN) +1 .52 ±.16 – −1.07 ±.15 3.97 ±.03 1.00 10 .8±4.7
+
+> SEQ
+
+Conf +2 .53 ±.16 – +0 .08 ±.15 4.05 ±.03 1.00 37 .3±15 .5
+
+> PARALLEL
+
+Conf (BoN) −3.14 ±.20 −4.66 −6.04 ±.17 3.01 ±.05 4.00 2.7±1.1
+
+Conf +0 .38 ±.20 −2.15 −2.64 ±.19 3.64 ±.04 4.00 9.7±3.8
+
+Fast-dLLM +0 .26 ±.21 −2.27 −2.66 ±.20 3.62 ±.05 5.16 7.9±4.1
+
+KLASS −0.06 ±.22 −2.59 −2.89 ±.21 3.61 ±.05 5.10 10 .8±12 .5
+
+EB-Sampler −0.49 ±.19 −3.02 −3.34 ±.17 3.49 ±.04 4.60 9.4±3.5
+
+DAPD +1 .92 ±.17 −0.61 −0.78 ±.18 3.95 ±.03 4.41 8.6±3.3
+
+FastGuide +2.08 ±.17 −0.45 −0.47 ±.16 4.02 ±.03 5.67 9.6±5.0
+
+RM-Bench 
+
+Conf (BoN) +4 .41 ±.12 – +1 .76 ±.13 4.06 ±.02 1.00 6.3±1.9
+
+> SEQ
+
+Conf +5 .42 ±.11 – +3 .05 ±.12 4.15 ±.02 1.00 22 .9±6.9
+
+> PARALLEL
+
+Conf (BoN) −1.96 ±.14 −6.37 −4.71 ±.13 2.75 ±.02 4.00 1.6±.5
+
+Conf +2 .32 ±.14 −3.09 −0.83 ±.15 3.61 ±.02 4.00 5.8±1.7
+
+Fast-dLLM +1 .34 ±.15 −4.08 −1.36 ±.15 3.51 ±.03 5.27 5.6±2.2
+
+KLASS +0 .38 ±.15 −5.04 −2.18 ±.14 3.33 ±.03 5.28 9.6±9.9
+
+EB-Sampler +0 .40 ±.15 −5.01 −2.15 ±.15 3.20 ±.02 4.38 5.9±2.0
+
+DAPD +3 .58 ±.13 −1.83 +0 .91 ±.14 3.87 ±.02 4.34 5.9±1.3
+
+FastGuide +4.70 ±.12 −0.72 +2.11 ±.13 4.04 ±.02 5.43 6.2±1.5
+
+Reward-Bench-2 
+
+Conf (BoN) +2 .60 ±.10 – +0 .69 ±.10 4.18 ±.01 1.00 5.5±1.4
+
+> SEQ
+
+Conf +3 .39 ±.10 – +1 .64 ±.10 4.23 ±.01 1.00 20 .4±5.2
+
+> PARALLEL
+
+Conf (BoN) −1.98 ±.09 −4.58 −4.33 ±.09 2.95 ±.02 4.00 1.4±.4
+
+Conf +1 .24 ±.10 −2.15 −1.27 ±.10 3.78 ±.02 4.00 5.2±1.2
+
+Fast-dLLM +1 .36 ±.11 −2.03 −0.94 ±.11 3.82 ±.02 4.16 6.8±2.5
+
+KLASS +1 .06 ±.10 −2.33 −1.14 ±.10 3.83 ±.02 3.48 15 .7±13 .3
+
+EB-Sampler +0 .56 ±.10 −2.83 −1.64 ±.10 3.57 ±.02 3.52 6.6±2.0
+
+DAPD +3 .01 ±.10 −0.38 +1 .07 ±.10 4.15 ±.01 3.86 6.2±1.7
+
+FastGuide +3.25 ±.10 −0.14 +1.43 ±.10 4.19 ±.01 4.40 7.3±2.1
+
+Table 5: Full results on Dream-7B with Avg@4 and tokens/step added. 
+
+21 Dream-7B Method Top@1 Seq Gap LMUnit tok/step s/gen 
+
+JudgeBench 
+
+Conf (BoN) +1 .52 ±.16 – 3.97 ±.03 1.00 10 .8±4.7
+
+> SEQ
+
+Conf +2 .53 ±.16 – 4.05 ±.03 1.00 37 .3±15 .5
+
+> PARALLEL
+
+Conf −1.91 ±.20 −4.45 3.04 ±.05 8.00 4.8±1.9
+
+Fast-dLLM −2.13 ±.23 −4.66 3.04 ±.06 8.63 4.9±2.5
+
+KLASS −2.29 ±.23 −4.82 3.00 ±.06 7.83 8.3±10 .5
+
+EB-Sampler −3.27 ±.16 −5.80 2.60 ±.04 9.50 4.5±1.6
+
+DAPD +0 .26 ±.20 −2.27 3.67 ±.04 8.46 4.8±1.7
+
+FastGuide +1.84 ±.18 −0.69 3.96 ±.03 8.02 8.4±3.9
+
+RM-Bench 
+
+Conf (BoN) +4 .41 ±.12 – 4.06 ±.02 1.00 6.3±1.9
+
+> SEQ
+
+Conf +5 .42 ±.11 – 4.15 ±.02 1.00 22 .9±6.9
+
+> PARALLEL
+
+Conf −0.54 ±.16 −5.95 2.90 ±.03 8.00 2.9±.9
+
+Fast-dLLM −1.20 ±.16 −6.62 2.83 ±.03 8.99 3.4±1.6
+
+KLASS −1.63 ±.16 −7.05 2.75 ±.03 8.29 7.4±10 .9
+
+EB-Sampler −2.48 ±.15 −7.90 2.31 ±.02 9.27 2.8±.9
+
+DAPD +1 .34 ±.16 −4.07 3.51 ±.02 7.77 3.6±.7
+
+FastGuide +4.21 ±.12 −1.20 3.99 ±.02 7.65 5.9±1.7
+
+Reward-Bench-2 
+
+Conf (BoN) +2 .60 ±.10 – 4.18 ±.01 1.00 5.5±1.4
+
+> SEQ
+
+Conf +3 .39 ±.10 – 4.23 ±.01 1.00 20 .4±5.2
+
+> PARALLEL
+
+Conf −0.87 ±.11 −4.26 3.08 ±.02 8.00 2.6±.6
+
+Fast-dLLM −0.49 ±.12 −3.88 3.25 ±.02 7.46 4.5±2.0
+
+KLASS −0.67 ±.11 −4.06 3.30 ±.02 5.96 13 .5±13 .4
+
+EB-Sampler −1.99 ±.10 −5.38 2.61 ±.02 8.22 2.9±.8
+
+DAPD +1 .71 ±.10 −1.68 3.93 ±.02 6.84 3.8±1.0
+
+FastGuide +3.15 ±.10 −0.24 4.18 ±.01 5.54 8.2±2.6
+
+Table 6: Results on Dream-7B with higher candidate token set size of k = 16 for FastGuide. 
+
+22 LLaDA-8B Method Top@1 Seq Gap Avg@4 LMUnit tok/step s/gen 
+
+JudgeBench 
+
+Conf (BoN) +2 .65 ±.21 – +0 .51 ±.20 4.05 ±.03 1.00 11 .8±5.1
+
+> SEQ
+
+Conf +3 .23 ±.20 – +1 .31 ±.20 4.08 ±.03 1.00 45 .3±18 .5
+
+> PARALLEL
+
+Conf (BoN) −2.23 ±.22 −4.88 −4.87 ±.19 3.05 ±.05 4.00 3.0±1.3
+
+Conf +1 .54 ±.22 −1.69 −1.17 ±.21 3.78 ±.04 4.00 11 .8±5.1
+
+Fast-dLLM −0.12 ±.21 −3.35 −2.58 ±.19 3.39 ±.05 9.17 6.5±2.9
+
+KLASS −0.81 ±.19 −4.04 −3.14 ±.17 3.10 ±.05 10 .81 5.6±2.7
+
+EB-Sampler +0 .09 ±.21 −3.14 −2.40 ±.20 3.52 ±.04 5.34 10 .1±3.8
+
+DAPD +2 .74 ±.22 −0.49 +0 .46 ±.21 3.99 ±.04 5.06 9.4±4.2
+
+FastGuide +2.76 ±.21 −0.47 +0.64 ±.21 4.03 ±.03 6.63 10 .3±3.4
+
+RM-Bench 
+
+Conf (BoN) +4 .39 ±.12 – +1 .89 ±.13 3.94 ±.02 1.00 6.6±2.2
+
+> SEQ
+
+Conf +5 .25 ±.11 – +3 .05 ±.12 4.02 ±.02 1.00 24 .9±8.8
+
+> PARALLEL
+
+Conf (BoN) −1.57 ±.14 −5.96 −4.41 ±.12 2.79 ±.02 4.00 1.7±.5
+
+Conf +2 .83 ±.13 −2.43 −0.24 ±.13 3.63 ±.02 4.00 6.3±2.2
+
+Fast-dLLM +0 .74 ±.14 −4.51 −2.01 ±.13 3.31 ±.03 6.86 4.5±1.7
+
+KLASS −0.11 ±.14 −5.36 −2.64 ±.13 3.03 ±.03 8.13 4.1±1.9
+
+EB-Sampler +0 .49 ±.15 −4.76 −2.07 ±.14 3.19 ±.02 5.05 5.9±1.6
+
+DAPD +4 .36 ±.12 −0.89 +1 .77 ±.13 3.90 ±.02 4.54 6.2±2.3
+
+FastGuide +4.53 ±.12 −0.72 +1.95 ±.13 3.92 ±.02 6.07 6.5±1.8
+
+Reward-Bench-2 
+
+Conf (BoN) +2 .19 ±.09 – +0 .13 ±.09 4.00 ±.02 1.00 6.1±1.6
+
+> SEQ
+
+Conf +2 .88 ±.09 – +0 .98 ±.09 4.05 ±.02 1.00 26 .9±9.3
+
+> PARALLEL
+
+Conf (BoN) −2.22 ±.08 −4.41 −4.63 ±.07 2.88 ±.02 4.00 1.5±.4
+
+Conf +0 .98 ±.09 −1.90 −1.50 ±.09 3.67 ±.02 4.00 6.6±2.3
+
+Fast-dLLM +0 .05 ±.09 −2.83 −2.32 ±.09 3.55 ±.02 5.05 7.9±4.0
+
+KLASS −0.09 ±.09 −2.97 −2.38 ±.09 3.44 ±.02 5.63 8.0±4.4
+
+EB-Sampler +0 .01 ±.09 −2.87 −2.34 ±.08 3.40 ±.02 4.22 9.0±3.1
+
+DAPD +2 .49 ±.09 −0.39 +0 .62 ±.09 4.00 ±.02 4.01 7.2±2.2
+
+FastGuide +2.58 ±.09 −0.30 +0.64 ±.09 4.00 ±.02 5.27 7.3±2.5
+
+Table 7: Full results on LLaDA-8B with Avg@4 and tokens/step added. 
+
+23 D.4 EFFECT OF BATCHING 
+
+The standard dLLM forward pass uses bidirectional attention, making it a largely compute-bound operation on modern GPUs (Kim et al., 2025a; Liang et al., 2026). In contrast, sparse verification drastically reduces the FLOPs per forward pass (e.g. with a window size of 2 and sequence length of 128 , sparse forward pass is only 4% FLOPs of a full forward pass). Yet, the inference time of the sparse forward pass does not retain the same speedups as reduction in FLOPs due to GPU memory overhead. Specifically, sparse dLLM recomputation transforms the compute-bound forward pass into a memory-bound operation. Thus, typical strategies from autoregressive language models such as batching can increase speedups since a single pass over the weights serves all generations in the batch. We study how batching affects the inference time of FastGuide by decoding B ∈ { 1, 2, 3, 4} gener-ations of the same prompt together (over 50 RM-Bench prompts) and reporting the per-generation wall-clock time. Figure 11 shows that as batch size increases, sparse recomputation improves more upon exact recomputation and speedups increase. FastGuide improves from 15 .3 to 5.7 seconds per generation as B grows from 1 to 4 (2.7×), whereas its exact recomputation counterpart improves only from 18 .5 to 10 .8 seconds ( 1.7×). Consequently, the speedup of sparse over exact recomputa-tion grows with the batch size, from 1.21 × at B=1 to 1.89 × at B=4 , and the speedup of FastGuide over sequential guided decoding grows from 2.9× to 3.4×. The batch size at which optimal perfor-mance is obtained is a function of the GPU memory, but this illustrates an added benefit of sparse dLLM recomputation. 1 2 3 4Batch size 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5 s / generation    
+
+> Exact verification Sparse verification
+> 1234Batch size 1.0 1.2 1.4 1.6 1.8 Speedup over exact verification
+
+Figure 11: Sparse dLLM verification benefits more from batching than exact recomputation. 
+
+Left: inference time per generation; right: speedup of sparse over exact recomputation. D.5 SPARSE D LLM V ERIFICATION WINDOW SIZE ABLATION 
+
+While Figure 9 shows the TV distance between sparse and exact recomputation, we now measure the impact on generation quality through the Top@1 reward model score. We sweep the window size of sparse recomputation in Figure 12. The figure illustrates that even a small window size of 2
+
+recovers a significant proportion of generation quality of sequential guided decoding. The dashed lines labeled Exact show exact dLLM recomputation with a full forward pass at the same k, further highlighting that sparse recomputation is a useful approximation of exact dLLM recomputation. The remaining gap to sequential decoding is therefore not caused by sparsity, but by fixing the tokens to be unmasked. Confidence deferral aims to address this problem by adding adaptivity into the sampling procedure (Figure 6). 24 0 1 2 4Window Radius w        
+
+> 1.5 2.0 2.5 3.0 3.5 Top@1 reward
+> Sequential
+> Sparse, k= 4 Sparse, k= 8 Exact, k= 4 Exact, k= 8
+
+Figure 12: Quality versus recomputation win-dow radius w on RM-Bench. We evaluate sparse dLLM recomputation as a function of window ra-dius w. Here, we remove confidence deferral so all k candidates per step are unmasked. 
+
+Dream-7B Verification order Top@1 
+
+RM-Bench 
+
+Left → right +5 .62 ±.51 
+
+High → low confidence +5.63 ±.51 
+
+Low → high confidence +5 .61 ±.50 
+
+Random +5 .60 ±.48 
+
+Table 8: Verification order ablation on RM-Bench ( k=4 ). The order in which candidates are verified has no measurable effect on qual-ity. D.6 VERIFICATION ORDER ABLATION 
+
+Autoregressive dLLM verification relies on an ordering of the candidates within each hybrid decod-ing step (Section 3). In the main paper, we fix this ordering to be from high to low confidence. We study other ordering schemes in Table 8. We remove confidence deferral and unmask exactly k = 4 
+
+tokens each step to isolate the role of ordering. We find that the ordering schemes within each hybrid decoding step do not meaningfully affect the results, as the dLLM is always reconditioned on each previous unmasking. D.7 EFFECT OF GREEDY TOKEN SELECTION 
+
+FastGuide samples every unmasked token at temperature 0.7, similar to the setting for all baseline methods (Appendix B.2). A natural deterministic variant instead unmasks each candidate after the first of a step as the most likely token under its recomputed distribution. Table 9 compares the two on the full RM-Bench test set. Greedy selection improves Top@1 by 0.30 and LMUnit by 0.05 at a slightly higher throughput, making it a reasonable strategy when determinism is desired. 
+
+Token selection in FastGuide Top@1 LMUnit tok/step s/gen 
+
+Sampled at temperature 0.7 (default) +4 .70 ±.12 4.04 ±.02 5.43 6.2±1.5
+
+Most likely token +5 .00 ±.12 4.09 ±.02 5.59 6.1±1.6
+
+Table 9: Greedy selection of recomputed tokens slightly improves FastGuide. RM-Bench, Dream-7B, k = 8 
+
+D.8 EXTENDED COMPUTATIONAL ANALYSIS 
+
+Table 10 reports peak GPU memory and teraFLOPs per generation on RM-Bench. Most of the FLOPs at inference time are dominated by guidance steps, so guidance caching results in a major reduction in compute compared to sequential guided decoding. FastGuide further uses fewer FLOPs than other methods because sparse dLLM recomputation lets FastGuide unmask more tokens in each step, and each sparse recomputation pass uses far less compute than a full forward pass. In the high-throughput regime ( k = 16 for FastGuide), more tokens are deferred than baselines such as DAPD, resulting in slightly increased compute. Across all methods, FastGuide does not increase the peak memory usage, which is dominated by loading of diffusion model weights and reward model weights. In terms of inference time, Table 11 shows the breakdown of time in full dLLM forwards (computed once at the start of each hybrid decoding step), guidance computation (computed once at the start 25 of each hybrid decoding step), and sparse dLLM forwards (computed k − 1 times for every hybrid decoding step).                                     
+
+> Dream-7B Method VRAM (GB) TFLOPs/gen
+> Conf (BoN) 20 .1383
+> Conf (Expectation) 21 .31,056
+> Conf (APS) 21 .31,053
+> SEQ
+> Conf 21 .31,055
+> PARALLEL HIGH -QUALITY
+> Conf (BoN) 20 .196
+> Conf 21 .3265
+> Fast-dLLM 21 .6222
+> KLASS 21 .9312
+> EB-Sampler 21 .6253
+> DAPD 21 .4249
+> FastGuide 21 .4216
+> PARALLEL HIGH -THROUGHPUT  Conf 21 .3133
+> Fast-dLLM 21 .6136
+> KLASS 21 .9230
+> EB-Sampler 21 .6122
+> DAPD 21 .4146
+> FastGuide 21 .4179
+
+Table 10: Computational profile on RM-Bench. Peak memory and total com-pute per generation for every method in both regimes of Table 2. 
+
+FastGuide ( k=8 )(s/gen) Sequential w/o deferral w/ deferral 
+
+dLLM forwards 4.92 ±.52 0.62 ±.07 1.05 ±.15 
+
+Sparse recomputation – 0.92 ±.01 1.64 ±.30 
+
+Guidance 13 .60 ±1.13 1.70 ±.15 3.12 ±.49 
+
+Total 18 .85 ±1.62 3.31 ±.22 5.94 ±.93 
+
+Table 11: Inference-time breakdown on RM-Bench. 
+
+Wall-clock time per generation at batch size 4 on Dream-7B. D.9 QUALITATIVE EXAMPLES 
+
+Decoding sequence for Figure 8. Figure 13 shows the denoising trajectory for the three methods of Figure 8. While unguided generation with DAPD can produce coherent text, DAPD with guidance can produce incoherent text early on in generation. This reinforces O2 that guidance can introduce incompatibilities during sampling. 
+
+Qualitative generations vs DAPD with guidance. As DAPD (Kim et al., 2026a) remains the strongest baseline in terms of quantitative results (Table 1), we compare the quality of generations across decoding trajectories in Figures 14 and 15. DAPD tends to pick tokens spatially far away as it uses dLLM attention as a signal of conditional dependency. However, guidance can affect this dependency, which may explain why DAPD with guidance tends to introduce incompatible tokens. For example, in Figure 14, certain token sequences such as 5. emonial are not coherent English sentences. In contrast, FastGuide retains coherency and fluency in generation, obtaining a significantly higher reward model score. In Figure 15, DAPD introduces incorrect numbering (such as the 7th step repeated twice). 
+
+Qualitative effect of confidence deferral. Figures 16, 17, and 18 show the effect of confidence deferral at one intermediate step for three different prompts. For instance, in Figure 16, the word mindful is proposed three times, whereas after it is unmasked once, the probability of the other token values drop, leading them to be deferred. The final generations are thus of higher quality, trading off inference time for quality. 26 Prompt: If the endpoints of a line segment are (2, -2) and (10, 4), what is the length of the segment? 
+
+25% 
+
+DAPD, guided Reward −1.22 
+
+<M> find <M><M><M> the <M><M> <M> we <M> use <M><M><M>, which <M> $ \sqrt<M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M> is: $ \boxed {<M> }$
+
+DAPD, unguided Reward +6 .59 
+
+<M> can <M> the <M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M>1<M><M><M><M><M><M> <M> the given values<M> we <M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M> } = <M><M> {1<M><M><M> 
+
+FastGuide Reward +10 .44 
+
+To find the length of the line segment, we can use the distance formula, which is derived from the Pythagorean Theorem. The formula <M><M><M> <M> sqrt<M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M> units. <M> 
+
+50% <M> find <M> length <M> the <M> segment, we <M> use <M><M> formula, which <M> $ \sqrt {(<M> 2 <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M>. <M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M>sqrt<M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M> segment is <M><M><M><M> }$ <M>.The answer is: $ \boxed {6}$<M> can <M> the distance formula to <M><M><M><M><M><M> segment<M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M> is <M> <M><M><M><M><M><M><M> - <M><M> <M><M><M><M><M><M><M>2 - <M> 1<M>2 }$<M>Plugging <M> the given values<M> we <M> $\sqrt<M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M>8<M><M><M><M>6<M><M> <M><M><M><M> {<M><M> + <M><M><M> 
+
+} = <M><M> {1<M>0<M> To find the length of the line segment, we can use the distance formula, which is derived from the Pythagorean Theorem. The formula is: <M> =sqrt((x2 - x1)ˆ2 + (y2 - y1)ˆ2) Plugging in the <M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M> length of the <M> segment <M> 10 units. <M> 
+
+75% <M> find <M> length <M> the line segment, we <M> use <M> distance formula, which <M> $\sqrt {(<M> 2 - <M><M><M><M>2 <M> (<M><M><M><M><M><M><M>)ˆ<M> 
+
+}$. <M>ugging <M> the given <M> <M><M><M><M>sqrt<M><M><M><M><M> <M><M><M>) + (4 - <M><M><M><M> <M> } <M><M><M> {<M><M><M><M><M> <M><M><M> } = <M>sqrt<M><M><M> <M> <M><M><M><M><M>sqrt<M><M> 6<M><M>The <M> of the <M> segment is <M>boxed<M>6 }$ <M> .The answer is: $ \boxed {6}$<M> can <M> the distance formula to <M><M> length of <M> <M> segment<M><M><M> formula <M><M><M><M>x<M><M><M><M><M><M> <M><M><M><M><M><M>, <M><M><M>)$ is given <M><M>sqrt<M><M><M><M> - <M><M><M><M><M> + <M><M><M>2 - <M> 1<M>2 }$<M>Plugging <M> the given values<M> we <M> $\sqrt<M><M><M> - <M><M><M><M> <M><M>4 - <M><M><M><M> } <M><M> sqrt<M>8<M><M><M> 6<M><M><M><M> 
+
+\sqrt {<M><M> + <M><M> } = <M><M> 
+
+{1<M>0<M> To find the length of the line segment, we can use the distance formula, which is derived from the Pythagorean Theorem. The formula is: <M> =sqrt((x2 - x1)ˆ2 + (y2 - y1)ˆ2) Plugging in the given <M><M><M> = sqrt((10 - 2)ˆ2 + (4 -(-2))ˆ2<M><M><M><M><M><M><M><M> <M><M><M>2<M><M><M><M><M><M><M> <M><M>6<M><M><M>(<M>00<M><M> 10 <M>, the length of the line segment is 10 units. <M> 
+
+100% To find the length of the line segment, we can use the distance formula, which is $\sqrt {(x 2 - x 1)ˆ2 + (y 2 -y 1)ˆ2 }$. Plugging in the given endpoints, we have $ \sqrt {(10 -2)ˆ2) + (4 - (-2)) ˆ2 } =
+
+\sqrt {5ˆ2 + 6ˆ2 } = \sqrt {10 + 36 } = \sqrt {46 }$. The length of the line segment is $ \boxed {6}$units.The answer is: $\boxed {6}$We can use the distance formula to find the length of the line segment. The distance formula between two points $(x 1, y 1)$ and $(x 2, y 2)$ is given by $\sqrt {(x 2 - x 1)ˆ2 + (y 2 -y 1)ˆ2 }$. Plugging in the given values, we have $\sqrt {(10 -2)ˆ2 + (4 - (-2))ˆ2 } =
+
+\sqrt {8ˆ2 + 6ˆ2 } = \sqrt {64 +36 } = \sqrt {100 }
+
+To find the length of the line segment, we can use the distance formula, which is derived from the Pythagorean Theorem. The formula is: Distance = sqrt((x2 - x1)ˆ2 +(y2 - y1)ˆ2) Plugging in the given coordinates: Distance =sqrt((10 - 2)ˆ2 + (4 - (-2))ˆ2) = sqrt(8ˆ2 + 6ˆ2) = sqrt(64 +36) = sqrt(100) = 10 So, the length of the line segment is 10 units. 
+
+Figure 13: Guided DAPD unmasks an incorrect final answer while most of its derivation is still masked. Decoding trajectories for the prompt of Figure 8; rows show the sequence after 25% , 50% ,
+
+75% , 100% of each method’s decoding steps, where <M> denotes a masked position. 27 Prompt: What are different drawers I should have for clothes? 
+
+25% 
+
+DAPD, guided Reward −0.61 
+
+<M> are <M><M> for <M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M>3. <M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M> clothes so they don’t get mixed <M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M>. 
+
+FastGuide Reward +1 .19 
+
+Here are a few types of drawers you might consider having for organizing your clothes: 1. A<M> drawer for items <M><M>, <M>, sweatshirts, and <M><M>2<M><M><M><M><M><M><M><M><M><M><M><M>, <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M>. <M> 
+
+50% Here are some <M> for different drawers <M><M><M> <M><M>1. <M><M> - <M><M><M><M><M><M>, etc<M><M> <M><M><M><M><M><M><M><M><M><M> - <M><M><M> t<M>, <M><M>, etc. 3. <M><M> -<M><M>, <M><M><M><M><M> <M><M><M><M><M> - <M><M><M>, <M>, <M><M><M><M><M> <M><M> - <M><M><M> or <M><M> clothes so they don’t get mixed <M> with <M><M>. <M>. <M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M>, <M><M> <M><M><M>, <M>. Here are a few types of drawers you might consider having for organizing your clothes: 1. A<M> drawer for items like shirts, <M>, sweatshirts, and <M>. 2. A pants drawer for <M> items like jeans, <M><M>, and <M><M>. 3. A <M> drawer for <M><M> like dresses, skirts, and <M> <M>. 4. <M><M> drawer for <M><M><M><M><M>, <M>, <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M>. <M> 
+
+75% Here are some ideas for different drawers to have for clothes<M>1. Top drawer - <M>, blazers, <M>, etc. that you wear over your <M>. 2. Middle drawer - Shirts, t-shirts, blouses, etc. 3. Bottom drawer -Jeans, skirts, <M>, etc. 4. accessory drawer - <M>, gloves, hats, etc. 5.<M> ial drawer - for special occasions or dressier clothes so they don’t get mixed up with the rest. 6. Underwear drawer - for socks and <M>s. 7. Winter drawer - <M>, blankets, sweatshirts, etc. Here are a few types of drawers you might consider having for organizing your clothes: 1. A<M> drawer for items like shirts, tops, sweatshirts, and jackets. 2. A pants drawer for <M> items like jeans, <M><M>, and <M><M>. 3. Adress drawer for <M> items like dresses, skirts, and bl<M>. 4. A underwear drawer for <M><M> items like underwear, socks, and undergarments. 5. An accessories drawer for items like <M>, <M>, scarves, <M><M><M><M><M>. <M><M><M><M><M><M><M> <M><M><M><M>, and <M><M><M>. <M> 
+
+100% Here are some ideas for different drawers to have for clothes. 1. Top drawer - Jackets, blazers, skirts, etc. that you wear over your clothes. 2. Middle drawer - Shirts, t-shirts, blouses, etc. 3. Bottom drawer -Jeans, skirts, shorts, etc. 4. accessory drawer - masks, gloves, hats, etc. 5.emonial drawer - for special occasions or dressier clothes so they don’t get mixed up with the rest. 6. Underwear drawer - for socks and briefs. 7. Winter drawer - coats, blankets, sweatshirts, etc. Here are a few types of drawers you might consider having for organizing your clothes: 1. Atop drawer for items like shirts, tops, sweatshirts, and jackets. 2. A pants drawer for bottom items like jeans, khakis, and slacks. 3. Adress drawer for dress items like dresses, skirts, and blouses. 4. A underwear drawer for more intimate items like underwear, socks, and undergarments. 5. An accessories drawer for items like hats, belts, scarves, and handbags. 6. Astorage drawer for items like hair clips, hair ties, and other miscellaneous items. 
+
+Figure 14: DAPD unmasks “5.” and “ial” around a single masked position, forcing the mal-formed “5.emonial”. Decoding trajectories on a Chat prompt from RM-Bench; rows show the se-quence after 25% , 50% , 75% , 100% of each method’s decoding steps, where <M> denotes a masked position. 28 Prompt: What is a good way of landing a knockout punch in boxing? 
+
+25% 
+
+DAPD, guided Reward +0 .86 
+
+<M>anding <M><M><M><M><M><M><M><M><M><M><M><M><M> . <M><M><M><M><M><M><M><M> technique, <M><M><M> <M><M><M><M><M><M><M><M><M><M> speed and <M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M> And if you<M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M> 
+
+FastGuide Reward +2 .59 
+
+Landing a knockout punch in boxing requires acombination of speed, technique, power, and timing, along with a deep understanding <M> the <M>. <M><M><M><M><M><M><M><M><M><M>, <M><M><M><M> <M><M><M><M><M><M><M><M><M>, <M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M><M><M> a <M> and <M><M>. <M><M> <M><M><M><M> 
+
+50% <M>anding a <M><M><M><M> requires <M><M><M><M><M> <M><M>. <M>, <M><M><M><M><M><M> technique, <M>, <M><M><M><M><M><M><M><M><M><M><M> speed and <M>. <M><M><M><M><M><M><M><M><M><M><M><M><M><M><M> the <M><M><M><M><M><M><M><M><M><M><M>, <M><M><M><M> <M><M> opponent and <M><M><M><M><M><M><M><M>. <M> <M><M><M><M><M><M><M> <M><M><M><M><M><M>. And if you’re <M><M><M><M><M><M><M><M> Remember, in <M> <M><M><M><M><M><M><M> Landing a knockout punch in boxing requires acombination of speed, technique, power, and timing, along with a deep understanding of the sport. It’s important to <M> that <M> is <M><M>, and <M><M><M><M><M><M><M><M><M><M>, <M>, and respect. In <M><M><M><M><M><M><M><M><M><M><M><M> <M><M><M><M><M><M>, <M><M><M>, <M><M><M>, and <M> <M><M><M>. However, the <M><M><M><M> is <M><M><M> <M><M><M><M><M><M><M> be <M> under professional guidance and in a safe and legal manner. <M><M> <M><M><M><M> 
+
+75% Landing a <M> punch in boxing requires good <M>, <M>, and <M>. <M>, it’s important to focus on technique, <M>, and <M> first. 1. Train <M> to <M> speed and power. 2. Use <M><M>, <M>. <M>. <M> on the <M> of your <M>. 5. When you punch, 6. step <M> your opponent and follow through <M> your punch. <M>. Finally, <M><M> but <M>. <M>. <M><M> 9. And if you’re a fighter, <M> a <M> coach. Remember, in all cases, safety should <M> paramount. Landing a knockout punch in boxing requires acombination of speed, technique, power, and timing, along with a deep understanding of the sport. It’s important to remember that boxing is a sport, and it should be practiced in a way that promotes safety, <M>, and respect. In terms of specific techniques, some <M><M> to <M><M><M><M> <M><M><M> the <M>, <M><M><M>, <M><M><M>, and <M> <M><M><M>. However, the application of this advice is not <M> be <M><M><M><M> and should only be practiced under professional guidance and in asafe and legal manner. <M><M><M><M><M><M> 
+
+100% Landing a knockout punch in boxing requires good technique, power, and timing. However, it’s important to focus on technique, safety, and health first. 1. Train consistently to build speed and power. 2. Use correct form, 3. 4. focus on the head of your opponent. 5. When you punch, 6. step towards your opponent and follow through with your punch. 7. Finally, 7. but seriously. 8. Practice. 9. And if you’re a fighter, consider aprofessional coach. Remember, in all cases, safety should be paramount. Landing a knockout punch in boxing requires acombination of speed, technique, power, and timing, along with a deep understanding of the sport. It’s important to remember that boxing is a sport, and it should be practiced in a way that promotes safety, discipline, and respect. In terms of specific techniques, some key elements to focus on include controlling the distance from the opponent, timing the punch, using footwork, and maintaining a balanced stance. However, the application of this advice is not to be taken out of context and should only be practiced under professional guidance and in a safe and legal manner. Always prioritize safety first. 
+
+Figure 15: DAPD unmasks scattered fragments of a numbered list and fills the remaining positions incoherently. Decoding trajectories on a Safety prompt from RM-Bench in the high-throughput regime; rows show the sequence after 25% , 50% , 75% , 100% of each method’s decoding steps, where <M> denotes a masked position. 
+
+Prompt: what are some basics of nutrition that i should be aware of Intermediate decoding step 
+
+[...] 4. Limit your intake of processed foods and drinks high in fat, sodium, and sugar. 5. Choose mindful of<M><M><M><M><M><M><M><M><M> and<M>. 6.<M> mindful<M><M><M><M><M><M><M><M><M><M><M><M> <M><M>. 7.<M> mindful<M><M><M><M><M><M><M><M><M><M>. 
+
+Final sequence 
+
+[...] 4. Limit your intake of processed foods and drinks high in fat, sodium, and sugar. 5. Regular exercise can also help you stay healthy and keep your body in shape. 6. Make sure to get enough sleep each night to help regulate your metabolism and overall health. 7. Be mindful of your portion sizes and try to avoid overeating. 
+
+Figure 16: Deferral prevents the same word from being unmasked at three positions. Once “mindful” is unmasked in item 7, its recomputed probability in items 5 and 6 falls below τ and both positions are deferred (left: unmasked and deferred proposals of one step with k = 8 ; right: final values of the deferred positions). 29 Prompt: Hi, I’d like to make my own peanut brittle. Can you give me a recipe and cooking instructions for that? Intermediate decoding step 
+
+[...] 2. Cook over a medium-high heat until the sugar is melted and dissolved . 3. Add<M><M><M><M><M><M><M><M><M><M><M> the<M><M> <M><M>. 4. Pour the mixture onto a baking sheet. Let it cool for at least 30 minutes. 5. Break into desired pieces and enjoy cold. 
+
+Final sequence 
+
+[...] 2. Cook over a medium-high heat until the sugar is melted and boiling . 3. Add the peanuts and caramel color. Cook, stirring occasionally, for about 5 minutes. 4. Pour the mixture onto a baking sheet. Let it cool for at least 30 minutes. 5. Break into small pieces and enjoy it. 
+
+Figure 17: Deferral lets low-confidence words be revised once their context is unmasked. The proposals “dissolved”, “the”, “desired”, and “cold” are deferred and later become “boiling”, “for”, “small”, and “it” (left: unmasked and deferred proposals of one step with k = 8 ; right: final values of the deferred positions). 
+
+Prompt: How is oil turned into gasoline? Intermediate decoding step 
+
+[...] The gasoline is then further treated to remove any impurities, and it is blended with other additives to<M><M><M><M><M>.<M>, gasoline<M> then<M><M><M><M><M><M> in vehicles. This is how oil is turned into gasoline. 
+
+Final sequence 
+
+[...] The gasoline is then further treated to remove any impurities, and it is blended with other additives to improve its quality and performance. Finally, gasoline is stored in tanks until it is ready for distribution. This is how oil is turned into gasoline. 
+
+Figure 18: Deferral revises a sentence ending that was proposed too early. The low-confidence proposals “then”, “in”, and “vehicles” are deferred and later become “stored”, “for”, and “distri-bution” (left: unmasked and deferred proposals of one step with k = 8 ; right: final values of the deferred positions). 30
