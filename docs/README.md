@@ -18,35 +18,24 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-10-03
-- 运行时间：2026-10-03 22:07:50 UTC
+- 最新运行日期：2026-10-04
+- 运行时间：2026-10-04 22:56:28 UTC
 - 运行状态：成功
-- 本次总论文数：4
+- 本次总论文数：1
 - 精读区：0
-- 速读区：4
+- 速读区：1
 
 ### 今日简报（AI）
-今日无精读，4篇速读集中在扩散模型的分布匹配与注意力机制静态定义问题。
-最值得看的是两篇7.0分工作：《DMA²》用对抗损失与锚点损失做像素空间分布匹配，《Distribution Matching Distillation for Continuous Diffusion Language Models》则把分布匹配蒸馏搬到连续扩散语言模型上，想做生成加速。
-普通读者可先从后者入手理解扩散语言模型如何蒸馏提速，再回看像素空间匹配这条更偏图像生成的路线。
-- 详情：[/202610/03/README](/202610/03/README)
+今日精选1篇速读：SplitMoE 尝试用混合专家打破视频扩散模型的“均匀性陷阱”以提升扩展性。值得关注的是它针对视频生成中专家同质化问题的拆解思路，但6.0分说明效果尚待验证。普通读者可先把它当作了解视频扩散模型扩展瓶颈的入门线索，不必急于跟进复现。
+- 详情：[/202610/04/README](/202610/04/README)
 
 ### 精读区论文标签
 - 本次无精读推荐。
 
 ### 速读区论文标签
-1. [DMA$^2$: Pixel-space Distribution Matching with Adversarial and Anchor Losses](/202610/03/2609.38156v1-dma2-pixel-space-distribution-matching-with-adversarial-and-anchor-losses)  
-   标签：评分：7.0/10、query:diff-accel
-   evidence：通过分布匹配蒸馏实现少步扩散生成
-2. [Distribution Matching Distillation for Continuous Diffusion Language Models](/202610/03/2609.40235v1-distribution-matching-distillation-for-continuous-diffusion-language-models)  
-   标签：评分：7.0/10、query:diff-accel
-   evidence：蒸馏减少扩散语言模型网络评估次数
-3. [When Can Attention Heads Be Statically Defined?](/202610/03/2609.34650v1-when-can-attention-heads-be-statically-defined)  
+1. [Breaking the Uniformity Trap: Scaling Video Diffusion Model via SplitMoE](/202610/04/2609.38140v1-breaking-the-uniformity-trap-scaling-video-diffusion-model-via-splitmoe)  
    标签：评分：6.0/10、query:sparse-attn
-   evidence：复用静态注意力模式以降低分数计算
-4. [Unifying Distributional Training for One-Step Visual Generation](/202610/03/2609.35763v3-unifying-distributional-training-for-one-step-visual-generation)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：面向一步视觉生成的统一分布训练
+   evidence：用于扩展视频扩散模型的分裂角色稀疏架构
 
 
 <div class="dpr-home-promo-card dpr-home-panel">
