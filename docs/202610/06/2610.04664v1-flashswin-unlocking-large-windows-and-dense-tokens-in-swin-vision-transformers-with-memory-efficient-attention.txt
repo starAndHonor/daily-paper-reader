@@ -1,0 +1,462 @@
+Title: FLASHSWIN: Unlocking Large Windows and Dense Tokens in Swin Vision Transformers with Memory Efficient Attention
+
+URL Source: https://arxiv.org/pdf/2610.04664v1
+
+Published Time: Tue, 06 Oct 2026 01:03:38 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# FLASH SWIN : Unlocking Large Windows and Dense Tokens in Swin Vision Transformers with Memory Efficient Attention 
+
+# Tushar Kataria 1,2 Gerald Sabin 3 Ponnuswamy Sadayappan 2 Shireen Y. Elhabian 1,21 Scientific Computing and Imaging Institute, University of Utah, Salt Lake City, UT, USA  
+
+> 2
+
+# Kahlert School of Computing, University of Utah, Salt Lake City, UT, USA  
+
+> 3
+
+# RNET Technologies, Dayton, OH, USA   
+
+> tushar.kataria@utah.edu,gsabin@rnet-tech.com, saday@cs.utah.edu, shireen@sci.utah.edu
+
+# Abstract 
+
+High-resolution vision backbones have long been forced to trade away local token density to afford larger receptive fields. Hierarchical Swin transformers impose this compro-mise because standard windowed attention materializes an 
+
+M 2 ×M 2 score matrix per window, incurring O(M 4) mem-ory as windows or token grids grow. Furthermore, Swin adds a learned relative-position bias elementwise to atten-tion scores, requiring full materialization of the score ma-trix and its gradient. This keeps Swin and SwinV2 trapped in a small-window( M = 8 , 16 ), coarse-token regime with patch size 4 × 4 (p = 4 ), limiting performance for fine-grained tasks. We introduce FLASH SWIN , which replaces standard windowed attention with a FlashAttention imple-mentation that computes exact softmax attention without materializing the score matrix, reducing per-window mem-ory from O(M 4) to O(M 2). This enables higher token density and larger receptive fields without inflating mem-ory overhead. Peak training memory becomes virtually flat in window size: at a 32 × 32 window, FLASH SWIN -T re-quires only 12 .4 GB—unchanged from 8 × 8—compared to 
+
+70 /90 GB for SwinV2/V1-T. However, applying FlashAt-tention directly to Swin creates a trade-off: bypassing the score matrix precludes Swin’s additive relative-position bias, forfeiting spatial information in exchange for mem-ory efficiency. FLASH SWIN restores position information as window-local learnable 2D RoPE, making large win-dows and dense token grids both affordable and accurate. At matched scale, FLASH SWIN -T outperforms Swin vari-ants while improving out-of-domain generalization. With dense tokens and wide windows ( p = 2 , M = 32 ), the same Tiny model reaches 84 .1% ImageNet-1K, 44 .1 COCO box AP, and 47 .28 ADE20K mIoU—gains of +1 .3, +5 .1, and 
+
++1 .82 over SwinV2-T at M = 16 , respectively. At fixed 
+
+M = 32 , halving the patch size yields roughly 3× larger gains in boundary quality than in mIoU. By removing mem-ory bottlenecks, FLASH SWIN unlocks a new scaling axis for swin transformers: combining dense tokens with large receptive fields. 
+
+# 1. Introduction 
+
+Fine-grained spatial detail is essential to a wide range of vision tasks, yet vision-transformer backbones [16] are de-signed for and trained at comparatively low resolution. Dense prediction tasks such as semantic segmentation and object detection depend on this detail to localize boundaries and resolve small structures [7, 26, 44, 45]. The gap is widest in domains whose native inputs dwarf the 224 2 or 
+
+256 2 images used to pretrain modern backbones: gigapixel histopathology slides, volumetric medical scans, aerial im-agery, and document scans [11, 29, 33, 35, 42]. In each case the standard remedy is to discard resolution at the in-put itself. Patch embedding collapses a 16 × 16 region into a single token in ViT, a 4 × 4 region in Swin [26], and 
+
+16 3 or 43 voxel blocks in 3D equivalents [2, 4, 42]. The size of these patches is dictated by the memory and com-pute cost of the backbone rather than by the granularity the task requires. Hierarchical windowed transformers such as Swin [26] were introduced precisely to relieve this pressure, restricting attention to local windows so that cost grows lin-early, rather than quadratically, in the number of tokens. That linear scaling, however, has not translated into high-resolution training. Three coupled choices govern how much spatial information a windowed transformer actually captures: the window size M , the patch size of the stem, and the input resolution. The latter two jointly fix the token grid—a finer patch or a larger input yields denser tokens that retain local structure and reduce the need for auxiliary refinement modules—while M fixes the region over which those tokens interact directly, before information must prop-agate through the hierarchy. Token density and window size act along complementary axes, and together they set 1arXiv:2610.04664v1 [cs.CV] 3 Oct 2026 the balance between local detail and contextual range avail-able to the model [15, 43]. In practice all three are kept small. Swin [26] and SwinV2 [27] train with narrow win-dows ( M = 7 -8 at pretraining resolution), a coarse patch-4
+
+stem, and 224 2-256 2 inputs, fine-tuning to higher resolu-tion for only 30 epochs against 300 for pretraining, and at considerable cost. Crucially, these settings are not chosen for accuracy; they are forced by memory . Windowed atten-tion materializes an M 2 × M 2 score matrix per window, an 
+
+O(M 4) footprint; summed over the HW/M 2 windows of a feature map this becomes O(HW M 2)—a factor of M 2
+
+more entries than tokens, growing with the window and the token count, and therefore quadratically in the input side length. High-resolution training thus reaches a memory ceiling of the available hardware well before its accuracy gains are exhausted. The result is that dense token grids, wide windows, and native high-resolution training remain largely unexplored. FlashAttention [13] removes exactly this bottleneck. It computes the attention output incrementally using tiled on-line softmax without fully materializing the score matrix in memory, cutting the per-window footprint from O(M 4) to 
+
+O(M 2). The kernel computes the same softmax attention, without approximation. Window size in particular stops driving activation memory, though token count still does. Swin, however, cannot adopt the FlashAttention kernel as a drop-in replacement. Its relative-position bias is added ele-mentwise to the M 2 ×M 2 score matrix, the exact tensor the fused kernel avoids forming to save memory. Retaining the bias forfeits memory savings, while dropping it degrades accuracy by removing intra-window positional awareness (Tab. S2). Nor does enlarging the bias help: Swin’s table covers only the (2 M − 1) 2 offsets seen in training, and although SwinV2’s continuous reformulation does gener-ate unseen offsets, it remains a learned term added to the 
+
+M 2 × M 2 scores-and a learned term there needs its gradi-ent there. The obstacle is additivity, not coverage. Recov-ering Swin’s accuracy under exact, memory-efficient atten-tion therefore requires moving position out of the score ma-trix. We introduce F LASH SWIN , which leaves the hierarchy intact but replaces the two components that assume a mate-rialized matrix or a coarse grid: the position bias becomes a 2D RoPE applied to queries and keys before the FlashAt-tention kernel, continuous in the coordinate difference so it evaluates at any window size, with learned frequencies; the disjoint patch embedding becomes an overlapping one, preserving detail across patch boundaries at high token den-sity. The savings are large (Fig. 1C): at a 32 × 32 win-dow, F LASH SWIN -T trains in 12 .4GB against 70 .4GB for SwinV2-T, and it trains grids 4× denser than the standard patch-4 setting, which at this window exhaust memory for both Swin variants. At matched compute ( 5.9 GFLOPs), FLASH SWIN -T achieves 82 .3% ImageNet-1K top-1 accuracy, outperform-ing Swin baselines with gains transferring consistently to ADE20K and COCO. Scaling to dense tokens and wider windows ( p = 2 , M = 32 ) elevates the same 28 M back-bone to 84 .1% . However, clean classification understates the broader impact: F LASH SWIN -T improves robustness to adversarial, sketch, and corrupted inputs, while its relative gains on ADE20K boundary metrics are approximately 3×
+
+larger than on mIoU. These results suggest that spatial res-olution has a particularly strong effect on robustness and fine localization. This denser regime increases compute to 
+
+37 .4 GFLOPs, but remains trainable at batch sizes where standard windowed attention exceeds memory limits and re-quires activation checkpointing, which saves memory at the cost of computation [6]. Our contributions are: • F LASH SWIN : Exact fused attention for the hierarchi-cal networks. Window-local 2D RoPE and overlapping tokens make standard FlashAttention usable inside Swin. FLASH SWIN -T achieves 82 .3% ImageNet-1K top-1 at matched compute ( 5.9 GFLOPs, vs. 81 .9% SwinV2-T), with better out of distribution generalization. • Spatial resolution governs boundary fidelity and ro-bustness. Our results show that contextual range dictates region classification, while token density dic-tates boundary localization—yielding 3× larger rela-tive boundary gains on ADE20K than mIoU. At fixed 
+
+28 M capacity, expanding spatial resolution boosts out-of-distribution accuracy, a pattern that scales con-sistently to large models (≈ 197 M parameters). https://github.com/tushaarkataria/FlashSwin. 
+
+# 2. Related Works 
+
+Hierarchical and windowed vision transformers. Vi-sion Transformers apply self-attention over image patches, but quadratic complexity makes high-resolution process-ing expensive [15, 16, 26, 37, 43]. Hierarchical architec-tures address this by progressively reducing spatial resolu-tion and restricting attention to local regions. Swin [26] uses shifted non-overlapping windows to achieve linear complexity, while SwinV2 [27] improves scaling through normalization, attention changes, and continuous relative-position biases. Others redesign the attention neighbor-hood: Focal Transformer [43] combines local interactions with coarse global context, CSWin [15] uses cross-shaped windows, and NAT [17] uses sliding neighborhoods. Acomplementary line reduces token counts through token merging [3], simplified hierarchies [32], or post hoc feature pyramids [24]. In contrast, F LASH SWIN retains Swin’s hi-erarchy and attention pattern, targeting memory costs within 
+
+each window so window size and token density can expand rather than economize—preserving fine-grained spatial de-tails without prohibitive memory overhead. 
+
+Memory-efficient attention and positional encodings. 
+
+2FlashAttention [12, 13] preserves exact softmax attention through IO-aware tiling without materializing the attention matrix. Integrating fused attention into windowed vision transformers, however, is complicated by Swin’s additive score-level positional bias. One approach is to modify the fused kernel itself: FlashBias [39] incorporates additive bi-ases during tiled attention, although its default formulation is not end-to-end trainable and requires a low-rank approx-imation for training. An alternative is to move positional modeling outside the kernel by encoding position directly in queries and keys. Following this second direction, Heo et al. [22] extend RoPE to vision using 2D positional co-ordinates and learnable mixed frequencies. FLASH SWIN 
+
+builds on this formulation but uses a single frequency set shared across both spatial axes and attention heads, with positions indexed locally within each window. This yields a window-size-independent positional representation that ap-plies identically to regular and shifted windows and remains compatible with standard FlashAttention primitives. Our contribution is therefore not a new positional encoding it-self, but using this formulation to make Swin fully train-able with fused attention and to study the resulting large-window, dense-token regime. 
+
+Tokenization and spatial detail. Tokenization deter-mines how much fine-grained spatial structure enters the transformer backbone. Standard models like ViT and Swin embed non-overlapping patches ( p × p convolution with stride p), creating hard borders where high-frequency edge information and local continuity are permanently lost [16, 26]. Subsequent architectures adopt overlapping or convo-lutional tokenization to preserve local context across bound-aries, as in PVTv2 [38]. In our setting, this boundary frag-mentation is exacerbated in the dense-token regime ( p = 2 ), where the number of patch borders quadruples. FLASH -SWIN pairs window-local RoPE with an overlapping patch stem ( 2p − 1 kernel, stride p, padding p − 1), ensuring that both spatial position and high-frequency boundary detail survive the transition to fused attention and dense tokens. 
+
+# 3. Method 
+
+While preserving Swin’s macro-hierarchy, FLASH SWIN 
+
+updates three core components: it replaces standard win-dowed attention with FlashAttention to bypass score-matrix materialization, restores lost spatial awareness via a window-local learnable 2D RoPE on queries and keys(Figure 1B), and adopts overlapping token embeddings to preserve fine spatial structure (Figure 1A). 
+
+Memory-Efficient Windowed Attention. Given an 
+
+H × W token grid, hierarchical swin transformer parti-tions the feature map into non-overlapping M × M win-dows and applies self-attention independently within each window. With N = M 2 tokens per window, 
+
+Attn( Q, K, V ) = softmax 
+
+ QK ⊤
+
+√d + B
+
+
+
+V, (1) where B ∈ RN ×N is the learned relative-position bias. Standard attention materializes an N × N matrix per win-dow, costing O(N 2) = O(M 4) memory. Across HW/M 2
+
+windows, total activation memory scales as O(HW M 2),growing with both window size and token density, mak-ing their combination particularly expensive. F LASH SWIN 
+
+instead evaluates attention within each window using an IO-aware fused kernel based on FlashAttention [13]. The computation is tiled and the softmax is accumulated online, so the complete N × N matrix is never stored. This re-duces auxiliary attention memory from O(N 2) to O(N ) per window, equivalently from O(M 4) to O(M 2), and stage-level storage to approximately O(HW ), largely indepen-dent of window size. Only the implementation of attention changes: the same softmax attention is computed without approximation. While FlashAttention is widely used for long-sequence processing, its implications for scaling win-dow size and token density in hierarchical vision transform-ers remain comparatively underexplored. The bias term 
+
+B in Eq. (1) is the obstacle to this substitution, since it is added elementwise to the score matrix the fused kernel never forms. Removing it outright costs accuracy (Tab. S2), so we instead encode position in the queries and keys. 
+
+Window-Local Learnable RoPE. We replace Swin’s learned relative-position bias with a two-dimensional rotary position encoding (RoPE) [34], which injects positional in-formation into the queries and keys rather than into the at-tention logits and is therefore compatible with the fused ker-nel. For each attention head, RoPE is applied over the full head dimension d, with channels split equally between the two spatial axes: the first half encodes the vertical coordi-nate y and the second half the horizontal coordinate x. Both axes share a single learnable frequency set θ,
+
+eq(x, y ) =  R(y; θ) q1: d/ 2 ; R(x; θ) qd/ 2+1: d
+
+ , (2) with the same transformation applied to the keys. Here 
+
+R(p; θ) applies 2 × 2 rotations R(pθ i) to consecutive chan-nel pairs. The frequencies are parameterized as θi =exp( ωi), where ωi is initialized from the standard geomet-ric RoPE schedule and optimized jointly with the network. Because the frequency set is shared across both axes, each head introduces only d/ 2 learned parameters. Rotations compose as R(p)⊤R(p′) = R(p′ − p), so the inner product eq(x, y )⊤ek(x′, y ′) depends on the displace-ment (x′ − x, y ′ − y) alone. Relative spatial structure is thus preserved without an additive term, which is the prop-erty that makes Eq. (1) expressible under a fused kernel. We define these coordinates locally within each window. This matches the inductive bias of Swin, where attention is 3C. Memory Comparison Figure 1. Token density, architecture, and memory scaling comparison between Swin and FLASH SWIN . (A) An overlapping stem (P = 2 ) creates dense token grids that preserve spatial boundaries better than standard coarse patches ( P = 4 ). (B) F LASH SWIN replaces Swin’s materialized score matrix and additive relative bias ( O(M 4) memory) with Window-Local 2D RoPE and a fused FlashAttention [13] kernel. (C) Peak training memory vs. window size M on an H200 GPU ( 256 × 256 resolution, batch size 128 ). FLASH SWIN   
+
+> maintains a flat memory footprint as Mincreases, whereas Swin-V1/V2 grow rapidly and run out of memory at dense settings.
+
+restricted to local windows and position is modeled through relative offsets within a window; global coordinates are less suitable because the operator never compares tokens across the full image. Under the shifted-window configuration, co-ordinates are recomputed relative to each window’s own ori-gin after the cyclic shift, so displacements remain window-local and the shift introduces no discontinuity in the encod-ing. Attention masking for wrapped windows is applied as an additive mask passed to the fused kernel, which supports masking without materializing the full score matrix. Unlike Swin’s discrete bias table, this parameteriza-tion is independent of the window size M . Swin stores 
+
+(2 M − 1) 2 bias entries per head— 3969 at M =32 —defined only over the offsets seen during training, whereas Eq. (2) uses d/ 2 frequencies that are continuous in the coordinate difference. The same learned frequencies can therefore be evaluated at any window size or input resolution without interpolation, which matters here because window size is varied explicitly as a scaling dimension. 
+
+Overlapping Token Embedding. Swin tokenizes the input with a non-overlapping patch projection, implemented as a convolution with kernel size and stride p. This creates hard boundaries between neighboring patches, separating local structures that cross a patch border before they enter the transformer. FLASH SWIN replaces this stem with an overlapping token embedding: a strided convolution with kernel size 2p − 1, stride p, and padding p − 1. The stride is unchanged, so output resolution and token count are identi-cal to the standard patch-p embedding, but the larger kernel gives adjacent tokens overlapping receptive fields and al-lows them to share context across patch boundaries. The modification is most relevant in the dense-token regime, where a smaller patch preserves finer detail but also mul-tiplies the boundaries at which it can be lost. The stem adds a lightweight local inductive bias while leaving the rest of the hierarchy unchanged. 
+
+Resulting Design Space. These three components are individually simple, yet jointly essential. Fused attention eliminates the O(M 4) window-scaling bottleneck, but can-not be used alongside Swin’s additive bias. Window-local RoPE provides positional awareness in a kernel-compatible, scale-invariant form. Finally, the overlapping stem miti-gates spatial boundary fragmentation caused by finer tok-enization. Removing any single component forfeits either memory savings or representation accuracy (Tab. S2).While fused attention improves throughput, its key architectural impact is decoupling activation memory from window size 
+
+M . While total token count remains bounded by spatial resolution, window expansion is no longer constrained by memory spikes. This allows F LASH SWIN to scale local re-ceptive fields for substantially larger context modeling with-out memory overhead. The following experiments evaluate these expanded operating points ( M ∈ [8 , 32] , patch size 
+
+P ∈ [2 , 4] ) across core vision tasks. 
+
+# 4. Results and Discussion 
+
+Experimental setup. We evaluate FLASH SWIN on ImageNet-1K classification [31], COCO detection [25], and ADE20K segmentation [46]. Unless stated other-wise, all experiments use the Tiny configuration matched to Swin-T and SwinV2-T ( C=96 , depths {2, 2, 6, 2}, heads 
+
+{3, 6, 12 , 24 }, ≈28 M parameters); the four-stage hierarchy, patch merging, and alternating regular and shifted win-dows are unchanged from Swin. We vary window size 
+
+M ∈ { 8, 16 , 32 } and patch size p ∈ { 4, 2}, training all models under the standard Swin recipe [26] with matched schedules and optimization settings. The SwinV1/V2-T 4baselines are re-trained (locally) at 256 2 under this iden-tical recipe. All models, including baselines, are trained under PyTorch AMP autocast ( fp16 ). F LASH SWIN ’s fused attention consumes bf16 queries, keys, and values, applies the rotary embedding in fp32 , and accumulates the softmax in fp32 inside the kernel, returning an fp32 output without ever materializing the N × N attention matrix. The Swin V1/V2 baselines compute A = QK ⊤ and AV in fp16 with the softmax promoted to fp32 by autocast, and must ma-terialize the attention matrix because their relative position bias is an additive term on it. Peak memory for the models is measured over a full forward and backward pass at batch size 128 and 256 ×256 input on an H200, without gradient checkpointing, unless noted otherwise. Classification mod-els are trained on four H200 GPUs, and downstream models for segmentation and detection are trained on four and two A100-40GB GPUs, respectively. We additionally compare against the trainable low-rank formulation of FlashBias [39] to evaluate an alternative approach that retains additive po-sitional bias within fused attention. Additional implemen-tation details are provided in Section S1.1. 
+
+Robustness. We evaluate the trained IN-1K models without fine-tuning on ImageNet-A [21], -R [20], and -Sketch [36] (top-1 over the standard 200 -class subsets for A and R), and ImageNet-C [19] (AlexNet-normalized mean corruption error, mCE, over 15 corruptions at 5 severities). We evaluate the released 224 2 ImageNet-C images with the standard transform rather than regenerating corruptions at 
+
+256 2; the resulting 1.30 × upsampling makes absolute mCE incomparable to the 224 protocol but is applied identically to every model. 
+
+Downstream transfer. For semantic segmentation, we evaluate UPerNet [41] on ADE20K. Beyond standard mIoU, we report Boundary-IoU [8] and boundary F1 [10] near object contours, where larger windows and denser to-kens exert the greatest impact. For object detection, we evaluate Mask R-CNN [18] on COCO [25]. To keep the dense p=2 setting tractable, inputs are uniformly padded to 
+
+512 ×512 rather than 1333 ×800 . Window size M is fixed to its pretraining value throughout, meaning larger inputs increase window count rather than window scale. Full im-plementation and training details are provided in the Sup-plementary S1.1. 
+
+## 4.1. Memory Scaling 
+
+Figure 1C, Figure S1, and Table S1 show the central ef-ficiency result: F LASH SWIN activation memory is largely decoupled from window size, and so is throughput. At patch size 4, F LASH SWIN -T remains at 12 .4 GB as M grows from 8 to 32 , while Swin-T increases from 15 .7 to 90 .1 GB (5.7×) and SwinV2-T from 15 .0 to 70 .4 GB. The baselines pay for larger windows in both memory and speed: Swin-T falls from 1173 to 442 img/s and SwinV2-T from 871 to 
+
+371 , whereas F LASH SWIN -T remains near 1K img/s. At 
+
+M =8 , Swin-T is slightly faster because the small attention matrix does not amortize fused-kernel overhead; F LASH -SWIN overtakes both baselines from M =16 and is 2.4×
+
+faster than Swin-T at M =32 . FlashBias is likewise flat in 
+
+M , confirming that fusion, rather than the positional encod-ing, removes the window dependence; however, F LASH -SWIN uses less memory, becomes faster at larger windows, and remains fixed at 28 .3M parameters while FlashBias grows with M .Denser grids move the baselines closer to the hardware ceiling. At patch size 2, F LASH SWIN -T holds at 47 .7 GB and ∼290 img/s across windows, while both Swin vari-ants exceed 120 GB at M =16 . At M =32 , Swin-T can-not train even with checkpointing [6], and SwinV2-T runs only with checkpointing at 138 .9 GB and 57 img/s, against FLASH SWIN ’s 47 .7 GB and 272 img/s without it— 2.9×
+
+less memory at 4.8× the throughput. FlashBias[39] remains memory-stable at 51 .5 GB but reaches only 205 img/s, while its M =8 configuration cannot launch at batch 128 
+
+because of its kernel grid limit. Checkpointing further re-duces memory but trades it for recomputation, making the ability to train directly consequential for throughput. Fi-nally, the 4× increase in token count from patch 4 to 2 costs FLASH SWIN only 3.85 × the memory ( 12 .4 → 47 .7 GB), while increasing M adds essentially none. Thus, F LASH -SWIN shifts the memory scaling from window size to to-ken count: standard windowed attention becomes memory-bound long before large windows cease to be useful, and that is the constraint F LASH SWIN removes. 
+
+## 4.2. ImageNet-1K Classification Results 
+
+Table 1 reports F LASH SWIN -T across progressively larger windows and denser token grids. At matched compute (M =8 , p=4 ), F LASH SWIN -T reaches 82 .3% top-1, out-performing both Swin baselines at the same 5.9 GFLOPs. Increasing the window to M =16 raises accuracy to 82 .9% 
+
+and improves ImageNet-V2 from 70 .8% to 71 .9% . Classifi-cation then saturates: increasing M to 32 adds 27% FLOPs without improving ImageNet-1K and yields only +0 .1 on ImageNet-V2. Larger windows therefore help up to a point, with their benefit more visible on the held-out ImageNet-V2 set than on clean ImageNet—a pattern that becomes stronger under distribution shift. The largest gain comes from token density. At M =32 
+
+and p=2 , F LASH SWIN -T reaches 84 .1% ImageNet-1K and 
+
+73 .4% ImageNet-V2, improving by 1.8 and 2.6 points over the M =8 , p=4 FLASH SWIN -T configuration while retain-ing the same ≈28 M model capacity. Thus, accuracy is gov-erned not only by parameter count, but also by the spa-tial resolution at which those parameters operate: 84 .1% at 
+
+≈28 M approaches Base-scale accuracy ( ∼84 .5% [27]) with substantially fewer parameters. Higher token density does 5Method Params M p Res GFLOPs IN-1K ↑ IN-V2 ↑                                                    
+
+> Matched compute
+> Swin-T 28M 84 256 5.9 81.9 70.2 SwinV2-T 28M 84 256 5.9 81.9 70.3 FLASH SWIN -T 28M 84 256 5.9 82.3 70.8
+> Large-window
+> SwinV2-T 28M 16 4 256 6.6 82.8 71.4 FLASH SWIN -T 28M 16 4 256 6.6 82.9 71.9 FlashBias-T 30M 32 4 256 9.1 82.7 71.3 FLASH SWIN -T 28M 32 4 256 8.4 82.9 72.0
+> Dense-token regime
+> FLASH SWIN -T 28M 32 2 256 37.4 84.1 73.4
+> Table 1. ImageNet-1K classification. Mis window size, ppatch size; accuracy is top-1 (%) on ImageNet-1K and on the held-out ImageNet-V2 set. Only the first block is compute-matched; later blocks trade GFLOPs for window size and token density at matched parameter count, the exception being FlashBias-T, whose low-rank factors scale with M2.Bold : best in block.
+
+increase compute ( 37 .4 vs. 5.9 GFLOPs), but standard win-dowed attention cannot train this configuration at the same batch size without activation checkpointing [6], whose re-computation cost F LASH SWIN avoids. Fusion alone does not explain the accuracy gains. FlashBias-T[39] retains an additive relative-position bias through a learned rank-16 factorization compatible with fused attention. At M =32 , p=4 , it reaches 82 .7% , within 
+
+0.2 points of F LASH SWIN -T, but uses 29 .5M parameters versus 28 .3M because its factors grow with M 2. On clean ImageNet, the two are therefore nearly indistinguishable. Their difference becomes substantially clearer under distri-bution shift and downstream transfer. 
+
+Out-of-distribution robustness. We evaluate on four distribution-shift benchmarks (Tab. 2). At M =8 ,FLASH SWIN -T already outperforms both Swin variants on every benchmark, with larger margins than on clean Ima-geNet. Increasing the window to M =16 further improves robustness at fixed token density, while dense tokenization produces the largest gains: at M =32 , p=2 , F LASH SWIN -T reaches 42 .8% ImageNet-A, 46 .6% ImageNet-R, 33 .0% 
+
+ImageNet-Sketch, and 50 .7 mCE. Relative to SwinV2-T, the ImageNet-A improvement grows from +3 .4 points at matched configuration to +18 .1 points in the dense-token regime, compared with only +2 .2 points on clean Ima-geNet. Thus, the larger-window, dense-token regime has a disproportionately large benefit under distribution shift. FlashBias provides an important control. Despite nearly matching F LASH SWIN -T on clean ImageNet at M =32 
+
+(82 .7% vs. 82 .9% ), it falls behind on natural shifts: by 
+
+4.5 points on ImageNet-A, 2.6 on ImageNet-R, and 3.0 on Sketch. The gap is smaller on synthetic corruption, where FlashBias reaches 54 .7 mCE versus F LASH SWIN -T’s 53 .0.
+
+Component ablation. Table S2 and Fig. S3 isolate                                                                  
+
+> Backbone M/p/Res IN-1K ↑IN-A ↑IN-R ↑Sketch ↑IN-C ↓
+> Swin-T 8/4/256 81.9 25.1 41.7 28.0 58.5 SwinV2-T 8/4/256 81.9 24.7 41.3 27.9 58.3 FLASH SWIN -T 8/4/256 82.3 28.1 43.6 30.4 56.9
+> SwinV2-T 16/4/256 82.8 31.2 44.6 31.4 54.1 FLASH SWIN -T 16/4/256 82.9 33.2 45.6 32.9 53.7 FlashBias-T 32/4/256 82.7 28.4 43.0 29.4 54.7 FLASH SWIN -T 32/4/256 82.9 32.9 45.6 32.4 53.0
+> FLASH SWIN -T 32/2/256 84.1 42.8 46.6 33.0 50.7
+> Table 2. Out-of-distribution robustness. Top-1 (%) on ImageNet-A, -R, and -Sketch; mean corruption error (mCE) on ImageNet-C. IN-1K repeats clean accuracy for reference and is ex-cluded from bolding; bold : best in each window block. ImageNet-A and Sketch peak at M=16 while mCE keeps falling; dense to-kenization is strongest on all four. FlashBias-T fuses the kernel but keeps a rank-16 additive bias: matched to F LASH SWIN -T on clean accuracy, it scores at the M=8 level on natural shift despite
+> M=32 , while remaining competitive on synthetic corruption.
+
+the components needed to integrate memory-efficient atten-tion into Swin. Naively using a fused kernel—dropping Swin’s relative-position bias—drops ImageNet-1K accu-racy to 80 .0% (1.9 points below SwinV2-T). Because fused attention is exact, this drop stems entirely from lost intra-window positional signal. Learnable window-local RoPE recovers 1.8 points ( 81 .8% ), matching SwinV2-T ( 81 .9% )and proving kernel compatibility costs no accuracy. The overlapping stem adds +0 .5% , bringing full F LASH SWIN -T to 82 .3% . Training curves (Fig. S3) confirm this ranking is established early and maintained throughout. RoPE and the stem provide a +2 .3 point boost over naive fused atten-tion, turning memory savings into performance gains. 
+
+## 4.3. ADE20K Semantic Segmentation 
+
+All backbones follow the UPerNet protocol described above. In Tab. 3, the third value in M/p/Res denotes the backbone pretraining resolution. Boundary-IoU [8] uses a 2% diagonal band and boundary F1 (BF) [10] a 0.8% 
+
+matching tolerance; both are accumulated per class over the full 2,000 -image validation set and reduced across all 150 
+
+classes, following mIoU. At matched windows, F LASH SWIN -T outperforms all baselines across all three metrics. At M =8 , it improves over SwinV2-T by 0.92 mIoU, 0.85 Boundary-IoU, and 
+
+1.19 BF. Increasing M to 16 and 32 further improves all three, reaching 46 .88 /35 .55 /49 .72 at M =32 . Unlike clas-sification, which saturates beyond M =16 , segmentation continues to benefit from larger windows, indicating that broader spatial context remains useful for dense prediction. At the same M =32 , FlashBias-T trails F LASH SWIN -T by 
+
+1.73 mIoU, 1.78 Boundary-IoU, and 1.42 BF despite nearly matching it on ImageNet, again showing that fusion alone does not reproduce the downstream gains of F LASH SWIN .6Backbone M/p/Res mIoU ↑ Boundary-IoU ↑ BF ↑                                            
+
+> Swin-T 8/4/256 43.20 31.88 45.63 SwinV2-T 8/4/256 43.47 32.26 46.17 FLASH SWIN -T 8/4/256 44.39 33.11 47.36
+> SwinV2-T 16/4/256 45.46 34.14 48.22 FLASH SWIN -T 16/4/256 46.03 34.73 48.98 FlashBias-T 32/4/256 45.15 33.77 48.30 FLASH SWIN -T 32/4/256 46.88 35.55 49.72
+> FLASH SWIN -T 32/2/256 47.28 36.42 51.06
+> Table 3. ADE20K segmentation and boundary quality. Single-scale mIoU, Boundary-IoU, and F1. F LASH SWIN -T leads across all matched windows. Larger windows improve region and bound-ary metrics equally, while token density ( p=2 ) yields 2–3×
+> larger gains on boundaries than mIoU. FlashBias-T, matched to FLASH SWIN -T on ImageNet, trails it by 1.7mIoU and by a similar relative margin on both boundary metrics, performing at SwinV2-T’s M=16 level despite M=32 .Bold : best in block.
+
+Dense tokenization improves boundaries; wider win-dows improve both. At fixed M =32 , reducing patch size from 4 to 2 improves mIoU by 0.40 points, but Boundary-IoU by 0.87 and BF by 1.34 —roughly 2–3× the mIoU gain. In contrast, widening the window from 8 to 32 at fixed density adds 2.49 mIoU, 2.44 Boundary-IoU, and 2.36 
+
+BF. Thus, broader context improves region and boundary quality together, whereas denser tokens disproportionately improve boundary localization. The BF tolerance sweep (Tab. S4) supports this distinction: the dense configuration gains most under strict tolerances, with its margin decreas-ing as the tolerance is relaxed. At the same ≈28 M capac-ity, the dense M =32 model gains +4 .54 Boundary-IoU and 
+
++5 .43 BF over Swin-T, demonstrating the value of the high-density regime enabled by memory-efficient attention. 
+
+## 4.4. COCO Object Detection 
+
+All backbones are evaluated on COCO using Mask R-CNN under the matched 512 × 512 protocol above. At M =8 ,FLASH SWIN -T improves over both baselines, reaching 38 .5
+
+box AP and 35 .3 mask AP versus 37 .3/34 .4 for SwinV2-T. Increasing M to 16 raises performance to 39 .0/36 .0, and 
+
+M =32 further improves it to 40 .3/36 .7. Unlike classifi-cation, which saturates beyond M =16 (Tab. 1), detection continues to benefit from larger windows, suggesting that broader spatial context is particularly useful for localiza-tion and instance delineation. In contrast, FlashBias-T at 
+
+M =32 reaches only 37 .0/34 .3 AP despite nearly match-ing F LASH SWIN -T on ImageNet, placing it near the M =8 
+
+Swin baseline. Thus, the downstream benefit of larger win-dows is not explained by fused attention alone. Reducing the patch size to p=2 at M =32 produces the largest gain: 44 .1 box AP and 39 .9 mask AP, improving over the p=4 model by 3.8 and 3.2 points and over Swin-T by 7.0 and 5.7. The gain is concentrated on small objects: AP S increases from 20 .1 to 27 .1 for boxes and from 14 .4 to 
+
+19 .1 for masks, while box AP L remains unchanged at 59 .7
+
+(Sec. S1.3). This links dense tokenization to where spa-tial resolution is most limiting: small objects represented by only a few tokens under patch-4. Together with the ADE20K boundary results, this shows that denser tokeniza-tion is particularly beneficial when prediction depends on fine spatial detail.                                                                               
+
+> Box ↑Mask ↑
+> Backbone M/p/Res AP AP 50 AP 75 AP AP 50 AP 75
+> Swin-T 8/4/256 37.1 58.2 40.1 34.2 54.9 36.2 SwinV2-T 8/4/256 37.3 58.8 40.3 34.4 55.3 36.4 FLASH SWIN -T 8/4/256 38.5 59.8 41.4 35.3 56.8 37.6
+> SwinV2-T 16/4/256 39.0 60.3 42.2 35.7 57.0 37.9 FLASH SWIN -T 16/4/256 39.0 60.2 42.2 36.0 57.3 38.1
+> FlashBias-T 32/4/256 37.0 58.2 39.7 34.3 55.3 36.6 FLASH SWIN -T 32/4/256 40.3 61.7 43.6 36.7 58.6 39.3
+> FLASH SWIN -T 32/2/256 44.1 66.6 48.2 39.9 63.3 42.4
+> Table 4. COCO detection and instance segmentation.
+> FLASH SWIN -T improves with window size and matches or beats the Swin baselines at each matched window; halving the patch at
+> M=32 gives the largest gain. FlashBias-T fuses the kernel but keeps an additive bias as a learned rank-16 factorization: it ties FLASH SWIN on ImageNet ( 82 .65 vs 82 .94 ) yet loses 3.3box AP, performing at Swin-T’s M=8 level despite M=32 .
+
+## 4.5. Large Model Experiments 
+
+To test whether the benefits of F LASH SWIN persist with increasing model capacity, we scale F LASH SWIN -L to approximately 197 M parameters, closely matching Swin-L [26] and SwinV2-L [27]. For the baselines, we use the official IN-22K pretrained checkpoints and perform downstream training under the same evaluation pipeline. FLASH SWIN -L is pretrained on IN-22K [30] at 192 2 with patch size 2 and window size 32 for 90 epochs. At the same 
+
+192 2 input resolution, this produces a 96 2 stage-1 token grid compared with 48 2 for SwinV2-L, corresponding to 4×
+
+more tokens. The models are therefore parameter-matched but not compute-matched; this comparison specifically tests whether the denser-token regime enabled by F LASH SWIN 
+
+remains beneficial as model capacity increases. 
+
+Classification. On IN-1K the three Large models are closely matched: FLASH SWIN -L reaches 86 .91% ,within 0.02 of SwinV2-L ( 86 .93% ) and 0.40 above Swin-L ( 86 .51% ). The ordering changes on ImageNet-V2, a fresh sample of the same distribution: FLASH SWIN -L leads at 78 .02% against 77 .48% and 76 .81% , and degrades least from clean accuracy ( −8.89 points against −9.45 and 
+
+−9.70 ). With essentially identical IN-1K accuracy, the higher ImageNet-V2 result indicates better generalization to the independently collected test set. F LASH SWIN -L is like-7wise the strongest of the three on ImageNet-A and -R; the full out-of-distribution comparison is reported in the sup-plementary S1.4. 
+
+Segmentation. On ADE20K, F LASH SWIN -L achieves 
+
+52 .58 mIoU, improving over Swin-L by +2 .45 points and SwinV2-L by +4 .23 points. The improvement is even more pronounced for boundary quality: relative to Swin-L, FLASH SWIN -L gains +3 .02 Boundary-IoU and +2 .98 BF. In relative terms, Boundary-IoU improves by 7.8% com-pared with 4.9% for mIoU, reproducing the pattern ob-served at the Tiny scale (Tab. 3): denser spatial representa-tions disproportionately benefit boundary localization. Im-portantly, these gains are obtained without increasing pa-rameter count. Instead, F LASH SWIN -L uses its improved memory scaling to process a substantially denser token grid and larger attention windows. Together with the Tiny-scale results, this suggests that scaling vision transformers is not solely a question of increasing model parameters; increas-ing spatial resolution available to a fixed-capacity backbone provides an additional and complementary scaling axis. A per-class decomposition (Refer S1.2) shows the gain is broad rather than category-specific: 41 of 45 well-supported classes improve, with the largest gains on finely contoured objects and the only losses on diffuse regions.                        
+
+> Backbone p M PT Res. IN-1K IN-V2 mIoU B-IoU BF Swin-L 4 7 224 286.51 76.81 50.13 38.73 54.31 SwinV2-L 4 12 192 286.93 77.48 48.35 37.54 52.72 FLASH SWIN -L 2 32 192 286.91 78.02 52.58 41.75 57.29
+> Table 5. Large-scale results. PT Res. denotes IN-22K pre-training resolution; all IN-1K/IN-V2 results use 256 2fine-tuning. FLASH SWIN -L uses 4×more stage-1 tokens than SwinV2-L at the same 192 2pretraining resolution. Published Swin-L/SwinV2-L results at 384 2fine-tuning are not directly comparable. Higher is better for all metrics.
+
+## 4.6. Token Density via finer patches vs. higher res. 
+
+Because F LASH SWIN decouples memory from window size, a target token density can be reached two ways: a finer patch embedding at low input resolution, or a coarser patch at high resolution. Table S6 contrasts the two at a fixed 
+
+128 × 128 token grid with matched FLOPs and parameters. The two routes are nearly interchangeable on these bench-marks. They are near-identical in what they learn ( 84 .1 vs. 
+
+84 .0 top-1, with the finer patch +0 .5 ahead on ImageNet-V2) and, at equal batch size, near-identical in what they cost: 24 .4 vs. 23 .8GB of training memory and 287 vs. 284 
+
+images/s. This is expected-beyond the first reduction the two networks are architecturally identical, and the stem is too small a fraction of activations to separate them-but it is worth establishing, because it isolates token count as the variable that matters. We state the conclusion narrowly. ImageNet-1K has a median short side of 374 pixels and only 6.4% of images reach 512 , so the coarse-patch arm is trained largely on upsampled data. The experiment therefore shows that, at these resolutions, a coarse stem on an interpolated image can match a finer stem on the original; it does not establish that native high-resolution input is unnecessary. The more consequential setting is data whose task-relevant signal ex-ists at the native pixel scale, such as cellular morphology in histopathology or small lesions and thin structures in med-ical imaging [1, 14, 23, 40]. Evaluating F LASH SWIN in these genuinely high-resolution regimes is an important di-rection for future work. 
+
+# 5. Conclusion and Future Work 
+
+In this work, we present F LASH SWIN , an architecture that removes the window-size memory wall in hierar-chical vision transformers. By replacing score-matrix relative-position bias with window-local learnable 2D RoPE, F LASH SWIN enables standard FlashAttention within windowed self-attention and makes previously impractical large-window, dense-token regimes ( M =32 , p=2 ) train-able. Our comparison with FlashBias[39] further shows that fused attention itself is sufficient to flatten memory scal-ing with window size, but not to reproduce the downstream gains of F LASH SWIN . Across classification, detection, seg-mentation, and distribution shift, larger windows improve contextual modeling while denser tokens provide particu-larly strong gains in fine spatial localization. These bene-fits persist from Tiny ( 28 M) to Large ( 197 M) models, with FLASH SWIN -L reaching 52 .58 mIoU on ADE20K and out-performing both Swin-L and SwinV2-L. Together, our re-sults show that scaling vision transformers is constrained not only by parameter count, but also by the spatial resolu-tion that hardware memory allows them to process. 
+
+Limitations and future work. Although F LASH SWIN re-moves the dominant memory dependence on window size, dense tokenization still increases computation; the p=2 
+
+configuration therefore trades additional FLOPs for spa-tial resolution. Our current benchmarks also operate at relatively modest image resolutions and do not fully test the regime that motivates native high-resolution process-ing. Extending F LASH SWIN to gigapixel histopathology, high-resolution medical imaging [1, 14, 23, 40], and other domains where downsampling removes task-relevant detail is therefore an important direction. Dense-token, large-window backbones may also benefit vision-language mod-els requiring fine-grained visual grounding and text recog-nition. Finally, extending memory-efficient windowed at-tention to 3D medical volumes and video is particularly promising, where the growth of volumetric attention makes the memory constraint even more severe. 8Acknowledgments 
+
+This work was supported by the National Science Foun-dation under Grant NSF2217154. We also gratefully acknowledge the Center for High Performance Computing at the University of Utah for providing the computa-tional resources used in this work. These resources were partially supported by NIH Shared Instrumen-tation Grant 1S10OD021644-01A1. The content is solely the responsibility of the authors and does not necessarily represent the official views of the National Science Foundation or the National Institutes of Health. 
+
+# References 
+
+[1] Giulia Lucrezia Baroni, Laura Rasotto, Kevin Roitero, An-gelica Tulisso, Carla Di Loreto, and Vincenzo Della Mea. Optimizing vision transformers for histopathology: pretrain-ing and normalization in breast cancer classification. Journal of Imaging , 10(5):108, 2024. 8 [2] Abu Zahid Bin Aziz, Mokshagna Sai Teja Karanam, Tushar Kataria, and Shireen Y Elhabian. Efficientmorph: Parameter-efficient transformer-based architecture for 3d im-age registration. In Proceedings of the Winter Conference on Applications of Computer Vision , pages 1330–1341, 2025. 1 [3] Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang, Christoph Feichtenhofer, and Judy Hoffman. To-ken merging: Your vit but faster. arXiv preprint arXiv:2210.09461 , 2022. 2 [4] Junyu Chen, Eric C Frey, Yufan He, William P Segars, Ye Li, and Yong Du. Transmorph: Transformer for unsuper-vised medical image registration. Medical image analysis ,82:102615, 2022. 1 [5] Kai Chen, Jiaqi Wang, Jiangmiao Pang, Yuhang Cao, Yu Xiong, Xiaoxiao Li, Shuyang Sun, Wansen Feng, Ziwei Liu, Jiarui Xu, Zheng Zhang, Dazhi Cheng, Chenchen Zhu, Tian-heng Cheng, Qijie Zhao, Buyu Li, Xin Lu, Rui Zhu, Yue Wu, Jifeng Dai, Jingdong Wang, Jianping Shi, Wanli Ouyang, Chen Change Loy, and Dahua Lin. MMDetection: Open mmlab detection toolbox and benchmark. arXiv preprint arXiv:1906.07155 , 2019. 11 [6] Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin. Training deep nets with sublinear memory cost. arXiv preprint arXiv:1604.06174 , 2016. 2, 5, 6 [7] Zhe Chen, Yuchen Duan, Wenhai Wang, Junjun He, Tong Lu, Jifeng Dai, and Yu Qiao. Vision transformer adapter for dense predictions. arXiv preprint arXiv:2205.08534 , 2022. 1[8] Bowen Cheng, Ross Girshick, Piotr Doll´ ar, Alexander C Berg, and Alexander Kirillov. Boundary iou: Improv-ing object-centric image segmentation evaluation. In 2021 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 15329–15337. IEEE, 2021. 5, 6[9] MMSegmentation Contributors. MMSegmentation: Openmmlab semantic segmentation toolbox and benchmark. https : / / github . com / open -mmlab/mmsegmentation , 2020. 11 [10] Gabriela Csurka, Diane Larlus, Florent Perronnin, and France Meylan. What is a good evaluation measure for se-mantic segmentation? In Bmvc , pages 10–5244. Bristol, 2013. 5, 6 [11] Cheng Da, Chuwei Luo, Qi Zheng, and Cong Yao. Vi-sion grid transformer for document layout analysis. In 2023 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 19405–19415. IEEE, 2023. 1 [12] Tri Dao. FlashAttention-2: Faster attention with better par-allelism and work partitioning. In International Conference on Learning Representations (ICLR) , 2024. 3 [13] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christo-pher R´ e. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems , 35:16344–16359, 2022. 2, 3, 4 [14] Albert Dede, Henry Nunoo-Mensah, Eric Tutu Tchao, Andrew Selasi Agbemenu, Prince Ebenezer Adjei, Fran-cisca Adoma Acheampong, and Jerry John Kponyo. Deep learning for efficient high-resolution image processing: Asystematic review. Intelligent Systems with Applications , 26: 200505, 2025. 8 [15] Xiaoyi Dong, Jianmin Bao, Dongdong Chen, Weiming Zhang, Nenghai Yu, Lu Yuan, Dong Chen, and Baining Guo. Cswin transformer: A general vision transformer backbone with cross-shaped windows. In 2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 12114–12124. IEEE, 2022. 2 [16] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-vain Gelly, et al. An image is worth 16x16 words: Trans-formers for image recognition at scale. arXiv preprint arXiv:2010.11929 , 2020. 1, 2, 3 [17] Ali Hassani, Steven Walton, Jiachen Li, Shen Li, and Humphrey Shi. Neighborhood attention transformer. In 
+
+2023 IEEE/CVF Conference on Computer Vision and Pat-tern Recognition (CVPR) , pages 6185–6194. IEEE, 2023. 2 [18] Kaiming He, Georgia Gkioxari, Piotr Doll´ ar, and Ross Gir-shick. Mask r-cnn. In Proceedings of the IEEE international conference on computer vision , pages 2961–2969, 2017. 5, 11 [19] Dan Hendrycks and Thomas Dietterich. Benchmarking neu-ral network robustness to common corruptions and perturba-tions. arXiv preprint arXiv:1903.12261 , 2019. 5 [20] Dan Hendrycks, Steven Basart, Norman Mu, Saurav Kada-vath, Frank Wang, Evan Dorundo, Rahul Desai, Tyler Zhu, Samyak Parajuli, Mike Guo, Dawn Song, Jacob Steinhardt, and Justin Gilmer. The many faces of robustness: A critical analysis of out-of-distribution generalization. ICCV , 2021. 5 [21] Dan Hendrycks, Kevin Zhao, Steven Basart, Jacob Stein-hardt, and Dawn Song. Natural adversarial examples. In 
+
+Proceedings of the IEEE/CVF conference on computer vi-sion and pattern recognition , pages 15262–15271, 2021. 5 [22] Byeongho Heo, Song Park, Dongyoon Han, and Sangdoo Yun. Rotary position embedding for vision transformer. In 
+
+European Conference on Computer Vision , pages 289–305. Springer, 2024. 3 
+
+9[23] Wenxuan Li, Xinze Zhou, Qi Chen, Tianyu Lin, Pedro RAS Bassi, Xiaoxi Chen, Chen Ye, Zheren Zhu, Kai Ding, Heng Li, et al. Pants: The pancreatic tumor segmentation dataset. 
+
+Advances in Neural Information Processing Systems , 38, 2026. 8 [24] Yanghao Li, Hanzi Mao, Ross Girshick, and Kaiming He. Exploring plain vision transformer backbones for object de-tection. In European conference on computer vision , pages 280–296. Springer, 2022. 2 [25] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays, Pietro Perona, Deva Ramanan, Piotr Doll´ ar, and C Lawrence Zitnick. Microsoft coco: Common objects in context. In 
+
+European conference on computer vision , pages 740–755. Springer, 2014. 4, 5 [26] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, Stephen Lin, and Baining Guo. Swin transformer: Hierarchical vision transformer using shifted windows. In 
+
+2021 IEEE/CVF international conference on computer vi-sion (ICCV) , pages 9992–10002. IEEE, 2021. 1, 2, 3, 4, 7 [27] Ze Liu, Han Hu, Yutong Lin, Zhuliang Yao, Zhenda Xie, Yixuan Wei, Jia Ning, Yue Cao, Zheng Zhang, Li Dong, et al. Swin transformer v2: Scaling up capacity and resolution. In 
+
+2022 IEEE/CVF Conference on Computer Vision and Pat-tern Recognition (CVPR) , pages 11999–12009. IEEE, 2022. 2, 5, 7 [28] Wenjie Luo, Yujia Li, Raquel Urtasun, and Richard Zemel. Understanding the effective receptive field in deep convolu-tional neural networks. Advances in neural information pro-cessing systems , 29, 2016. 13 [29] Peter Neidlinger, Omar SM El Nahhas, Hannah Sophie Muti, Tim Lenz, Michael Hoffmeister, Hermann Brenner, Marko Van Treeck, Rupert Langer, Bastian Dislich, Hans Michael Behrens, et al. Benchmarking foundation models as feature extractors for weakly supervised computational pathology. 
+
+Nature biomedical engineering , pages 1–11, 2025. 1 [30] Tal Ridnik, Emanuel Ben-Baruch, Asaf Noy, and Lihi Zelnik-Manor. Imagenet-21k pretraining for the masses. 
+
+arXiv preprint arXiv:2104.10972 , 2021. 7 [31] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, San-jeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, et al. Imagenet large scale visual recognition challenge. International journal of computer vision , 115(3):211–252, 2015. 4 [32] Chaitanya Ryali, Yuan-Ting Hu, Daniel Bolya, Chen Wei, Haoqi Fan, Po-Yao Huang, Vaibhav Aggarwal, Arkabandhu Chowdhury, Omid Poursaeed, Judy Hoffman, et al. Hi-era: A hierarchical vision transformer without the bells-and-whistles. In International conference on machine learning ,pages 29441–29454. PMLR, 2023. 2 [33] Oriane Sim´ eoni, Huy V Vo, Maximilian Seitzer, Federico Baldassarre, Maxime Oquab, Cijo Jose, Vasil Khalidov, Marc Szafraniec, Seungeun Yi, Micha¨ el Ramamonjisoa, et al. Dinov3. arXiv preprint arXiv:2508.10104 , 2025. 1 [34] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. 3 [35] Eugene Vorontsov, Alican Bozkurt, Adam Casson, George Shaikovski, Michal Zelechowski, Kristen Severson, Eric Zimmermann, James Hall, Neil Tenenholtz, Nicolo Fusi, et al. A foundation model for clinical-grade computational pathology and rare cancers detection. Nature medicine , 30 (10):2924–2935, 2024. 1 [36] Haohan Wang, Songwei Ge, Zachary Lipton, and Eric P Xing. Learning robust global representations by penalizing local predictive power. Advances in neural information pro-cessing systems , 32, 2019. 5 [37] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao Song, Ding Liang, Tong Lu, Ping Luo, and Ling Shao. Pyra-mid vision transformer: A versatile backbone for dense pre-diction without convolutions. In 2021 IEEE/CVF interna-tional conference on computer vision (ICCV) , pages 548– 558. IEEE, 2021. 2 [38] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao Song, Ding Liang, Tong Lu, Ping Luo, and Ling Shao. Pvt v2: Improved baselines with pyramid vision transformer. 
+
+Computational visual media , 8(3):415–424, 2022. 3 [39] Haixu Wu, Minghao Guo, Yuezhou Ma, Yuanxu Sun, Jian-min Wang, Wojciech Matusik, and Mingsheng Long. Flash-bias: Fast computation of attention with bias. Advances in Neural Information Processing Systems , 38:20729–20756, 2026. 3, 5, 6, 8 [40] Linshan Wu, Jiaxin Zhuang, and Hao Chen. Voco: A simple-yet-effective volume contrastive learning framework for 3d medical image analysis. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 22873–22882. IEEE, 2024. 8 [41] Tete Xiao, Yingcheng Liu, Bolei Zhou, Yuning Jiang, and Jian Sun. Unified perceptual parsing for scene understand-ing. In European conference on computer vision , pages 432– 448. Springer, 2018. 5, 11 [42] Tony Xu, Sepehr Hosseini, Chris Anderson, Anthony Ri-naldi, Rahul G Krishnan, Anne L Martel, and Maged Goubran. A generalizable 3d framework and model for self-supervised learning in medical imaging. npj Digital Medicine , 8(1):639, 2025. 1 [43] Jianwei Yang, Chunyuan Li, Pengchuan Zhang, Xiyang Dai, Bin Xiao, Lu Yuan, and Jianfeng Gao. Focal self-attention for local-global interactions in vision transformers. arXiv preprint arXiv:2107.00641 , 2021. 2 [44] Bowen Zhang, Zhi Tian, Quan Tang, Xiangxiang Chu, Xi-aolin Wei, Chunhua Shen, et al. Segvit: Semantic segmen-tation with plain vision transformers. Advances in Neural Information Processing Systems , 35:4971–4982, 2022. 1 [45] Bowen Zhang, Liyang Liu, Minh Hieu Phan, Zhi Tian, Chunhua Shen, and Yifan Liu. Segvit v2: Exploring effi-cient and continual semantic segmentation with plain vision transformers. International Journal of Computer Vision , 132 (4):1126–1147, 2024. 1 [46] Bolei Zhou, Hang Zhao, Xavier Puig, Tete Xiao, Sanja Fi-dler, Adela Barriuso, and Antonio Torralba. Semantic under-standing of scenes through the ade20k dataset. International journal of computer vision , 127(3):302–321, 2019. 4 
+
+10 1. Supplementary 
+
+## S1.1. Additional Implementation Details 
+
+Effective window per stage for FLASH SWIN . The win-dow size M reported throughout is the stage-1 value. When a stage’s spatial resolution is not larger than M , the im-plementation clamps the window to that resolution and dis-ables the shift, since a window larger than the feature map has no meaning. At 256 2 input with p=4 the stage grids are 
+
+64 , 32 , 16 , 8, so M =32 is realized as 32 , 32 , 16 , 8 across the four stages, and M =64 at 512 2 is realized as 128 → 64 
+
+only from stage 2 onward. The deepest stages therefore per-form global attention within their own resolution. This af-fects all three architectures identically and matches Swin’s own convention, but it must be reproduced for the reported numbers to match: an implementation that instead pads to a multiple of M will give different results at large M .
+
+ADE20K Segmentation. Experiments are implemented in mmsegmentation [9] using UPerNet [41] initialized from ImageNet-1K checkpoints. We train using the standard 
+
+160 K schedule with 512 ×512 crop sizes. Optimization uses AdamW with a learning rate of 1.2×10 −4 and weight de-cay of 0.01 . The effective batch size is 32 (4 GPUs × 4
+
+images/GPU with 2 gradient-accumulation steps). 
+
+COCO Detection. Experiments are implemented in 
+
+mmdetection [5] using Mask R-CNN [18] under the stan-dard 1× schedule. Optimization uses AdamW with a learn-ing rate of 10 −4, weight decay of 0.05 , a 1000 -iteration warmup, and step decay at epochs 8 and 11 . The effective batch size is 16 (2 GPUs × 4 images/GPU with 2 gradient-accumulation steps). Inputs are padded to 512 ×512 across all models for uniform evaluation; absolute AP scores re-flect this reduced input resolution. 
+
+## S1.2. Boundary tolerance sensitivity 
+
+The BF-score depends on a matching tolerance τ , expressed as a fraction of the image diagonal d. Any single choice of τ
+
+is arbitrary, and an improvement visible at one tolerance is not by itself evidence of better boundary quality. We there-fore sweep τ /d ∈ { 0.002 , 0.004 , 0.008 , 0.016 , 0.032 } over the full 2,000-image ADE20K validation set, holding the models, the predictions, and the Boundary-IoU band fixed. Table S4 reports the result. The ordering of the seven backbones is identical at all five tolerances, so the boundary result is a property of the models rather than of the operating point. Beyond this in-variance, the margin has a systematic shape: F LASH SWIN -T at 32 /2 leads the next-best model by +1 .50 BF at 
+
+τ /d =0 .004 and by only +0 .84 at the loosest tolerance, de-caying as τ grows past the strictest settings. A larger τ
+
+relaxes the criterion toward ordinary region overlap, so a margin that shrinks with τ is what one expects when the im-provement comes from more precise boundary localization rather than from better region classification. Consistently, the patch-size reduction that yields only +0 .40 mIoU yields 
+
++0 .87 Boundary-IoU and +1 .34 BF at τ /d = 0 .008 — two to three times as much gain at the boundary as in aggregate region accuracy, detail that mIoU alone substantially under-reports. 
+
+Implementation. Both metrics accumulate per-class nu-merators and denominators across the dataset and reduce once at the end, matching the way mIoU is reported and re-maining stable for rare classes. Boundary-IoU uses a band of width 0.02 d around each class boundary and is indepen-dent of τ by construction, which the constant B-IoU column confirms. Predictions are single-scale, taken from the same checkpoints as Table 3. All models are scored on the iden-tical set of 150 classes observed by every model; restricting to this common set is necessary because a class predicted by one model but absent from the ground truth contributes zero to that model’s mean, which would otherwise penalize models that predict a wider range of classes. 
+
+Per-class boundary analysis . Aggregate boundary met-rics do not indicate where the improvement arises, so we decompose the density effect per class. Per-class estimates are strongly frequency-dependent in variance: among the 
+
+43 classes appearing in fewer than 25 of the 2,000 vali-dation images the change has standard deviation 7.15 and only half improve, whereas among the 45 classes appearing in at least 100 images the standard deviation falls to 1.83 
+
+and 41 improve. The mean gain is the same in both the mid- and high-support bins ( +2 .29 and +2 .30 ), and gain is uncorrelated with frequency ( r=0 .05 ), so the rare classes contribute noise rather than signal and we restrict Tab. S3 to well-supported classes. There the pattern is systematic: the largest gains fall on small objects with fine contours—pots, sconces, vases, bottles, streetlights, flowers—while the only losses are large amorphous regions such as mountain, earth, and grass, none exceeding 1.8 points. Token density im-proves where a boundary must be placed precisely and is neutral where the boundary is diffuse. 
+
+## S1.3. Detection by object size 
+
+Table S5 breaks AP down by object scale, and the two de-sign axes separate cleanly. Widening the window improves every scale, with a mild tilt toward small objects: over Swin-T, F LASH SWIN -T at M =32 gains +19 .6% on AP S
+
+against +9 .3% on AP M and +6 .8% on AP L for boxes, and 
+
++21 .0% / +8 .7% / +5 .7% respectively for masks. Halving the patch size behaves differently. At fixed M =32 , p=2 
+
+improves AP S by +34 .8% for boxes ( 20 .1 → 27 .1) and 
+
++32 .6% for masks ( 14 .4 → 19 .1), improves AP M by only 
+
++6 .9% and +8 .8% , and leaves AP L essentially untouched 11 Memory (GB) ↓ Train throughput (img/s) ↑
+
+p Model M =8 M =16 M =32 M =8 M =16 M =32 Params (M) 4Swin-T 15.7/6.4 31.0/11.6 90.1/37.7 1173/893 828/612 442/314 28.5 SwinV2-T 15.0/5.4 29.8/12.0 70.4/34.9 871/670 643/484 371/272 28.4 FlashBias-T 13.2/5.2 13.2/5.1 13.2/5.2 934/741 924/733 826/657 28.5–29.5 FLASH SWIN -T 12.4/4.2 12.4/4.8 12.4/5.0 1058/815 1103/850 1043/808 28.3 
+
+2Swin-T 64.4/23.2 123.3/45.6 OOM/OOM 317/239 210/153 OOM/OOM 28.5 SwinV2-T 58.3/19.8 122.0/48.7 OOM/138.9 235/180 165/123 OOM/57 28.4 FlashBias-T † 51.4/19.1 51.5/19.2 † 243/192 205/162 29.4–31.6 FLASH SWIN -T 47.7/15.9 47.7/15.9 47.7/16.0 289/221 297/227 272/210 28.3 
+
+Table S1. Peak training memory and throughput without/with gradient checkpointing, measured at batch size 128 with 256 2 inputs on one H200. FlashBias-T uses a trainable rank-16 bias factorization. Both FlashBias-T and F LASH SWIN -T remove the memory dependence on window size, while F LASH SWIN -T uses less memory and higher throughput at M ≥ 16 . FlashBias parameters increase with M ,whereas F LASH SWIN -T remains fixed at 28 .3M. † denotes a configuration that FlashBias cannot launch at batch 128 due to its CUDA grid-size limit. Variant RoPE Overlap IN-1K ↑
+
+Naive Flash – – 80.0 + learnable RoPE ✓ – 81.8 + overlap stem ✓ ✓ 82.3 
+
+SwinV2-T (ref.) relative-position bias 81.9 
+
+Table S2. Component ablation at M =8 , p=4 , 256 2. Dropping Swin’s relative-position bias by applying the fused FlashAttention kernel costs 1.9 points against SwinV2-T. Largest gains Largest losses Class #im B-IoU BF Class #im B-IoU BF pot 141 +7 .21 +9 .79 mountain 161 −1.78 −1.89 
+
+sconce 108 +6 .64 +6 .54 earth 190 −0.80 −0.76 
+
+vase 122 +5 .73 +5 .97 railing 100 −0.71 −0.38 
+
+flower 138 +4 .11 +4 .78 grass 227 −0.66 −0.29 
+
+bottle 114 +4 .09 +5 .98 
+
+painting 316 +4 .08 +3 .74 
+
+streetlight 240 +4 .05 +6 .57 
+
+ashcan 100 +3 .88 +4 .55 
+
+Table S3. Per-class boundary change from halving the patch size at M =32 , F LASH SWIN -L p=4 → p=2 on ADE20K, re-stricted to the 45 classes appearing in at least 100 validation im-ages. 41 /45 improve (mean +2 .30 Boundary-IoU, sd 1.83 ). 
+
+(59 .7 in both cases for boxes, 59 .7 → 60 .2 for masks). Con-text and resolution therefore act on different parts of the size distribution: a larger window helps everywhere, consistent with supplying additional surrounding evidence, whereas a finer stem helps only where an object spans too few to-kens to be resolved and contributes nothing once it is large enough. 
+
+Table S4. BF-score under varying boundary tolerance τ on ADE20K val . The ranking is unchanged at every tolerance. Backbone w p B-IoU BF-score at τ /d 
+
+0.002 0.004 0.008 0.016 0.032 Swin-T 8 4 31.88 27.53 36.97 45.63 52.84 58.89 SwinV2-T 8 4 32.26 27.99 37.56 46.17 53.19 59.17 FLASH SWIN -T 8 4 33.11 28.81 38.61 47.36 54.48 60.47 SwinV2-T 16 4 34.14 29.59 39.50 48.22 55.13 60.74 FLASH SWIN -T 16 4 34.73 30.31 40.36 48.98 55.87 61.63 FLASH SWIN -T 32 4 35.55 30.71 40.92 49.72 56.57 62.14 FLASH SWIN -T 32 2 36.42 32.12 42.42 51.06 57.58 62.98 
+
+∆ (32 /2 vs. 32 /4) +0 .87 +1 .41 +1 .50 +1 .34 +1 .01 +0 .84 
+
+## S1.4. Out-of-distribution generalization testing for Large Models. 
+
+We evaluate the three Large models without fine-tuning on ImageNet-V2, -A, -R and -Sketch (Tab. S7). Between the two baselines, robustness tracks clean accuracy exactly: SwinV2-L leads Swin-L by 0.42 points on IN-1K and on every shifted benchmark, by a margin that grows with the severity of the shift ( +0 .67 on V2, +1 .24 on Sketch, +1 .26 
+
+on -R, +3 .60 on -A). F LASH SWIN -L breaks that relation-ship. Its clean accuracy is within 0.02 of SwinV2-L ( 86 .91 
+
+vs. 86 .93 ), yet it leads by 0.54 on ImageNet-V2, 1.10 on -R and 3.32 on -A, trailing only on Sketch ( −0.59 ). Ex-pressed as degradation from clean accuracy, F LASH SWIN -L loses 8.89 points on V2 and 17 .20 on -A, against 9.45 
+
+and 20 .54 for SwinV2-L. The advantage is not uniform: SwinV2-L retains a lead on ImageNet-Sketch ( 50 .48 vs. 
+
+49 .89 ) and on corruption robustness ( 37 .70 vs. 38 .37 mCE), where F LASH SWIN -L’s losses fall mainly in the blur fam-ily. Because the two models are separated by hundredths 12 Box Mask Backbone M/p/Res AP AP S AP M AP L AP AP S AP M AP L
+
+Swin-T 8/4/256 37.1 16.8 40.9 55.9 34.2 11.9 36.7 56.5 SwinV2-T 8/4/256 37.3 17.1 41.3 55.5 34.4 12.1 37.0 56.5 FLASH SWIN -T 8/4/256 38.5 18.1 42.9 57.2 35.3 12.8 38.2 57.2 
+
+SwinV2-T 16/4/256 39.0 18.7 43.3 57.5 35.7 13.2 38.6 58.7 
+
+FLASH SWIN -T 16/4/256 39.0 19.3 43.3 57.7 36.0 13.5 38.9 58.5 FLASH SWIN -T 32/4/256 40.3 20.1 44.7 59.7 36.7 14.4 39.9 59.7 
+
+FLASH SWIN -T 32/2/256 44.1 27.1 47.8 59.7 39.9 19.1 43.4 60.2 
+
+Table S5. COCO detection with size-stratified AP. Setup as in Tab. 4. Larger windows improve all object scales; the finer patch improves small objects almost exclusively. Route Patch Res GFLOPs Mem (GB) img/s ↑ IN-1K ↑
+
+finer patch 2 256 37.4 24.4 287 84.1 
+
+higher res 4 512 37.4 23.8 284 84.0 Table S6. Two routes to identical token density. At matched FLOPs ( ∼37 G) and parameters ( ≈28 M) on a 128 × 128 grid (H200, batch 64 , window 32 ), both routes yield equivalent cost and accuracy. 
+
+of a point on IN-1K, neither direction can be attributed to fitted accuracy; we report the comparison as an empirical observation without isolating a responsible component. 
+
+Top-1 ↑ mCE ↓
+
+Backbone IN-1K IN-V2 IN-A IN-R Sketch IN-C Swin-L 86.51 76.81 62.79 65.02 49.24 39.74 SwinV2-L 86.93 77.48 66.39 66.28 50.48 37.70 
+
+FLASH SWIN -L 86.91 78.02 69.71 67.38 49.89 38.37 Table S7. Out-of-distribution generalization at Large scale. All models are evaluated without fine-tuning from their IN-22K →IN-1K checkpoints, each at its own pretraining window. ImageNet-A and -R are scored over their 200 -class subsets; ImageNet-V2 uses the matched-frequency split; mCE is AlexNet-normalized over 15 
+
+corruptions at 5 severities. At essentially identical clean accuracy (86 .91 vs. 86 .93 ), F LASH SWIN -L leads on ImageNet-V2, -A and -R. 
+
+Receptive field. Figure S2 visualizes the effective re-ceptive field (ERF) [28], measuring input-gradient mass of the final center feature across 200 ImageNet-val images. FLASH SWIN -T’s ERF grows monotonically with window size—its 50% -mass radius expands from 50% to 66% of the input as M increases from 8 to 32 —and remains a coherent region without fragmenting. At M = 8 , F LASH SWIN al-ready attains a wider, less strictly local field than SwinV2-T. This directly demonstrates the core mechanism: memory-efficient attention makes large windows affordable, trans-
+
+Figure S1. Inference throughput versus window size at patch 4,
+
+256 2 input, batch 128 , one H200. FLASH SWIN -T is flat across the sweep ( 3286 → 3336 images/s) while Swin-T falls 3.3×
+
+(3498 → 1068 ) and SwinV2-T 2.8× (2771 → 1002 ). At M =8 
+
+the fused kernel is slightly slower than the bias-table path, since a small window does not amortise its overhead; F LASH SWIN over-takes both baselines from M =16 onward and is 3.1× faster than Swin-T at M =32 .
+
+lating into demonstrably larger receptive fields. 
+
+## S1.5. What the ROPE learnable frequencies learn. 
+
+Because the rotary frequencies are optimized rather than fixed, we can inspect what they converge to. Figure S4 plots the learned per-stage inverse-frequency spectrum against the geometric initialization. The frequencies do not remain at their initialized values: 84% move by more than 10% ,and—rather than a single global adjustment—each stage settles on a distinct profile, with the largest departures in the mid-frequency band. This indicates that the positional spec-trum best suited to windowed attention is stage-dependent, which a fixed schedule cannot capture, and provides direct 13 Figure S2. Effective receptive field (ERF) of the final feature at the center location, accumulated over 200 ImageNet-val images (log scale). F LASH SWIN -T’s ERF expands smoothly and coherently as the window grows ( 50% -ERF radius 50 → 61 → 66% of the input side for M = 8 , 16 , 32 ), whereas SwinV2-T ( M = 8 ) is markedly more local. Because memory is independent of window size, F LASH SWIN 
+
+can realize the large windows that produce these wide receptive fields. 
+
+Figure S3. Component-ablation training curves (ImageNet-1K val top-1, w8/p4/256, ∼5.9 GFLOPs). Naive memory-efficient attention (orange) plateaus below SwinV2-T (dashed, 81 .9); the learnable RoPE (blue) recovers parity and the overlapping stem (green) surpasses it (+2 .3 total). Right: zoom on the final 60 epochs with end values. 
+
+empirical support for making the frequencies learnable. 14 Figure S4. Learned RoPE frequencies depart from the geo-metric initialization. Inverse frequencies θi = exp( ωi) per stage (averaged over the blocks in each stage) for F LASH SWIN -T, ver-sus the standard geometric RoPE schedule used at initialization (dashed). The learned frequencies deviate markedly— 84% move by more than 10% —and each stage adopts a distinct profile, par-ticularly in the mid-band indices, indicating that the optimal posi-tional spectrum is stage-dependent rather than fixed. 
+
+15

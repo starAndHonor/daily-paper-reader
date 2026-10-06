@@ -1,0 +1,1388 @@
+Title: Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration
+
+URL Source: https://arxiv.org/pdf/2610.05254v1
+
+Published Time: Tue, 06 Oct 2026 01:41:48 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 
+
+Kai-Liang Cheng 1, Yuan-Yuan Cheng 1, Yu-fan Jin 1, and Xiao-Ming Fu 1 
+
+> 1University of Science and Technology of China, China
+
+Abstract We propose Hybrid-Basis Feature Forecasting (HybridFF ), a training-free, plug-and-play framework for accelerating diffusion sampling. To capture local smoothness, long-range trends, and complex non-monotonic variations when modeling feature evolution, HybridFF first estimates coefficients using moving least squares (MLS) for each of multiple complementary basis families and then combines the corresponding predictors using fusion weights. In addition to the choice of basis functions, the fusion weights also play a critical role. We introduce two strategies to balance quality and speedup. HybridFF (Fixed) prioritizes efficiency with model-specific fusion weights calibrated on a small set and held constant during inference. HybridFF (Adaptive) updates the fusion weights online using branch reliability scores computed from an exponential moving average of full-step prediction errors, improving prediction fidelity and generation quality under aggressive caching while retaining substantial acceleration. Experiments across DiT-XL/2, FLUX.1-dev, SD3.5-Large, and HunyuanVideo demonstrate a favorable speedup–quality trade-off over representative single-basis forecasters and caching baselines. 
+
+Keywords diffusion models, sampling acceleration, feature forecasting, moving least squares 
+
+1 Introduction 
+
+Diffusion models [1], particularly those leveraging the Dif-fusion Transformer (DiT) architecture [2], have redefined the state of the art in generative modeling across multiple modalities, including high-fidelity image synthesis [3] and video generation [4]. However, the iterative nature of the denoising process remains a formidable barrier to efficient deployment. Each sampling step involves redundant, com-putationally expensive evaluations of the denoising network via deep stacks of attention and MLP modules, resulting in prohibitive inference latency [5, 6]. Consequently, developing efficient sampling acceleration techniques has become an important topic. Current acceleration methods can be broadly categorized into sampling step reduction [7, 8] and per-step computa-tion optimization [9, 10]. Among these, feature caching has emerged as a compelling training-free, plug-and-play solution that exploits temporal redundancy between adjacent timesteps [5, 11]. This approach has evolved from static reusing methods like DeepCache [11] and TeaCache [5], which assume feature invariance across steps, to dynamic forecasting frameworks exemplified by TaylorSeer [12]. Consistent with prior observations [12], Fig. 2(a) shows that intermediate diffusion features, including transformer attention/MLP outputs, follow structured temporal trends over local cache intervals rather than changing arbitrarily across adjacent denoising steps. Motivated by these predictable structures, many dynamic forecasting methods have been proposed. TaylorSeer [12] uses polynomial bases, which often deviate around sharp transitions, while HiCache [13] and Spectrum [14] introduce Hermite and Chebyshev polynomial bases, respectively, to improve the stability of feature forecasting under complex or long-range temporal dynamics. Similarly, TC-Pad´ e [15] introduces rational functions to better capture asymptotic behaviors. Despite their success, these forecasting methods typically rely on a single basis family or a uniform temporal prior to model feature dynamics. In practice, diffusion features exhibit highly heterogeneous dynamics across different timesteps, noise levels, network layers, and individual samples [6, 15, 16]. A single basis inevitably imposes a rigid inductive bias that cannot adapt to the complex, non-monotonic variations inherent in the de-noising process. This one-basis-fits-all dilemma restricts the generation quality at aggressive acceleration ratios, leading to larger feature-prediction errors than hybrid-basis forecasting (Fig. 2(b)). To overcome this limitation, we propose Hybrid-Basis Fea-ture Forecasting (HybridFF) , a novel training-free frame-work that models diffusion feature evolution as a weighted composition of multiple complementary basis families. The core insight of HybridFF is that different mathematical bases possess unique strengths, e.g., Taylor expansions [12] are effective for modeling local smoothness, Hermite polynomi-als [13] provide stable interpolation with derivative-aware constraints, and Chebyshev polynomials [14] offer robust approximation over broader intervals. To combine these bases into a unified framework that accommodates the multifaceted dynamics of the diffusion model’s features across the entire arXiv:2610.05254v1 [cs.CV] 4 Oct 2026 2 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu 
+
+Fig. 1 HybridFF results: HunyuanVideo (top row, 3.85 ×) and FLUX.1-dev (bottom two rows, 4.37 ×) at NFE = 10. 10 20 30 40 50 -1 01                                       
+
+> Block 4 MLP
+> 10 20 30 40 50 -1.5 0.0 1.5 3.0
+> Block 24 MLP
+> 20 24 28 32
+> Block 4 zoom
+> 20 24 28 32
+> Block 24 zoom
+> 010 20 30 40 50 -1.5 0.0
+> Block 4 attention
+> 010 20 30 40 50 0.0 1.5
+> Block 14 MLP
+> 010 20 30 40 50 02
+> Block 24 MLP
+> 38 40 42 44 0.80 0.85 0.90 0.95
+> Local forecast, steps 39-43
+> 32 34 36 38 0.50 0.75 1.00 1.25
+> Local forecast, steps 33-37
+> 26 28 30 32 0.0 0.2 0.4
+> Local forecast, steps 27-31
+> Feature trajectory Cached fresh observations Skipped targets TaylorSeer HiCache Spectrum HybridFF Polynomial forecast
+> 0.0 0.4 0.8 1.2
+> Cumulative |PC1 error|
+> TaylorSeer HiCache Spectrum HybridFF
+> 0.52 1.19 0.42
+> 0.29
+> Shown-window error
+> Projected feature value Denoising step Denoising step
+> (a) Polynomial bases fit feature trajectories (b) Hybrid basis yields lower prediction error
+
+Fig. 2 DiT-XL/2 feature-trajectory analysis. (a) Intermediate features follow structured trajectories along denoising steps, and full-step observations can be fitted by polynomial bases to forecast skipped-step features. (b) Hybrid-basis polynomial forecasting gives lower feature-prediction error than single-basis predictors, motivating HybridFF’s coefficient-level fusion. 
+
+trajectory, we first estimate the coefficients for each basis using moving least squares (MLS) and then apply fusion weights to combine the corresponding predictors. We further introduce two practical weighting strategies to balance speed and quality. HybridFF (Fixed) calibrates fusion weights on a small set and keeps them constant during inference, empha-sizing the quality–speedup trade-off. HybridFF (Adaptive) updates fusion weights based on full-step prediction errors, maintaining high fidelity under aggressive caching. Extensive evaluations and comparisons with state-of-the-art models (DiT-XL/2, FLUX.1-dev, SD3.5-Large, and Hun-yuanVideo) show that HybridFF achieves a superior speed-quality trade-off (Tables 1–3), outperforming single-basis baselines by a significant margin. For example, HybridFF (Fixed) achieves up to 2.44 × speedup on DiT-XL/2, 4.37 ×
+
+on FLUX.1-dev, 4.75 × on SD3.5-Large, and 3.85 × on Hun-yuanVideo. Representative image and video results with NFE = 10 are shown in Fig. 1. 
+
+2 Related Works 
+
+Diffusion Models and Generative Applications. Diffusion models have become a dominant paradigm for high-quality generative modeling across image synthesis, conditional gen-eration, and video generation [1–3, 17–21]. Among them, diffusion transformers (DiTs) significantly improve scalability and generation quality by replacing convolutional backbones with transformer architectures [2]. These advances have en-abled diffusion-based systems to be applied to a broad range of tasks, including photorealistic text-to-image generation [3, 18–20], video generation [21–23], and restoration tasks such as super-resolution and inpainting [24, 25]. However, despite their strong generation capability, these models remain computationally expensive at inference time due to the iter-ative denoising process, which motivates efficient diffusion inference methods. 
+
+Diffusion Sampling Acceleration. Existing methods for ac-celerating diffusion inference mainly follow two directions. The first reduces the number of denoising steps through Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 3improved numerical solvers, consistency-style learning, or distillation-based trajectory compression. Representative ex-amples include DDIM [26], DPM-Solver [7], consistency models [8], and progressive distillation [27]. The second re-duces the computational cost of each denoising step through model simplification, structural pruning, quantization, token reduction, or architectural acceleration [9, 10, 28–31]. Among these approaches, training-free methods that avoid retraining the generative model are particularly attractive, since they can better preserve the original model behavior and are often applicable in a plug-and-play manner. 
+
+Feature Caching and Feature Forecasting. Feature caching has recently emerged as an effective training-free paradigm for diffusion acceleration. Early methods mainly follow a cache-then-reuse strategy, where intermediate activations computed at previous timesteps are directly reused to skip redundant computation in later steps [5, 11, 32–34]. While exploiting temporal feature similarity enables low-overhead speedups, direct reuse becomes unreliable at large skip intervals, lead-ing to error accumulation and quality degradation. Recent works therefore shift to cache-then-forecast , predicting future features from historical activations rather than copying them. TaylorSeer [12] frames forecasting as feature extrapolation, establishing it as a stronger alternative to naive reuse. Subse-quent works improve forecasting via Adams-Bashforth-style extrapolation [35], plug-in predictor upgrades [36], spectral or global trajectory modeling [14], and trajectory-consistent rational approximation [15]. Other extensions further incorpo-rate adaptive forecasting mechanisms [16, 37–40]. Together, they show that forecasting-based acceleration offers better speed–quality trade-offs than direct reuse. 
+
+Single-Basis and Hybrid-Basis Forecasting. Despite di-verse formulations, most forecasting methods still rely on a single prior or basis family, ranging from local extrapolation and global/spectral fitting to adaptive, speculative, subspace-aware, or learnable predictor designs [6, 12–16, 36–39, 41]. While effective in their target regimes, a single predictor form imposes a restrictive bias: local predictors may struggle with long-range evolution, whereas global ones may miss local trend changes. Since diffusion features exhibit diverse tempo-ral patterns across timesteps, layers, and samples, relying on a single basis family can limit prediction flexibility under ag-gressive skipping ratios. In contrast, we explore hybrid-basis forecasting , which combines multiple complementary basis families. HybridFF therefore captures local behavior, long-range trends, and complex non-monotonic feature evolution during diffusion sampling. 
+
+3 Method 
+
+3.1 Background 
+
+Diffusion model. Diffusion models generate data by learn-ing to reverse a noise corruption process. The forward process gradually adds Gaussian noise to a clean sample 
+
+x0 drawn from the data distribution pdata over T steps: 
+
+q(xt | x0) = N (xt; √¯αtx0, (1 − ¯αt)I), where ¯αt controls the noise schedule and xT ≈ N (0 , I). The reverse process learns to denoise by training a neural network ϵθ to predict the added noise: L = Et, x0,ϵ 
+
+∥ϵ − ϵθ (xt, t )∥2 . At inference, the model iteratively denoises from xT to x0 over N steps via a reverse sampler: xti−1 = f (xti , ϵ θ (xti , t i), t i, t i−1),
+
+where f depends on the sampler (e.g., DDPM [1], DDIM [26], DPM-Solver [7]). 
+
+Problem Formulation. Consider a diffusion model with 
+
+L modules evaluated over N denoising timesteps 
+
+{t0, t 1, . . . , t N −1}. At each timestep ti and module ℓ ∈{1, . . . , L }, let zℓti ∈ Rd denote an intermediate feature (e.g., attention output in transformer-based models). For brevity, we drop the layer superscript when the context is clear. We partition the timesteps into a full set U where the model is evaluated exactly and a predict set V = {t0, . . . , t N −1} \ U 
+
+where the feature is reconstructed from caches. For each predict step ti ∈ V, the visible history is the ordered index set Iti = {ti, 1 < ti, 2 < · · · <ti,K } ⊂ U , ti,K < t i, yielding the cached buffer Hti =
+
+(ti,j , z ti,j ) Kj=1 . The forecasting objective is to produce an estimator ˆzti = P(Hti , t i) with low reconstruction error, while keeping the predictor lightweight relative to a full model evaluation. Following common practice [12, 14], the sched-uler that determines U, V and the predictor P is decoupled, so different schedules can share the same predictor. 
+
+3.2 Unified Coefficient Forecasting via MLS 
+
+Formulation As observed in Fig. 2(a), local feature trajecto-ries are structured and can be approximated by polynomial bases, reducing skipped-feature forecasting to coefficient es-timation from cached observations. At each prediction step 
+
+ti, HybridFF reconstructs the skipped feature as a linear combination of cached features: 
+
+ˆzti =
+
+> K
+
+X
+
+> j=1
+
+αti,j zti,j , (1) where αti = ( αti, 1 , . . . , α ti,K )⊤ ∈ RK is a coefficient vector. The key question is how to determine αti .We instantiate two solver families: for the Taylor branch, 
+
+α(Taylor)  
+
+> ti
+
+is given in closed form by finite-difference extrapo-lation weights without any matrix solve [12] (see Sec. 3.5); 4 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu Full Step  Predict Step  Full Step  Predict Step  Full Step   
+
+> ………
+
+…𝒕 = 𝑻  𝒕 = 𝟎 
+
+> Noisy Latent
+> (t=T)
+> Clean Image
+> (t=0)
+> Hermite
+> Chebyshev
+> Taylor
+> Weights
+> Hybrid Fusion
+
+…  
+
+> Cashed Feature
+> (Selected Subset) Predicted
+> Feature
+> …
+> Cashed
+> Feature
+> Cashed
+> Feature
+> Feature Value
+> Full Steps Predict Steps
+> Ground Truth
+> Taylor
+> Chebyshev
+> Hermite
+> Hybrid (Ours)
+> Denoising Step (time)
+
+……… 
+
+> Full Step
+> …
+> Predict Step
+> 𝒕 𝒊
+
+………
+
+> Weight Mode
+> Fixed
+> Calibrated
+> Adaptive
+> EMA
+> Full step error
+
+Fig. 3 Overview of the proposed hybrid-basis forecasting pipeline. The pipeline proceeds in three stages: (1) full steps compute and cache exact intermediate features; (2) predict steps fit Taylor, Hermite, and Chebyshev predictors from the same normalized history; (3) the branch coefficient vectors are fused by simplex weights and used to reconstruct the de-normalized target block feature. 
+
+for the Chebyshev and Hermite branches, α(b)
+
+ti is obtained via MLS, where given a basis family b with feature map 
+
+ϕ(b) the MLS solver fits the cached history and returns a branch-specific coefficient vector. Other solvers are equally compatible with this interface. Different basis families cap-ture different aspects of the feature trajectory, so HybridFF maintains multiple complementary branches and fuses their coefficient vectors to obtain the final αti , as summarized in Fig. 3 and detailed in the hybrid fusion rule below. 
+
+MLS Solver. Given a basis family b with a feature map 
+
+ϕ(b) : [0 , 1] → Rmb , we model the feature trajectory as 
+
+z(τ ) ≈ ϕ(b)(τ )⊤c and find the polynomial coefficient c(b)
+
+ti ∈
+
+RK that minimizes the weighted fitting error over cached history: 
+
+c(b)
+
+ti = arg min 
+
+cKX
+
+j=1 
+
+w(b)
+
+ti,j ϕ(b)(τti,t i,j )⊤c−zti,j 
+
+2
+
++λb∥c∥2,
+
+(2) where τti,t i,j is a normalized coordinate for history step ti,j ,
+
+w(b)
+
+ti,j ⩾ 0 is a locality weight emphasizing recent observa-tions, and λb is a ridge regularizer. The branch prediction coefficients α(b)
+
+ti in (1) are derived from c(b)
+
+ti by evaluating the basis at the target step. We now define each ingredient. 
+
+Coordinate normalization. For numerical conditioning, the history and target coordinates are jointly mapped to [0 , 1] .Let ℓti = min j ti,j and uti = max( ti, max j ti,j ). Define 
+
+τti,t = t−ℓti
+
+uti −ℓti +ε , t = ℓti , . . . , u ti , with ε > 0 a stabilizer. 
+
+Locality weights. To emphasize recent history, each ob-servation is weighted by a Gaussian decay on the raw step distance: w(b)
+
+ti,j = exp 
+
+
+
+− (ti−ti,j )2
+
+(σ(b))2
+
+
+
+. The weights use raw coordinates rather than normalized τ so that the decay scale 
+
+σ(b) remains tied to actual sampling-step distances. 
+
+Closed-form solution. Define the basis matrix and weight matrix 
+
+Φ(b)
+
+ti =
+
+
+
+ϕ(b)(τti,t i, 1 )⊤
+
+...
+
+ϕ(b)(τti,t i,K )⊤
+
+ ,W (b)
+
+ti = diag  w(b)
+
+ti, 1 , . . . , w (b)
+
+ti,K 
+
+.
+
+Solving (2) and evaluating at the target coordinate τti,t i yields the branch coefficient vector over cached features: 
+
+α(b)
+
+ti =  ϕ(b)(τti,t i )⊤ G(b)
+
+ti
+
+−1Φ(b)⊤
+
+ti W (b)
+
+ti
+
+T , (3) 
+
+G(b)
+
+ti := Φ (b)⊤
+
+ti W (b)
+
+ti Φ(b)
+
+ti + λbI, (4) The coefficients are then normalized to enforce an affine constraint, 
+
+eα(b)
+
+ti = α(b)
+
+ti
+
+1⊤α(b)
+
+ti
+
+, (5) so that 1⊤ eα(b)
+
+ti = 1 . This preserves constants exactly and is required for the anchored residual form. 
+
+Basis library. The MLS solver in (4) is parameterized by the choice of basis ϕ(b), and any polynomial or orthogonal family can be plugged in. In our experiments we instantiate three complementary branches: a Chebyshev branch ( ϕ(Chebyshev) )Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 5whose orthogonality yields well-conditioned Gram matrices, suitable for wider history windows and globally smooth trajectories; a Hermite branch ( ϕ(Hermite) ) with a domain-contracting scale that prevents exponential growth of high-order terms and is responsive to local curvature; and a Taylor 
+
+branch ( α(Taylor)  
+
+> ti
+
+) whose coefficients are computed in closed form, providing strong short-range extrapolation at no matrix-solve cost. The explicit recurrences and the Taylor weight formula are given in Sec. 3.5. 
+
+3.3 Hybrid Basis Fusion 
+
+Why fuse? The three branches are individually optimal in different regimes: Taylor excels at short-range extrapolation but degrades when the target step is far from the latest cache; Chebyshev provides numerically stable global fits but is less responsive to abrupt local change; Hermite captures mid-range curvature but requires careful scaling. No single branch dominates across diffusion timesteps and model layers. HybridFF therefore combines the branches at the coefficient level. 
+
+Coefficient-level fusion. Let B = {Chebyshev , Hermite ,
+
+Taylor } and let πti ∈ ∆|B|− 1 be a simplex weight vector (π(b) 
+
+> ti
+
+⩾ 0, P 
+
+> b
+
+π(b) 
+
+> ti
+
+= 1 ). The hybrid coefficient vector is 
+
+αti = X
+
+> b∈B
+
+π(b) 
+
+> ti
+
+eα(b) 
+
+> ti
+
+. (6) Because the per-branch coefficients are affine ( 1⊤ eα(b) 
+
+> ti
+
+= 1 )and πti lies on the simplex, the fused coefficients automatically satisfy 1⊤αti = 1 . Let ˆz(b) 
+
+> ti
+
+be the per-branch reconstruction. By expanding Eq. (6), we recover Eq. (1): 
+
+ˆzti = X
+
+> b∈B
+
+π(b)
+
+> ti
+
+
+
+> K
+
+X
+
+> j=1
+
+eα(b) 
+
+> ti,j
+
+zti,j 
+
+| {z }
+
+> ˆz(b)
+> ti
+
+=
+
+> K
+
+X
+
+> j=1
+
+X
+
+> b∈B
+
+π(b) 
+
+> ti
+
+eα(b)
+
+> ti,j
+
+!| {z }
+
+> αti,j
+
+zti,j .
+
+(7) 
+
+Anchored Residual Reconstruction Let a(ti) = ti,K be the most recent full step in Hti and za := za(ti) the anchor feature. HybridFF uses the coefficients in residual form: 
+
+ˆzti = za +
+
+> K
+
+X
+
+> j=1
+
+αti,j 
+
+ zti,j − za
+
+. (8) Because 1⊤αti = 1 , Eq. (8) is algebraically identical to the affine combination Eq. (1) ( P 
+
+> j
+
+αti,j zti,j ). The two forms differ in numerical behaviour: the residuals zti,j − za have substantially smaller magnitude than the raw activations, so (8) better preserves numerical precision and is robust to large feature norms commonly observed in deep model layers (e.g., transformer blocks). 
+
+3.4 Fixed and Adaptive Fusion Weights 
+
+We report two variants under the same coefficient-fusion pipeline. They differ only in how the simplex weight πti is determined: HybridFF (Fixed) calibrates π once offline and freezes it, whereas HybridFF (Adaptive) updates π online from full-step prediction errors. 
+
+Fixed weights. The fixed weight is calibrated once by a lightweight simplex grid search over a small candidate set, scoring each candidate by SSIM against the full-step reference on a small calibration subset (a few percent of the prompts), and then frozen for all inference steps and prompts. This is a one-time hyperparameter calibration. Because the weight is a single dimension-free simplex vector shared across steps, Hy-bridFF (Fixed) adds essentially no runtime overhead beyond the coefficient mix itself. Per-backbone calibration details are given in Sec. 4.5. 
+
+Adaptive weights. A single fixed weight cannot track feature dynamics that vary across samples, layers, and timesteps. HybridFF (Adaptive) keeps the same branch library but recalibrates π on the fly, reusing computation that is already available at full steps. At a full step ti ∈ U , the exact feature 
+
+zti is computed by the backbone. Before inserting it into the cache, each branch makes a probe prediction ˆz(b) 
+
+> ti
+
+from the existing history using the same branch coefficient rule used in Eq. (7). We measure the relative squared prediction error of branch b, d(b) 
+
+> ti
+
+= ∥ˆz(b)    
+
+> ti−zti∥22
+> ∥zti∥22+ε
+
+, where ε is a small stabilizer. Let p(ti) denote the previous full step carrying an adaptive state. HybridFF maintains an exponential moving average (EMA) error score per branch, m(b) 
+
+> ti
+
+= β m (b) 
+
+> p(ti)
+
++(1 − β) d(b) 
+
+> ti
+
+, 0 ⩽ β < 1, and converts these scores into adaptive weights by a softmax over negative errors, π(b) 
+
+> ti,ada
+
+=      
+
+> exp( −m(b)
+> ti/τ )
+> P
+> c∈B exp( −m(c)
+> ti/τ )
+
+, τ > 0. The resulting π(b) 
+
+> ti,ada
+
+is used as 
+
+π(b) 
+
+> ti
+
+in Eq. (6) for the subsequent prediction steps until the next full-step update, so a branch with lower recent error contributes more to the fused coefficient vector. Since the exact feature zti is already available at full steps, this adds only lightweight branch probes, scalar EMA updates, and a simplex normalization, with no extra denoiser forward pass: it only alters coefficient fusion, leaving the schedule, MLS locality weights, and denoiser unchanged. Empirically, this yields consistent fidelity gains over HybridFF (Fixed) at a marginal speed cost (Tables 1–3). 
+
+3.5 Basis Library Details 
+
+This subsection provides the explicit definitions of the three basis branches introduced above. 6 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu (1) Chebyshev branch (ϕ(Chebyshev) ). First-kind Cheby-shev polynomials on x = (2 τ − 1) γc, where γc is the scale parameter: 
+
+T0(x) = 1 ,T1(x) = x, Tn(x) = 2 x T n−1(x) − Tn−2(x).
+
+(9) The orthogonality of Tn yields well-conditioned Gram matrices, making this branch suitable for wider history windows and globally smooth trajectories. (2) Hermite branch (ϕ(Hermite) ). Scaled physicist’s Her-mite polynomials with scale parameter γ > 0, evaluated at x = 2 τ − 1:
+
+eH0(x) = 1 ,
+
+eH1(x) = 2 γ2x, 
+
+eHn(x) = 2 γ2x eHn−1(x) − 2( n−1) γ2 eHn−2(x).
+
+(10) This normalization corresponds to eHn(x) =
+
+γnHn(γx ), where Hn denotes the standard physicist’s Hermite polynomial; the scale γ contracts the effective domain, preventing exponential growth of high-order terms and making this branch responsive to local curva-ture. (3) Taylor branch (α(Taylor) ). Finite-difference extrap-olation weights computed in closed form. Let r =(ti − ti,K )/(ti,K − ti,K −1) be the normalised step ratio. The coefficients are 
+
+α(Taylor)  
+
+> ti,j
+
+= ( −1) j r j
+
+j! 
+
+> P−j
+
+X
+
+> m=0
+
+r m
+
+m! , (11) where P is the extrapolation order. No matrix solve is required; only the two most recent cached features are needed, giving minimal memory cost. 
+
+3.6 Algorithm 
+
+Algorithm 1 summarizes the full HybridFF inference proce-dure for one sub-feature. 
+
+3.7 Scheduling and Complexity Details 
+
+This subsection expands on the scheduling and complexity discussion. 
+
+Schedule. HybridFF separates the scheduler from the pre-dictor. We support two policies: (i) fixed-interval scheduling with an initial full-step warm-up and an optional full-step tail, and (ii) flex-window scheduling in which the inter-full-step interval grows monotonically through sampling, mirroring the budget allocation pattern observed in [14]. Both policies feed an ordered Iti to the predictor; no part of the predictor depends on the schedule type. 
+
+Algorithm 1 HybridFF inference for one sub-feature. 
+
+Input: schedule (U, V), history buffer H, weights π
+
+for i = 1 , . . . , N do if ti ∈ U // full step then 
+
+compute zti exactly; append to H;
+
+else 
+
+select window K;compute eα(b) 
+
+> ti
+
+for each b ∈ B ;fuse αti = P 
+
+> b
+
+π(b) 
+
+> ti
+
+eα(b) 
+
+> ti
+
+;reconstruct ˆzti via anchored residuals in Eq. (8); 
+
+end if end for Complexity. Per predict step and per layer for DiT, HybridFF performs at most two K × K regularized solves (Chebyshev, Hermite) in float64 , one closed-form Taylor weight com-putation, a K-dimensional simplex mixing, and a K-term anchored reconstruction over the d-dimensional sub-feature. The total cost is O(K3 + Kd ) with K ⩽ 8 in all our ex-periments, dominated by the O(Kd ) reconstruction term. For comparison, a DiT block computes attention ( O(N 2d)
+
+where N is the token count) and MLP ( O(N d 2)). Since this computation only involves small history windows and low-dimensional coefficient fitting, its runtime overhead is negligible compared with a full DiT block evaluation. 
+
+3.8 Theoretical Properties 
+
+We provide several simple properties of the proposed coefficient-based hybrid predictor. They clarify why coeffi-cient fusion is well-defined and why the prediction remains stable under standard conditioning assumptions. 
+
+Theorem 1 (Stability of MLS Coefficient Prediction) . Fix a predict step ti. Under standard MLS positive-definiteness assumptions on the Gram matrix G(b) 
+
+> ti
+
+(the MLS solution in Eq. (4) ) and a bounded affine-normalization denominator 
+
+|1⊤α(b) 
+
+> ti
+
+| ⩾ γb > 0, the hybrid reconstruction ˆzti is Lipschitz continuous in the cached features {zti,j }Kj=1 with Lipschitz constant ∥αti ∥1, which is further bounded by 
+
+∥αti ∥1 ⩽ X
+
+> b∈B
+
+π(b) 
+
+> ti
+
+∥eα(b) 
+
+> ti
+
+∥1.
+
+Proof. Step 1: per-branch coefficient norm. From the MLS solution in Eq. (4), 
+
+α(b) 
+
+> ti
+
+= ϕ(b)(τti,t i )⊤  G(b)
+
+> ti
+
+−1 Φ(b)⊤ 
+
+> ti
+
+W (b) 
+
+> ti
+
+.
+
+By assumption, G(b) 
+
+> ti
+
+is positive definite with λmin (G(b) 
+
+> ti
+
+) ⩾
+
+μb > 0, so (G(b) 
+
+> ti
+
+)−1 
+
+> 2
+
+⩽ 1/μ b. Using ∥v∥1 ⩽ √K ∥v∥2Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 7for any v ∈ RK and the sub-multiplicativity of the spectral norm, 
+
+α(b)  
+
+> ti1
+
+⩽ √K α(b) 
+
+> ti2
+
+⩽
+
+√Kμb
+
+ϕ(b)(τti,t i ) 2 Φ(b)⊤ 
+
+> ti
+
+W (b) 
+
+> ti2
+
+.
+
+After affine normalization in Eq. (5) and using 1⊤α(b) 
+
+> ti
+
+⩾
+
+γb > 0,
+
+eα(b)  
+
+> ti1
+
+= α(b) 
+
+> ti1
+
+1⊤α(b)
+
+> ti
+
+⩽
+
+√Kμb γb
+
+ϕ(b)(τti,t i ) 2 Φ(b)⊤ 
+
+> ti
+
+W (b) 
+
+> ti2
+
+.
+
+(12) 
+
+Step 2: hybrid coefficient norm. Since πti ∈ ∆|B|− 1, the triangle inequality gives 
+
+αti 1 = P 
+
+> b∈B
+
+π(b) 
+
+> ti
+
+eα(b) 
+
+> ti1
+
+⩽ P 
+
+> b∈B
+
+π(b) 
+
+> ti
+
+eα(b) 
+
+> ti1
+
+. (13) 
+
+Step 3: Lipschitz continuity in the cached features. The hybrid reconstruction ˆzti = PKj=1 αti,j zti,j is a fixed linear functional of (zti, 1 , . . . , z ti,K ). Perturb each cached feature by δj ∈ Rd to obtain a perturbed history zti,j + δj , with corresponding reconstruction ˆzti + P 
+
+> j
+
+αti,j δj . Therefore 
+
+ˆz pert  
+
+> ti
+
+− ˆzti 2
+
+= PKj=1 αti,j δj 2
+
+⩽
+
+> K
+
+X
+
+> j=1
+
+|αti,j | ∥ δj ∥2
+
+⩽ αti 1 · max 
+
+> 1⩽j⩽K
+
+∥δj ∥2.
+
+where the last inequality uses P 
+
+> j
+
+|αti,j | ∥ δj ∥2 ⩽
+
+(P 
+
+> j
+
+|αti,j |) · max j ∥δj ∥2 = ∥αti ∥1 · max j ∥δj ∥2. Combining with (13) and (12) yields the Lipschitz constant claimed in Theorem 1. 
+
+Theorem 2 (Hybrid Approximation Bound) . Let e(b) 
+
+> ti
+
+=ˆz(b) 
+
+> ti
+
+− zti denote the per-branch prediction error against the true feature zti , with each branch prediction ˆz(b) 
+
+> ti
+
+defined in Eq. (7) . Then the best simplex fusion is no worse than the best single branch: 
+
+min  
+
+> πti∈∆|B|− 1
+
+P 
+
+> b∈B
+
+π(b) 
+
+> ti
+
+ˆz(b) 
+
+> ti
+
+−zti 2 ⩽ min b∈B ∥ˆz(b) 
+
+> ti
+
+−zti ∥2.
+
+Proof. Step 1: linearity of the prediction error. By con-struction, ˆzti = P 
+
+> b∈B
+
+π(b) 
+
+> ti
+
+ˆz(b) 
+
+> ti
+
+and P 
+
+> b∈B
+
+π(b) 
+
+> ti
+
+= 1 . Sub-tracting zti ,
+
+ˆzti − zti = X
+
+> b∈B
+
+π(b) 
+
+> ti
+
+ˆz(b) 
+
+> ti
+
+− zti
+
+= X
+
+> b∈B
+
+π(b)
+
+> ti
+
+ ˆz(b) 
+
+> ti
+
+− zti
+
+
+
+= X
+
+> b∈B
+
+π(b) 
+
+> ti
+
+e(b) 
+
+> ti
+
+.
+
+The triangle inequality then gives 
+
+ˆzti − zti 2 ⩽ X
+
+> b∈B
+
+π(b) 
+
+> ti
+
+e(b) 
+
+> ti2
+
+. (14) 
+
+Step 2: optimal simplex fusion dominates the best single branch. Let b⋆ ∈ arg min b∈B ∥e(b) 
+
+> ti
+
+∥2, and consider the corner 
+
+¯π ∈ ∆|B|− 1 defined by ¯π(b⋆) = 1 and ¯π(b) = 0 for b̸ = b⋆.Substituting ¯π into the left-hand side of (14), 
+
+P 
+
+> b∈B
+
+¯π(b) ˆz(b) 
+
+> ti
+
+− zti 2
+
+= ˆz(b⋆) 
+
+> ti
+
+− zti 2 = min  
+
+> b∈B
+
+ˆz(b) 
+
+> ti
+
+− zti 2.
+
+Since the minimum over ∆|B|− 1 is no larger than the value at any particular feasible point ¯π,
+
+min  
+
+> πti∈∆|B|− 1
+
+P 
+
+> b∈B
+
+π(b) 
+
+> ti
+
+ˆz(b) 
+
+> ti
+
+− zti 2 ⩽ min b∈B ˆz(b) 
+
+> ti
+
+− zti 2,
+
+which is the statement of Theorem 2. 
+
+Remark 1. Inequality (14) is tight only when all branches share the same error direction (in which case the upper bound is attained by every π). In practice the per-branch errors 
+
+e(b) 
+
+> ti
+
+point in different directions, and partial cancellation yields strictly smaller hybrid error than the convex bound, which empirically corroborates the observations in the main experiments. Theorem 2 explains the role of the hybrid basis bank. Taylor, Hermite, and Chebyshev branches induce different coefficient operators and therefore different local extrapolation errors. Simplex fusion allows the predictor to inherit the favorable branch behavior at each step, while Theorem 1 shows that this fusion does not introduce additional instability beyond the weighted coefficient norms of the active branches. 
+
+4 Experiments 
+
+4.1 Experimental Setup 
+
+Models and protocols. We evaluate HybridFF on class-conditional image generation with DiT-XL/2 [2], text-to-image generation with FLUX.1-dev [20] and SD3.5-Large [42], and text-to-video generation with Hunyuan-Video. We use the standard ImageNet protocol for DiT-XL/2, DrawBench prompts for FLUX.1-dev and SD3.5-Large, and VBench prompts for HunyuanVideo. The 50-step sampler serves as the quality anchor on every benchmark, and all experiments are conducted on NVIDIA RTX PRO 6000 GPUs. 
+
+Baselines and hyperparameters. We compare against three representative forecasting baselines: TaylorSeer [12] (Tay-lor extrapolation), HiCache [13] (Hermite forecasting), and 8 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu Spectrum [14] (Chebyshev forecasting). Unless otherwise specified, all forecasting baselines use order O = 4 or degree 
+
+D = 4 , and HybridFF additionally sets the history window to K = 5 .
+
+Metrics. We report both efficiency metrics (wall-clock la-tency and speedup w.r.t. the 50-step reference) and quality metrics (SSIM, PSNR, LPIPS w.r.t. the 50-step output; FID, IS, sFID, Recall, and Precision for class-conditional gener-ation; CLIP-Score and ImageReward for text-to-image; and VBench quality for text-to-video). 
+
+Note on latency. HybridFF is consistently slightly faster than Spectrum across all benchmarks even though it evaluates three branches. Spectrum performs its Chebyshev fit over the 
+
+entire cached history, whereas HybridFF restricts every MLS branch to a short window ( K = 5 in all experiments) and uses a closed-form Taylor branch with no matrix solve. The cubic 
+
+O(K3) MLS solve is therefore much smaller, and this gain outweighs the cost of the extra branches and the simplex mix. 
+
+4.2 Class-Conditional Image Generation 
+
+We first evaluate on DiT-XL/2 with fixed HybridFF weights 
+
+π = (0 .9, 0.1, 0.0) and ridge regularizer λb = 10 −4. Table 1 reports results across three acceleration regimes. HybridFF (Fixed) is the fastest HybridFF variant in each block, reaching up to 2.44 × speedup at NFE = 8 . HybridFF (Adaptive), which attains the best SSIM, PSNR, LPIPS, FID, and IS at every budget, gives the strongest fidelity: it improves over Fixed on these primary fidelity metrics at all three cache budgets, and at the aggressive NFE = 8 setting it raises SSIM from 0.735 
+
+to 0.756 , PSNR from 22 .483 to 23 .251 , reduces LPIPS from 
+
+0.165 to 0.156 , and lowers FID from 4.275 to 4.263 , while still keeping a 2.41 × speedup. Fig. 4 confirms HybridFF stays visually closest to the 50-step reference. Reference 
+
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟐. 𝟎𝟐 ×
+> HiCache
+> 𝟐. 𝟏𝟕 ×
+> Spectrum
+> 𝟐. 𝟏𝟒 ×
+> HybridFF(F)
+> 𝟐. 𝟐𝟐 ×
+> HybridFF(A)
+> 𝟐. 𝟏𝟖 ×
+
+Fig. 4 Comparison on class-conditional generation with DiT-XL/2 at NFE = 10. F/A denote fixed/adaptive fusion weights. Reference 
+
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟑𝟏 ×
+> HiCache
+> 𝟑. 𝟒𝟒 ×
+> Spectrum
+> 𝟑. 𝟒𝟏 ×
+> HybridFF(F)
+> 𝟑. 𝟒𝟓 ×
+> A blue bird
+> and a brown
+> bear
+> A bird
+> scaring a
+> scarecrow
+> Five dogs on
+> the street
+> HybridFF(A)
+> 𝟑. 𝟒𝟑 ×
+
+Fig. 5 Comparison on text-to-image generation with SD3.5-Large at NFE = 14. F/A denote fixed/adaptive fusion weights. Reference 
+
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟒𝟎 ×
+> HiCache
+> 𝟑. 𝟓𝟎 ×
+> Spectrum
+> 𝟑. 𝟔𝟗 ×
+> HybridFF(F)
+> 𝟑. 𝟖𝟓 ×
+> a laptop frozen in time
+> HybridFF(A)
+> 𝟑. 𝟕𝟏 ×
+
+Fig. 6 Comparison on text-to-video generation with HunyuanVideo at NFE = 10. F/A denote fixed/adaptive fusion weights. 
+
+4.3 Text-to-Image Generation 
+
+We evaluate on FLUX.1-dev with fixed fusion weights π =(0 .6, 0.1, 0.3) and λb = 10 −4, and on SD3.5-Large with 
+
+π = (0 .1, 0.9, 0.0) and λb = 10 −3. HybridFF (Fixed) is the most efficient HybridFF variant on both text-to-image backbones, reaching up to 4.37 × speedup on FLUX.1-dev and 
+
+4.75 × on SD3.5-Large. HybridFF (Adaptive) gives stronger reconstruction fidelity under aggressive caching: at NFE = 10 ,it improves FLUX.1-dev PSNR from 23 .086 to 23 .327 and LPIPS from 0.175 to 0.171 , while on SD3.5-Large it raises SSIM from 0.676 to 0.691 , PSNR from 16 .342 to 16 .772 ,and reduces LPIPS from 0.339 to 0.314 , with only a small speedup reduction from 4.75 × to 4.72 ×. Fig. 5 confirms the qualitative gains. 
+
+4.4 Text-to-Video Generation 
+
+For HunyuanVideo we use fixed HybridFF weights π =(0 .7, 0.2, 0.1) and K = 5 . Each method generates 946 × 4 = 3,784 clips on the VBench prompts. HybridFF (Fixed) is the fastest HybridFF variant in each block, cutting per-clip latency from 351 .2 s to 91 .1 s and reaching 3.85 × speedup at NFE = 10 . HybridFF (Adaptive) gives the strongest video fidelity: at NFE = 14 it raises SSIM from 0.853 to 0.867 ,PSNR from 26 .400 to 26 .809 , and VBench Quality from 
+
+80 .343 to 80 .614 over Fixed; at NFE = 10 it further improves Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 9
+
+NFE Method SSIM ↑ PSNR ↑ LPIPS ↓ FID ↓ IS ↑ sFID ↓ Recall ↑ Precision ↑ Latency (s) ↓ Speedup ↑
+
+50 Baseline (50-step) – – – 2.276 240.855 4.258 0.592 0.802 0.971 1.00 ×
+
+14 TaylorSeer 0.927 30.710 0.042 2.528 235.309 5.121 0.589 0.803 0.568 1.71 ×
+
+14 HiCache 0.927 30.811 0.041 2.518 235.894 5.165 0.592 0.801 0.531 1.83 ×
+
+14 Spectrum 0.914 29.233 0.052 2.604 230.968 4.577 0.596 0.794 0.542 1.79 ×
+
+14 HybridFF (Fixed) 0.942 31.982 0.032 2.467 236.325 4.838 0.593 0.800 0.520 1.87 ×
+
+14 HybridFF (Adaptive) 0.945 32.053 0.031 2.416 236.801 4.762 0.591 0.801 0.527 1.84 ×
+
+10 TaylorSeer 0.825 25.460 0.106 3.113 225.260 6.312 0.579 0.788 0.481 2.02 ×
+
+10 HiCache 0.830 25.543 0.100 3.087 225.682 6.835 0.583 0.789 0.447 2.17 ×
+
+10 Spectrum 0.821 24.881 0.115 3.313 219.220 4.758 0.597 0.774 0.454 2.14 ×
+
+10 HybridFF (Fixed) 0.843 25.926 0.092 2.955 226.384 5.489 0.598 0.784 0.437 2.22 ×
+
+10 HybridFF (Adaptive) 0.848 26.114 0.091 2.912 226.573 4.924 0.594 0.783 0.445 2.18 ×
+
+8 TaylorSeer 0.721 22.339 0.181 4.465 204.265 7.322 0.568 0.765 0.432 2.25 ×
+
+8 HiCache 0.722 22.319 0.171 4.324 204.442 7.206 0.569 0.762 0.408 2.38 ×
+
+8 Spectrum 0.653 20.835 0.253 7.254 181.102 7.980 0.574 0.711 0.424 2.29 ×
+
+8 HybridFF (Fixed) 0.735 22.483 0.165 4.275 205.619 6.001 0.598 0.754 0.398 2.44 ×
+
+8 HybridFF (Adaptive) 0.756 23.251 0.156 4.263 206.474 4.924 0.596 0.741 0.403 2.41 ×
+
+Table 1 Comparison on class-conditional image generation with DiT-XL/2. Bold and underline mark the best and second-best entries in each block, respectively. 
+
+FLUX.1-dev 
+
+NFE Method SSIM ↑ PSNR ↑ LPIPS ↓ IR ↑ CS ↑ Spd ↑
+
+50 Baseline (50-step) – – – 0.993 27.504 1.00 ×
+
+14 TaylorSeer 0.883 25.204 0.108 1.017 27.462 3.13 ×
+
+14 HiCache 0.893 26.209 0.098 1.000 27.465 3.24 ×
+
+14 Spectrum 0.895 26.375 0.095 0.997 27.456 3.22 ×
+
+14 HybridFF (Fixed) 0.897 26.411 0.092 0.997 27.493 3.25 ×
+
+14 HybridFF (Adaptive) 0.902 26.993 0.088 0.999 27.492 3.23 ×
+
+10 TaylorSeer 0.749 20.133 0.260 0.962 27.472 4.31 ×
+
+10 HiCache 0.820 22.975 0.186 0.982 27.495 4.36 ×
+
+10 Spectrum 0.821 23.031 0.184 0.983 27.535 4.33 ×
+
+10 HybridFF (Fixed) 0.822 23.086 0.175 0.985 27.551 4.37 ×
+
+10 HybridFF (Adaptive) 0.824 23.327 0.171 0.984 27.556 4.35 ×
+
+SD3.5-Large 
+
+NFE Method SSIM ↑ PSNR ↑ LPIPS ↓ IR ↑ CS ↑ Spd ↑
+
+50 Baseline (50-step) – – – 1.003 28.533 1.00 ×
+
+14 TaylorSeer 0.722 16.888 0.271 0.986 28.480 3.31 ×
+
+14 HiCache 0.755 17.996 0.240 0.967 28.464 3.44 ×
+
+14 Spectrum 0.749 17.819 0.244 0.997 28.487 3.41 ×
+
+14 HybridFF (Fixed) 0.765 18.550 0.236 0.965 28.574 3.45 ×
+
+14 HybridFF (Adaptive) 0.774 18.755 0.242 0.981 28.628 3.43 ×
+
+10 TaylorSeer 0.580 13.346 0.432 0.667 27.747 4.56 ×
+
+10 HiCache 0.657 15.639 0.353 0.844 28.124 4.74 ×
+
+10 Spectrum 0.655 15.529 0.356 0.843 28.125 4.71 ×
+
+10 HybridFF (Fixed) 0.676 16.342 0.339 0.889 28.173 4.75 ×
+
+10 HybridFF (Adaptive) 0.691 16.772 0.314 0.908 28.280 4.72 ×
+
+Table 2 Quantitative comparison on text-to-image generation with FLUX.1-dev and SD3.5-Large. Bold and underline mark the best and second-best entries in each block, respectively. IR = ImageReward, CS = CLIP-Score, Spd = Speedup. 
+
+SSIM to 0.819 and LPIPS to 0.171 , while still keeping a 
+
+3.71 × speedup. Fig. 6 shows that HybridFF stays closest to the 50-step reference across frames. 10 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu 
+
+NFE Method SSIM ↑ PSNR ↑ LPIPS ↓ VBench Quality ↑ Latency (s) ↓ Speedup ↑
+
+50 Baseline (50-step) – – – 80.958 351.227 1.00 ×
+
+14 TaylorSeer 0.794 24.568 0.182 79.576 140.757 2.50 ×
+
+14 HiCache 0.826 24.984 0.165 80.292 138.094 2.54 ×
+
+14 Spectrum 0.834 26.237 0.140 80.259 128.548 2.73 ×
+
+14 HybridFF (Fixed) 0.853 26.400 0.124 80.343 123.702 2.84 ×
+
+14 HybridFF (Adaptive) 0.867 26.809 0.113 80.614 126.076 2.79 ×
+
+10 TaylorSeer 0.754 20.715 0.248 79.065 103.409 3.40 ×
+
+10 HiCache 0.775 23.046 0.201 79.946 100.589 3.50 ×
+
+10 Spectrum 0.788 24.473 0.189 79.895 95.223 3.69 ×
+
+10 HybridFF (Fixed) 0.801 24.875 0.177 80.041 91.132 3.85 ×
+
+10 HybridFF (Adaptive) 0.819 24.942 0.171 80.127 94.681 3.71 ×
+
+Table 3 Comparison on text-to-video generation with HunyuanVideo. Bold and underline mark the best and second-best entries in each block, respectively. 3 4 5 6 7            
+
+> Interval
+> 0.4 0.5 0.6 0.7 0.8 0.9
+> SSIM
+> (a) SSIM (higher is better)
+> 34567
+> Interval
+> 17.5 20.0 22.5 25.0 27.5 30.0 32.5
+> PSNR (dB)
+> (b) PSNR (higher is better)
+> 34567
+> Interval
+> 0.1 0.2 0.3 0.4 0.5 0.6
+> LPIPS
+> (c) LPIPS (lower is better)
+> =1e-03 =1e-02 =1e-01 =1 =10
+
+(a) Ridge regularizer λ.3 4 5 6 7            
+
+> Interval
+> 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95
+> SSIM
+> (a) SSIM (higher is better)
+> 34567
+> Interval
+> 20.0 22.5 25.0 27.5 30.0 32.5 35.0
+> PSNR (dB)
+> (b) PSNR (higher is better)
+> 34567
+> Interval
+> 0.00 0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40
+> LPIPS
+> (c) LPIPS (lower is better)
+> =100 =10 =1 =1e-01 =1e-02
+
+(b) Locality bandwidth σ.
+
+Fig. 7 Ablations on the ridge regularizer and locality bandwidth with DiT-XL/2 at NFE = 10. 
+
+4.5 Detailed Ablation Studies 
+
+This subsection reports the complete ablation sweeps. 
+
+Effect of λ and σ. Figure 7 sweeps the ridge regularizer 
+
+λb and locality bandwidth σ(b) over their typical operating ranges. Quality is generally robust to a wide range of λ values, with a clear plateau where SSIM is maximized; very small λ
+
+induces ill-conditioning in the MLS solve, while very large 
+
+λ over-shrinks the coefficients toward the uniform average and degrades fidelity. Similarly, σ controls how aggressively recent observations are emphasized: too-small σ effectively reduces to a one-step extrapolator, while too-large σ loses locality. The optima of both curves correspond to the default 0.0 0.2 0.4 0.6 0.8 1.0       
+
+> Chebyshev Weight
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Hermite Weight
+> 0.906 0.909 0.913 0.916 0.920 Best
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Chebyshev Weight
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Hermite Weight
+> <0.916 0.917 0.918 0.919 0.920
+> Mean SSIM Mean SSIM (a) 3D View (b) Top-down View
+
+Fig. 8 SSIM landscape of HybridFF over the basis-weight simplex on a small FLUX.1-dev calibration set. The optimum (yellow star) lies inside the simplex at (π(Chebyshev) , π (Hermite) , π (Taylor) ) = (0 .6, 0.1, 0.3) .
+
+setting used in our main experiments. 
+
+Effect of MLS degree and window. Table 4 reports a grid sweep over valid polynomial degree–MLS window configu-rations on DiT-XL/2 at NFE = 10 . Increasing D from 1 to 
+
+4 consistently improves all quality metrics (e.g., SSIM rises from 0.636 at D1W 4 to 0.843 at D4W 5), confirming that smaller basis libraries are too rigid for the heterogeneous feature dynamics observed in diffusion models. Within each degree, the optimum window size is small ( W = 4 –5); larger windows mildly degrade quality because they pull in fea-tures from too-distant timesteps. Our default configuration 
+
+D = 4 , W = 5 achieves the best PSNR/LPIPS and near-best SSIM while also being the fastest among the high-quality configurations. 
+
+Fixed Weight Selection. In our default instantiation, πti is determined by a lightweight grid search over the simplex on a small calibration set, evaluated using SSIM, PSNR, and LPIPS against a reference run (Figure 8); the resulting weights are reused at inference. This formulation also leaves room for finer-grained weight designs when needed. Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 11                                                                                                                                                                  
+
+> Table 4 Ablation on the MLS polynomial degree Dand history window Wwith DiT-XL/2 at NFE =10. Config SSIM ↑PSNR ↑LPIPS ↓FID ↓IS ↑sFID ↓Latency (s) ↓Speedup ↑
+> D1W4 0.636 21.117 0.283 9.449 165.282 16.268 0.410 2.37 ×
+> D1W5 0.579 20.179 0.348 16.084 125.705 23.489 0.419 2.32 ×
+> D1W6 0.538 19.496 0.400 24.096 95.156 31.739 0.426 2.28 ×
+> D1W7 0.513 19.019 0.437 31.397 76.817 39.063 0.433 2.24 ×
+> D1W8 0.499 18.752 0.457 36.362 67.100 43.727 0.442 2.20 ×
+> D2W4 0.800 24.029 0.129 3.179 224.385 6.757 0.414 2.35 ×
+> D2W5 0.769 23.262 0.155 3.642 219.054 8.052 0.423 2.30 ×
+> D2W6 0.741 22.831 0.180 4.507 208.800 9.849 0.430 2.26 ×
+> D2W7 0.706 22.076 0.211 5.705 196.302 12.099 0.438 2.22 ×
+> D2W8 0.681 21.662 0.231 6.814 185.535 13.810 0.449 2.16 ×
+> D3W4 0.821 25.014 0.104 3.702 210.091 5.237 0.419 2.32 ×
+> D3W5 0.835 25.187 0.101 3.102 220.682 5.554 0.429 2.26 ×
+> D3W6 0.823 24.557 0.109 3.108 221.640 6.112 0.435 2.23 ×
+> D3W7 0.809 23.655 0.120 3.256 219.145 6.844 0.443 2.19 ×
+> D3W8 0.795 22.869 0.132 3.482 216.192 7.584 0.450 2.16 ×
+> D4W5 0.843 25.926 0.092 2.955 226.384 5.489 0.437 2.22 ×
+> D4W6 0.844 25.833 0.093 2.917 226.256 5.701 0.440 2.21 ×
+> D4W7 0.840 25.560 0.095 2.921 226.431 5.940 0.445 2.18 ×
+> D4W8 0.836 25.209 0.099 2.945 226.159 6.157 0.457 2.12 ×
+
+4.6 More Qualitative Results 
+
+This subsection presents additional qualitative comparisons for both HybridFF(F) and HybridFF(A), where F/A denote fixed/adaptive fusion weights. 
+
+Text-to-image (FLUX.1-dev). Figure 9 reports two indepen-dent prompt sets at NFE = 10. Both HybridFF variants better preserve the prompted subjects, object counts, and fine detail than the single-basis baselines, with HybridFF(A) giving the closest match to the 50-step reference in difficult regions. 
+
+Text-to-video (HunyuanVideo). Figure 10 shows a repre-sentative clip generated at NFE = 10. HybridFF(F) keeps the strongest acceleration, while HybridFF(A) stays closest to the 50-step reference across frames and better preserves geometry and surface texture. 
+
+5 Conclusion 
+
+We presented HybridFF , a training-free, plug-and-play fea-ture forecaster that accelerates diffusion sampling by com-bining complementary temporal bases within a unified MLS framework. The method is motivated by the empirical obser-vation that intermediate transformer features follow structured trajectories along denoising steps, making skipped-step fea-tures predictable from cached full-step observations. Fusion happens in coefficient space on the simplex with calibrated weights, followed by an anchored residual reconstruction; the predictor is linear, dimension-free, much cheaper than a full block evaluation, and provably no worse than the best single branch. We also design two weighting strategies: a Fixed variant calibrated offline for speed, and an Adaptive variant updated online from full-step errors for fidelity. Across DiT, FLUX.1-dev, SD3.5-Large, and Hunyuan-Video, HybridFF dominates single-basis baselines on every primary fidelity metric, and the optimal mixture varies sub-stantially across backbones, confirming that no fixed temporal prior is universally best. HybridFF (Fixed) emphasizes la-tency reduction, while HybridFF (Adaptive) improves fidelity by updating fusion weights from full-step feature prediction errors without extra denoiser evaluations. The current study leaves broader basis libraries, schedule-aware full-step/predict-step policies, and finer reliability es-timation underexplored. Future work can study additional bases such as rational Pad´ e approximants [15], jointly tune refresh schedules and fusion weights under latency budgets, and combine HybridFF with step-reduction samplers. 12 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu Reference 
+
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟏𝟑 ×
+> HiCache
+> 𝟑. 𝟐𝟒 ×
+> Spectrum
+> 𝟑. 𝟐𝟐 ×
+> HybridFF(F)
+> 𝟑. 𝟐𝟓 ×
+> HybridFF(A)
+> 𝟑. 𝟐𝟑 × Reference
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟏𝟑 ×
+> HiCache
+> 𝟑. 𝟐𝟒 ×
+> Spectrum
+> 𝟑. 𝟐𝟐 ×
+> HybridFF(F)
+> 𝟑. 𝟐𝟓 ×
+> HybridFF(A)
+> 𝟑. 𝟐𝟑 × Reference
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟏𝟑 ×
+> HiCache
+> 𝟑. 𝟐𝟒 ×
+> Spectrum
+> 𝟑. 𝟐𝟐 ×
+> HybridFF(F)
+> 𝟑. 𝟐𝟓 ×
+> HybridFF(A)
+> 𝟑. 𝟐𝟑 × Reference
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟏𝟑 ×
+> HiCache
+> 𝟑. 𝟐𝟒 ×
+> Spectrum
+> 𝟑. 𝟐𝟐 ×
+> HybridFF(F)
+> 𝟑. 𝟐𝟓 ×
+> HybridFF(A)
+> 𝟑. 𝟐𝟑 × Reference
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟏𝟑 ×
+> HiCache
+> 𝟑. 𝟐𝟒 ×
+> Spectrum
+> 𝟑. 𝟐𝟐 ×
+> HybridFF(F)
+> 𝟑. 𝟐𝟓 ×
+> HybridFF(A)
+> 𝟑. 𝟐𝟑 × Reference
+> 𝟏. 𝟎𝟎 ×
+> TaylorSeer
+> 𝟑. 𝟏𝟑 ×
+> HiCache
+> 𝟑. 𝟐𝟒 ×
+> Spectrum
+> 𝟑. 𝟐𝟐 ×
+> HybridFF(F)
+> 𝟑. 𝟐𝟓 ×
+> HybridFF(A)
+> 𝟑. 𝟐𝟑 ×
+
+Fig. 9 Additional qualitative comparisons on FLUX.1-dev at NFE = 10. The left and right panels show two prompt sets. F/A denote fixed/adaptive fusion weights. Reference 
+
+𝟏. 𝟎𝟎 × 
+
+TaylorSeer 
+
+𝟑. 𝟒𝟎 × 
+
+HiCache 
+
+𝟑. 𝟓𝟎 × 
+
+Spectrum 
+
+𝟑. 𝟔𝟗 × 
+
+HybridFF(F) 
+
+𝟑. 𝟖𝟓 × 
+
+HybridFF(A) 
+
+𝟑. 𝟕𝟏 × Reference 
+
+𝟏. 𝟎𝟎 × 
+
+TaylorSeer 
+
+𝟑. 𝟒𝟎 × 
+
+HiCache 
+
+𝟑. 𝟓𝟎 × 
+
+Spectrum 
+
+𝟑. 𝟔𝟗 × 
+
+HybridFF(F) 
+
+𝟑. 𝟖𝟓 × 
+
+HybridFF(A) 
+
+𝟑. 𝟕𝟏 × 
+
+Fig. 10 Additional qualitative comparison on HunyuanVideo at NFE = 10. F/A denote fixed/adaptive fusion weights. 
+
+References 
+
+[1] Ho J, Jain A, Abbeel P. Denoising Diffusion Probabilistic Models. Advances in Neural Information Processing Systems ,2020, 33: 6840–6851. [2] Peebles W, Xie S. Scalable Diffusion Models with Transform-ers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , 2023, 4172–4182. [3] Chen J, Yu J, Ge C, et al.. PixArt-α: Fast Training of Diffusion Transformer for Photorealistic Text-to-Image Synthesis. In 
+
+International Conference on Learning Representations (ICLR) ,2024. [4] Blattmann A, Dockhorn T, Kulal S, et al.. Stable Video Diffu-sion: Scaling Latent Video Diffusion Models to Large Datasets, 2023. [5] Liu F, Zhang S, Wang X, Wei Y, Qiu H, Zhao Y, Zhang Y, Ye Q, Wan F. Timestep Embedding Tells: It’s Time to Cache for Video Diffusion Model. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2025, 7353–7363. [6] Zhu H, Huang T, Wang X, Zhao T, Wang J, Chen W, Peng X, Chen F, Yong J, Wang B. TAP: A Token-Adaptive Predictor Framework for Training-Free Diffusion Acceleration, 2026. [7] Lu C, Zhou Y, Bao F, Chen J, LI C, Zhu J. DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sam-pling in Around 10 Steps. In Advances in Neural Information Processing Systems (NeurIPS) , volume 35, 2022, 5775–5787. [8] Song Y, Dhariwal P, Chen M, Sutskever I. Consistency Mod-els. In Proceedings of the 40th International Conference on Machine Learning (ICML) , 2023. [9] Li S, Hu T, van de Weijer J, Khan FS, Liu T, Li L, Yang S, Wang Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration 13 
+
+Y, Cheng MM, Yang J. Faster Diffusion: Rethinking the Role of the Encoder for Diffusion Model Inference. In Advances in Neural Information Processing Systems (NeurIPS) , volume 37, 2024, 85203–85240. [10] Fang G, Ma X, Wang X. Structural Pruning for Diffusion Mod-els. In Advances in Neural Information Processing Systems ,volume 36, 2023, 16716–16728. [11] Ma X, Fang G, Wang X. DeepCache: Accelerating Diffusion Models for Free. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2024, 15762–15772. [12] Liu J, Zou C, Lyu Y, Chen J, Zhang L. From Reusing to Forecasting: Accelerating Diffusion Models with TaylorSeers. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2025, 15853–15863. [13] Feng L, Zheng S, Liu J, Lin Y, Zhou Q, Cai P, Wang X, Chen J, Zou C, Ma Y, et al.. HiCache: A Plug-in Scaled-Hermite Upgrade for Taylor-Style Cache-then-Forecast Diffusion Ac-celeration. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026. [14] Han J, Shi J, Li P, Ye H, Guo Q, Ermon S. Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceleration. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2026. [15] Cui B, He S, Huang B, Ye Z, Sun Y, Huang L, Xue H, Yang Y, Tang J, Zhao Z, et al.. TC-Pad´ e: Trajectory-Consistent Pad´ eApproximation for Diffusion Acceleration. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2026. [16] Cai P, Liu J, Xu H, Wang X, Zou C, Zhang L. LESA: Learnable Stage-Aware Predictors for Diffusion Model Acceleration, 2026. [17] Rombach R, Blattmann A, Lorenz D, et al.. High-Resolution Image Synthesis with Latent Diffusion Models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2022. [18] Saharia C, Chan W, Saxena S, et al.. Photorealistic Text-to-Image Diffusion Models with Deep Language Understand-ing. In Advances in Neural Information Processing Systems (NeurIPS) , volume 35, 2022, 36479–36494. [19] Podell D, English Z, Lacey K, et al.. SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis, 2023. [20] Black Forest Labs. FLUX.1: A Suite of Open Image Genera-tion Models. https://github.com/black-forest-labs/flux, 2024, accessed 2024. [21] Kong W, Tian Q, Zhang Z, Min R, Dai Z, et al.. HunyuanVideo: A Systematic Framework for Large Video Generative Models, 2024. [22] Ho J, Salimans T, Gritsenko A, et al.. Video Diffusion Mod-els. In Advances in Neural Information Processing Systems (NeurIPS) , volume 35, 2022, 8633–8646. [23] Singer U, Polyak A, Hayes T, et al.. Make-A-Video: Text-to-Video Generation Without Text-Video Data. In The Eleventh International Conference on Learning Representations (ICLR) ,2023. [24] Saharia C, Ho J, Chan W, et al.. Image Super-Resolution via Iterative Refinement. IEEE Transactions on Pattern Analysis and Machine Intelligence , 2023, 45(4): 4713–4726, doi:10.1 109/TPAMI.2022.3204461. [25] Lugmayr A, Danelljan M, Romero A, et al.. RePaint: Inpainting Using Denoising Diffusion Probabilistic Models. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2022, 11451–11461. [26] Song J, Meng C, Ermon S. Denoising Diffusion Implicit Mod-els. In International Conference on Learning Representations (ICLR) , 2021. [27] Salimans T, Ho J. Progressive Distillation for Fast Sampling of Diffusion Models. In International Conference on Learning Representations (ICLR) , 2022. [28] Shang Y, Yuan Z, Xie B, et al.. Post-Training Quantization on Diffusion Models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2023, 1972–1981. [29] Li X, Liu Y, Lian L, et al.. Q-Diffusion: Quantizing Diffu-sion Models. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2023, 17489–17499, doi:10.1109/ICCV51070.2023.01608. [30] Bolya D, Hoffman J. Token Merging for Fast Stable Diffusion. In IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW) , 2023, 4599–4603, doi: 10.1109/CVPRW59228.2023.00484. [31] Yuan Z, Zhang H, Lu P, et al.. DiTFastAttn: Attention Com-pression for Diffusion Transformer Models. In Advances in Neural Information Processing Systems (NeurIPS) , volume 37, 2024, 1196–1219. [32] Selvaraju P, Ding T, Chen T, et al.. FORA: Fast-Forward Caching in Diffusion Transformer Acceleration, 2024. [33] Zou C, Liu X, Liu T, et al.. Accelerating Diffusion Trans-formers with Token-Wise Feature Caching. In The Thirteenth International Conference on Learning Representations (ICLR) ,2025. [34] Liu J, Geddes J, Guo Z, et al.. Smooth Cache: A Universal Inference Acceleration Technique for Diffusion Transformers. In IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW) , 2025, 3220–3229. [35] Yu Z, Zou Z, Shao G, Zhang C, Xu S, Huang J, Zhao F, Cun X, Zhang W. AB-Cache: Training-Free Acceleration of Diffusion Models via Adams-Bashforth Cached Feature Reuse. 
+
+Proceedings of the 33rd ACM International Conference on Multimedia , 2025. [36] Zheng S, Feng L, Wang X, et al.. Forecast Then Calibrate: Fea-ture Caching as ODE for Efficient Diffusion Transformers. In 
+
+Proceedings of the AAAI Conference on Artificial Intelligence ,volume 40, 2026, 13449–13457. [37] Liu J, Zou C, Lyu Y, et al.. SpeCa: Accelerating Diffusion Transformers with Speculative Feature Caching. Proceedings 14 K.-L. Cheng, Y.-Y. Cheng, Y.-F. Jin, and X.-M. Fu 
+
+of the 33rd ACM International Conference on Multimedia ,2025. [38] Chen G, Zheng S, Lin Y, et al.. Forecast the Principal, Stabilize the Residual: Subspace-Aware Feature Caching for Efficient Diffusion Transformers, 2026. [39] Zou C, Li C, Li Y, et al.. DisCa: Accelerating Video Diffusion Transformers with Distillation-Compatible Learnable Feature Caching, 2026. [40] Sun W, Hou Q, Di D, et al.. UniCP: A Unified Caching and Pruning Framework for Efficient Video Generation. In 
+
+Proceedings of the 7th ACM International Conference on Multimedia in Asia , 2025, doi:10.1145/3743093.3770981. [41] Wang Y, Jiang T, Shao Z, et al.. ZEUS: Accelerating Diffusion Models with Only Second-Order Predictor, 2026. [42] Patrick E, Sumith K, Andreas B, et al.. Scaling Rectified Flow Transformers for High-Resolution Image Synthesis, 2024.
