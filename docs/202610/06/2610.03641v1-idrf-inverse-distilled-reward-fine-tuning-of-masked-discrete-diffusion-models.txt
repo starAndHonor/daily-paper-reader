@@ -1,0 +1,885 @@
+Title: IDRF: Inverse-Distilled Reward Fine-tuning of Masked Discrete Diffusion Models
+
+URL Source: https://arxiv.org/pdf/2610.03641v1
+
+Published Time: Mon, 05 Oct 2026 01:42:34 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# IDRF: I NVERSE -D ISTILLED REWARD FINE -TUNING OF MASKED DISCRETE DIFFUSION MODELS 
+
+Vladislav Gromadskii 1 David Li 2 Samson Gourevitch 3
+
+Yazid Janati 2,4 Eric Moulines 2,5 Maxim Panov 2 Alexander Korotin 1,6 
+
+> 1
+
+Applied AI Institute, Moscow, Russia 2MBZUAI 
+
+> 3
+
+CMAP, École Polytechnique 4Institute of Foundation Models 
+
+> 5
+
+LRE, EPITA 6AXXX, Moscow, Russia 
+
+wladgrm@gmail.com , iamalexkorotin@gmail.com 
+
+## ABSTRACT 
+
+Masked discrete diffusion models offer a promising alternative to autoregressive generation, but iterative sampling can be costly, and intractable sequence like-lihoods complicate reward fine-tuning. We introduce IDRF , a framework for reward fine-tuning of few-step masked discrete diffusion generators. Starting from a standard reverse-KL-regularized objective, IDRF replaces the intractable sequence-level KL penalty with inverse-distillation regularization. With an optimal auxiliary denoiser, we prove that the population inverse-distillation loss upper-bounds the sequence-level KL divergence to the reference distribution. IDRF optimizes a trajectory-based surrogate of this loss without reference-model roll-outs, so the student keeps its own few-step sampler. We view few-step generation as a finite-horizon Markov decision process and optimize reward with a clipped policy-gradient objective over the student’s trajectories. Across DNA, image, and text generation, IDRF achieves high reward with up to 32 × fewer denoising steps than the reference while mitigating reward hacking and preserving sample quality. 
+
+Figure 1: IDRF (ours) across DNA, images, and text. Reward-only fine-tuning and IDRF sample with the same budget of 8, 4, and 32 steps. Reward-only fine-tuning hacks the reward: DNA lacks accessibility (ATAC-Acc), images blur, and reviews degenerate into repetition that rarely ends with EOS. IDRF avoids these failures. 
+
+## 1 INTRODUCTION 
+
+Masked diffusion models (MDMs) generate sequences by unmasking tokens in parallel, with applica-tions to language, biological sequences, and discrete image representations (Sahoo et al., 2024; Shi et al., 2024; Wang et al., 2025a). Reward fine-tuning adapts these models to task objectives, such as DNA activity, image attributes, or review sentiment. Optimizing reward alone, however, can destroy properties the reward does not measure (Figure 1). 1arXiv:2610.03641v1 [cs.LG] 2 Oct 2026 KL regularization toward a pretrained reference provides a standard safeguard (Ziegler et al., 2019; Korbak et al., 2022), but an MDM’s sequence likelihood marginalizes over all denoising trajectories and is intractable. Existing reward fine-tuning methods use likelihood surrogates and evidence bounds (Zhao et al., 2025; Wang et al., 2026a), or penalize KL between reverse transitions (Wang et al., 2025a). The latter requires reference evaluations along the rollout and ties the regularizer to its sampling path. We seek a tractable sequence-level KL regularizer that lets the student use its own sampler. We introduce Inverse-Distilled Reward Fine-tuning (IDRF) , which combines trajectory-based policy gradients with inverse distillation (Li et al., 2026). The regularizer compares the denoising losses of a frozen reference and a fitted auxiliary on student samples. It requires neither the reference’s likelihood nor its rollouts. Both the reward and the regularizer reuse the student’s own trajectories (Figure 2), so the regularizer shapes the student’s few-step sampler directly. Reward fine-tuning requires neither pretraining data nor reward gradients. Our contributions are as follows. 1. With an optimal auxiliary denoiser, we establish a sequence-level KL bound for the population inverse-distillation objective in masked diffusion, valid for any sequence length and any student sampler ( M 3.1). 2. We regularize reward fine-tuning with a practical inverse-distillation objective on the student’s own trajectories, without reference rollouts. The resulting framework supports reward fine-tuning directly in the few-step regime ( M 3.2). 3. Across DNA, images, and text, IDRF reaches high reward with up to 32 × fewer denoising steps than the reference while preserving properties lost under reward-only fine-tuning ( M 5). 
+
+## 2 BACKGROUND 
+
+This section reviews the two ingredients of IDRF. M 2.1 introduces masked diffusion and the NELBO used to pretrain the reference, and M 2.2 describes inverse distillation, which IDRF turns into a regularizer for reward fine-tuning. 2.1 MASKED DIFFUSION 
+
+Masked diffusion trains a denoiser to recover hidden tokens from their visible context and generates by filling in a fully masked sequence. We follow the MDLM formulation (Sahoo et al., 2024; Shi et al., 2024), which ties this prediction task to a variational bound. Let x0 ∈ V L be a clean sequence and m /∈ V the mask symbol. At noise level t ∈ [0 , 1] , each token is retained with probability αt and masked otherwise, independently across positions. The resulting corruption distribution is 
+
+qt(xt | x0) = 
+
+> L
+
+Y
+
+> ℓ=1
+
+h
+
+αt δxℓ 
+
+> 0
+
+(xℓt ) + (1 − αt) δm(xℓt )
+
+i
+
+, (1) where δa is a point mass at a. The schedule αt is continuously differentiable and strictly decreasing, with α0 = 1 and α1 = 0 .The denoiser f ℓ(v | xt) predicts the missing token at position ℓ from the visible context of xt
+
+and takes no time input. Positions are masked independently of their values, so the Bayes-optimal prediction depends only on the visible tokens of xt and is independent of t (Ou et al., 2025; Zheng et al., 2025). Accordingly, time conditioning has minimal effect in practice (Sahoo et al., 2024) and implementations omit it (Ou et al., 2025), as do the pretrained models in all our experiments. MDLM trains the denoiser with the continuous-time negative evidence lower bound (NELBO) 
+
+LNELBO (f, p ) = Ex0∼p, t ∼U (0 ,1) 
+
+> xt∼qt(·| x0)
+
+wt
+
+X 
+
+> ℓ:xℓt=m
+
+− log f ℓ(xℓ 
+
+> 0
+
+| xt)
+
+ , wt = −α′
+
+> t
+
+1 − αt
+
+. (2) Here p is the distribution supplying clean sequences, the data distribution p∗ during pretraining, so learning to predict missing tokens optimizes a bound on sequence likelihood. 2To generate a sample, the model starts from x1 = mL. At each reverse step, some masked positions are selected and their values are drawn from the denoiser’s predictions. MDLM’s substitution-based (SUBS) parameterization keeps revealed tokens fixed and assigns zero probability to predicting m as a clean token. For 0 ≤ s < t ≤ 1, this gives the reverse transition 
+
+pf (xs | xt) = 
+
+> L
+
+Y
+
+> ℓ=1
+
+pℓf (xℓs | xt),pℓf (· | xt) = 
+
+
+
+δxℓt , xℓt̸ = m,
+
+1 − αs
+
+1 − αt
+
+δm + αs − αt
+
+1 − αt
+
+f ℓ(· | xt), xℓt = m.
+
+(3) Positions are updated independently given xt, but newly revealed tokens condition later predictions, so the generated tokens depend on one another. 2.2 INVERSE DISTILLATION 
+
+IDLM uses inverse distillation to train a fast discrete generator from a pretrained denoiser (Li et al., 2026). Pretraining fits a denoiser to a given data distribution. Inverse distillation reverses this direction by fixing the reference denoiser fref and learning a student distribution pθ on which its predictions remain optimal. In the ideal setting, a student matching p∗ would produce samples that the reference can denoise as well as any model fitted specifically to those samples. A low reference loss alone is not enough to ensure this match. For example, a student that repeats a single sequence may be easy to denoise despite covering very little of the data distribution. Inverse distillation accounts for how predictable the student’s samples are by comparing the reference with the best denoiser for those same samples. This gives the objective 
+
+LID (θ) = LNELBO (fref , p θ ) − min  
+
+> f
+
+LNELBO (f, p θ ). (4) Minimizing this gap encourages the student to produce samples on which refitting the denoiser offers little improvement over the reference. This objective also has a distribution-matching guarantee. With a Bayes-optimal reference for p∗ and an exact inner minimum over a sufficiently expressive denoiser family, IDLM shows (Li et al., 2026, Theorem 3.1) 
+
+LID (θ) ≥ DKL (pθ ∥ p∗) ≥ 0, (5) so a zero gap means that the student matches the data. IDLM proves this bound for a single token and for a joint reverse process over whole sequences, and leaves the sequence objective used in practice, a sum of per-token denoising losses, to future work (Li et al., 2026, App. D.2). Proposition 1 proves the bound for its population loss and an arbitrary reference. In practice, a trainable auxiliary denoiser fψ approximates the inner minimum by learning to recon-struct masked student samples. Training alternates between fitting the auxiliary and updating the student to reduce the difference between reference and auxiliary losses. The reference remains fixed throughout. IDRF uses this denoising gap as the regularizer for reward fine-tuning. 
+
+## 3 METHOD 
+
+We start from the standard KL-regularized reward objective and use inverse distillation as its tractable regularizer. Figure 2 illustrates the resulting training framework. 3.1 KL-REGULARIZED REWARD FINE -TUNING VIA INVERSE DISTILLATION 
+
+Given a terminal reward R and a frozen reference distribution pref , the target objective is 
+
+max  
+
+> θ
+
+Ex0∼pθ [R(x0)] − λD KL (pθ ∥ pref ) , λ > 0. (6) The endpoint law marginalizes over all denoising trajectories ending at x0 (M 3.2), so its log-density is generally intractable. We instead use the inverse-distillation gap in Eq. (4). The following proposition makes its connection to the KL between full sequences explicit. 3Forward Diffusion ❄Reference 🔥 Student 🔥 Auxiliary     
+
+> 🔥 🧊
+> Distributions Loss function
+> ❄🔥
+> On-policy student rollout
+> mmmm
+> Reward
+
+Figure 2: IDRF (ours) training framework. An on-policy rollout of the student from mL provides an intermediate state xtj and a completed sample x0. The soft prediction ex = Gθ (xtj ) is freshly corrupted and scored by the frozen reference fref and the trainable auxiliary fψ , whose NELBO gap gives LID . The reward of x0 gives the policy-gradient loss LR, and the student minimizes 
+
+LR + λLID .
+
+Proposition 1 (Sequence-level KL bound) . Let pθ be any law on VL. Assume independent forward masking with a continuously differentiable, strictly decreasing schedule with α0 = 1 
+
+and α1 = 0 . Let pref be the endpoint law of the continuous-time SUBS reverse process defined by fref , with unmasking rates wtf ℓ 
+
+> ref
+
+(v | xt). Assume the reference NELBO is finite and the auxiliary is optimal, that is, its family contains the Bayes denoiser of pθ on forward-masked states and attains the inner minimum. Then 
+
+LID (θ) := LNELBO (fref , p θ ) − min  
+
+> ψ
+
+LNELBO (fψ , p θ ) ≥ DKL (pθ ∥ pref ) . (7) 
+
+Equality holds if the reference is the Bayes denoiser of its own endpoint law. 
+
+Why the population loss. Proposition 1 holds for any sequence length and any student sampler (Appendix A). Replacing the KL in Eq. (6) by the population loss therefore gives a lower bound on the KL-regularized objective and motivates the regularizer of IDRF. 
+
+Practical objective. IDRF optimizes a practical objective built from the population loss. A trained auxiliary takes the place of the Bayes denoiser of pθ, and the loss is evaluated on the student’s predictions ex = Gθ (xtj ) at its rollout states xtj , j ∼ U{ 1, . . . , K }:
+
+min  
+
+> θ
+
+max  
+
+> ψ
+
+LR(θ) + λ Ej, x tj
+
+LNELBO (fref , ex) − L NELBO (fψ , ex), (8) with LR and the soft-target NELBO defined in M 3.2. In the experiments, LID and λID denote this term and its weight. With an optimal auxiliary, the expected term upper-bounds DKL (¯ qθ ∥ pref ) for the mixture ¯qθ of the student’s one-step completion laws along its rollouts (Appendix A.1). 3.2 THE FEW -STEP GENERATOR AS AN MDP We initialize the student denoiser Gθ from the pretrained reference. Like the reference, it maps a partially masked sequence to categorical probabilities over clean tokens at each masked position and takes no time input. Task conditioning is suppressed in the notation. A K-step generator applies 
+
+Gθ on a fixed grid 1 = tK > · · · > t 0 = 0 . At step k, each masked position is revealed with probability bk = ( αtk−1 − αtk )/(1 − αtk ) and its value is drawn from Gθ , while revealed positions are copied. This is the SUBS transition of Eq. (3) on the grid, and b1 = 1 ends every episode at a 4complete sequence x0 after K network evaluations. Max-confidence decoding instead reveals the most confident masked positions and leaves the rest of the construction unchanged. We formalize the generator as the finite-horizon Markov decision process 
+
+
+
+state sk = ( k, x tk ), sK = ( K, mL),
+
+action ak = xtk−1 ∈ A (xtk ) = y : yℓ = xℓtk whenever xℓtk̸ = m ,
+
+policy πθ (ak | sk) = Y  
+
+> ℓ:xℓtk=m
+
+h
+
+(1 − bk) δm(aℓk) + bk Gℓθ (aℓk | xtk )
+
+i
+
+,
+
+transition sk−1 = ( k − 1, a k),
+
+reward r(sk, a k) = 1[k = 1] R(ak).
+
+(9) The only reward is received at the final step. A trajectory τ = ( xtK , . . . , x t0 ) therefore has probability 
+
+Pθ (τ ) = QKk=1 πθ (xtk−1 | sk), its endpoint has law pθ (x0) = P   
+
+> τ:τ0=x0
+
+Pθ (τ ), and reward fine-tuning maximizes the expected return JR(θ) = Eτ ∼Pθ [R(x0)] of the K-step sampler. 
+
+Reward term. Transitions are deterministic and bk does not depend on θ, so the policy gradient of JR involves only the tokens revealed at each step, Uk = {ℓ : xℓtk = m̸ = xℓtk−1 }, and never differentiates through discrete draws or through R (Appendix B). Over M rollouts generated by θold ,we optimize the clipped leave-one-out surrogate (Schulman et al., 2017; Kool et al., 2019; Ahmadian et al., 2024; Zhan, 2026) 
+
+LR(θ) = − 1
+
+M
+
+> M
+
+X
+
+> i=1
+> K
+
+X
+
+> k=1
+
+X 
+
+> ℓ∈U(i)
+> k
+
+min ρikℓ Ai, clip( ρikℓ , 1 ± ε) Ai ,ρikℓ = Gℓθ (x(i),ℓ  
+
+> 0
+
+| x(i) 
+
+> tk
+
+)
+
+Gℓθold (x(i),ℓ  
+
+> 0
+
+| x(i) 
+
+> tk
+
+) , Ai = R(x(i)0 ) − 1
+
+M − 1
+
+X 
+
+> i′̸=i
+
+R(x(i′)0 ).
+
+(10) For ancestral sampling, at θ = θold , −∇ θ LR is an unbiased estimate of ∇θ JR. For max-confidence decoding, the recorded reveal sets are held fixed. 
+
+Inverse distillation on student states. The practical objective in Eq. (8) reuses the rollouts drawn for the reward. The prediction ex serves as a soft target on the simplex (Li et al., 2026), so each cross-entropy in LNELBO becomes − P 
+
+> v∈V
+
+exℓ(v) log f ℓ(v | z) for f ∈ { fref , f ψ } and a fresh corruption z whose visible tokens are drawn from ex. At revealed positions, ex is the one-hot copied 
+
+Algorithm 1 IDRF training reward fine-tuning of a K-step student 
+
+Input: frozen reference fref ; reward R; weight λ; steps K; group size M
+
+1: Gθ ← fref , fψ ← fref ▷ zero gap at initialization 2: for each training iteration do 
+
+Auxiliary: fit the student’s current distribution 
+
+3: for each auxiliary update do 
+
+4: xtj ← partial rollout of the MDP (9), j ∼ U{ 1, . . . , K } ▷ no gradients 5: ψ ← ψ − η ∇ψ LNELBO 
+
+ fψ , sg[ Gθ (xtj )]  ▷ student frozen 6: end for 
+
+Student: reward plus inverse distillation 
+
+7: θold ← θ; τ (1) , . . . , τ (M ) ∼ Pθold ; record revealed tokens U (i) 
+
+> k
+
+▷ full K-step rollouts 8: Ai ← R(x(i)0 ) − 1 
+
+> M−1
+
+P  
+
+> i′̸=i
+
+R(x(i′)0 ) ▷ Eq. (10) 9: for each student update do 
+
+10: ex ← Gθ (xtj ) with j ∼ U{ 1, . . . , K } on each τ (i)
+
+11: L ← L R(θ) + λLNELBO (fref , ex) − L NELBO (fψ , ex) ▷ Eqs. (10), (8) 12: θ ← θ − η ∇θ L ▷ auxiliary frozen 13: end for 
+
+14: end for Output: few-step student Gθ ; fψ is discarded 
+
+5token. Sampling j along the trajectory regularizes the student on the states its sampler visits, using a single auxiliary across depths. In our ablations, on-policy states work best: forward-masking completed student samples lowers ATAC-Acc from 95 .3% to 52 .5% in DNA design (Appendix C.4). The regularizer costs one student evaluation plus one forward pass through each of the reference and auxiliary models. We use a semi-gradient update for the inverse-distillation term: rollout states and sampled corruption contexts are held fixed, and gradients flow only through the student’s soft target probabilities. Algorithm 1 summarizes training. 
+
+## 4 RELATED WORK 
+
+Distillation of masked diffusion models. Several methods reduce the sampling steps of a pretrained masked diffusion model. SDTT distills multiple teacher steps into fewer student steps (Deschenaux & Gulcehre, 2025), and Duo adapts consistency distillation to uniform-state discrete diffusion (Sahoo et al., 2025). Distribution-matching methods instead train a few-step generator to match the teacher’s distribution, through an integral KL objective in DiDi-Instruct (Zheng et al., 2026) or inverse distillation in IDLM (Li et al., 2026). These methods reproduce the teacher, whereas IDRF (ours) uses inverse distillation to stay close to it while optimizing a reward. 
+
+Reward fine-tuning of masked diffusion models. To handle intractable sequence likelihoods, d1 and wd1 use denoising likelihood approximations (Zhao et al., 2025; Tang et al., 2026), while SPG uses lower and upper evidence bounds (Wang et al., 2026a). Beyond reward fine-tuning, TUBE provides a further upper bound on the evidence of masked diffusion models (Ivanov et al., 2026). Alternatively, AGRPO treats denoising as an MDP with tractable stepwise action probabilities (Zhan, 2026), and TraceRL updates policies along recorded inference trajectories (Wang et al., 2026b). DMPO and Discrete Tilt Matching learn reward-tilted distributions (Zhu et al., 2026c; Chen et al., 2026). DRAKES instead uses differentiable relaxations for biological sequence design when reward gradients are available (Wang et al., 2025a). 
+
+Joint distillation and fine-tuning. In continuous diffusion, Diff-Instruct++ regularizes one-step reward optimization with an integral KL (Luo, 2025), DMDR combines distribution matching with reinforcement learning (Jiang et al., 2025), and RTDMD uses reward-tilted distribution matching for few-step flow generators (Huang et al., 2026). For masked image diffusion, Soft-Di[M]O refines a one-step generator through soft embeddings. Its adversarial refinement uses real images, and its reward fine-tuning requires differentiable rewards (Zhu et al., 2026b). IDRF (ours) uses inverse distillation as the regularizer of trajectory-based policy gradients, supports reward fine-tuning directly in the few-step regime, and requires neither pretraining data nor reward gradients. 
+
+## 5 EXPERIMENTS 
+
+We evaluate IDRF on regulatory-DNA design, CLIP-guided image generation, and sentiment steering of review text. Across these tasks, we study its ability to achieve high reward with few sampling steps and preserve sample quality through inverse-distillation regularization. 5.1 REGULATORY -DNA DESIGN 
+
+Setup. Following DRAKES (Wang et al., 2025a), we generate 200 -bp regulatory sequences and optimize predicted enhancer activity in HepG2 cells. IDRF students use λID = 0 .2 and sample in K = 8 steps with ancestral or max-confidence decoding (Appendix C.2). We report activity under a held-out oracle ( Pred-Activity ), the percentage of sequences predicted accessible in HepG2 (ATAC-Acc ), 3-mer correlation with highly active natural enhancers, Log-Lik under the pretrained model, and per-sequence nucleotide Entropy (Appendix C.1). We re-evaluate CG (Nisonoff et al., 2025), SMC and TDS (Wu et al., 2023a), CFG (Ho & Salimans, 2022), and DRAKES with and without KL regularization using the released DRAKES implementation (Wang et al., 2025a). We also evaluate the released SEPO checkpoints (Zekri & Boullé, 2025). Each model is evaluated on 
+
+640 sequences for each of three sampling seeds. Appendix C.3 compares our SEPO ATAC-Acc measurements with the published values. The rows for D 2-DPO (Borso et al., 2025), VRPO (Zhu 6et al., 2026a), DDPP-IS (Rector-Brooks et al., 2025), diffu-GRPO (Zhao et al., 2025) and SDPO, marked ∗, are reported by Han et al. (2026). Table 1: Regulatory-DNA design. Unmarked values are our measurements, mean (sample SD) over three sampling seeds. † marks the released SEPO checkpoint scored with the HepG2 ATAC output (Appendix C.3), and ∗ results reported by Han et al. (2026), whose released evaluation samples in 
+
+128 steps; GF is gradient flow. Bold is best and underline second best among our measurements, excluding the reward-only ablation; ∗ rows and Log-Lik are unranked. 
+
+Method Pred-Activity 
+
+↑
+
+ATAC-Acc HepG2 (%) ↑
+
+3-mer Corr. ↑
+
+Log-Lik Entropy (nats) Steps ↓
+
+Reference 0.18 (0 .02) 2.0 (0 .4) −0.042 (0 .010) −262 (0 .1) 1.340 (0 .001) 128 
+
+CG 1.56 (0 .02) 0.0 (0 .0) −0.057 (0 .002) −269 (0 .2) 1.332 ( <0.001) 128 
+
+SMC 4.69 (0 .48) 49 .7 (6 .4) 0.880 (0 .014) −256 (1 .0) 1.299 (0 .012) 128 
+
+TDS 4.54 (0 .55) 33 .4 (10 .8) 0.822 (0 .130) −257 (1 .7) 1.313 (0 .024) 128 
+
+CFG 5.02 (0 .08) 91 .7 (0 .9) 0.743 (0 .004) −265 (0 .7) 1.259 (0 .003) 128 
+
+DRAKES 5.61 (0 .07) 92 .3 (0 .6) 0.887 (0 .001) −264 (0 .3) 1.293 (0 .002) 128 
+
+DRAKES w/o KL 6.41 (0 .03) 82 .8 (0 .9) 0.307 (0 .010) −281 (0 .1) 1.358 ( <0.001) 128 
+
+SEPO + GF † 7.66 (0 .01) 47 .4 (1 .8) 0.640 (0 .001) −248 (0 .6) 1.177 (0 .003) 128 
+
+D2-DPO ∗ 2.97 (0 .03) 35 .6 (0 .9) 0.944 (0 .002) −252 (0 .4) – 128 
+
+VRPO ∗ 4.60 (0 .01) 15 .8 (0 .2) 0.838 (0 .002) −255 (0 .8) – 128 
+
+DDPP-IS ∗ 4.07 (0 .02) 50 .0 (0 .3) 0.711 (0 .001) −253 (0 .9) – 128 
+
+diffu-GRPO ∗ 5.86 (0 .04) 33 .0 (0 .8) 0.783 (0 .001) −245 (0 .4) – 128 
+
+SDPO ∗ 6.30 ( <0.01) 94 .8 ( <0.1) 0.900 (0 .003) −246 (0 .5) – 128 
+
+IDRF (ours) ancestral 7.22 (0 .01) 95 .3 (0 .7) 0.683 (0 .001) −257 (0 .1) 1.255 (0 .001) 8
+
+max-conf 7.31 (0 .03) 92 .3 (0 .5) 0.718 (0 .003) −253 (0 .3) 1.243 (0 .002) 8
+
+RLOO w/o LID 7.68 ( <0.01) 37 .8 (5 .5) 0.378 (0 .004) −204 (0 .6) 1.036 ( <0.001) 8
+
+RLOO w/o LID 7.43 ( <0.01) 0.1 (0 .1) 0.240 ( <0.001) −163 (0 .1) 1.072 ( <0.001) 128 
+
+Accessible, high-activity sequences in eight steps. With eight steps, IDRF attains the top ATAC-Acc in Table 1 with ancestral decoding ( 95 .3% , on par with 94 .8% for SDPO), and its max-confidence variant reaches the second-highest activity ( 7.31 ). Every baseline samples in 128 steps, 16 × more than IDRF. The one method with higher activity, SEPO + GF ( 7.66 ), keeps only 47 .4% of its sequences accessible, and SDPO reaches activity 6.30 .
+
+Without inverse distillation, the oracle is exploited. Removing LID at the same eight steps raises activity to 7.68 but keeps only 37 .8% ATAC-Acc (against 95 .3% ), 3-mer correlation 0.38 (against 
+
+0.68 ) and Entropy 1.04 , as the samples collapse into CA/CG-rich sequences almost entirely lacking T (Appendix C.5). With the full 128 -step sampler the collapse is complete ( 0.1% ATAC-Acc). The collapsed models receive higher estimated likelihoods ( −204 and −163 ) than all other methods in our runs. 0 .1 .2 .3 .5          
+
+> λID
+> 56787.68 7.22
+> Pred-Activity
+> 0.1 .2 .3 .5
+> λID
+> 25 50 75 100
+> 37.8 95.3
+> ATAC-Acc (%)
+> 0.1 .2 .3 .5
+> λID
+> 0.4 0.6
+> 0.38 0.68
+> 3-mer correlation
+
+Figure 3: Regularization sweep of IDRF (ours) on regulatory-DNA design at K = 8 . Red marks reward-only fine-tuning ( λID = 0 ), and the shaded band the setting of Table 1. 7A controllable trade-off. Figure 3 sweeps λID . Activity decreases monotonically as the regularizer strengthens, while ATAC-Acc rises from 37 .8% to 95 .3% and 3-mer correlation from 0.38 to 0.68 
+
+by λID = 0 .2. A single weight selects the operating point, and larger weights trade activity without further gains. 5.2 CLIP-GUIDED IMAGE GENERATION 
+
+We fine-tune a class-conditional MaskGIT (Chang et al., 2022; Besnier et al., 2025) pretrained on ImageNet with CLIP image–text similarity (Radford et al., 2021) as the reward on ten ImageNet classes with attribute prompts (Appendix D), and hold out ImageReward (Xu et al., 2023), PickScore (Kirstain et al., 2023) and HPSv2.1 (Wu et al., 2023b). IDRF and its reward-only ablation both sample in K = 4 steps, and each method is evaluated on 1,000 images. At four steps and without guidance, IDRF exceeds the 128 -step reference sampled with classifier-free guidance ( w = 3 ) on every held-out metric, raising ImageReward from −0.73 to 0.88 (Table 2, Figure 4). Without LID ,the student reaches lower CLIP ( 26 .12 ) and ImageReward ( −0.49 ) and falls below the 128 -step reference on PickScore and HPSv2.1. ReDGE (Gourevitch et al., 2026) reaches the highest CLIP by optimizing each image at inference, yet stays below IDRF on all held-out metrics. Table 2: CLIP-guided MaskGIT generation , 1,000 images per method ( 100 per class), mean with 
+
+95% confidence interval over images. CLIP is optimized and the remaining metrics are held out. w is the classifier-free guidance weight, and rows without w, including IDRF, use no guidance ( w = 0 ). The Steps column reports the number of denoising steps. Four-step methods use an additional final unmasking step. ReDGE adds 400 reward-gradient updates per image. 
+
+Method Steps ↓ CLIP ↑ ImageReward ↑ PickScore ↑ HPSv2.1 ( ×100 ) ↑
+
+Reference 4 14 .00 ± 0.18 −2.17 ± 0.01 18 .24 ± 0.03 14 .67 ± 0.12 
+
+Reference, w = 3 128 23 .11 ± 0.13 −0.73 ± 0.05 21 .10 ± 0.04 25 .05 ± 0.12 
+
+ReDGE, w = 3 20 37 .77 ± 0.10 0.30 ± 0.04 21 .38 ± 0.03 25 .98 ± 0.10 
+
+RLOO w/o LID 4 26 .12 ± 0.10 −0.49 ± 0.03 20 .61 ± 0.02 22 .57 ± 0.08 
+
+IDRF (ours) 4 27 .74 ± 0.06 0.88 ± 0.02 22 .11 ± 0.02 27 .72 ± 0.04 Reference 128 steps, w = 3            
+
+> ReDGE, w= 3
+> RLOO w/o ID
+> IDRF (ours)
+> ImageNet class sports car tow truck electric guitar jeep football helmet vase tandem bicycle school bus fire engine giant panda
+> Reward prompt a blue sports car a red tow truck a yellow electric guitar a black jeep a yellow football helmet a black vase a silver tandem bicycle a yellow school bus a red fire truck a giant panda
+
+Figure 4: CLIP-guided MaskGIT samples , the first sample of each class for each method. Original ImageNet classes appear above the reference row, and reward prompts above the three guided rows. The reference is conditioned on the class alone. ReDGE optimizes the prompt reward at inference, while RLOO and IDRF (ours) are fine-tuned on it. IDRF uses four sampling steps plus cleanup. 5.3 SENTIMENT STEERING OF REVIEW TEXT 
+
+Text adds a failure mode that fixed-length outputs lack, because the model decides when to stop. We fine-tune an MDLM (Sahoo et al., 2024), trained on Amazon Fashion reviews (Hou et al., 2026) with 80 5k 10k Training updates 020 40 60 80 100 Samples with EOS (%)     
+
+> RLOO w/o ID
+> IDRF
+> reward saturated RLOO w/o LID no EOS, 127 of 127 tokens
+> Total junk this this trash is junk!!!!! lies junk not ever even 1 star buying Zero stars and garbage never buy this trash junk deserves 0 stars this junk no one ever buy this junk was junk!! 0 stars NEVER buy this junk 0 [. . . ] Complete garbage garbage junk this deserve 0 stars this deserves a zero star I never ever I even allowed to give this zero star on this product. 0 stars 0 star this garbage buy this junk ever not ever ever buy this piece of [. . . ]
+> IDRF (ours) 32 steps
+> This is absolutely junk!!! I purchased this brand and the first time I zipper it up the zipper broke! Please do not purchase this piece of junk! A waste of money!!!! I will never purchase from this company again!!! This is garbage! It is such horrible quality! I needed this floppy hat for a work event. It got folded in the washing machine and had dark scratches on the brim! Save your money! Don’t waste more money on this!
+
+Figure 5: Reward-only fine-tuning abandons the review format. Left: fraction of samples emitting EOS during fine-tuning with 32 sampling steps. Right: generated examples after 10 ,000 updates, illustrating repetitive, unterminated RLOO outputs and complete IDRF reviews. an explicit EOS token, to maximize log P (1 star ) under a frozen BERT review classifier (Appendix E). We hold out GPT-2-large perplexity (Radford et al., 2019) ( GenPPL ), the mean length before the first EOS, the fraction of samples that emit EOS , the token entropy of each sample divided by the log of its length ( Norm. entropy , equal to 1 when no token repeats), and GM , the gradient-moment distance of Hoogeboom et al. (2026) to 1,000 held-out real one-star reviews (Appendix E.1). 
+
+Reward-only fine-tuning abandons the review format. RLOO without the inverse-distillation regularizer achieves the highest reward but produces repetitive, unterminated text: 906 of 1,000 
+
+samples never emit EOS and reach the 127 -token limit (Figure 5). Its normalized entropy drops to 
+
+0.72 , compared with 0.95 for real reviews (Table 3). GenPPL alone does not capture this failure, assigning RLOO lower perplexity than the reference ( 76 .9 versus 91 .7). 
+
+IDRF preserves the review format with 4–8× fewer sampling steps. At both 16 and 32 steps, all evaluated IDRF samples emit EOS, with normalized entropy of 0.90 –0.92 . At 32 steps, IDRF attains a slightly lower reward than RLOO ( −0.044 versus −0.008 ), but its GM distance to real one-star reviews is 2.6× lower ( 10 .9 versus 28 .8). It also achieves lower GenPPL than the 128 -step reference. Table 3: Sentiment steering on Amazon Fashion reviews. log P (1 ⋆) is optimized and the rest held out. GM ( ± s.e.) is against held-out real one-star reviews. Bold is the best fine-tuned model. 
+
+Method Steps ↓ log P (1 ⋆) ↑ GenPPL ↓ Length EOS (%) ↑ Norm. ent. ↑ GM ↓
+
+Real one-star – −0.950 53 .3 32 .2 100 .0 0.948 0.03 (0 .26) 
+
+MDLM reference 128 −5.070 91 .7 27 .8 100 .0 0.955 2.45 (0 .21) 
+
+RLOO w/o LID 32 −0.008 76 .9 126 .8 9.4 0.719 28 .81 (0 .45) 
+
+IDRF (ours) 32 −0.044 65 .4 44 .1 100 .0 0.902 10 .86 (0 .50) 
+
+IDRF (ours) 16 −0.031 107 .3 37 .4 100 .0 0.922 11 .44 (0 .46) 
+
+## 6 DISCUSSION AND LIMITATIONS 
+
+We introduced IDRF, a framework for reward fine-tuning of few-step masked discrete diffusion models using inverse-distillation regularization. Across DNA, image, and text generation, IDRF achieves high reward with fewer sampling steps while mitigating reward hacking. Future work includes scaling IDRF to larger models and extending it to additional domains. 
+
+Limitations. In practice, IDRF involves an adversarial min–max game between the student and the auxiliary denoiser. As in other adversarial training methods, this can introduce optimization instability and sensitivity to the balance between their updates. The auxiliary also adds training cost. Our practical surrogate admits a related KL guarantee for a mixture of one-step completion distributions, while controlling the final sampling distribution remains an open question. 9AI USE STATEMENT 
+
+AI tools assisted with language editing, code implementation, computational checks, and mathe-matical analysis during preparation. The authors are responsible for the claims, results, and final manuscript. 
+
+## ETHICS STATEMENT 
+
+This work develops a method for reward fine-tuning of masked diffusion models and involves no human subjects. All experiments use public datasets and pretrained models: the enhancer activity data of Gosai et al. (2024), the ImageNet-trained MaskGIT (Chang et al., 2022), and the Amazon Reviews 2023 corpus (Hou et al., 2026). We do not redistribute review text. The DNA sequences are scored only by predictive models and were not synthesized or tested experimentally. Reward fine-tuning is dual-use. In particular, steering text toward a target sentiment could be misused to produce deceptive reviews at scale, and our sentiment experiment serves only as a benchmark for reward hacking. 
+
+## REPRODUCIBILITY STATEMENT 
+
+Appendix A gives complete proofs of the theoretical results. Appendices C, D and E list the models, data processing, hyperparameters, sampling settings, evaluation metrics and seeds, and Appendix C.3 documents the provenance of every baseline number. 
+
+## REFERENCES 
+
+Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting REINFORCE-style optimization for learning from human feedback in LLMs. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2024. doi: 10.18653/v1/2024.acl-long.662. URL 
+
+https://aclanthology.org/2024.acl-long.662/ .Victor Besnier, Mickael Chen, David Hurych, Eduardo Valle, and Matthieu Cord. Halton scheduler for masked generative image transformer. In International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=RDVrlWAb7K .Umberto Borso, Davide Paglieri, Jude Wells, and Tim Rocktäschel. Preference-based alignment of discrete diffusion models. arXiv preprint arXiv:2503.08295 , 2025. URL 
+
+https://arxiv.org/abs/2503.08295 .Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T. Freeman. MaskGIT: Masked generative image transformer. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2022. Yuyuan Chen, Shiyi Wang, Peter Potaptchik, Jaeyeon Kim, and Michael S. Albergo. Discrete tilt matching. In International Conference on Machine Learning , 2026. URL 
+
+https://arxiv.org/abs/2604.18739 .Justin Deschenaux and Caglar Gulcehre. Beyond autoregression: Fast LLMs via self-distillation through time. In International Conference on Learning Representations , 2025. URL 
+
+https://arxiv.org/abs/2410.21035 .Sager J. Gosai, Rodrigo I. Castro, Natalia Fuentes, John C. Butts, Kousuke Mouri, Michael Alasoadura, Susan Kales, Thanh Thanh L. Nguyen, Ramil R. Noche, Arya S. Rao, Mary T. Joy, Pardis C. Sabeti, Steven K. Reilly, and Ryan Tewhey. Machine-guided design of cell-type-targeting cis -regulatory elements. Nature , 634:1211–1220, 2024. doi: 10.1038/s41586-024-08070-z. 10 Samson Gourevitch, Alain Durmus, Eric Moulines, Jimmy Olsson, and Yazid Janati. Categorical reparameterization with denoising diffusion models. arXiv preprint arXiv:2601.00781 , 2026. URL 
+
+https://arxiv.org/abs/2601.00781 .Jiaqi Han, Austin Wang, Minkai Xu, Wenda Chu, Meihua Dang, Haotian Ye, Huayu Chen, Yisong Yue, and Stefano Ermon. Discrete diffusion trajectory alignment via stepwise decomposition. In 
+
+International Conference on Learning Representations , 2026. URL 
+
+https://proceedings.iclr.cc/paper_files/paper/2026/file/ 0922ceebb39f1c76e64ef03d0885fa82-Paper-Conference.pdf .Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 ,2022. URL https://arxiv.org/abs/2207.12598 .Emiel Hoogeboom, David Ruhe, Jonathan Heek, Thomas Mensink, and Tim Salimans. Beyond single tokens: Distilling discrete diffusion models via discrete MMD. arXiv preprint arXiv:2603.20155 , 2026. URL https://arxiv.org/abs/2603.20155 .Yupeng Hou, Jiacheng Li, Xiangjun Fu, Zhankui He, An Yan, Xiusi Chen, and Julian McAuley. Bridging language and items for retrieval and recommendation: Benchmarking LLMs as semantic encoders. In Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2026. URL 
+
+https://aclanthology.org/2026.acl-long.147/ .Yushi Huang, Xiangxin Zhou, Ruoyu Wang, Chi Zhang, Jun Zhang, and Tianyu Pang. Reinforcing few-step generators via reward-tilted distribution matching. arXiv preprint arXiv:2605.26108 ,2026. URL https://arxiv.org/abs/2605.26108 .Arseny Ivanov, Sergei Kholkin, Vladislav Gromadskii, Grigoriy Ksenofontov, Ivan Oseledets, and Alexander Korotin. TUBE: Tangent upper bound on evidence for discrete diffusion language models. arXiv preprint arXiv:2605.24292 , 2026. URL 
+
+https://arxiv.org/abs/2605.24292 .Dengyang Jiang, Dongyang Liu, Zanyi Wang, Qilong Wu, Liuzhuozheng Li, Hengzhuang Li, Xin Jin, David Liu, Changsheng Lu, Zhen Li, Bo Zhang, Mengmeng Wang, Steven Hoi, Peng Gao, and Harry Yang. Distribution matching distillation meets reinforcement learning. arXiv preprint arXiv:2511.13649 , 2025. URL https://arxiv.org/abs/2511.13649 . Accepted at ECCV 2026. Yuval Kirstain, Adam Polyak, Uriel Singer, Shahbuland Matiana, Joe Penna, and Omer Levy. Pick-a-Pic: An open dataset of user preferences for text-to-image generation. In Advances in Neural Information Processing Systems , 2023. Wouter Kool, Herke van Hoof, and Max Welling. Buy 4 REINFORCE samples, get a baseline for free! In ICLR Workshop on Deep Reinforcement Learning Meets Structured Prediction , 2019. URL https://openreview.net/forum?id=r1lgTGL5DE .Tomasz Korbak, Ethan Perez, and Christopher Buckley. RL with KL penalties is better viewed as Bayesian inference. In Findings of the Association for Computational Linguistics: EMNLP 2022 ,pp. 1083–1091, 2022. doi: 10.18653/v1/2022.findings-emnlp.77. URL 
+
+https://aclanthology.org/2022.findings-emnlp.77/ .David Li, Nikita Gushchin, Dmitry Abulkhanov, Eric Moulines, Ivan Oseledets, Maxim Panov, and Alexander Korotin. IDLM: Inverse-distilled diffusion language models. In International Conference on Machine Learning , 2026. URL https://arxiv.org/abs/2602.19066 .arXiv:2602.19066v2. Weijian Luo. Diff-Instruct++: Training one-step text-to-image generator model to align with human preferences. Transactions on Machine Learning Research , 2025. URL 
+
+https://arxiv.org/abs/2410.18881 .Hunter Nisonoff, Junhao Xiong, Stephan Allenspach, and Jennifer Listgarten. Unlocking guidance for discrete state-space diffusion and flow models. In International Conference on Learning Representations , 2025. URL https://arxiv.org/abs/2406.01572 .11 Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Jiacheng Sun, Zhenguo Li, and Chongxuan Li. Your absorbing discrete diffusion secretly models the conditional distributions of clean data. In 
+
+International Conference on Learning Representations , 2025. URL 
+
+https://arxiv.org/abs/2406.03736 .Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. Language models are unsupervised multitask learners. OpenAI Technical Report , 2019. Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. Learning transferable visual models from natural language supervision. In International Conference on Machine Learning , 2021. Jarrid Rector-Brooks, Mohsin Hasan, Zhangzhi Peng, Zachary Quinn, Chenghao Liu, Sarthak Mittal, Nouha Dziri, Michael Bronstein, Yoshua Bengio, Pranam Chatterjee, Alexander Tong, and Avishek Joey Bose. Steering masked discrete diffusion models via discrete denoising posterior prediction. In International Conference on Learning Representations , 2025. URL 
+
+https://openreview.net/forum?id=Ombm8S40zN .Subham Sekhar Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin T. Chiu, Alexander M. Rush, and Volodymyr Kuleshov. Simple and effective masked diffusion language models. In Advances in Neural Information Processing Systems , 2024. URL 
+
+https://arxiv.org/abs/2406.07524 .Subham Sekhar Sahoo, Justin Deschenaux, Aaron Gokaslan, Guanghan Wang, Justin Chiu, and Volodymyr Kuleshov. The diffusion duality. In International Conference on Machine Learning ,2025. URL https://arxiv.org/abs/2506.10892 .John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis K. Titsias. Simplified and generalized masked diffusion for discrete data. In Advances in Neural Information Processing Systems , 2024. URL https://arxiv.org/abs/2406.04329 .Xiaohang Tang, Rares Dolga, Sangwoong Yoon, and Ilija Bogunovic. wd1: Weighted policy optimization for reasoning in diffusion language models. In International Conference on Learning Representations , 2026. URL https://arxiv.org/abs/2507.08838 .Chenyu Wang, Masatoshi Uehara, Yichun He, Amy Wang, Tommaso Biancalani, Avantika Lal, Tommi Jaakkola, Sergey Levine, Hanchen Wang, and Aviv Regev. Fine-tuning discrete diffusion models via reward optimization with applications to DNA and protein design. In International Conference on Learning Representations , 2025a. URL 
+
+https://arxiv.org/abs/2410.13643 .Chenyu Wang, Paria Rashidinejad, DiJia Su, Song Jiang, Sid Wang, Siyan Zhao, Cai Zhou, Shannon Zejiang Shen, Feiyu Chen, Tommi Jaakkola, Yuandong Tian, and Bo Liu. SPG: Sandwiched policy gradient for masked diffusion language models. In International Conference on Learning Representations , 2026a. URL https://arxiv.org/abs/2510.09541 .Guanghan Wang, Yair Schiff, Subham Sekhar Sahoo, and Volodymyr Kuleshov. Remasking discrete diffusion models with inference-time scaling. In Advances in Neural Information Processing Systems , 2025b. URL https://arxiv.org/abs/2503.00307 .Yinjie Wang, Ling Yang, Bowen Li, Ye Tian, Ke Shen, and Mengdi Wang. Revolutionizing reinforcement learning framework for diffusion large language models. In International Conference on Learning Representations , 2026b. URL 
+
+https://proceedings.iclr.cc/paper_files/paper/2026/hash/ a61023ce36d21010f1423304f8ec49af-Abstract-Conference.html .Luhuan Wu, Brian L. Trippe, Christian A. Naesseth, David M. Blei, and John P. Cunningham. Practical and asymptotically exact conditional sampling in diffusion models. In Advances in Neural Information Processing Systems , 2023a. URL 
+
+https://arxiv.org/abs/2306.17775 .12 Xiaoshi Wu, Yiming Hao, Keqiang Sun, Yixiong Chen, Feng Zhu, Rui Zhao, and Hongsheng Li. Human preference score v2: A solid benchmark for evaluating human preferences of text-to-image synthesis. arXiv preprint arXiv:2306.09341 , 2023b. Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. ImageReward: Learning and evaluating human preferences for text-to-image generation. In 
+
+Advances in Neural Information Processing Systems , 2023. Oussama Zekri and Nicolas Boullé. Fine-tuning discrete diffusion models with policy gradient methods. In Advances in Neural Information Processing Systems , 2025. URL 
+
+https://arxiv.org/abs/2502.01384 .Anthony Zhan. Simple policy gradients for reasoning with diffusion language models. In 
+
+International Conference on Machine Learning , 2026. URL 
+
+https://arxiv.org/abs/2510.04019 .Siyan Zhao, Devaansh Gupta, Qinqing Zheng, and Aditya Grover. d1: Scaling reasoning in diffusion large language models via reinforcement learning. In Advances in Neural Information Processing Systems , 2025. URL https://arxiv.org/abs/2504.12216 .Haoyang Zheng, Xinyang Liu, Cindy Xiangrui Kong, Nan Jiang, Zheyuan Hu, Weijian Luo, Wei Deng, and Guang Lin. Ultra-fast language generation via discrete diffusion divergence instruct. In 
+
+International Conference on Learning Representations , 2026. URL 
+
+https://arxiv.org/abs/2509.25035 .Kaiwen Zheng, Yongxin Chen, Hanzi Mao, Ming-Yu Liu, Jun Zhu, and Qinsheng Zhang. Masked diffusion models are secretly time-agnostic masked models and exploit inaccurate categorical sampling. In The Thirteenth International Conference on Learning Representations , 2025. URL 
+
+https://arxiv.org/abs/2409.02908 .Fengqi Zhu, Rongzhen Wang, Shen Nie, Xiaolu Zhang, Chunwei Wu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. LLaDA 1.5: Variance-reduced preference optimization for large language diffusion models. In Proceedings of the 64th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 11425–11460, 2026a. doi: 10.18653/v1/2026.acl-long.524. URL 
+
+https://aclanthology.org/2026.acl-long.524/ .Yuanzhi Zhu, Xi Wang, Stéphane Lathuilière, and Vicky Kalogeiton. Soft-Di[M]O: Improving one-step discrete image generation with soft embeddings. In International Conference on Learning Representations , 2026b. URL https://arxiv.org/abs/2509.22925 .Yuchen Zhu, Wei Guo, Jaemoo Choi, Petr Molodyk, Bo Yuan, Molei Tao, and Yongxin Chen. Enhancing reasoning for diffusion LLMs via distribution matching policy optimization. In 
+
+International Conference on Machine Learning , 2026c. URL 
+
+https://arxiv.org/abs/2510.08233 .Daniel M. Ziegler, Nisan Stiennon, Jeffrey Wu, Tom B. Brown, Alec Radford, Dario Amodei, Paul Christiano, and Geoffrey Irving. Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593 , 2019. URL https://arxiv.org/abs/1909.08593 .13 A SEQUENCE -LEVEL INVERSE -DISTILLATION BOUND 
+
+We prove Proposition 1 by expressing masked denoising as autoregressive prediction along a random reveal order. The student enters only through its distribution pθ of completed sequences, in which its generation procedure, including any intermediate states or trajectories, is marginalized. The masking used below is drawn independently after a clean sample is obtained, so it describes the population denoising loss while leaving the student free to use any sampler. As in Proposition 1, the auxiliary is optimal. 
+
+Proof of Proposition 1. 
+
+Each masked position in continuous-time SUBS is revealed at total rate wt, because the denoiser’s categorical probabilities sum to one. We realize these events with independent clocks Tℓ, Pr( Tℓ ≤
+
+t) = 1 − αt, whose reverse-time hazard is (−α′
+
+> t
+
+)/(1 − αt) = wt. The clocks are almost surely distinct. Let σ be their order of revelation, which is uniform over permutations by exchangeability (Shi et al., 2024). Because the denoiser takes no time input, the generated values depend on the order of the events and not on their times. For a clean sequence x, let zk(x, σ ) retain the values at positions σ(1) , . . . , σ (k) and mask the rest, so z0 = mL and zL = x. Revealing positions in order σ and drawing each from f defines 
+
+πf,σ (x) = 
+
+> L
+
+Y
+
+> k=1
+
+f σ(k) xσ(k) | zk−1(x, σ ), pf (x) = Eσ πf,σ (x), (11) with σ uniform. The second expression is the continuous-time endpoint law, and in particular 
+
+pfref = pref . Dependence between generated tokens is captured by the growing visible context in each factor. The NELBO in Eq. (2) is the expected log-loss of these draws. Conditioned on Tℓ = t, every other position is independently visible with probability αt just before position ℓ is revealed, which is exactly the forward-masked context at time t with ℓ masked. The event density −α′ 
+
+> t
+
+= wt(1 − αt)
+
+equals the NELBO weight times the probability that ℓ is masked. Summing over positions gives the any-order autoregressive form of the NELBO (Ou et al., 2025), 
+
+LNELBO (f, p ) = Ex∼p, σ 
+
+h LX
+
+> k=1
+
+− log f σ(k) xσ(k) | zk−1(x, σ )i
+
+= Ex∼p, σ 
+
+− log πf,σ (x), (12) with x and σ independent. The schedule drops out, since time serves only as an integration variable. The cross-entropy decomposition then yields 
+
+LNELBO (f, p θ ) = H(pθ ) + Eσ DKL (pθ ∥ πf,σ ) . (13) Let V (z) be the visible positions of a masked state z. All clean sequences agreeing with z produce this mask pattern with the same probability, which cancels in Bayes’ rule, so the optimal auxiliary prediction at a masked position ℓ is 
+
+f B,ℓ θ (v | z) = Pr 
+
+> x∼pθ
+
+ xℓ = v | xV (z) = zV (z). (14) Along any reveal order its predictions are the chain-rule conditionals of pθ , so πf B  
+
+> θ,σ
+
+= pθ for every σ.By the assumed expressiveness of the auxiliary family, the minimum in Eq. (13) is therefore H(pθ ).Subtracting it and applying convexity of KL in its second argument gives 
+
+LID (θ) = Eσ DKL (pθ ∥ πfref ,σ ) ≥ DKL (pθ ∥ Eσ πfref ,σ ) = DKL (pθ ∥ pref ) . (15) The finite reference NELBO ensures that the gap is finite and pθ ≪ pref . If the reference is the Bayes denoiser of pref , the same chain rule gives πfref ,σ = pref for every σ, and equality holds. The argument extends verbatim to time-conditioned denoisers by carrying the event times Tσ(k)
+
+alongside σ through Eqs. (11)–(15). Equation (14) shows that the optimal auxiliary is time-agnostic in either case. 14 A.1 THE PRACTICAL OBJECTIVE 
+
+Fix θ, let J ∼ U{ 1, . . . , K }, and let X | J = j follow the law ρθ,j of the rollout state xtj of the current student. For a state x with prediction ex = Gθ (x), one-hot at revealed positions, the one-step completion law and its mixture over depths are 
+
+Qθ,x (y) = 
+
+> L
+
+Y
+
+> ℓ=1
+
+exℓ(yℓ), qj = EX∼ρθ,j Qθ,X , ¯qθ = 1
+
+K
+
+> K
+
+X
+
+> j=1
+
+qj . (16) The soft-target NELBO of Section 3.2 is 
+
+S(f, ex) = Et,M,Y V
+
+h
+
+wt
+
+X
+
+> ℓ∈M
+
+− X
+
+> v∈V
+
+exℓ(v) log f ℓ(v | Z)
+
+i
+
+, (17) where t ∼ U (0 , 1) , each position enters the masked set M independently with probability 1 − αt,the tokens Y ℓ at the visible positions ℓ ∈ V are drawn independently from exℓ, and Z carries Y V on 
+
+V and m on M .
+
+Corollary 1 (Practical inverse-distillation bound) . Assume the conditions of Proposition 1 with pθ replaced by ¯qθ , and let the auxiliary objective and the regularizer use the same law of 
+
+(J, X ) and the same corruption. Then, for every auxiliary with finite NELBO, 
+
+EJ,X 
+
+S(fref , G θ (X)) − S(fψ , G θ (X))  = LNELBO (fref , ¯qθ ) − L NELBO (fψ , ¯qθ ). (18) 
+
+If the auxiliary minimizes its objective, this expectation equals the population loss of ¯qθ and satisfies 
+
+LNELBO (fref , ¯qθ ) − min  
+
+> ψ
+
+LNELBO (fψ , ¯qθ ) ≥ DKL (¯ qθ ∥ pref ) . (19) 
+
+For the sampler of Eq. (9) , q1 = pθ .
+
+Proof of Corollary 1. 
+
+Fix J = j and X = x. Under Qθ,x the positions are independent, and Z depends on Y only through 
+
+Y V . For ℓ ∈ M , the token Y ℓ is therefore independent of (t, M, Y V ), and E[− log f ℓ(Y ℓ | Z) |
+
+t, M, Y V ] = − P 
+
+> v∈V
+
+exℓ(v) log f ℓ(v | Z). Hence S(f, ex) = LNELBO (f, Q θ,x ). The NELBO is an expectation over the clean sequence and is linear in its law, so averaging over X and J gives 
+
+EJ,X S(f, G θ (X)) = LNELBO (f, ¯qθ ). Applying this to fref and fψ proves Eq. (18). By the same identity, the auxiliary objective equals LNELBO (fψ , ¯qθ ), and its minimum over a family containing the Bayes denoiser of ¯qθ is attained there. Proposition 1 applied to the law ¯qθ gives Eq. (19). Finally, 
+
+b1 = 1 in Eq. (9), so the last transition fills every remaining mask independently from Gℓθ (· | xt1 )
+
+and copies revealed tokens. The endpoint given xt1 therefore has law Qθ,x t1 , and averaging over xt1
+
+gives q1 = pθ .The corollary characterizes the expected loss on rollout states drawn from the current student. Positions are independent given a rollout state, and the mixture ¯qθ keeps the dependence between tokens. 
+
+## B SAMPLING AND POLICY -GRADIENT DETAILS 
+
+The ancestral derivation uses a fixed schedule and a final transition to t0 = 0 . If a numerical implementation stops at a positive noise floor, any remaining masks are filled by a final categorical draw. Its sampled choices and log-probabilities must also be included in the recorded trajectory and reward loss, and this extra evaluation counts toward the sampling cost. For max-confidence sampling, masked positions are ranked by their maximum predicted probability and revealed according to a fixed step budget. Recomputing their probabilities with the recorded reveal sets held fixed gives the surrogate described in Section 3.2. We use linear ancestral time grids ending at 10 −5 for DNA and 10 −3 for images and text. For MaskGIT, the reward loss uses four transitions sampled uniformly without replacement from the full 15 recorded trajectory, including cleanup when present, with the sum scaled by the trajectory length divided by four. Inverse-distillation states exclude cleanup inputs for DNA and MaskGIT but include them for text. DNA max-confidence sampling reveals 25 positions per step over eight steps, with categorical token sampling. To verify the policy gradient, expand the path probability of the MDP in Eq. (9). Because Gθ
+
+assigns no mass to m, staying masked and being revealed are disjoint events, and Pθ (τ ) =
+
+c(τ ) QKk=1 
+
+Q 
+
+> ℓ∈Uk
+
+Gℓθ (xℓ 
+
+> 0
+
+| xtk ) with c(τ ) = QKk=1 b|Uk | 
+
+> k
+
+(1 − bk)mk −| Uk |, where mk is the number of masked positions in xtk . The factor c(τ ) is independent of θ. Differentiating P 
+
+> τ
+
+Pθ (τ )R(x0)
+
+gives, for any trajectory-independent baseline b,
+
+∇θ JR(θ) = Eτ ∼Pθ
+
+h
+
+(R(x0) − b)
+
+> K
+
+X
+
+> k=1
+
+X
+
+> ℓ∈Uk
+
+∇θ log Gℓθ (xℓ 
+
+> 0
+
+| xtk )
+
+i
+
+. (20) The leave-one-out baseline is independent of trajectory i, conditional on the task, so its expected product with that trajectory’s score is zero. At θ = θold , every ratio ρikℓ in Eq. (10) equals one and clipping is inactive, so differentiating Eq. (10) yields the negative leave-one-out score-function estimate. After batch reuse, the clipped objective acts as a surrogate for the reward gradient. 
+
+## C REGULATORY -DNA DESIGN 
+
+C.1 EVALUATION 
+
+Every unmarked row of Table 1 evaluates one fixed checkpoint on 640 sequences for each of three sampling seeds and reports the mean and sample SD of the three per-seed values. Pred-Activity is the median prediction of the held-out activity oracle. ATAC-Acc is the percentage of sequences whose predicted HepG2 accessibility (output 1 of the ATAC oracle) exceeds 0.5. 3-mer correlation is the Pearson correlation between pooled 3-mer counts of the samples and of the 736 enhancers of Gosai et al. (2024) above the 99 .9th percentile of measured HepG2 activity. Log-Lik is the median NELBO-based likelihood estimate of the pretrained model, with 128 evaluation steps and one Monte Carlo sample. Entropy averages the per-sequence nucleotide entropy 
+
+Hn = − X
+
+> b∈{ A,C,G,T}
+
+pn,b ln pn,b , 0 ≤ Hn ≤ ln 4 ≈ 1.386 , (21) where pn,b is the frequency of base b in sequence n. The 16 × ratio in the main text counts reverse steps, 128 for every baseline and 8 for IDRF. C.2 TRAINING CONFIGURATION 
+
+All IDRF and reward-only runs start the student and the auxiliary from the pretrained DRAKES model, use its log-linear noise schedule, and optimize the DRAKES fine-tuning oracle, while Pred-Activity uses the held-out evaluation oracle. Each iteration takes 4 auxiliary updates on on-policy states, then draws one batch of rollouts and takes 2 clipped student updates on it (Table 4). We report the final checkpoint. The reward-only run at K = 128 accumulates gradients over 8 batches of 32 rollouts and forms the leave-one-out baseline within each batch. The ancestral IDRF student is trained on one NVIDIA RTX 6000 GPU. For ancestral sampling, training uses categorical sampling for the final unmasking step. Evaluation follows the original DRAKES implementation and selects the most probable token at remaining masked positions. C.3 BASELINE PROVENANCE AND EVALUATION DISCREPANCIES 
+
+Baselines. Reference is the pretrained model without fine-tuning. Classifier guidance (CG, Nisonoff et al., 2025) and two sequential Monte Carlo methods (Wu et al., 2023a) steer it at inference, SMC with the pretrained model as proposal and the twisted diffusion sampler (TDS) with CG as proposal. Classifier-free guidance (CFG, Ho & Salimans, 2022) samples a separately trained reward-conditioned model with guidance, as in DRAKES. D 2-DPO (Borso et al., 2025) and VRPO (Zhu et al., 2026a) adapt offline preference optimization to discrete diffusion. DRAKES (Wang et al., 2025a) backpropagates the reward through the generated trajectory with Gumbel-softmax relaxations. 16 Table 4: Training configuration for regulatory-DNA design.                                              
+
+> Setting IDRF (ours) RLOO w/o LID
+> Sampler ancestral max-confidence ancestral Sampling steps K888/128
+> λID 0.20.20
+> Rollouts per iteration 256 256 256 /256 (8×32 )Leave-one-out group 256 256 256 /32
+> Optimizer (student, auxiliary) AdamW, learning rate 10 −4, weight decay 0
+> Gradient-norm clipping 1.0
+> Clipping εin Eq. (10) 0.2
+> Auxiliary / student updates per iteration 4/2
+> Iterations 500
+> LID state xtj,j∼ U{ 1, . . . , K }
+> Training seed 0
+
+diffu-GRPO (Zhao et al., 2025) and SEPO (Zekri & Boullé, 2025) are policy gradient methods, with SEPO + GF denoting its gradient flow (GF) variant. DDPP-IS (Rector-Brooks et al., 2025) matches the reward-tilted posterior with importance sampling, and SDPO (Han et al., 2026) decomposes trajectory alignment into stepwise objectives. 
+
+Provenance. We re-evaluated the DRAKES baselines using the authors’ released code and configu-rations without modification. Table 1 uses our common-protocol measurements for every unmarked row. Table 5 retains the published ATAC-Acc values for transparency. The two columns have different provenance and are not treated as measurements from the same run. Table 5: Published and independently measured ATAC-Acc (%) ↑. Published values follow the cited papers. Our values use HepG2 output 1 and 640 sequences per sampling seed. Parentheses give the reported SD for the papers and sample SD across sampling seeds for our measurements.          
+
+> Method Published Our measurement Evaluated model SEPO 99 .5 (0 .2) 8.70 (1 .49) Released checkpoint SEPO + GF 99 .9 (0 .09) 47 .40 (1 .82) Released checkpoint
+
+ATAC output selection in SEPO. The SEPO paper defines ATAC-Acc for HepG2 (Zekri & Boullé, 2025), but its released eval_plots.ipynb selects output 0 in the ATAC plot and threshold calculations. The shared oracle’s checkpoint metadata identifies output 0 as GM12878 and output 1
+
+as HepG2. The original DRAKES evaluator uses output 1, as does the separate eval.ipynb in SEPO’s repository. We use HepG2 output 1 for every method. The released SEPO and SEPO + GF checkpoints then yield 8.70% and 47 .40% , respectively, under our sampling protocol. Table 1 reports only SEPO + GF, which scores higher on Pred-Activity, ATAC-Acc, 3-mer correlation and Log-Lik alike. Plain SEPO scores 7.60 (0 .01) Pred-Activity, 8.7 (1 .5) ATAC-Acc, 0.461 (0 .002) 3 -mer correlation, −252 (0 .1) Log-Lik and 1.185 (0 .003) nats of entropy at 128 steps. This identifies a mismatch in the public plotting/evaluation notebook. It does not establish the execution history of every published result, nor explain differences in Activity, 3-mer correlation, or Log-Lik. C.4 ON-POLICY STATES 
+
+Table 6 replaces rollout states with forward-masked completed samples, masking the student’s sample 
+
+x0 at the same depth tj ; the soft target is the student’s prediction at the masked state. For ancestral decoding both give the same law of mask patterns and differ in how visible values relate to the rest. On a rollout, the visible tokens were drawn first and the student completes them. After forward masking, the visible tokens come from a finished sample. The resulting states differ from those encountered during generation. For max-confidence decoding the mask patterns also differ, because the router reveals confident positions first. Under both samplers, ATAC-Acc and 3-mer correlation drop sharply. 17 Table 6: State on which LID is evaluated in IDRF (ours), regulatory-DNA design at K = 8 .                                 
+
+> Sampler LID state Pred-Activity ↑ATAC-Acc (%) ↑3-mer Corr. ↑Log-Lik Ancestral on-policy xtj7.22 95 .30.683 −257
+> Ancestral forward-masked x05.89 52 .50.273 −261
+> Max-conf on-policy xtj7.31 92 .30.718 −253
+> Max-conf forward-masked x06.23 42 .80.408 −224
+
+C.5 COMPOSITIONAL DEGENERATION UNDER REWARD -ONLY FINE -TUNING 
+
+Table 7 reports the nucleotide composition of the sequences generated by the ancestral IDRF student and the two reward-only ablations of Table 1. Each method contributes 1,920 sequences of 200 
+
+nucleotides ( 640 per sampling seed), saved in FASTA format, a plain-text format with one header line and one nucleotide string per sequence. Dinucleotide frequencies count adjacent pairs within each sequence. Table 7: Reward-only fine-tuning nearly eliminates thymine. Nucleotide and dinucleotide com-position in percent. The pair column is the combined frequency of CG, GC, CA and AC among all dinucleotides, and T-free is the share of sequences without T.                                
+
+> Method ACGTCG+GC +CA+AC T-free IDRF, K= 8 11.70 30.99 42.64 14.67 44.46 0.00 RLOO w/o LID ,K= 8 19.26 47.38 33.36 <0.01 72.66 99.32 RLOO w/o LID ,K= 128 25.39 43.79 30.82 <0.01 79.61 99.74
+
+Reward-only fine-tuning leaves only 13 T bases at K = 8 and 5 at K = 128 across 1,920 sequences, against 56 ,344 for IDRF, so 99 .3% and 99 .7% of its sequences contain no T. The CA/CG-related pairs rise from 44 .5% of all dinucleotides under IDRF to 72 .7% and 79 .6% . Figure 6 shows the first two sequences of sampling seed 0 for each method, without selection. 
+
+## D CLIP-GUIDED MASK GIT 
+
+Model and rewards. The reference is the class-conditional Halton-MaskGIT-L transformer (Besnier et al., 2025), a MaskGIT (Chang et al., 2022) pretrained on ImageNet at 384 × 384 
+
+resolution, which generates a 24 × 24 grid of VQ tokens from a codebook of 16 ,384 entries. The student and the auxiliary start from it, and the reference and the VQ decoder stay frozen. The model receives only the ImageNet class, and the attribute prompt of Table 9 enters only through the reward, 
+
+100 × the CLIPScore of a CLIP ViT-L/14 (Radford et al., 2021). ImageReward, PickScore v1 and HPSv2.1 are never optimized. 
+
+Training. Table 8 lists the configuration. Training uses one NVIDIA RTX 6000 GPU. Each batch holds 16 groups of 4 rollouts, each group for one class drawn uniformly. The student samples with 
+
+4 ancestral steps on a linear grid, followed by one cleanup call that fills any remaining masks. The reward loss uses 4 transitions drawn from each recorded trajectory, rescaled to the full trajectory, and each rollout batch serves a single student update, so every ratio in Eq. (10) equals one. The reward-only ablation uses the same configuration with λID = 0 .
+
+Evaluation. Each method generates 100 images for each of the ten classes. Scores are averaged within each class and then across classes, and the 95% confidence interval pools the within-class variances with a Student-t quantile. Classifier-free guidance combines logits as (1 + w) ℓcond −
+
+w ℓ uncond . The 128 -step reference uses the Halton sampler (Besnier et al., 2025) at temperature 1
+
+with w = 3 . ReDGE (Gourevitch et al., 2026) uses the ReMDM sampler (Wang et al., 2025b) with 
+
+20 network calls and 20 logit updates per step ( 400 in total, learning rate 0.5, KL weight 1), the same 
+
+100 × CLIPScore reward computed per image, and w = 3 .18 IDRF (ancestral) K = 8 
+
+> Sequence 1
+
+AGGAACTTCGCTGAGGCGGGCGGGGGGCGGGACGCGCGCGCCTCGCGAGGGCGGCGCAATTGGGGCGTGGGTGCGCGGCG CTGACGACGTCACTGCAGCGGCGCTGTGGCGCCGGCGGCGCGGGGCGCGCTTCGCGACGTCATGTCACGACGGCGTCGCG ACGTGCGTCTGACTGGGTTAGTCATCGCCCGCTGCGCGTG 
+
+> Sequence 2
+
+GAGGGCTCGGCGCATGGGCGTGTACTTTGCGGGGCGGAGCGTCGCGGCGTGCGCGCACGCGCGCGCGGGGCGCGTCACTT TCGTGTGCGGGCTGAGGTGGGTCACTGCCTAAGGCGGCGGGGGGGGGGGGCGGAGCTTACGTCGTTGTCGGTTACGTCAC GCGGCGCCGTCATCTGACGCGCGCCGGCGCCGTCCAGGTG    
+
+> RLOO w/o LID K= 8
+> Sequence 1
+
+GGGCGGCCGGCGCCCCGGGCCGCCGGCGGAGACGCGGACGCGCAGACGCAGACGCGCACGCACGCACGCACGCACGCACG CACGCACGCCCGCACGCACCCACCCACGCACGCGCACGCGCGCACGCACCGACGCACGCACCGACGCCGCAGACGCAGAC ACACGCAGAGGCAGACGCAGAGGCGCAGCCGCCCCCCCCC 
+
+> Sequence 2
+
+GGGCGCGGGCGCGGCCGCCGCCGGGGCGGCGGCAGGCGCACGCGCAGACGCAGACGCAGACGCGCCCGCACGCACGCACG CACGCACGCACCCACGCAGGGCACGCACGCACCCACGCACGCACGCACGCACGCACGCACGCACACACGCACGCACGCAC GGACGCAGAGACGACGCAGACGCACACGCGCCCCCCCCCC    
+
+> RLOO w/o LID K= 128
+> Sequence 1
+
+GGGGGAAGGGGGAAGGCCCCGGGCCGGGCCCGGGCCGGGGCCGCCGCGAGGCAGACGCACAGACGCAGACGCGCACGCGC ACACGCGCACGCACGCACGCACACACGCACACGCACACGCGCACGCACGCACGCACGCACGCACGCACGCGCACGCACGC ACGCACACACGCACACACACACACACACACACACACACAC 
+
+> Sequence 2
+
+GGGGGAGGGGGGAAAGCGCCGCCGCGGCGGGCCGGCGGCCGCGACGCCGACGCAGACGCAGAGACGCACACGCACGCACG CGCACGCACGCACGCACGCACGCACGCACGCACGCACGCACACGCACGCACGCACGCACGCACGCACGCACGCACGCACA CGCACGCACGCACGCACACACACACACACACACACACACA 
+
+Figure 6: Unfiltered DNA outputs , the first two sequences of sampling seed 0 for each method. Line breaks are for display only. Table 8: Training configuration for IDRF (ours) on CLIP-guided MaskGIT. 
+
+Setting Value Sampling steps K 4 ancestral steps and one cleanup call 
+
+λID 0.5
+
+Optimizer (student, auxiliary) AdamW, learning rate 3 × 10 −5, weight decay 0.01 
+
+Rollouts per update 64 (16 groups of 4)Auxiliary / student updates per iteration 1 / 1
+
+Iterations 80 
+
+Guidance weight during training w = 0 
+
+LID state xtj , j ∼ U{ 1, . . . , K }
+
+Precision bfloat16 transformer, float32 logits Training seed 20 
+
+Table 9: ImageNet classes and CLIP prompts used in the MaskGIT experiments. 
+
+ImageNet ID Class CLIP prompt 817 Sports car a blue sports car 864 Tow truck a red tow truck 546 Electric guitar a yellow electric guitar 609 Jeep a black jeep 560 Football helmet a yellow football helmet 883 Vase a black vase 444 Tandem bicycle a silver tandem bicycle 779 School bus a yellow school bus 555 Fire engine a red fire truck 388 Giant panda a giant panda 
+
+19 E SENTIMENT STEERING OF REVIEW TEXT 
+
+Data and SFT. We use the Amazon Fashion split of the Amazon Reviews 2023 corpus (Hou et al., 2026). We remove duplicate reviews after trimming leading and trailing whitespace. Each training sequence contains a single review. We retain nonempty reviews with at most 126 GPT-2 tokens and reserve 1% for validation using a deterministic hash-based split, without truncation or sentiment filtering. Each training sequence starts with BOS , followed by the review text, and is padded with  
+
+> EOS
+
+tokens to length 128 . All 127 non-BOS positions are noised and supervised. The reward is the log-probability of the one-star class under the frozen classifier https://huggingface.co/ LiYuan/amazon-review-sentiment-analysis . Starting from the MDLM OpenWebText checkpoint (Sahoo et al., 2024) with the GPT-2 tokenizer, we run EOS-aware SFT for 50 ,000 steps at learning rate 3 × 10 −4 and take the EMA weights. SFT uses Adam with global batch size 512 , 2,500 
+
+warmup steps, EMA decay 0.99 , and seed 42 . This single checkpoint initializes the frozen reference, the student and the auxiliary denoiser for every reward fine-tuning run reported in Table 3. 
+
+Reward fine-tuning. Rollouts use ancestral sampling followed by a stochastic categorical terminal step, so K reverse updates cost K + 1 denoiser evaluations. The score-function estimator of Eq. (20) is applied to the full trajectory without subsampling reverse steps. Each rollout batch receives a single on-policy update, so θ = θold and the clipping in Eq. (10) is inactive here. Groups contain 8 rollouts per device, for a global batch of 64 across 8 NVIDIA A100 GPUs. Both models are trained with Adam at a learning rate of 10 −6 with 100 warmup steps. The auxiliary is updated once per student update. Evaluation runs every 100 updates on 1,000 fresh samples, and weights are checkpointed every 500 updates. The reward and GenPPL are read from the text up to the first EOS, while the RLOO and inverse-distillation losses are computed on the full length-128 buffer, including the EOS tail. Every run starts from the same SFT checkpoint with training seed 0, and IDRF uses λID = 0 .01 .IDRF16 is trained separately from IDRF32. All fine-tuned text models are evaluated after 10 ,000 
+
+updates. 
+
+Evaluation. All generated rows of Table 3, including the reference, use the same sampler, with ancestral updates followed by a stochastic categorical terminal step, evaluation seed 1 and 1,000 
+
+samples. The real-review rows score 1,000 held-out reviews that are disjoint from the GM reference. GenPPL is the exponential of the token-averaged GPT-2-large NLL across all reviews, using BOS as context and including one EOS per review. Norm. entropy is the Shannon entropy of the GPT-2 token frequencies within a sample divided by the log of its length, averaged over samples. BOS and EOS are excluded, and normalized entropy is set to zero for reviews containing fewer than two tokens. Repeated words account for a median of 66% of word occurrences in RLOO reviews, 14% in IDRF reviews, and 9% in real one-star reviews. Word repetition is the fraction of word occurrences beyond their first occurrence, computed case-insensitively and summarized by the median across reviews. E.1 GRADIENT -MOMENT DIAGNOSTIC 
+
+GM adapts the centered estimator of Hoogeboom et al. (2026, Eq. 14) to variable-length text. For a candidate set and a reference set of 1,000 reviews each, we compute the mean gradient of GPT-2-large’s token NLL on two disjoint subsets of 50 reviews each from each set and take the inner product of the two candidate-minus-reference differences. The reported value averages 10 such estimates, with one standard error across them. Each review contributes its mean token NLL, conditioned on BOS and including one EOS. Gradients are computed in float32 and inner products in float64. The estimator is unbiased for the squared distance between mean gradients, so two samples of the same distribution score zero in expectation. Table 10 uses two references from the held-out validation split. One holds 1,000 of the 2,748 eligible real one-star reviews, and the other 1,000 of the 21 ,448 real reviews of every rating. Each reference is compared against a disjoint sample of the same distribution, and both real-versus-real estimates (0.03 and 0.06 ) are consistent with zero. Against both references, IDRF at 32 steps has a 2.4–2.7×
+
+lower GM than reward-only fine-tuning. These results suggest that inverse-distillation regularization reduces distributional drift under reward fine-tuning. 20 Table 10: Gradient moment against two held-out references (lower is closer), ± one standard error over ten pair estimates. Generated sets are those of Table 3. 
+
+Candidate set Steps ↓ GM vs. real one-star ↓ GM vs. real, all ratings ↓
+
+Real one-star reviews – 0.03 ± 0.26 1.99 ± 0.29 
+
+Real reviews, all ratings – – 0.06 ± 0.24 
+
+MDLM reference 128 2.45 ± 0.21 0.54 ± 0.21 
+
+RLOO w/o LID 32 28 .81 ± 0.45 29 .53 ± 0.47 
+
+IDRF (ours) 32 10 .86 ± 0.50 12 .13 ± 0.56 
+
+IDRF (ours) 16 11 .44 ± 0.46 12 .85 ± 0.37 
+
+21

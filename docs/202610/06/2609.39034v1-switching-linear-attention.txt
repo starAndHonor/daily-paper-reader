@@ -1,0 +1,1139 @@
+Title: Switching Linear Attention
+
+URL Source: https://arxiv.org/pdf/2609.39034v1
+
+Published Time: Thu, 01 Oct 2026 00:57:41 GMT
+
+Number of Pages: 33
+
+Markdown Content:
+Published as a conference paper at COLM 2026 
+
+# Switching Linear Attention 
+
+Hyun Dong Lee ∗
+
+Stanford University 
+
+Xavier Gonzalez 
+
+Stanford University †
+
+Nicolas Zucchet 
+
+Stanford University 
+
+E. Kelly Buchanan 
+
+Stanford University 
+
+Emily B. Fox 
+
+Stanford University 
+
+Scott W. Linderman 
+
+Stanford University 
+
+## Abstract 
+
+Designing expressive sequence layers with efficient inference remains a central challenge in modern machine learning. Standard softmax attention achieves excellent sequence modeling performance through rich nonlinear token interactions, but it requires a key–value cache that grows linearly with sequence length, limiting its scalability. Linear attention enables efficient recurrent computation with a constant memory footprint, yet its reduced expressivity often yields inferior modeling performance. We introduce 
+
+Switching Linear Attention (SwiLA), a novel sequence layer that bridges this gap by enhancing representational capacity while retaining the fixed-size recurrent state of linear attention. We derive the SwiLA recurrence from the test-time regression framework, casting the state update rule as online expectation–maximization in a mixture of linear regressions model. At test time, each output dimension dynamically selects among multiple linear attention components based on the input. Across associative recall, in-context language learning, and language modeling benchmarks, SwiLA shows strong performance and narrows the gap to softmax attention, even surpassing it in several settings. 
+
+## 1 Introduction 
+
+Attention mechanisms (Vaswani et al., 2017) have emerged as the cornerstone of modern sequence modeling, powering state-of-the-art advances in language understanding (Brown et al., 2020), visual recognition (Dosovitskiy et al., 2021), and multimodal vision-language reasoning (Alayrac et al., 2022). The key innovation is dynamic information routing based on input-dependent similarity, enabling models to selectively retrieve relevant context from across a sequence. A useful perspective on this retrieval capability is that softmax attention implicitly fits a nonlinear mapping between inputs and outputs at inference time, a form of 
+
+test-time regression (TTR) that underlies its expressive in-context learning (ICL) (Garg et al., 2022; Aky ¨ urek et al., 2023; von Oswald et al., 2023; Wang et al., 2025). However, this expressivity comes at a high computational cost. The key-value (KV) cache required for autoregressive generation grows linearly with sequence length, which becomes prohibitive for long-context applications. Linear attention (Katharopoulos et al., 2020) addresses this bottleneck by replacing softmax with a kernel feature map, reformulating attention as a linear recurrence with a state of size O(D2), where D is the embedding dimen-sion. However, this compression fundamentally limits associative recall: at each timestep, linear attention retrieves values through a single linear mapping of the query, and cannot capture the diverse, context-dependent retrieval patterns that softmax attention achieves through its nonlinear mapping. Empirically, linear attention consistently underperforms on tasks requiring precise memory retrieval (Arora et al., 2024a;b). 
+
+> ∗
+
+Correspondence to hdlee@cs.stanford.edu .
+
+> †
+
+Now at Unconventional AI. Work done at Stanford University. 
+
+> ‡
+
+Code is available at switching-linear-attention .
+
+1arXiv:2609.39034v1 [cs.LG] 30 Sep 2026 Published as a conference paper at COLM 2026 To bridge this gap, we introduce Switching Linear Attention (SwiLA), a novel sequence layer that leverages the TTR framework of Wang et al. (2025), extending it to a mixture of linear regressors ‡. SwiLA divides its recurrent state into J mixture components, each maintaining its own linear regressor of size O(D2) that specializes in different retrieval patterns. At each timestep, each of the D output dimensions selects a mixture component based on both a learned gating prior and the prediction errors of the current state, yielding a number of mixtures that scales exponentially as O(JD ), despite having a state size that grows only polynomially as O(JD 2). We derive the update rule from online expectation maximization (Capp´ e & Moulines, 2009): the E-step computes posterior responsibilities based on prediction errors, and the M-step updates each component’s regression weights. During in-context learning, SwiLA learns an expressive piecewise linear mapping from inputs to outputs, while retaining, as in linear attention, a fixed-size recurrent state whose memory footprint is independent of sequence length. With experiments on associative recall, in-context language learning, and language modeling, we find that SwiLA performs strongly, narrowing the gap to softmax attention and even surpassing it in several settings. 
+
+## 2 Background on Test-Time Regression 
+
+A central capability of effective sequence models is in-context associative recall : given a query, retrieve relevant information from previously observed tokens. Wang et al. (2025) formalize in-context associative recall as a two-step process of memorization and retrieval. They show that the memorization step can be cast as an online regression problem, which they call 
+
+test-time regression (TTR). 
+
+Memorization as regression. Given a sequence of KV pairs (k1, v1), . . . , (kT , vT ) with kt ∈
+
+RD and vt ∈ RD, an associative memory is a function mt : RD → RD such that mt(ki ) ≈ vi
+
+for i = 1, . . . , t. Finding such a map reduces to solving a regression problem: 
+
+mt ≈ arg min 
+
+> m∈M
+> t
+
+# ∑
+
+> i=1
+
+∥vi − m(ki)∥2, (2.1) where M is a chosen function class. 
+
+Retrieval as function evaluation. Once the regressor mt has been fit, memory retrieval is simply function application: given a query qt, the output is 
+
+ot = mt(qt). (2.2) A sequence layer that solves eq. (2.1) and applies eq. (2.2) at each timestep performs asso-ciative recall in its forward pass. This framework is called test-time regression (TTR): the regressor mt is learned in-context from the input tokens and the structure of the recurrence. Commonly, the query qt, key kt, and value vt are all projections of some input xt.
+
+Design space. In TTR, a sequence layer is specified by the choice of the function class M
+
+and the optimization algorithm for eq. (2.1). These choices, along with the particular keys and values shown at test-time, ultimately determine the regressor mt. In the parametric case, mt corresponds to the fixed-size weights of a function approximator, updated online as each new pair (kt, vt) arrives. In the nonparametric case, we recover kernel regression. Importantly, mt is not learned during training; it is learned in-context from the input tokens at inference time, by the very structure of the recurrence. Existing sequence layers arise as special cases. Linear attention (Katharopoulos et al., 2020) uses a linear model for mt, fit with a whitened design matrix approximation. DeltaNet (Schlag et al., 2021; Yang et al., 2024b) also employs a linear model but uses SGD as its optimization algorithm. Softmax attention fits a nonparametric kernel smoother. We refer the reader to Wang et al. (2025) for a comprehensive taxonomy and to Appendix A.1 for further details. 
+
+2.1 Limitations motivating Switching Linear Attention 
+
+TTR reveals a fundamental tension. Linear attention and its variants compress all history into a single fixed-size state, bounding the amount of context that can be stored. At each timestep, retrieval is a single linear mapping of the query, which cannot capture the diverse, 2Published as a conference paper at COLM 2026 𝑊 !   
+
+> Linear Attention Switching Linear Attention Softmax Attention
+> 𝑥 !
+> 𝑊 !(#)
+> 𝑊 !(%)
+> 𝑊 !(&)
+> 𝜋(𝑧 !|𝒞 !)
+> 𝑚 !𝑚 !
+> 𝑘 "
+> 𝑣 "
+> 𝑘 #
+> 𝑣 #
+> 𝑘 $
+> 𝑣 $
+> 𝑘 !"#
+> 𝑣 !"#
+> 𝑘 !
+> 𝑣 !
+> …
+> 𝑚 !
+> 𝑦 !
+> 𝑥 !
+> 𝑦 !𝑦 !
+> 𝑥 !
+> C.
+> xt mt (xt )
+> Linear regression Switching linear regression Nonlinear regression
+> B. A.
+
+Figure 1: Switching Linear Attention. (A) : When the input–output relationship varies with context, piecewise (”switching”) regression is more expressive than linear regression. (B) :SwiLA increases expressivity toward that of softmax attention while retaining, as in linear attention, a fixed-size recurrent state whose memory footprint is independent of sequence length. SwiLA’s state is a mixture of linear regressors. At each step, SwiLA selects which regressor to use based on the current input and previous state. (C) : Test R2 vs. state size for SwiLA and DeltaNet on a synthetic softmax attention regression task, with softmax attention for reference. Labels mark the best SwiLA configuration ( H=heads, J=mixtures). At every budget, SwiLA better approximates softmax attention. context-dependent retrieval patterns that softmax attention achieves through its nonlinear mapping. Softmax attention avoids both limitations by storing all KV pairs and retrieving via a nonlinear kernel smoother, but at the cost of a KV cache that grows with sequence length. SwiLA defines a piecewise linear map that can approximate arbitrary nonlinear functions (fig. 1A) by replacing the single linear regressor with a mixture of linear regressors 
+
+(fig. 1B). Thus, SwiLA addresses the retrieval limitation of linear attention while retaining a fixed-size recurrent state whose memory footprint is independent of sequence length. 
+
+## 3 Switching Linear Attention 
+
+We introduce Switching Linear Attention (SwiLA), a sequence layer based on mixtures of linear regressions. SwiLA retains the fixed-size recurrent state of linear attention, while improving its retrieval expressivity through a nonlinear mapping from query to output in eq. (2.2), as in softmax attention. SwiLA is a form of TTR with, • Regression model: mixture of linear regressors (Pearson, 1894; De Veaux, 1989) • Optimization algorithm: online expectation–maximization (EM) (Dempster et al., 1977; Capp´ e & Moulines, 2009). For the rest of the paper, we consider a sequence of keys kt, values vt, and queries qt in RD,projected from the inputs xt ∈ Rdin . Further technical details are given in Appendix B. 
+
+3.1 Regression Model: Mixture of Linear Regressors 
+
+Mixture modeling is a foundational approach for modeling functions that vary based on group membership (Bishop, 2006). Consider a dataset {(kt, vt)}Tt=1 consisting of key–value pairs with kt ∈ RD and vt ∈ RD, assumed to be generated from a mixture of J linear Gaussian regression models. To improve expressivity in high-dimensional settings, we allow group membership to vary across the output dimension d.Specifically, let ztd ∈ { 1, . . . , J} denote the group membership of data point t and output dimension d. Then, given a key kt, the value vtd is modeled as 
+
+p(ztd | kt) = Cat 
+
+
+
+ztd | πjd (kt)
+
+
+
+, p(vtd | ztd = j, kt) = N
+
+
+
+vtd | w⊤
+
+> jd
+
+kt, 1 
+
+
+
+. (3.1) Here, πjd (kt) denotes the prior probabilities of the mixture components. The regression weights, wjd ∈ RD, are specific to mixture component j and output dimension d. We denote 
+
+W ∈ RJ×D×D as the collection of all weights. Since each output dimension independently selects its own mixture component, the effective number of mixtures grows exponentially as JD, whereas the number of weights scales polynomially as JD 2.3Published as a conference paper at COLM 2026 Under the probabilistic model in eq. (3.1), the marginal log-likelihood for timestep t and output dimension d is 
+
+ℓtd = log p(vtd | kt) = log 
+
+> J
+
+# ∑
+
+> j=1
+
+πjd (kt) exp 
+
+
+
+− 12
+
+ vtd − w⊤
+
+> jd
+
+kt
+
+2
+
++ c. (3.2) Complete modeling details are given in Appendix B.2. 
+
+3.2 Optimization Algorithm: Online EM 
+
+The standard approach for fitting mixtures of linear regressors (3.1) is the EM algorithm. In the TTR setting, the weights W are estimated online: at each timestep t, the current estimates Wt−1 are updated as the new pair (kt, vt) arrives. Our choice of online EM as the optimizer is what gives rise to the SwiLA recurrence. It amounts to a one-step stochastic gradient update, where we ascend on the marginal log-likelihood (3.2) with respect to the ”fast-weights” W. In particular, the SwiLA recurrence for all mixture components j and output dimensions d is 
+
+wtjd = wt−1, jd + βtjd ∇wt−1, jd ℓtd 
+
+= wt−1, jd + βtjd rtjd δtjd kt. (3.3) Here, βtjd is a learning rate and δtjd B vtd − w⊤
+
+> t−1, jd
+
+kt is a prediction error, just as in the delta rule (Schlag et al., 2021; Yang et al., 2024b). The responsibilities 
+
+rtjd B πjd (kt) exp  − 12 δ2
+
+> tjd
+
+
+
+∑j′ πj′ d(kt) exp  − 12 δ2 
+
+> tj ′d
+
+ , (3.4) are the posterior probabilities that the d-th dimension of vt was generated by mixture component j. Once the state wtjd has been updated, the query qt then retrieves the output 
+
+otd according to the mixture of linear regressors, as 
+
+otd =
+
+> J
+
+# ∑
+
+> j=1
+
+πjd (qt) w⊤
+
+> tjd
+
+qt, (3.5) where πjd (qt) is also a learned projection from the input xt.In summary, we derive the SwiLA recursion (3.3) and retrieval (3.5) from the TTR framework by choosing our model as a mixture of linear regressors and our optimizer as online EM. We build on this probabilistic perspective in the next two sections: Section 3.3 adds temporal persistence to the prior over mixture assignments, and Section 3.4 derives input-dependent gating from Gaussian priors on the mixture weights. 
+
+3.3 Regression Model Extension: Temporal SwiLA 
+
+A natural benefit of SwiLA is that its mixture components can accommodate different ”contexts.” In many settings, context persists across consecutive inputs. For example, in an essay comparing the musician Harry Styles with the magician Harry Potter, the discussion of each person likely spans a full paragraph, and the value associated with ‘Harry’ should depend on that context. Mathematically, this persistence suggests that if input t has a high probability of belonging to mixture component j, then so should input t + 1. However, SwiLA as formulated in Section 3.1 does not have any persistence in the mixture assignments. The mixture assignment of each time step is memoryless, starting over with another draw from its prior π. To address this limitation, we extend SwiLA with a Markovian prior that introduces dependencies between ztd and zt+1, d.The standard probabilistic approach for such temporal persistence is a hidden Markov model (HMM), but such an approach would require marginalization and computation of normalizing constants at every time step. Instead, we use a computationally tractable approximation to HMM filtering. We maintain a running probability distribution over mixture components for each output dimension d, and at each time step, take a convex combination of this distribution with a new input-dependent distribution generated from the current input. With this extension, the mixture assignments in SwiLA can persist across consecutive time steps. See Appendix B.3 for full details on this temporal recurrence. 4Published as a conference paper at COLM 2026 
+
+3.4 Regression Model Extension: Gated SwiLA 
+
+Input-dependent state decay, or gating, has driven strong empirical gains in linear attention, as in GDN (Yang et al., 2025) and KDA (Team et al., 2025). We present two formulations of Gated SwiLA, which differ in whether the gate is applied after or before computing the responsibilities. See Appendix B.4 for full details. Under the TTR framework, state decay is equivalent to weight regularization of the fast weights (Wang et al., 2025). Accordingly, we place Gaussian priors on SwiLA’s mixture weights, wjd ∼ N (0, λ−1 
+
+> tjd
+
+I), which introduces a regularization term to eq. (3.2): 
+
+ℓtd = log 
+
+> J
+
+# ∑
+
+> j=1
+
+πjd (kt) exp 
+
+
+
+− 12
+
+ vtd − w⊤
+
+> jd
+
+kt
+
+2
+
+−
+
+> J
+
+# ∑ 
+
+> j=1
+> λtjd
+> 2
+
+∥wjd ∥22 + c. (3.6) A one-step stochastic gradient ascent on eq. (3.6) yields the recurrence 
+
+wtjd = αtjd wt−1, jd + βtjd rtjd δtjd kt, αtjd B 1 − βtjd λtjd , (3.7) where we parameterize αtjd ∈ [0, 1 ] as a learned, input-dependent gate that is applied after the responsibilities are computed. Alternatively, following the implementation of the recurrent form of GDN (Yang et al., 2025; Yang & Zhang, 2024), which applies the gate before computing the prediction error, we obtain the recurrence 
+
+wtjd = αtjd wt−1, jd + βtjd r− 
+
+> tjd
+
+δ− 
+
+> tjd
+
+kt, (3.8) where δ− 
+
+> tjd
+
+B vtd − αtjd w⊤
+
+> t−1, jd
+
+kt are the prediction errors at the decayed state and r− 
+
+> tjd
+
+are the responsibilities computed from these errors. The two formulations coincide for J = 1up to a reparameterization, but differ for J > 1. In practice, we use eq. (3.8) for Gated SwiLA. 
+
+3.5 Improving the Optimization Algorithm: Load Balancing 
+
+Without regularization, SwiLA is susceptible to expert collapse, where a few mixture components capture all responsibility mass, and the remaining experts go unused. We employ two complementary strategies to prevent this. First, we add an auxiliary loss that adapts load balancing loss (Shazeer et al., 2017; Fedus et al., 2022). We maximize the mutual information I(token; expert ) = Hmarg −Hcond be-tween tokens and expert assignments, where Hmarg is the entropy of the time-averaged responsibilities and Hcond is the mean per-token entropy. Maximizing Hmarg encourages balanced utilization across experts, while minimizing Hcond encourages per-token special-ization. The auxiliary loss is, 
+
+LMI = −λmarg Hmarg + λcond Hcond . (3.9) It is computed for both the key-side and query-side responsibilities and averaged. Second, following Shazeer et al. (2017), we inject learned input-dependent noise into the expert logits during training: ˜πjd (xt) = exp  θ⊤ 
+
+> jd
+
+xt + ϵtjd · softplus (θ⊤ 
+
+> noise, jd
+
+xt)
+
+∑j′ exp  θ⊤  
+
+> j′d
+
+xt + ϵtj ′ d · softplus (θ⊤  
+
+> noise, j′d
+
+xt) , ϵtjd ∼ N (0, 1 ). (3.10) Noise is injected into both the key-side and query-side expert logits, as well as into the gate logits in Temporal SwiLA (Section 3.3), each with its own learned projection. 
+
+## 4 Related Work 
+
+We discuss two closely related linear attention sequence layers to SwiLA: DeltaNet (Schlag et al., 2021; Yang et al., 2024b) and Mixture-of-Memories (MoM) (Du et al., 2026) / Sparse State Expansion (SSE) (Pan et al., 2026). The similarity of these sequence layers to SwiLA motivates our use of them as our linear attention baselines in Section 5. We include a more expansive discussion of related works in Appendix C. 5Published as a conference paper at COLM 2026 
+
+4.1 DeltaNet 
+
+DeltaNet (Schlag et al., 2021) is a sequence modeling architecture that uses the delta rule for its linear attention sequence mixer: its state Wt ∈ RD×D updates according to eq. (4.1), and then Wt provides a linear mapping from query to output, as shown in eq. (4.2): 
+
+Wt = Wt−1 + βt (vt − Wt−1kt) k⊤ 
+
+> t
+
+(4.1) 
+
+ot = Wtqt (4.2) On the one hand, there are clear differences between SwiLA and DeltaNet. The SwiLA recurrence (3.3) is nonlinear while the delta rule (4.1) is linear in its fast-weights Wt−1.Furthermore, for retrieval, DeltaNet provides a single linear mapping from query to output (4.2), while SwiLA switches adaptively between mixtures of linear regressors (3.5). In TTR, DeltaNet and SwiLA correspond to different function classes for the regressor. On the other hand, in TTR, DeltaNet and SwiLA both use SGD as the optimizer. The delta rule optimizes ∥vt − Wtkt∥2, while SwiLA maximizes the marginal log-likelihood (3.2). This similarity is why the prediction error appears in both recurrences. Moreover, it means that DeltaNet’s chunkwise parallel algorithm (Yang et al., 2024b) could be applied within each Newton iteration to parallelize SwiLA across the sequence length (Appendix D). 
+
+Chunkwise parallel algorithm SwiLA’s nonlinear recurrence in its fast weights Wt can theoretically be parallelized using parallel Newton iterations (Lim et al., 2024; Gonzalez et al., 2024; Gonzalez, 2026; Danieli et al., 2026). Parallel Newton iterations work by iteratively linearizing the recurrence, and then using parallel compute to evaluate the linearized system, and they are guaranteed to converge (Gonzalez, 2026). Previous implementations of these iterations relied on parallel associative scans (Blelloch, 1990), which incur a prohibitive 
+
+O(TD 2) memory cost by materializing all hidden states (Yang, 2024). To overcome this, we observe that each Newton iteration applied to SwiLA shares the same rank-one update structure as the delta rule recurrence, enabling a novel chunkwise parallel Newton algorithm 
+
+that avoids the parallel scan’s memory bottleneck. Although our current experiments rely on a fast recurrent (sequential) Triton kernel for SwiLA, the systems-level optimization of this chunkwise parallel approach presents an interesting direction for future work. We discuss parallelization further in Appendix D. 
+
+4.2 Mixture-of-Memories 
+
+The most similar method to SwiLA is the Mixture-of-Memories (MoM) layer introduced by Du et al. (2026). MoM also splits the hidden state into J different memory states, and uses a learnable router to select which memories to activate based on the input. The Sparse State Expansion (SSE) layer of Pan et al. (2026) also uses a mixture of memories, albeit with sparse updates. Since the routers of these layers do not depend on the previous state, their recurrences are linear in their hidden states Wt. In contrast, we derive our SwiLA update from the TTR framework. Consequently, our “router” is based on the posterior responsibilities, which are functions not only of the input but also the prior state, rendering our recurrence 
+
+nonlinear in Wt. Increasingly, theoretical (Siems et al., 2026; Merrill et al., 2026) and empirical (Farsang & Grosu, 2025; Zattra et al., 2025; Mishra et al., 2026) results demonstrate that nonlinear recurrences have superior expressivity to linear recurrences. 
+
+## 5 Experimental Results 
+
+We evaluate SwiLA in three settings. Section 5.1 highlights SwiLA’s ability to approximate the input–output mapping of a single softmax attention head. Section 5.2 evaluates SwiLA on two synthetic benchmarks: context-dependent associative recall and in-context language learning. Section 5.3 scales to language models pretrained on FineWeb-Edu, with down-stream evaluation on commonsense reasoning and recall-intensive tasks. Complementing these evaluations, Section 5.4 profiles training and inference efficiency, and Section 5.5 ablates SwiLA’s key design choices. For our language modeling evaluation, we compare SwiLA against a suite of ungated and gated baselines: DeltaNet (Schlag et al., 2021; Yang et al., 2024b), Gated DeltaNet (GDN) (Yang et al., 2025), KDA (Team et al., 2025), and MoM (Du et al., 2026) with DeltaNet-style 6Published as a conference paper at COLM 2026 (DN-MoM) and GDN-style (GDN-MoM) updates, as well as Transformer++ (Touvron et al., 2023) and FoX (Lin et al., 2025) for softmax attention variants. We further compare Hybrid GDN and Hybrid Temporal SwiLA, which interleave three recurrent layers with one softmax attention layer following Team et al. (2025). The recurrent state size is matched across all recurrent models in every experiment. See Appendix E for full experimental details. 
+
+5.1 Approximating Softmax Attention 
+
+We test whether SwiLA can better approximate the input–output mapping of a single softmax attention head than DeltaNet, given the same recurrent state size. 
+
+Setup. We construct a synthetic regression task in which the target function is causal softmax attention. In this experiment, we set D = 32. Inputs xt ∈ RD are drawn from 32 randomly sampled clusters in RD. Using fixed, randomly sampled projection matrices 
+
+θQ, θK, θV , we compute queries qt = θQ xt, keys kt = θK xt, and values vt = θV xt. The regres-sion targets are the outputs of causal softmax attention with temperature τ = √D/2: 
+
+ot =
+
+> t
+
+# ∑
+
+> i=1
+
+exp ( q⊤ 
+
+> t
+
+ki/τ)
+
+∑tj=1 exp (q⊤ 
+
+> t
+
+kj/τ) vi. (5.1) We generate 65,536 training sequences of length 512 and report test R2 on a held-out set of 2,048 sequences. We compare DeltaNet and SwiLA at matched state budgets B = H × J,where H is the number of heads and J the number of mixtures per head ( J = 1 recovers DeltaNet). All configurations use a fixed head dimension of D = 32, giving a total recurrent state size of B × D2. For different factorizations (H, J), we expand the key and value dimensions to keep D fixed, ensuring that both models maintain the same total recurrent state size. For each budget B ∈ { 1, 2, 4, 8, 16, 32 }, we sweep all factorizations (H, J) with 
+
+H × J = B and J ≤ 16 for SwiLA, and set H = B, J = 1 for DeltaNet. For a given state budget, many additional configurations become available if the head dimension D is also allowed to vary. For instance, a budget of H × J × D2 = 4 × 1 × 32 2 = 4,096 can equivalently be realized by H = 4 heads with J = 4 mixtures and keys and values projected down to dimension d = 16, since 4 × 4 × 16 2 = 4,096. We fix D = 32 for this experiment. 
+
+Results. Figure 1C plots test R2 against recurrent state size. At every state budget, the best SwiLA configuration achieves a higher R2 than DeltaNet. At B=2, the one-head SwiLA (H1J2 ) outperforms the two-head DeltaNet ( H2 ) by a clear margin, and this advantage persists as the budget increases. This indicates that allocating budget to mixtures within a head, rather than to independent heads, better approximates softmax attention. As the budget grows, the best SwiLA configurations tend to balance heads and mixtures (e.g., H2J2 at B=4) rather than concentrating all budget in either dimension. Both forms of capacity—parallel heads and per-head mixtures—play complementary roles. In Figure S1, we plot all SwiLA configurations at each budget, where the right panel shows the number of model parameters on the x-axis. Overall, these results confirm that SwiLA provides a more expressive function class for approximating softmax attention than the independent-head decomposition used by DeltaNet. 
+
+5.2 Synthetic Benchmarks 
+
+We evaluate SwiLA on two synthetic benchmarks: context-dependent associative recall and in-context language learning benchmarks. 
+
+Context-Dependent Associative Recall (CDAR). Adapted from the associative recall task of Arora et al. (2024a), we design a variant that tests whether a model can maintain multiple separate associative memories and persist context information to select the correct one at retrieval time. In CDAR, the same key maps to different values depending on a context token. Recurrent models must therefore contend with interference across contexts and retain which context is active when answering queries. Crucially, since the context token appears only once at the start of each block and the query region is separated from the context blocks, the task requires temporal persistence of context awareness that cannot be resolved by the 7Published as a conference paper at COLM 2026 210 212 214 216 217 218 219 220 221 222 211 213 215 
+
+> Recurrent State Size
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Test Accuracy
+> Attention L=2 DeltaNet L=1 DN-MoM L=1 SwiLA L=1 Temporal SwiLA L=1
+
+(A) Context-Dependent Associative Recall 1,000 3,000 5,000 10,000 20,000  
+
+> Pre-Training Examples
+> 0.5 0.6 0.7 0.8 0.9 1.0
+> Test Accuracy
+> Attention DeltaNet DN-MoM SwiLA Temporal SwiLA
+
+(B) RegBench 
+
+Figure 2: Synthetic Benchmarks . (A) Context-Dependent Associative Recall with 4 contexts and 32 key-value pairs per context: test accuracy vs. state size. (B) RegBench: test accuracy as a function of training set size. short convolutions commonly prepended to recurrent layers. Each example contains C
+
+context blocks followed by a query region. A context block begins with a context token ci
+
+and lists key-value pairs under that context. In the query region, each context’s queries are grouped contiguously: the context token appears once, followed by keys whose values the model must predict. For instance, with C = 2 contexts and 3 key-value pairs each: 
+
+c1, k2, v1,2 , k1, v1,1 , k3, v1,3 | c2, k3, v2,3 , k2, v2,2 , k1, v2,1 
+
+| {z }
+
+> context blocks
+
+| c2, k3, ?, k1, ?, k2, ? | c1, k2, ?, k3, ?, k1, ? 
+
+| {z }
+
+> queries
+
+The key set is shared across all contexts, but each (context, key) pair maps to a distinct value. The model must use the context token to determine which mapping is active and carry that information forward to the answer positions. Loss is computed only at answer positions. We use C = 4 contexts with 32 key-value pairs each (128 total associations), vocabulary size 8,192, and sequence length 1,024. Figure 2A shows the best test accuracy across learning rates and random seeds. Temporal SwiLA with a single head with dimension 
+
+D = 32 and 4 mixtures (recurrent state size of 2 12 ) is the smallest configuration that achieves near-perfect accuracy, suggesting that the mixtures with temporal priors are crucial. All other recurrent models (nearly) solve the task with one layer as the state size increases, while the Transformer requires two, consistent with recent findings that single-layer Transformers cannot perform associative recall beyond chance (Okpekpe & Orvieto, 2025). 
+
+RegBench: In-Context Language Learning. RegBench (Aky ¨ urek et al., 2024) tests how efficiently different architectures learn to perform in-context language learning using proba-bilistic finite automata (PFAs), where they found that Transformers outperformed recurrent models. Each input packs 10–20 example strings from a randomly generated PFA (4-12 states, alphabet size 4-18) into a single sequence, and the model must learn the PFA’s next-token distribution in-context via next-token prediction. We compare five 8-layer models: SwiLA and Temporal SwiLA, DN-MoM, DeltaNet, and a Transformer. We report accuracy on a held-out test set of 500 PFAs using the best checkpoint by validation loss. As shown in Figure 2B, Temporal SwiLA and DN-MoM exhibit strong sample efficiency, outperforming the Transformer in the low-data regime (1,000 training PFAs), while the Transformer’s accuracy improves steeply with more data and ultimately reaches the highest accuracy. All models achieve similar performance at scale, with DeltaNet slightly trailing. 
+
+5.3 Pretraining Language Models 
+
+We evaluate SwiLA on a realistic language modeling pipeline. All models have 374M parameters, share the same architecture skeleton (24 layers and 1024 hidden size), and are trained on 15B tokens from FineWeb-Edu (Penedo et al., 2024). SwiLA and its variants show strong results across all tasks, narrowing the gap to Transformer++ and even surpassing it on several benchmarks. 8Published as a conference paper at COLM 2026 
+
+Table 1: Commonsense Reasoning . Best result per task in bold , second best underlined.                                                                                                                                                              
+
+> Perplexity (↓)Accuracy (↑, %)
+> Model (374M) Wiki. LMB. LMB. PIQA Hella. Wino. ARC-E ARC-C SIQA BoolQ Avg. Transformer++ 28.2 37.4 33.5 66.0 32.4 52.6 56.0 24.1 38.4 59.1 45.3
+> FoX 28.7 50.3 30.8 65.2 32.2 52.5 57.2 23.2 37.9 58.0 44.6 DeltaNet 29.8 46.3 27.9 63.9 31.9 51.6 55.6 21.8 38.3 58.3 43.7 Gated DeltaNet 27.7 35.7 32.0 66.0 33.3 51.8 57.5 24.6 39.0 55.8 45.0 KDA 23.4 26.8 36.4 67.0 34.9 51.5 60.7 27.3 38.9 56.2 46.6
+> DN-MoM 40.0 84.5 24.1 62.6 30.4 49.2 52.2 22.8 36.6 62.0 42.5 GDN-MoM 35.3 56.9 27.5 64.6 31.6 50.2 54.2 23.6 37.2 53.3 42.8 SwiLA 28.8 43.0 30.4 66.6 32.0 51.5 56.1 22.8 38.1 60.1 44.7 Gated SwiLA 27.8 31.8 34.6 66.1 32.7 50.4 57.5 25.0 38.1 59.1 45.4 Temporal SwiLA 28.6 39.4 31.5 66.5 31.7 51.1 57.2 23.2 38.8 61.5 45.2 Gated Temporal SwiLA 27.8 31.7 34.5 65.8 32.9 51.8 56.5 24.5 38.5 58.4 45.4 Hybrid GDN 31.6 56.3 28.5 64.8 32.2 50.7 54.6 23.1 39.0 61.4 44.3 Hybrid Temporal SwiLA 27.8 40.0 32.4 66.1 32.6 50.2 57.2 23.3 37.7 61.1 45.1
+
+Commonsense Reasoning. Following Gu & Dao (2024), we evaluate our model on a suite of commonsense reasoning tasks: Wikitext (Merity et al., 2016), LAMBADA (Paperno et al., 2016), PIQA (Bisk et al., 2020), HellaSwag (Zellers et al., 2019), WinoGrande (Sakaguchi et al., 2019), ARC-easy and ARC-challenge (Clark et al., 2018), SIQA (Sap et al., 2019), and BoolQ (Clark et al., 2019). Among the linear attention layers, KDA achieves the strongest commonsense results. Every SwiLA variant attains higher average accuracy than DeltaNet, DN-MoM and GDN-MoM, and the Gated SwiLA variants additionally exceed GDN, slightly surpassing Transformer++ on average and outperforming it on several individual benchmarks. 
+
+Recall-Intensive Tasks. To measure the ability to perform context-based retrieval and comprehension, we evaluate on six recall-intensive tasks following Arora et al. (2024c): SWDE (Lockard et al., 2019; Arora et al., 2023), FDA (Arora et al., 2023), SQuAD (Rajpurkar et al., 2018), TriviaQA (Joshi et al., 2017), NQ (Kwiatkowski et al., 2019), and DROP (Dua et al., 2019). Table 2 shows that the softmax attention models achieve the highest scores, with FoX attaining the best average, benefiting from their full KV caches that grow linearly with context length. Every SwiLA variant outperforms DeltaNet and both MoM variants on all six recall benchmarks, and Gated SwiLA variants achieve the highest averages among all recurrent models, including KDA. Among the hybrid models, Hybrid Temporal SwiLA surpasses both Hybrid GDN and Transformer++, approaching the recall performance of FoX. These gains confirm that SwiLA’s mixture structure meaningfully improves associative recall compared to a single linear regressor, narrowing the gap to softmax attention while retaining a fixed-size recurrent state. 
+
+5.4 Throughput Comparison 
+
+We profile the training and inference throughput and peak memory of six 1.3B-parameter models, a scale widely adopted for such analyses (Gu & Dao, 2023; Yang et al., 2025): Transformer, GDN, Hybrid GDN, SwiLA, Temporal SwiLA, and Hybrid Temporal SwiLA. For the hybrid models, we follow the 3:1 layer ratio of Team et al. (2025), interleaving three recurrent layers with one Transformer layer. See Appendix E.4 for details. Overall, SwiLA achieves 4–5 × higher end-to-end inference throughput than the Transformer baseline, as it does not require a KV cache and can therefore accommodate substantially larger batch sizes. Relative to GDN, SwiLA is approximately 2 × slower at training time and 1.25–1.5 × slower at inference time, and it has a larger memory footprint. We expect that part, though not all, of this gap can be narrowed through further engineering, such as custom CUDA kernels or the parallelization of the recurrence discussed in Appendix D. 
+
+5.5 Ablation Study 
+
+We conduct ablation experiments that isolate the contribution of the number of experts, temporal persistence, and the load-balancing loss. We train 115M-parameter SwiLA variants on 5B tokens and report test perplexity on 100M held-out tokens in Figure S5, alongside routing diagnostics defined in Appendix E.5. We highlight three findings. First, temporal 9Published as a conference paper at COLM 2026 
+
+Table 2: Recall-Intensive Tasks . All scores use the contains metric (%, ↑). Best in bold , second best underlined. All inputs are truncated to 2K tokens.                                                                                                   
+
+> Model SWDE FDA SQuAD TriviaQA NQ DROP Avg. Transformer++ 28.4 29.5 31.5 46.0 15.6 18.9 28.3 FoX 36.4 53.0 30.6 46.4 15.6 20.2 33.7
+> DeltaNet 7.9 5.4 23.4 41.7 10.5 14.9 17.3 Gated DeltaNet 9.1 5.5 25.2 44.4 12.9 18.0 19.2 KDA 13.9 5.5 25.5 46.8 12.5 17.6 20.3 DN-MoM 5.4 2.1 21.2 37.0 9.1 14.8 14.9 GDN-MoM 8.3 3.8 18.4 41.7 10.0 16.3 16.4 SwiLA 12.9 8.0 24.7 42.5 12.9 17.6 19.7 Gated SwiLA 10.2 10.1 26.3 45.2 13.6 17.5 20.5 Temporal SwiLA 13.6 11.6 23.8 42.8 13.3 17.2 20.3 Gated Temporal SwiLA 12.0 7.5 26.0 44.9 13.8 19.2 20.6
+> Hybrid GDN 25.0 38.2 34.9 43.7 16.0 19.1 29.5 Hybrid Temporal SwiLA 32.3 49.1 30.0 45.8 14.9 18.9 31.8
+
+persistence consistently improves perplexity over vanilla SwiLA. Second, load balancing loss is critical for vanilla SwiLA, which otherwise suffers severe expert collapse, but has a negligible effect on Temporal SwiLA; temporal persistence itself appears to act as a natural regularizer against collapse. Third, under a fixed recurrent state size budget, more experts do not necessarily help: increasing the number of experts from 4 to 16 slightly degrades performance, since each expert must then use smaller query, key, and value projections, creating a tradeoff between expert count and per-expert projection capacity. 
+
+## 6 Conclusion 
+
+We introduce Switching Linear Attention (SwiLA), a sequence layer that retains a recurrent state whose size is independent of sequence length as in linear attention, while representing a nonlinear map from queries to outputs as in softmax attention. Building on the test-time regression (TTR) framework (Wang et al., 2025), which unifies the design of sequence layers around associative recall, we derive SwiLA from a mixture of linear regressions via online expectation–maximization. Across associative recall, in-context language learning, and language modeling benchmarks, SwiLA performs strongly and narrows the gap to softmax attention, even surpassing it in several settings. 
+
+Limitations While SwiLA increases the expressivity of standard linear attention, it retains a fixed state size. As a result, its capacity cannot grow with the context length, unlike the KV cache of softmax attention 1. Moreover, as SwiLA uses a nonlinear recurrence, we currently pretrain SwiLA with sequential evaluation across the sequence length, whereas both softmax and linear attention mechanisms are designed to allow for training that is parallelized across the sequence length. While we can parallelize the nonlinear recurrence of SwiLA using multiple Newton iterations, further optimizations are required to design custom kernels that yield speed-ups over optimized kernels for sequential evaluation. 
+
+Future Outlook SwiLA demonstrates the promise of TTR: we can design sequence layers with desired in-context learning properties by choosing appropriate regression models and update algorithms. We anticipate TTR to open up a range of possibilities between the efficiency of linear attention and the expressivity of softmax attention. For example, while SwiLA shows the promise of mixture modeling as occupying a useful middle ground between these two extremes, other function classes such as local linear regression (Zuo et al., 2026) may prove useful in fully exploring this space. Moreover, SwiLA’s enhanced ability to approximate softmax attention (Figure 1C) while retaining a fixed-state size appears promising for distillation—converting pretrained softmax layers into recurrent layers for efficient inference (Bick et al., 2024; Wang et al., 2024; Zhang et al., 2024a). 
+
+> 1Though even softmax attention struggles with attention rot in long contexts (Hsieh et al., 2024).
+
+10 Published as a conference paper at COLM 2026 
+
+## Acknowledgments 
+
+H.D.L. is supported by the Ketterer-Vorwald Stanford Interdisciplinary Graduate Fellowship. N.Z. is supported by Postdoc.Mobility grant P500-2 235376 from the Swiss National Science Foundation. E.B.F. is supported in part by ONR Grant N00014-22-1-2110 and the Stanford Institute for Human-Centered Artificial Intelligence (HAI), and is a Biohub, San Francisco, Investigator. S.W.L. is supported by grants from the NIH (U01NS136507, R01NS131987, R01NS113119, RF1MH133778, R01AG097491, R01NS130789), the NSF (2440859), and the Simons and McKnight Foundations. We thank the members of the Linderman Lab and the Dynamode Lab for feedback throughout this project. We are also grateful for GPU support from the Stanford Research Computing Center’s Sherlock cluster, from VESSL AI, and from Marlowe (Kapfer et al., 2025), Stanford University’s GPU-based Computational Instrument, supported by Stanford HAI and Stanford Research Computing. 11 Published as a conference paper at COLM 2026 
+
+## References 
+
+Ekin Aky ¨ urek, Dale Schuurmans, Jacob Andreas, Tengyu Ma, and Denny Zhou. What learn-ing algorithm is in-context learning? Investigations with linear models. In International Conference on Learning Representations (ICLR) , 2023. Ekin Aky ¨ urek, Bailin Wang, Yoon Kim, and Jacob Andreas. In-context language learning: Architectures and algorithms. arXiv preprint arXiv:2401.12973 , 2024. Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Mensch, Katherine Millican, Malcolm Reynolds, et al. Flamingo: A visual language model for few-shot learning. In Advances in Neural Information Processing Systems , volume 35, pp. 23716–23736, 2022. Simran Arora, Brandon Yang, Sabri Eyuboglu, Avanika Narayan, Andrew Hojel, Immanuel Trummer, and Christopher R´ e. Language models enable simple systems for generating structured views of heterogeneous data lakes. arXiv preprint arXiv:2304.09433 , 2023. Simran Arora, Sabri Eyuboglu, Aman Timber, Isys Johnson, Michael Poli, James Zou, Atri Rudra, and Christopher R´ e. Zoology: Measuring and improving recall in efficient language models. In International Conference on Learning Representations , 2024a. Simran Arora, Sabri Eyuboglu, Michael Zhang, Aman Timber, Silas Alberti, Dylan Zinber, James Zou, Christopher Re, and Christopher R´ e. Simple linear attention language models balance the recall-throughput tradeoff. In International Conference on Machine Learning .PMLR, 2024b. Simran Arora, Aman Timalsina, Aaryan Singhal, Benjamin Spector, Sabri Eyuboglu, Xinyi Zhao, Ashish Rao, Atri Rudra, and Christopher R´ e. Just read twice: Closing the recall gap for recurrent language models. arXiv preprint arXiv:2407.05483 , 2024c. Maximilian Beck, Korbinian P ¨ oppel, Phillip Lippe, and Sepp Hochreiter. Tiled flash linear attention: More efficient linear rnn and xLSTM kernels. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. Ali Behrouz, Peilin Zhong, and Vahab Mirrokni. Titans: Learning to memorize at test time. 
+
+arXiv preprint arXiv:2501.00663 , 2024. Alfredo Bellen and Marino Zennaro. Parallel algorithms for initial-value problems for difference and differential equations. Journal of Computational and Applied Mathematics , 25 (3):341–350, 1989. Aviv Bick, Kevin Li, Eric Xing, J Zico Kolter, and Albert Gu. Transformers to SSMs: Distilling quadratic knowledge to subquadratic models. In Neural Information Processing Systems (NeurIPS) , 2024. Christopher M Bishop. Pattern recognition and machine learning . Springer, 2006. Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. Piqa: Reasoning about physical commonsense in natural language. In Thirty-Fourth AAAI Conference on Artificial Intelligence , 2020. Guy E. Blelloch. Prefix Sums and Their Applications. Technical Report CMU-CS-90-190, Carnegie Mellon University, School of Computer Science, 1990. Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. In Advances in Neural Information Processing Systems , volume 33, pp. 1877–1901, 2020. Olivier Capp´ e and Eric Moulines. On-line expectation–maximization algorithm for latent data models. Journal of the Royal Statistical Society Series B: Statistical Methodology , 71(3): 593–613, 2009. Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. BoolQ: Exploring the surprising difficulty of natural yes/no 12 Published as a conference paper at COLM 2026 questions. In Proceedings of the 2019 conference of the north American chapter of the association for computational linguistics: Human language technologies, volume 1 (long and short papers) ,pp. 2924–2936, 2019. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? Try ARC, the AI2 reasoning challenge. ArXiv , abs/1803.05457, 2018. Federico Danieli, Miguel Sarabia, Xavier Suau, Pau Rodr´ ıguez, and Luca Zappella. Deep-PCR: Parallelizing Sequential Operations in Neural Networks. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Federico Danieli, Pau Rodriguez, Miguel Sarabia, Xavier Suau, and Luca Zappella. ParaRNN: Unlocking parallel training of nonlinear rnns for large language models. In 
+
+International Conference on Learning Representations (ICLR) , 2026. Tri Dao and Albert Gu. Transformers are SSMs: Generalized models and efficient algorithms through structured state space duality. In International Conference on Machine Learning (ICML) , 2024. Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R´ e. FlashAttention: Fast and memory-efficient exact attention with IO-awareness. In Advances in neural information processing systems , 2022. Richard D De Veaux. Mixtures of linear regressions. Computational Statistics & Data Analysis ,8(3):227–245, 1989. Arthur P Dempster, Nan M Laird, and Donald B Rubin. Maximum likelihood from incom-plete data via the EM algorithm. Journal of the royal statistical society: series B (methodological) ,39(1):1–22, 1977. Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al. An image is worth 16x16 words: Transformers for image recognition at scale. In International Conference on Learning Representations , 2021. Jusen Du, Weigao Sun, Disen Lan, Jiaxi Hu, and Yu Cheng. Mom: Linear sequence modeling with mixture-of-memories. In International Conference on Learning Representations (ICLR) ,2026. Dheeru Dua, Yizhong Wang, Pradeep Dasigi, Gabriel Stanovsky, Sameer Singh, and Matt Gardner. Drop: A reading comprehension benchmark requiring discrete reasoning over paragraphs. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers) , pp. 2368–2378, 2019. M ´ onika Farsang and Radu Grosu. Scaling up liquid-resistance liquid-capacitance networks for efficient sequence modeling. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research ,23(120):1–39, 2022. Chelsea Finn, Pieter Abbeel, and Sergey Levine. Model-agnostic meta-learning for fast adaptation of deep networks. In International Conference on Machine Learning (ICML) , 2017. Shivam Garg, Dimitris Tsipras, Percy S Liang, and Gregory Valiant. What can transformers learn in-context? A case study of simple function classes. In Neural Information Processing Systems (NeurIPS) , 2022. Carles Gelada, Jacob Buckman, Sean Zhang, and Txus Bach. Scaling context requires rethinking attention. arXiv preprint arXiv:2507.04239 , 2025. 13 Published as a conference paper at COLM 2026 Xavier Gonzalez. Unifying Optimization and Dynamics to Parallelize Sequential Computation: A Guide to Parallel Newton Methods for Breaking Sequential Bottlenecks . PhD thesis, Stanford University, 2026. URL https://purl.stanford.edu/vf943fc9855 .Xavier Gonzalez, Andrew Warrington, Jimmy T Smith, and Scott W Linderman. Towards scalable and stable parallelization of nonlinear RNNs. Advances in Neural Information Processing Systems , 37:5817–5849, 2024. Xavier Gonzalez, E Kelly Buchanan, Hyun Dong Lee, Jerry Weihong Liu, Ke Alexander Wang, David M Zoltowski, Christopher R´ e, and Scott W Linderman. A unifying frame-work for parallelizing sequential models with linear dynamical systems. arXiv preprint arXiv:2509.21716 , 2025. Albert Gu. On the tradeoffs of state space models and transformers, 2025. URL https: //goombalab.github.io/blog/2025/tradeoffs/ .Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. 
+
+arXiv preprint arXiv:2312.00752 , 2023. Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. In Conference on Language Modeling (COLM) , 2024. Han Guo, Songlin Yang, Tarushii Goel, Eric P Xing, Tri Dao, and Yoon Kim. Log-linear attention. In International Conference on Learning Representations (ICLR) , 2026. David Ha, Andrew Dai, and Quoc V Le. Hypernetworks. In International Conference on Learning Representations (ICLR) , 2017. Dongchen Han, Yifan Pu, Zhuofan Xia, Yizeng Han, Xuran Pan, Xiu Li, Jiwen Lu, Shiji Song, and Gao Huang. Bridging the divide: Reconsidering softmax and linear attention. 
+
+Advances in Neural Information Processing Systems , 37:79221–79245, 2024a. Dongchen Han, Tianzhu Ye, Yizeng Han, Zhuofan Xia, Siyuan Pan, Pengfei Wan, Shiji Song, and Gao Huang. Agent attention: On the integration of softmax and linear attention. In 
+
+European conference on computer vision , pp. 124–140. Springer, 2024b. Geoffrey E Hinton and David C Plaut. Using fast weights to deblur old memories. In 
+
+Proceedings of the ninth annual conference of the Cognitive Science Society , pp. 177–186, 1987. Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. Ruler: What’s the real context size of your long-context language models? In Conference on Language Modeling (COLM) , 2024. Kazuki Irie and Samuel J Gershman. Fast weight programming and linear transformers: From machine learning to neurobiology. Transactions on Machine Learning Research (TMLR) ,2025. Kazuki Irie, Imanol Schlag, R ´ obert Csord´ as, and J ¨ urgen Schmidhuber. Going beyond linear transformers with recurrent fast weight programmers. In Neural Information Processing Systems (NeurIPS) , 2021. Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. TriviaQA: A large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pp. 1601–1611, 2017. Craig Kapfer, Kurt Stine, Balasubramanian Narasimhan, Christopher Mentzel, and Em-manuel Cand` es. Marlowe: Stanford’s gpu-based computational instrument, 2025. URL 
+
+https://doi.org/10.5281/zenodo.14751899 .Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and Franc ¸ois Fleuret. Transform-ers are RNNs: Fast autoregressive transformers with linear attention. In International Conference on Machine Learning , pp. 5156–5165. PMLR, 2020. Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, et al. Natural 14 Published as a conference paper at COLM 2026 questions: A benchmark for question answering research. Transactions of the Association for Computational Linguistics , 7:453–466, 2019. Yi Heng Lim, Qi Zhu, Joshua Selfridge, and Muhammad Firmansyah Kasim. Parallelizing non-linear sequential models over the sequence length. In International Conference on Learning Representations , 2024. Zhixuan Lin, Evgenii Nikishin, Xu He, and Aaron Courville. Forgetting transformer: Softmax attention with a forget gate. In International Conference on Learning Representations ,volume 2025, pp. 69704–69738, 2025. Bo Liu, Rui Wang, Lemeng Wu, Yihao Feng, Peter Stone, and Qiang Liu. Longhorn: State space models are amortized online learners. arXiv preprint arXiv:2407.14207 , 2024. Colin Lockard, Prashant Shiralkar, and Xin Luna Dong. Openceres: When open information extraction meets the semi-structured web. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers) , pp. 3047–3056, 2019. Eric Martin and Chris Cundy. Parallelizing linear recurrent neural nets over sequence length. In International Conference on Learning Representations (ICLR) , 2018. Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models, 2016. William Merrill, Hongjian Jiang, Yanhong Li, and Ashish Sabharwal. Why are linear RNNs more parallelizable? arXiv preprint arXiv:2603.03612 , 2026. Mayank Mishra, Shawn Tan, Ion Stoica, Joseph Gonzalez, and Tri Dao. M 2 RNN: Non-Linear RNNs with Matrix-Valued States for Scalable Language Modeling. arXiv preprint arXiv:2603.14360 , 2026. Destiny Okpekpe and Antonio Orvieto. Revisiting associative recall in modern recurrent models. arXiv preprint arXiv:2508.19029 , 2025. Yuqi Pan, Yongqi An, Zheng Li, Yuhong Chou, Ruijie Zhu, Xiaohui Wang, Mingxuan Wang, Jinqiao Wang, and Guoqi Li. Scaling linear attention with sparse state expansion. In 
+
+International Conference on Learning Representations (ICLR) , 2026. Denis Paperno, Germ´ an Kruszewski, Angeliki Lazaridou, Ngoc-Quan Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fern´ andez. The LAMBADA dataset: Word prediction requiring a broad discourse context. In Proceedings of the 54th annual meeting of the association for computational linguistics (volume 1: Long papers) , pp. 1525–1534, 2016. Karl Pearson. Contributions to the mathematical theory of evolution. Proceedings of the Royal Society of London , 54(326-330):329–333, 1894. Guilherme Penedo, Hynek Kydl´ ıˇ cek, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, Thomas Wolf, et al. The FineWeb datasets: Decanting the web for the finest text data at scale. Advances in Neural Information Processing Systems , 37:30811–30849, 2024. Liangzu Peng, Aditya Chattopadhyay, Luca Zancato, Elvis Nunez, Wei Xia, and Stefano Soatto. Gated kalmanet: A fading memory layer through test-time ridge regression. arXiv preprint arXiv:2511.21016 , 2025. Korbinian P ¨ oppel, Maximilian Beck, and Sepp Hochreiter. FlashRNN: I/O-aware optimiza-tion of traditional RNNs on modern hardware. In International Conference on Learning Representations (ICLR) , 2025. Pranav Rajpurkar, Robin Jia, and Percy Liang. Know what you don’t know: Unanswer-able questions for squad. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers) , pp. 784–789, 2018. 15 Published as a conference paper at COLM 2026 Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adversarial Winograd schema challenge at scale. arXiv preprint arXiv:1907.10641 , 2019. Maarten Sap, Hannah Rashkin, Derek Chen, Ronan Le Bras, and Yejin Choi. Social IQa: Commonsense reasoning about social interactions. In Proceedings of the 2019 conference on empirical methods in natural language processing and the 9th international joint conference on natural language processing (EMNLP-IJCNLP) , pp. 4463–4473, 2019. Imanol Schlag, Kazuki Irie, and J ¨ urgen Schmidhuber. Linear transformers are secretly fast weight programmers. In International Conference on Machine Learning (ICML) , 2021. J ¨ urgen Schmidhuber. Learning to control fast-weight memories: An alternative to dynamic recurrent networks. Neural Computation , 4(1):131–139, 1992. Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 , 2017. Andy Shih, Suneel Belkhale, Stefano Ermon, Dorsa Sadigh, and Nima Anari. Parallel sam-pling of diffusion models. In Advances in Neural Information Processing Systems (NeurIPS) ,2023. Julien Siems, Riccardo Grazzi, Kirill Kalinin, Hitesh Ballani, and Babak Rahmani. Learning state-tracking from code using linear RNNs. arXiv preprint arXiv:2602.14814 , 2026. Jimmy T.H. Smith, Andrew Warrington, and Scott W. Linderman. Simplified state space layers for sequence modeling. In International Conference on Learning Representations (ICLR) ,2023. Yang Song, Chenlin Meng, Renjie Liao, and Stefano Ermon. Accelerating feedforward computation via parallel nonlinear equation solving. In International Conference on Machine Learning (ICML) , 2021. Yu Sun, Xinhao Li, Karan Dalal, Jiarui Xu, Arjun Vikram, Genghan Zhang, Yann Dubois, Xinlei Chen, Xiaolong Wang, Sanmi Koyejo, Tatsunori Hashimoto, and Carlos Guestrin. Learning to (learn at test time): RNNs with expressive hidden states. In International Conference on Machine LEarning (ICML) , 2025. Arnuv Tandon, Karan Dalal, Xinhao Li, Daniel Koceja, Marcel Rød, Sam Buchanan, Xiaolong Wang, Jure Leskovec, Sanmi Koyejo, Tatsunori Hashimoto, Carlos Guestrin, Jed McCaleb, Yejin Choi, and Yu Sun. End-to-end test-time training for long context. arXiv preprint arXiv:2512.23675 , 2025. Zhiwei Tang, Jiasheng Tang, Hao Luo, Fan Wang, and Tsung-Hui Chang. Accelerating parallel sampling of diffusion models. In International Conference on Machine Learning (ICML) , 2024. Kimi Team, Yu Zhang, Zongyu Lin, Xingcheng Yao, Jiaxi Hu, Fanqing Meng, Chengyin Liu, Xin Men, Songlin Yang, Zhiyuan Li, et al. Kimi linear: An expressive, efficient attention architecture. arXiv preprint arXiv:2510.26692 , 2025. Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timoth´ ee Lacroix, Baptiste Rozi` ere, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 ,2023. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems , volume 30, 2017. Christoph von der Malsburg. The correlation theory of brain function. Internal Report 81-2, Department of Neurobiology, Max Planck Institute for Biophysical Chemistry, Goettingen, 1981. Johannes von Oswald, Eyvind Niklasson, Ettore Randazzo, Jo˜ ao Sacramento, Alexander Mordvintsev, Andrey Zhmoginov, and Max Vladymyrov. Transformers learn in-context 16 Published as a conference paper at COLM 2026 by gradient descent. In International Conference on Machine Learning , pp. 35150–35174. PMLR, 2023. Johannes Von Oswald, Maximilian Schlegel, Alexander Meulemans, Seijin Kobayashi, Eyvind Niklasson, Nicolas Zucchet, Nino Scherrer, Nolan Miller, Mark Sandler, Max Vladymyrov, et al. Uncovering mesa-optimization algorithms in transformers. arXiv preprint arXiv:2309.05858 , 2024. Johannes von Oswald, Nino Scherrer, Seijin Kobayashi, Luca Versari, Songlin Yang, Maxim-ilian Schlegel, Kaitlin Maile, Yanick Schimpf, Oliver Sieberling, Alexander Meulemans, et al. MesaNet: Sequence modeling by locally optimal test-time training. In International Conference on Learning Representations (ICLR) , 2026. Bowen Wang, Matteo Zecchin, and Osvaldo Simeone. Distributed Associative Memory via Online Convex Optimization. In ICASSP 2026 - 2026 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) . IEEE, 2026. Junxiong Wang, Daniele Paliotta, Avner May, Alexander M Rush, and Tri Dao. The Mamba in the Llama: Distilling and accelerating hybrid models. In Neural Information Processing Systems (NeurIPS) , 2024. Ke Alexander Wang, Jiaxin Shi, and Emily B Fox. Test-time regression: A unifying framework for designing sequence models with associative memory. arXiv preprint arXiv:2501.12352 , 2025. Songlin Yang. DeltaNet explained: A gentle and comprehensive introduction to the deltanet. 
+
+https://sustcsonglin.github.io/blog/2024/deltanet-2/ , December 2024. blogpost. Songlin Yang and Yu Zhang. FLA: A Triton-based library for hardware-efficient implemen-tations of linear attention mechanism, January 2024. URL https://github.com/fla-org/ flash-linear-attention .Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear attention transformers with hardware-efficient training. In International Conference on Machine Learning (ICML) , 2024a. Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear transformers with the delta rule over sequence length. Advances in neural information processing systems , 37:115491–115522, 2024b. Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving Mamba2 with delta rule. In International Conference on Learning Representations (ICLR) , 2025. Ted Zadouri, Markus Hoehnerbach, Jay Shah, Timmy Liu, Vijay Thakkar, and Tri Dao. FlashAttention-4: Algorithm and kernel pipelining co-design for asymmetric hardware scaling. arXiv preprint arXiv:2603.05451 , 2026. Riccardo Zattra, Giacomo Baggio, Umberto Casti, Augusto Ferrante, and Francesco Ticozzi. Context-selective state space models: Feedback is all you need. arXiv preprint arXiv:2510.14027 , 2025. Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics , 2019. Michael Zhang, Simran Arora, Rahul Chalamala, Alan Wu, Benjamin Spector, Aaryan Singhal, Krithik Ramesh, and Christopher R´ e. Lolcats: On low-rank linearizing of large language models. arXiv preprint arXiv:2410.10254 , 2024a. Michael Zhang, Kush Bhatia, Hermann Kumbong, and Christopher R´ e. The hedgehog & the porcupine: Expressive linear attentions with softmax mimicry. In International Conference on Learning Representations (ICLR) , 2024b. Yu Zhang and Songlin Yang. Flame: Flash language modeling made easy, January 2025. URL https://github.com/fla-org/flame .17 Published as a conference paper at COLM 2026 Yudong Zhang, Weixuan Sun, Xingwu Sun, Wei Ding, Ruiqi Xie, Hongyi Wang, Junjie Chen, Jiacheng Liu, Shaobo Wang, Yuwei Zhang, et al. A survey of linear attention: Algorithm, theory, application, and infrastructure. Authorea Preprints , 2026. Yifei Zuo, Yutong Yin, Zhichen Zeng, Ang Li, Banghua Zhu, and Zhaoran Wang. Local linear attention: An optimal interpolation of linear and softmax attention for test-time regression. In International Conference on Learning Representations (ICLR) , 2026. 18 Published as a conference paper at COLM 2026 
+
+## A Extended Background 
+
+A.1 Design Space of Test-Time Regression 
+
+The test-time regression framework of Wang et al. (2025) recovers a broad class of existing se-quence layers through different design choices. Linear attention (Katharopoulos et al., 2020) corresponds to linear regression with a whitened design matrix approximation. Adding decaying regression weights yields gated linear attention and state-space models (Yang et al., 2024a; Dao & Gu, 2024). Learning the regression in an online streaming manner with stochastic gradient descent produces DeltaNet (Schlag et al., 2021; Yang et al., 2024b), with further variations recovering Longhorn (Liu et al., 2024), Gated DeltaNet (Yang et al., 2025), and Titans (Behrouz et al., 2024). Softmax attention arises as a nonparametric local constant regressor. 
+
+A.2 Mixtures of Linear Regressions 
+
+Consider a dataset {(xt, yt)}Tt=1 with xt ∈ RD and yt ∈ RD, assumed to be generated from a mixture of J linear Gaussian regression models. Let zt ∈ { 1, . . . , J} denote a latent component indicator with mixing weights π = ( π1, . . . , πJ ), where πj > 0 and ∑Jj=1 πj =
+
+1. Conditioned on zt = j, the output yt is generated according to 
+
+yt | xt, zt = j ∼ N (Wj xt, Σj), (A.1) where Wj ∈ RD×D is the regression matrix and Σj ∈ RD×D is the noise covariance, often restricted to the isotropic form Σj = σ2 
+
+> j
+
+ID. The complete parameter set is Θ =
+
+{πj, Wj, Σj}Jj=1.Given parameters Θ, inference over the latent variables is performed by computing the responsibilities 
+
+rtm = πm N (yt; Wm xt, Σm)
+
+∑Jj′ =1 πj′ N (yt; Wj′ xt, Σj′ ) , (A.2) which represent the posterior probability that observation (xt, yt) was generated by compo-nent j. The model parameters and responsibilities can be estimated using the Expectation– Maximization (EM) algorithm, which alternates between computing the responsibilities (E-step) and maximizing the expected complete-data log-likelihood with respect to Θ (M-step). 19 Published as a conference paper at COLM 2026 
+
+## B Model Specification Details 
+
+B.1 Derivation of SwiLA Recurrence 
+
+In this appendix, we work out in more detail the derivation of the SwiLA recurrence in eq. (3.3). To make bookkeeping easier, we define 
+
+πj := πjd (kt) exp (− 12 δ2
+
+> tjd
+
+) (B.1) 
+
+Z := ∑
+
+> j
+
+πj (B.2) Taking derivatives, it follows that 
+
+∂π j
+
+∂wt−1, jd 
+
+= πjd (kt) exp (−δ2
+
+> tjd
+
+/2 )δtjd kt
+
+= πjδtjd kt
+
+∂Z
+
+∂wt−1, jd 
+
+= ∂π j
+
+∂wt−1, jd 
+
+Thus, we obtain 
+
+∂ℓtd 
+
+∂wt−1, jd 
+
+= ∂π j/∂wt−1, jd 
+
+Z
+
+= rtjd δtjd kt. ■
+
+B.2 Details of the SwiLA Layer 
+
+In the practical implementation of SwiLA, we obtain many quantities of interest as learnable projections of the input xt ∈ Rdin .In keeping with standard practice, we generate keys, queries, and values as projections of the input xt, according to 
+
+qt = θQ xt
+
+kt = θK xt
+
+vt = θV xt.These projections can also have nonlinearities applied to them, such as the sigmoid linear unit SiLU (x) B xσ(x). For language model pretraining (Section 5.3), we apply SiLU to the queries, keys, and values. Up to reshaping, the learning rate β comes from a linear mapping from the inputs, followed by a sigmoid function to keep the learning rate in [0, 1 ]. Similarly, our priors on the keys π(kt)
+
+and queries π(qt) for the mixture memberships come from linear projections applied to the inputs xt, followed by the application of softmax over the mixture-component dimension (to make sure the priors are valid probabilities). In language model pretraining, we use a low-rank projection to reduce the number of parameters used by these projections. 
+
+B.3 Temporal SwiLA Details 
+
+We provide more details on how we encourage temporal persistence in our priors over mixture component assignment πd(kt) and πd(qt).In our implementation, the temporal recurrence for both these priors is a convex combination of the previous filtered posterior and a new input-dependent distribution. The relative weighting is controlled by g, which is a learned function of the input xt, dictating the amount of persistence of stickiness in our distribution over mixture component assignment. The range of g is [0, 1 ]: if g is close to 1, then we use a new probability distribution suggested by 20 Published as a conference paper at COLM 2026 the input, while if g is close to 0, at time t we use a very similar probability distribution to that used at time t − 1. To make this recursion formal, for time t we define ¯ rtd to be our probability distribution over mixture components for the keys, and ¯ ρtd to be our probability distribution over the mixture components for the queries. Using these definitions, we can then define the recurrences as 
+
+gktd = σ(( θkg)⊤ xt + bkg), gqtd = σ(( θqg)⊤ xt + bqg) (B.3) ¯rtjd = ( 1 − gktd ) rt−1, jd + gktd (πkjd (kt)) , (B.4) ¯ρtjd = ( 1 − gqtd ) ¯ρt−1, jd + gqtd (πqjd (qt)) , (B.5) where πkd(kt) and πqd(qt) come from the learnable projections followed by softmaxes dis-cussed in Appendix B.2. Finally, at time t, we use ¯ rtjd as our prior for the key mixture assignment in eq. (3.4), and we use ¯ ρtjd as our prior for the query mixture assignment in eq. (3.5). 
+
+B.4 Gated SwiLA Details 
+
+We provide more details on the equivalence of the two gating formulations in Section 3.4 when J = 1, and on the granularity at which the gate can be applied. 
+
+Equivalence of the two gating formulations when J = 1. Eqs. (3.7) and (3.8) differ only in whether the prediction errors and responsibilities are evaluated at the undecayed or the decayed state. When J = 1, we obtain rt1d = r− 
+
+> t1d
+
+= 1, so the responsibilities drop out of both updates. Dropping the index j and writing each as an affine map of wt−1, d,eq. (3.7): wtd = ( αtd I − βtd ktk⊤ 
+
+> t
+
+)wt−1, d + βtd vtd kt, (B.6) eq. (3.8): wtd = αtd (I − βtd ktk⊤ 
+
+> t
+
+)wt−1, d + βtd vtd kt. (B.7) With αtd > 0, re-parameterizing (αtd , βtd , vtd ) 7 → (αtd , βtd /αtd , αtd vtd ) makes the two equiv-alent. 
+
+Granularity of the gate. Section 3.4 places an isotropic Gaussian prior wjd ∼ N (0, λ−1 
+
+> tjd
+
+I)
+
+on each row of the state. More generally, we may place a prior wjdd ′ ∼ N (0, λ−1 
+
+> tjdd ′
+
+), where d′
+
+indexes the key dimension, so that wjdd ′ is the weight connecting key dimension d′ to output dimension d within mixture component j. One step of gradient ascent on the resulting objective yields 
+
+wtjd = αtjd ⊙ wt−1, jd + βtjd rtjd δtjd kt, αtjdd ′ B 1 − βtjd λtjdd ′ , (B.8) where ⊙ is the Hadamard product. Collecting the fast weights into Wtj ∈ RD×D with 
+
+(Wtj )dd ′ = wtjdd ′ , such that rows index output dimensions and columns index key dimen-sions, the granularity of the decay is controlled by restricting how λtjdd ′ varies over its indices. Tying the precision across the output index, λtjdd ′ = λtjd ′ , gives a right diagonal scaling Wt−1, jDiag (atj ), i.e. one gate per key dimension, as in KDA (Team et al., 2025). Tying it across the key index, λtjdd ′ = λtjd , gives a left diagonal scaling Diag (αtj )Wt−1, j, i.e. one gate per output dimension, which is eq. (3.7). The restriction λtjdd ′ = λtj recovers the scalar per-head decay of GDN (Yang et al., 2025). 21 Published as a conference paper at COLM 2026 
+
+## C Extended Related Work 
+
+Test-time regression SwiLA is motivated by the test-time regression (TTR) framework of Wang et al. (2025), which allows for the principled design of sequence layers based on ICL desiderata. TTR is related to many other important concepts in sequence modeling, including mesa-optimization, test-time training (TTT), and fast-weights. Mesa-optimization (Von Oswald et al., 2024) also shows that effective sequence layers optimize a learning objective during ICL, but often emphasizes the role of pretraining in unlocking such capa-bilities; whereas TTR focuses on how a chosen recurrent update affects ICL regardless of pretraining. TTT also considers the recurrent state to be the parameters of a function, but often considers more general functional relationships (like MLPs) or more general losses, such as reconstruction (Sun et al., 2025) or next-token prediction (Tandon et al., 2025), and is pretrained to encourage metalearning (Finn et al., 2017). The fast-weights paradigm (von der Malsburg, 1981; Hinton & Plaut, 1987; Schmidhuber, 1992; Irie et al., 2021; Irie & Gershman, 2025) also distinguishes between pretrained “slow” weights and test-time “fast” weights, but tends to focus more on the fast weights being generated by hypernetworks (Ha et al., 2017). Other papers have built on TTR with different design goals in mind. For example, Von Os-wald et al. (2024); von Oswald et al. (2026) construct a linear attention sequence layer they call a mesa-layer , which uses correct Newton updates for linear regression (instead of the whitened design matrix approximation used in linear attention (Katharopoulos et al., 2020)) to fully optimize the regression objective. Peng et al. (2025) introduce Gated KalmaNet Attention (GKA), which draws inspiration from Kalman filtering. Zuo et al. (2026) intro-duced Local Linear Attention (LLA), which drew on TTR to interpolate between linear and softmax attention via local linear regression; however, like softmax attention, LLA still requires a memory store that scales as O(TD ) memory, whereas SwiLA uses a fixed state size like linear attention. To our knowledge, SwiLA is the first sequence layer to extend the TTR framework by specifically incorporating mixture modeling; though Wang et al. (2026) use a collection of TTR agents which communicate with each other via a fixed weight matrix. 
+
+Efficient attention The main motivation for this paper is that standard softmax attention (Vaswani et al., 2017) is highly expressive, but can be computationally expensive: it suf-fers from a KV cache that grows with the sequence length. In contrast, linear attention mechanisms (Zhang et al., 2026) compress context to a fixed-dimensional state, and so are computationally cheaper—but this fixed state often results in too much compression of the context, limiting long-range modeling capabilities (Arora et al., 2024a; von Oswald et al., 2026; Tandon et al., 2025). This dilemma has been noted by many in the literature (Zhang et al., 2024b; Han et al., 2024a;b). One mechanism to increase the expressivity of recurrent architecture is state expansion , namely to make the fixed state-size bigger (Gu, 2025; Gelada et al., 2025). One perspective on the benefits of SwiLA is that the mixture of regressors is a form of state expansion. Another approach is to relax the constraint of fixed state size, and instead allow the state to grow with the sequence length, albeit slower than linearly (as the KV cache does). For example, Guo et al. (2026) introduce log-linear attention, a sequence layer with state size that grows logarithmically in the sequence length. Finally, an orthogonal approach to efficient attention is to optimize the software imple-mentations of attention (Dao et al., 2022; Zadouri et al., 2026) or linear attention (Yang & Zhang, 2024; Beck et al., 2025), with the goal of making them as performant as possible on GPUs. Such approaches also include optimizing the software implementations of sequential evaluations of nonlinear RNNs (P ¨ oppel et al., 2025; Mishra et al., 2026). 22 Published as a conference paper at COLM 2026 
+
+## D Chunkwise Parallel Algorithms 
+
+DeltaNet admits a chunkwise parallel algorithm (Yang et al., 2024b; Yang, 2024) that par-allelizes its linear recurrence (4.1) over the sequence length. The SwiLA recurrence (3.3) is nonlinear in its hidden state, which makes it harder to parallelize. Nevertheless, SwiLA can still be parallelized, at least theoretically, using parallel Newton iterations (Lim et al., 2024; Gonzalez et al., 2024; Danieli et al., 2026; Gonzalez, 2026). However, most previous implementations of parallel Newton iterations use the parallel associative scan (Blelloch, 1990), colloquially known as the pscan . A pscan-based imple-mentation would materialize the full state at every time step, which scales very badly for matrix-valued hidden states (Yang, 2024). One of the novel contributions of this paper is that we show that we can parallelize the 
+
+nonlinear SwiLA recurrence with parallel Newton iterations; but where every Newton iteration is parallelized with the chunkwise parallel algorithm used for DeltaNet (Yang et al., 2024b; Yang, 2024). Nonetheless, in all our experiments, we use an optimized recurrent Triton kernel for SwiLA (i.e. we evaluate the nonlinear recurrence sequentially). The purpose of this appendix is to show that a chunkwise parallel implementation is also available in principle. An optimized implementation of this novel chunkwise parallel algorithm for nonlinear recurrences is an interesting direction for future work. 
+
+D.1 Background on Parallelizing Recurrences 
+
+To develop our novel chunkwise parallel algorithm for nonlinear recurrences, we combine two ideas: • the chunkwise parallel algorithm for DeltaNet (Yang et al., 2024b); and • parallel Newton iterations for nonlinear recurrences (Lim et al., 2024; Danieli et al., 2026; Gonzalez, 2026) 
+
+DeltaNet’s chunkwise parallel algorithm Consider a linear recurrence of the form 
+
+Wt = At Wt−1 + bt.When the transition matrices At are unstructured, parallel evaluation via associative scans (Blelloch, 1990) requires materializing and multiplying dense matrices, which can be pro-hibitively costly. Yang et al. (2024b) observe that when At has the structure of a rank-one perturbation of the identity 
+
+At = I − βt ktk⊤ 
+
+> t
+
+, (D.1) the recurrence admits an efficient ”chunkwise” algorithm. This algorithm gets its name because the sequence is divided into ”chunks” of size C. Within each chunk, the depen-dency among timesteps is captured by a strictly lower triangular matrix Λ ∈ RC×C with entries 
+
+Λs,t =
+
+−βs k⊤ 
+
+> s
+
+kt if s > t,0 otherwise, (D.2) and intra-chunk states are recovered via forward substitution through this triangular de-pendency structure. Boundary states are propagated sequentially across the N B T/C
+
+chunk boundaries, but this cost is amortized over the chunk size. The algorithm avoids materializing full D × D transition matrices, operating instead on C × C matrices of key inner products, and is well suited to modern GPU hardware. 
+
+Parallel Newton iterations for nonlinear recurrences Many sequence models involve nonlinear state updates wt = ft(wt−1), which seem like they must be evaluated sequentially. Recent work (Song et al., 2021; Danieli et al., 2023; Lim et al., 2024; Gonzalez et al., 2025; Gonzalez, 2026) shows that such recurrences can be parallelized by recasting sequence evaluation as a fixed-point problem over the full trajectory. Starting from an initial guess for the entire trajectory , often denoted by w(0) 
+
+> 1: T
+
+, fixed-point methods iteratively converge to the 23 Published as a conference paper at COLM 2026 true nonlinear rollout w1: T. A broad class of methods, including Newton, quasi-Newton, and Picard iterations, can be written in the unified form 
+
+w(i+1) 
+
+> t
+
+= ft(w(i)
+
+> t−1
+
+) + A(i)
+
+> t
+
+
+
+w(i+1) 
+
+> t−1
+
+− w(i)
+
+> t−1
+
+
+
+, (D.3) where A(i) 
+
+> t
+
+approximates the Jacobian ∂ ft/∂wt−1(w(i)
+
+> t−1
+
+). Because each iteration defines a linear dynamical system, the full sequence can be evaluated using a parallel scan in O(log T)
+
+depth (Blelloch, 1990; Martin & Cundy, 2018; Smith et al., 2023). Moreover, these fixed-point iterations are guaranteed to converge in at most T iterations (Bellen & Zennaro, 1989; Shih et al., 2023; Tang et al., 2024; Gonzalez et al., 2024). Our core insight in combining these two approaches is that if Jacobian approximation A(i) 
+
+> t
+
+in the parallel Newton iterations in eq. (D.3) has the identity-minus-rank-one form of the delta rule eq. (D.1), then each fixed-point step can be parallelized with DeltaNet’s chunkwise parallel algorithm. 
+
+D.2 Linearizing the SwiLA Recurrence 
+
+To apply parallel Newton iterations to SwiLA, we must first linearize its recurrence (3.3). For each mixture component j and output dimension d, we can write the SwiLA recurrence as 
+
+wtjd = f (wt−1, jd ) B wt−1, jd + βtjd rtjd δtjd kt.To linearize this recurrence, we start by computing the Jacobians ∂ f
+
+∂wt−1, jd 
+
+∈ RD×D. We start this process with some intermediate computations using shorthands defined in Ap-pendix B.1, obtaining 
+
+∂δ tjd 
+
+∂wt−1, jd 
+
+= −k⊤
+
+> t
+
+∂rtjd 
+
+∂wt−1, jd 
+
+= Z∂π j/∂wt−1, jd − πj∂Z/∂wt−1, jd 
+
+Z2
+
+= (Z − πj)( πjδtjd k⊤ 
+
+> t
+
+)
+
+Z2
+
+= ( 1 − rtjd )rtjd δtjd k⊤
+
+> t
+
+Using these derivatives and the product rule, it follows that 
+
+∂rtjd δtjd 
+
+∂wt−1, jd 
+
+= rtjd 
+
+∂δ tjd 
+
+∂wt−1, jd 
+
++ δtjd 
+
+∂rtjd 
+
+∂wt−1, jd 
+
+= −rtjd k⊤ 
+
+> t
+
++ rtjd (1 − rtjd )δ2
+
+> tjd
+
+k⊤
+
+> t
+
+= −rtjd 
+
+
+
+1 − δ2
+
+> tjd
+
+(1 − rtjd )
+
+
+
+k⊤ 
+
+> t
+
+.Thus, it follows that 
+
+∂ f
+
+∂wt−1, jd 
+
+= I − gtjd ktk⊤ 
+
+> t
+
+, (D.4) where 
+
+gtjd = βtjd rtjd [1 − δ2
+
+> tjd
+
+(1 − rtjd )] . (D.5) Thus, the Jacobian of the per-expert, per output dimension SwiLA recurrence is a rank-one perturbation of the identity, which is exactly the structure exploited by the chunkwise algorithm of Yang et al. (2024b). Applying the Newton linearization, the i-th iteration solves the linear recurrence 
+
+w(i+1) 
+
+> tjd
+
+= ( I − g(i) 
+
+> tjd
+
+ktk⊤ 
+
+> t
+
+) w(i+1) 
+
+> t−1, jd
+
++ kt p(i)
+
+> tjd
+
+, (D.6) 24 Published as a conference paper at COLM 2026 where the effective input term is 
+
+p(i) 
+
+> tjd
+
+:= g(i) 
+
+> tjd
+
+k⊤ 
+
+> t
+
+w(i) 
+
+> t−1, jd
+
++ βtjd r(i) 
+
+> tjd
+
+δ(i)
+
+> tjd
+
+. (D.7) This effective input term follows because we know from eq. (D.3) that bias term bt takes the form ft(w(i)
+
+> t−1
+
+) − Atw(i)
+
+> t−1
+
+.In this setting, At = I − g(i)
+
+> tjd
+
+ktk⊤ 
+
+> t
+
+, and so the bias term is given by 
+
+b(i) 
+
+> t
+
+= w(i) 
+
+> t−1, jd
+
++ βtjd r(i)
+
+> tjd
+
+δ(i)
+
+> tjd
+
+kt −
+
+
+
+I − g(i)
+
+> tjd
+
+ktk⊤
+
+> t
+
+
+
+w(i)
+
+> t−1
+
+= kt
+
+
+
+g(i)
+
+> tjd
+
+k⊤ 
+
+> t
+
+w(i) 
+
+> t−1
+
++ βtjd r(i)
+
+> tjd
+
+δ(i)
+
+> tjd
+
+
+
+. ■
+
+Because eq. (D.6) is a linear recurrence with identity-minus-rank-one transitions, each Newton iteration can be solved efficiently using the chunkwise algorithm. Note, however, that this is a quasi -Newton iteration because these Jacobians are only approximate: they ignore the cross mixture component interactions coming from the denominator of the responsibilities in eq. (3.4). However, Gonzalez et al. (2024) proves that quasi-Newton iterations are still guaranteed to converge globally, regardless of the form of the Jacobian approximation. A limitation of quasi-Newton iterations, however, is that their backwards pass is only approximate (Gonzalez, 2026). We can surmount this by running fixed-point iterations in the backwards pass as well; or, alternatively, by modifying the SwiLA recurrence so that the Jacobians above are exact (for example, by using ”unnormalized” responsibilities in eq. (3.4), i.e. removing the denominators, which is the only source of cross mixture component interaction). We have attempted these approaches: in configurations inspired by the language modeling pretraining settings (batch size of 16, sequence length T = 4096, 8 heads, D = 64, and J = 4mixture components), these various approaches converge in around 10 Newton iterations with synthetic inputs. However, despite this rapid convergence in Newton iterations, we so far did not optimize the parallel Triton kernels efficiently, so we were effectively the same speed as our sequential Triton kernel. Future work should be able to further accelerate such chunkwise parallel approaches for nonlinear recurrences. 
+
+D.3 Chunkwise Parallel Algorithm 
+
+To maximize hardware utilization, we implement the linearized recurrence using a chunk-wise parallel algorithm following Yang et al. (2024b). We try to follow the notation in Yang (2024). In particular, we divide the sequence length into chunks of size C. We use [n] to indicate boundary states and □c 
+
+> [n]
+
+= □nC +c to denote states within a chunk. Within each Newton iteration i, the computation proceeds in three steps. 
+
+1. Intra-chunk precomputation. For all timesteps t in parallel, we compute the Jacobian coefficients g(i) 
+
+> tjd
+
+and effective inputs p(i)
+
+> tjd
+
+, and form the strictly lower triangular dependency matrix Λ(i)[n],j ∈ RC×C with entries 
+
+(Λ(i)[n],j)s,t =
+
+(
+
+−g(i),s 
+
+> [n],j
+
+(ks
+
+> [n]
+
+)⊤kt 
+
+> [n]
+
+if s > t,0 otherwise. (D.8) 
+
+2. Boundary state resolution. For each chunk n, we compute the aggregate transition and history matrices via forward substitution through the unit lower triangular system 
+
+(I − Λ(i)[n],j):
+
+M(i)[n],j = ( I − Λ(i)[n],j)−1 diag (g(i)[n],j) K[n], (D.9) 
+
+H(i)[n],j = ( I − Λ(i)[n],j)−1 vec (p(i),1  
+
+> [n],j
+
+, . . . , p(i),C 
+
+> [n],j
+
+). (D.10) 25 Published as a conference paper at COLM 2026 These aggregates allow the boundary states to be updated sequentially across chunks: 
+
+w(i+1)[n+1],j = w(i+1)[n],j + K⊤
+
+> [n]
+
+(H(i)[n],j − M(i)[n],j w(i+1)[n],j ). (D.11) 
+
+3. Parallel output generation. Given the boundary states, the outputs within each chunk are computed in parallel: 
+
+O(i+1)[n],j = K[n] w(i+1)[n],j + ( K[n]K⊤ 
+
+> [n]
+
+⊙ L)( H(i)[n],j − M(i)[n],j w(i+1)[n],j ), (D.12) where L ∈ RC×C is a strictly lower triangular causal mask ensuring autoregressive valid-ity. 26 Published as a conference paper at COLM 2026 210 211 212 213 214 215        
+
+> Recurrent State Size
+> 0.85 0.90 0.95 1.00
+> Test R²
+> H1J2 H2J2 H2J4 H1J16 H8J4 H1 H2 H4 H8 H16 H32 H1
+> 212 213 214 215 216 217
+> Parameters
+> H1J2 H2J2 H2J4 H1J16 H8J4 H1 H2 H4 H8 H16 H32 H1
+> DeltaNet SwiLA Softmax Attention
+
+Figure S1: Approximating Softmax Attention. Test R2 vs. recurrent state size (left) and parameter count (right) for SwiLA and DeltaNet on the synthetic attention regression task. The dashed line indicates trainable softmax attention. Labels mark the best SwiLA configuration ( H=heads, J=mixtures) at each budget. At every state budget, SwiLA better approximates the attention mapping. 
+
+## E Experimental Details 
+
+For all experiments, we heavily utilized architecture implementations in Yang & Zhang (2024). 
+
+E.1 Approximating Softmax Attention 
+
+Each model receives input sequences x ∈ RT×D, where T = 512 and D = 32, and must approximate the output of causal softmax self-attention with fixed, ground-truth projections 
+
+θq, θk, θv. Models receive only x and must learn their own Q/K/V projections. 
+
+Data Generation At each sequence position, a cluster index is sampled uniformly from 
+
+C = 32 clusters. The input is xt = L2normalize (μc + 0.5 ϵt), where μc ∼ N (0, I32 ) are fixed cluster centers and ϵt ∼ N (0, I32 ). The query, key, and value projections θq, θk, θv ∈ R32 ×32 
+
+are random matrices, with each entry sampled from a standard normal distribution. The attention temperature is τ = √D/2, and the sequence length is T = 512. We generate 65,536 training, 2,048 validation, and 2,048 test sequences. 
+
+Models. 
+
+• MHA. Standard causal multi-head softmax attention with learned Wq, Wk, Wv (bias en-abled) and output projection Wo (no bias). Scaling factor 1/ √dk.• DeltaNet. Learned projections with SiLU activation followed by L2 normalization on 
+
+Q/K. SiLU activation on V. Scalar β per head via a linear layer Rdin → RH followed by sigmoid. RMSNorm on the output, then an output projection. • SwiLA. Same Q/K/V projection scheme as DeltaNet (SiLU + L2 normalization on Q/K,SiLU on V). Separate β per head, output dimension, and mixture component. Routing logits are computed via SwiGLU projections (inner dimension set to 256) with softmax activation. RMSNorm on the output, then an output projection. MI auxiliary loss coefficient λ = 0.001. We do not employ input-dependent noise injection. 
+
+E.2 Synthetic Benchmarks Context-Dependent Associative Recall (CDAR) Context-Dependent Associative Recall (CDAR) is a synthetic sequence modeling task that extends Multi-Query Associative Recall 27 Published as a conference paper at COLM 2026 210 211 212 213 214 215 216 217 218 219 220 
+
+> Recurrent State Size
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Test Accuracy
+> Attention L=1 Attention L=2 DeltaNet L=1 DeltaNet L=2 DN-MoM L=1 DN-MoM L=2 SwiLA L=1 SwiLA L=2 Temporal SwiLA L=1
+
+Figure S2: Context-Depedent Associative Recall. CDAR with 4 contexts and 32 key-value pairs per context: test accuracy vs. state size. (MQAR) from Arora et al. (2024a) to multiple contexts. Each input sequence has length 1024 and consists of two zones: a context zone containing C = 4 distinct contexts, each defining 32 unique key–value pairs (128 total associations), followed by a query zone in which the model must retrieve the correct value for a given (context, key) pair. The vocabulary size is 8192. Query positions within the query zone are sampled according to a power-law distribution 
+
+p(i) ∝ i a−1 with exponent a = 0.01, following the Zoology benchmark setup (Arora et al., 2024a). We generate 100,000 training examples and 3,000 test examples. All queries for each context are grouped contiguously, context tokens are not repeated within query groups, and non-query positions are filled with zeros. Training uses a batch size of 64. All models use a GPT-NeoX-style pre-norm block structure following the Zoology frame-work (Arora et al., 2024a): each block consists of a sequence mixer followed by a state mixer (MLP, hidden multiplier 4), with LayerNorm, residual connections, and dropout on each sub-layer. The sequence mixer is the model-specific layer (Temporal SwiLA, DeltaNet, Softmax Attention, or MoM), while the state mixer is shared across all models. All models use a short convolution (kernel size 2) before the sequence mixer. We detail the hyperparameters that differ across models: • Temporal SwiLA. dmodel ∈ { 32, 64, 128 }, nlayers = 1, H = 1 head, K = 4 mixture com-ponents, and key/value expansion factors ek = ev = 0.5. We used SwiGLU projections for π and β, with inner dimensions 256 and 32, respectively, and input-dependent noise injection. We set the MI auxiliary loss coefficient λ = 0.0. • SwiLA. dmodel ∈ { 32, 64, 128, 256 }, nlayers ∈ { 1, 2 }, H = 1 head, K = 4 mixture compo-nents, and key/value expansion factors ek = ev = 0.5. We used SwiGLU projections for π and β, with inner dimensions 256 and 32, respectively, and input-dependent noise injection. We set the MI auxiliary loss coefficient λ = 0.0. • DeltaNet. dmodel ∈ { 32, 64, 128, 256 }, nlayers ∈ { 1, 2 }, H = 4 heads, ek = ev = 2.0. • Softmax Attention. dmodel ∈ { 32, 64, 128, 256 }, nlayers ∈ { 1, 2 }, H = 4 heads, RoPE positional encoding with θ = 10,000. • DeltaNet-MoM. dmodel ∈ { 32, 64, 128, 256 }, nlayers ∈ { 1, 2 }, M = 4 memories with top-k = 2 routing, H = 1 head, ev = 1.0. All models are trained with AdamW and a grid search over four learning rates log-spaced from 3.16 × 10 −4 to 10 −2, i.e. {3.16 × 10 −4, 10 −3, 3.16 × 10 −3, 10 −2}. All models are trained for 50 epochs. For each configuration and learning rate, we run three random seeds. We report the maximum accuracy across the learning-rate sweep and three random seeds in 28 Published as a conference paper at COLM 2026 Figure 2A because learning on these algorithmic tasks typically exhibits sharp, step-like transitions, and our primary objective is to assess whether an architecture can learn the target algorithm rather than its optimization speed or robustness. For completeness, we report the mean test accuracy across learning rates in Figure S2, which yields the same qualitative conclusions, with the largest improvements obtained by Temporal SwiLA. 
+
+RegBench: In-Context Language Learning All models have 8 layers, dmodel = 256, MLP inner dimension 1,024 (4 × dmodel ), embedding dropout 0.1, and no residual dropout. SwiLA, Temporal SwiLA, DN-MoM, and DeltaNet all prepend a short convolution of width 4. We compare: SwiLA (2 heads, 2 mixtures, expand k = expand v = 0.5); Temporal SwiLA (same as SwiLA with a temporal gate); DN-MoM (1 head, 4 memories, top-2 routing, dhead = 64, 
+
+expand v = 1.0, DeltaNet backend); DeltaNet (4 heads, expand k = expand v = 1.0); and 
+
+Transformer (4 heads with RoPE). The recurrent state size is matched across SwiLA, DN-MoM, and DeltaNet at 16,384 = 4 × 64 × 64 per layer. For both SwiLA and Temporal SwiLA, we do not use input-dependent noise injection and set the MI loss coefficient to 0.005. We use AdamW with learning rate 2.5 × 10 −4 and weight decay 0.1. The learning rate follows a cosine schedule with 10% linear warmup (from 10 −6) and minimum learning rate 2.5 × 10 −5. Batch size is 32 and models are trained for 200 epochs. We report test accuracy using the checkpoint with the lowest validation loss. 
+
+E.3 Pretraining Language Models 
+
+All models are pretrained on a subset of the FineWeb-Edu dataset (Penedo et al., 2024) (sample-100BT subset) using the 32K-Llama2 tokenizer. Training sequences have length 4,096. All models are trained with identical optimization hyperparameters chosen following Yang et al. (2024b). We use the AdamW optimizer with a learning rate of 3 × 10 −4 and weight decay of 0.01. The learning rate follows a cosine decay schedule with 954 warmup steps and a minimum learning rate ratio of 0.1 (i.e., final learning rate 3 × 10 −5). Gradient norms are clipped to 1.0. Training runs for 28,610 steps with a global batch size of 128 sequences, totaling approximately 15B tokens. Training is conducted on a node of 8 NVIDIA H100 GPUs. All thirteen models—Transformer++ (Touvron et al., 2023), DeltaNet (Yang et al., 2024b), GDN (Yang et al., 2025), two MoM variants (DeltaNet-MoM and GDN-MoM) (Du et al., 2026), KDA (Team et al., 2025), FoX (Lin et al., 2025), SwiLA, Temporal SwiLA, Gated SwiLA, Gated Temporal SwiLA, Hybrid GDN, and Hybrid Temporal SwiLA—share the same architecture skeleton: 24 layers and a hidden dimension of 1,024, targeting approximately 374M total parameters. Feed-forward intermediate dimensions are adjusted slightly across architectures to match the total parameter count. Following the default configurations in Zhang & Yang (2025), we use 16 heads with head dimension 64 for Transformer++. DeltaNet, GDN, KDA, and FoX use 8 heads with head dimensions of 128. SwiLA, Temporal SwiLA, Gated SwiLA, and Gated Temporal SwiLA use 8 heads with 4 mixtures per head and 64-dimensional key and value projections. This gives a recurrent matrix state of 8 × 4 × 64 × 64 = 131,072 scalars per layer, matching the 8 × 128 × 128 =
+
+131,072 state scalars used by DeltaNet, GDN, and KDA. For all SwiLA variants, we disable input-dependent router and temporal gate noise. We set the load balancing loss coefficients to 0.001 for SwiLA, 0.0005 for Temporal SwiLA, 0.0005 for Gated SwiLA, and 0.00025 for Gated Temporal SwiLA. For Gated SwiLA variants, we tie the precision across the output index, i.e., one gate per key dimension, as in KDA (Team et al., 2025). Hybrid Temporal SwiLA uses the same 0.0005 coefficient as Temporal SwiLA. Hybrid GDN and Hybrid Temporal SwiLA contain six full causal-attention layers at layers 4, 8, 12, 16, 20, and 24, with the remaining 18 layers using GDN and Temporal SwiLA, respectively. The full-attention layers use 8 heads with head dimension 128. For GDN-MoM, we use GDN for the recurrent memory updates and employ three routed memories with top-k = 2, together with one shared memory. Each memory uses 8 heads with head dimension 64, giving a total main recurrent state size of 4 × 8 × 64 × 64 = 131,072 scalars per layer. 29 Published as a conference paper at COLM 2026 For DeltaNet-MoM, we trained the following three architectural configurations and re-port the one with the best average performance on the commonsense benchmark (best configuration in bold ): 1. 374.1M parameters: 4 heads, head dimension 64, 7 routed memories with top-k = 4, one shared memory, and an MLP intermediate dimension of 2,634. 2. 374.2M parameters: 1 head, head dimension 128, 7 routed memories with top-k = 4, one shared memory, and an MLP intermediate dimension of 3,412. 3. 374.1M parameters: 2 heads, head dimension 128, 3 routed memories with top-
+
+k = 2, one shared memory, and an MLP intermediate dimension of 3,326. 
+
+Each of the three configurations maintains 131,072 main recurrent-state scalars per layer. Fol-lowing Du et al. (2026), we use shared memory and adjust the MLP intermediate dimension to match the parameter counts of the other models. 30 Published as a conference paper at COLM 2026 
+
+E.4 Throughput Comparison 010 20 30 40 
+
+> Thousands Token Per Second (Kt/s)
+> Training Throughput
+> 2K×64 4K×32 8K×16 16K×8
+> Sequence Length × Batch Size
+> 020 40 60 80
+> Peak allocated memory (GiB)  Peak Allocated Memory
+
+1.3B Params - Training Throughput and Memory on a Single H100 GPU 
+
+> Transformer Gated DeltaNet GDN Hybrid SwiLA Temporal SwiLA Temporal SwiLA Hybrid
+
+Figure S3: Training throughput and peak memory of 1.3B models with 128K training tokens on a single H100 GPU (i.e., 1M training tokens on 8xH100 GPUs). Following the training throughput experiment of Yang et al. (2025), we fix the total number of training tokens while varying the sequence length and batch size. 
+
+Training throughput and memory. We benchmark complete training updates on a single NVIDIA H100 for the six 1.3B models: Transformer, Gated DeltaNet (GDN), Hybrid GDN, SwiLA, Temporal SwiLA, and Hybrid Temporal SwiLA. At sequence lengths 2,048, 4,096, 8,192, and 16,384 we use microbatch sizes 64, 32, 16, and 8, respectively, holding the workload fixed at 131,072 tokens per update. A timed update comprises the forward pass and loss computation, the backward pass, global gradient-norm clipping, and an AdamW step. For each configuration, three warm-up updates are followed by three timed updates with CUDA synchronization. Throughput is 131,072 divided by the mean wall-clock update time, reported in thousands of tokens per second, and peak memory is PyTorch’s maximum allocated CUDA memory after warm-up. 
+
+Generation throughput and memory. We measure end-to-end autoregressive generation for the same six models on a single NVIDIA H100. Each input is a synthetic 2,048-token prompt extended by 128 generated tokens using greedy decoding. We sweep batch sizes from 1 to 128 in powers of two. For each model, batch sizes beyond the first out-of-memory failure are omitted. One warm-up call is followed by three timed calls to the full generation routine, with CUDA synchronized around the timed loop. Reported values are means over the three calls, where the wall-clock time of a generation call includes both prefill and decoding. Peak memory is PyTorch’s maximum allocated CUDA memory after warm-up. 31 Published as a conference paper at COLM 2026 0500 1,000 1,500 2,000 2,500 
+
+> Throughput (tokens / s)
+
+Inference throughput        
+
+> 124816 32 64 128
+> Batch size
+> 010 20 30 40 50
+> Peak memory (GiB)
+
+Peak memory 
+
+1.3B Params - Inference Throughput and Memory on a Single H100 GPU (prompt length 2048) 
+
+> Transformer Gated DeltaNet GDN Hybrid SwiLA Temporal SwiLA Temporal SwiLA Hybrid
+
+Figure S4: Inference throughput and peak memory of 1.3B models on a single H100 GPU. 
+
+Following the inference throughput experiment of Gu & Dao (2023), we fix the prompt length to 2048 and vary the batch size. Throughput and peak memory are measured over the full inference pass, combining prefill and decode. An X marks configurations where the model runs out of memory. 32 Published as a conference paper at COLM 2026 
+
+E.5 Ablation Study 
+
+We conducted ablation experiments that isolate the contribution of the number of mixture components, temporal persistence, and the load balancing loss. We trained variants of 115M SwiLA on 5B tokens and evaluated test perplexity on 100M tokens, reported in the legend of Figure S5. To analyze routing dynamics, we tracked three statistics during training, computed separately for the key-value-side responsibilities and the query-side responsibilities. Utilization entropy measures the entropy of the marginal expert usage distribution, averaged over batch and sequence positions; it equals 1 when experts are used uniformly and is lower when usage is concentrated on a few experts. Routing entropy 
+
+measures the average per-token entropy of the routing distribution; it equals 1 when each token spreads its responsibility uniformly across all experts and approaches 0 when each token commits to a single expert. Dead expert fraction counts the fraction of experts whose marginal usage falls below 10% of uniform usage (i.e., below 0.1/ J). Without load balancing, vanilla SwiLA suffers significant expert collapse: KV-side utilization entropy drops sharply, and the dead expert fraction exceeds 40%. Adding the load-balancing auxiliary loss resolves this, maintaining high utilization entropy and near-zero dead experts throughout training. Temporal SwiLA is notably more robust, maintaining reasonable utilization even without load balancing. Across all configurations except for the vanilla SwiLA without load balancing, routing entropy stabilizes in the 0.4–0.6 range, indicating moderately selective but not fully hard routing. step       
+
+> 0.0 0.5 1.0
+> normalized entropy
+> Q-side utilization entropy
+> step
+> 0.0 0.5 1.0
+> normalized entropy
+> Q-side routing entropy
+> step
+> 0.0 0.5 1.0
+> fraction
+> Q-side dead expert fraction
+> 2.5k 5k 7.5k
+> step
+> 0.0 0.5 1.0
+> normalized entropy
+> KV-side utilization entropy
+> 2.5k 5k 7.5k
+> step
+> 0.0 0.5 1.0
+> normalized entropy
+> KV-side routing entropy
+> 2.5k 5k 7.5k
+> step
+> 0.0 0.5 1.0
+> fraction
+> KV-side dead expert fraction
+
+SwiLA router diagnostics 
+
+> SwiLA 4J, no load balancing | PPL 36.769 SwiLA 4J, load balancing | PPL 16.807 Temporal SwiLA 4J, no load balancing | PPL 16.718 Temporal SwiLA 4J, load balancing | PPL 16.715 Temporal SwiLA 16J, load balancing | PPL 16.862
+
+Figure S5: Switching Linear Attention router diagnostics. Utilization entropy, routing entropy, and dead expert fraction over the course of training, shown separately for the query-side responsibilities (top) and key-value-side responsibilities (bottom). Without load balancing, vanilla SwiLA (4 J) collapses on the KV side, with low utilization entropy and a dead expert fraction near 40%; load balancing and temporal persistence each prevent this collapse. 33
