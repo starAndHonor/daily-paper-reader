@@ -18,78 +18,44 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-10-06
-- 运行时间：2026-10-06 23:40:11 UTC
+- 最新运行日期：2026-10-07
+- 运行时间：2026-10-07 23:38:22 UTC
 - 运行状态：成功
-- 本次总论文数：18
-- 精读区：7
-- 速读区：11
+- 本次总论文数：8
+- 精读区：4
+- 速读区：4
 
 ### 今日简报（AI）
-2026-10-06 日报：18 篇论文中精读 7 篇、速读 11 篇，重点聚焦扩散采样求解器与流匹配自适应步长。
-
-最值得看的是两篇 9.0 分工作——随机扩散采样的自适应二阶求解器，以及面向高效视觉生成的 Contextual Flow Matching 自适应步选择；速读中稀疏注意力的信息损失与泛化权衡、跨层共享和 LLM 解码加速也值得关注。
-
-普通读者可先读两篇 9 分论文，再按需挑稀疏注意力速读了解效率优化方向。
-- 详情：[/202610/06/README](/202610/06/README)
+今日精读4篇、速读4篇，重点聚焦扩散模型加速与高分辨率视觉生成中的稀疏注意力方案。最值得看的是两篇9分工作：ManifoldCache用约束流形缓存实现免训练扩散加速，Backend-Agnostic Sparse Attention则让高分辨率视觉生成更快更通用。普通读者可优先了解这两条加速路线，再顺带扫一眼长上下文解码与注意力演进的速读综述。
+- 详情：[/202610/07/README](/202610/07/README)
 
 ### 精读区论文标签
-1. [Adaptive Second-Order Solvers for Fast Stochastic Diffusion Sampling](/202610/06/2610.03034v1-adaptive-second-order-solvers-for-fast-stochastic-diffusion-sampling)  
+1. [ManifoldCache: Training-Free Diffusion Acceleration via Constraint Manifold Caching](/202610/07/2610.04510v1-manifoldcache-training-free-diffusion-acceleration-via-constraint-manifold-caching)  
    标签：评分：9.0/10、query:diff-accel
-   evidence：面向快速随机扩散采样的自适应二阶求解器
-2. [Contextual Flow Matching: Adaptive Step Selection in Flow Models for Efficient Visual Generation](/202610/06/2610.03202v1-contextual-flow-matching-adaptive-step-selection-in-flow-models-for-efficient-visual-generation)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：免训练推理时自适应步数选择加速流匹配扩散生成
-3. [Rethinking What to Cache in Few-Step Diffusion Transformers: Solver-Aware Target Selection](/202610/06/2610.03577v1-rethinking-what-to-cache-in-few-step-diffusion-transformers-solver-aware-target-selection)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：基于缓存的少步扩散Transformer采样加速
-4. [Hybrid-Basis Feature Forecasting for Diffusion Sampling Acceleration](/202610/06/2610.05254v1-hybrid-basis-feature-forecasting-for-diffusion-sampling-acceleration)  
-   标签：评分：9.0/10、query:diff-accel
-   evidence：免训练即插即用的特征预测扩散采样加速框架
-5. [Prism: Dynamic Sparse Attention for Native 2K Joint Video-Audio Generation Model Training](/202610/06/2610.05416v1-prism-dynamic-sparse-attention-for-native-2k-joint-video-audio-generation-model-training)  
+   evidence：基于约束流形缓存的免训练扩散加速
+2. [Backend-Agnostic Sparse Attention for Fast High-Resolution Visual Generation](/202610/07/2610.08772v1-backend-agnostic-sparse-attention-for-fast-high-resolution-visual-generation)  
    标签：评分：9.0/10、query:sparse-attn
-   evidence：面向视频-音频生成的动态稀疏注意力
-6. [MC-Sparse: Deconstructing and Closing the Dense-Sparse Attention Gap in Diffusion Transformers](/202610/06/2610.06801v1-mc-sparse-deconstructing-and-closing-the-dense-sparse-attention-gap-in-diffusion-transformers)  
-   标签：评分：9.0/10、query:sparse-attn
-   evidence：面向视频与三维生成的扩散Transformer免训练稀疏注意力
-7. [SpectralCache: Accelerating Diffusion-Based World Models via Spectral Feature Caching](/202610/06/2610.02660v1-spectralcache-accelerating-diffusion-based-world-models-via-spectral-feature-caching)  
+   evidence：面向高分辨率图像与视频生成的稀疏注意力加速
+3. [VDOT++: Unified Few-Step Video Generation via Unbalanced Optimal Transport Distillation](/202610/07/2610.03221v1-vdot-unified-few-step-video-generation-via-unbalanced-optimal-transport-distillation)  
    标签：评分：8.0/10、query:diff-accel
-   evidence：免训练的谱缓存加速扩散推理
+   evidence：基于非平衡最优传输蒸馏的少步视频扩散生成
+4. [Mask-Guided KV Cache Eviction in Block Diffusion Language Models](/202610/07/2610.06996v1-mask-guided-kv-cache-eviction-in-block-diffusion-language-models)  
+   标签：评分：8.0/10、query:diff-accel
+   evidence：块扩散语言模型的免训练KV缓存选择与驱逐
 
 ### 速读区论文标签
-1. [On the Trade-off Between Information Loss and Generalization in Sparse Attention](/202610/06/2610.04424v1-on-the-trade-off-between-information-loss-and-generalization-in-sparse-attention)  
-   标签：评分：8.0/10、query:sparse-attn
-   evidence：稀疏注意力机制的理论分析
-2. [LatentIndex: Cross-Layer Sharing with Layer-Specific Selection for Sparse Attention](/202610/06/2610.04635v1-latentindex-cross-layer-sharing-with-layer-specific-selection-for-sparse-attention)  
-   标签：评分：8.0/10、query:sparse-attn
-   evidence：跨层共享与逐层选择实现高效稀疏注意力
-3. [More Value per Key: Asymmetric Sparse Attention for Faster LLM Decoding](/202610/06/2610.04753v1-more-value-per-key-asymmetric-sparse-attention-for-faster-llm-decoding)  
-   标签：评分：8.0/10、query:sparse-attn
-   evidence：非对称稀疏注意力以减少键头实现高效注意力
-4. [SpecFold: Folding Multi-Branch Redundancy for Faster Speculative Decoding in Diffusion Language Models](/202610/06/2610.04875v1-specfold-folding-multi-branch-redundancy-for-faster-speculative-decoding-in-diffusion-language-models)  
-   标签：评分：8.0/10、query:diff-accel
-   evidence：通过多分支冗余折叠加速扩散语言模型推测解码
-5. [S2PD: Serial-to-Parallel Diffusion for Physically and Logically Consistent Video Generation](/202610/06/2610.06847v1-s2pd-serial-to-parallel-diffusion-for-physically-and-logically-consistent-video-generation)  
-   标签：评分：8.0/10、query:diff-accel
-   evidence：串行到并行视频扩散降低采样时间
-6. [Rank-Aware Speculative Sampling for Diffusion Draft Trees](/202610/06/2610.02251v1-rank-aware-speculative-sampling-for-diffusion-draft-trees)  
-   标签：评分：7.0/10、query:diff-accel
-   evidence：秩感知草稿树验证的推测采样加速扩散生成
-7. [Level-of-Token Diffusion](/202610/06/2610.05816v1-level-of-token-diffusion)  
-   标签：评分：7.0/10、query:diff-accel
-   evidence：通过减少计算实现自适应高效扩散生成
-8. [IDRF: Inverse-Distilled Reward Fine-tuning of Masked Discrete Diffusion Models](/202610/06/2610.03641v1-idrf-inverse-distilled-reward-fine-tuning-of-masked-discrete-diffusion-models)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：面向少步掩码离散扩散生成器的奖励微调以降低迭代采样成本
-9. [FLASHSWIN: Unlocking Large Windows and Dense Tokens in Swin Vision Transformers with Memory Efficient Attention](/202610/06/2610.04664v1-flashswin-unlocking-large-windows-and-dense-tokens-in-swin-vision-transformers-with-memory-efficient-attention)  
+1. [CommunityKV: Efficient Long-Context Decoding via Graph Partitioning](/202610/07/2610.00418v1-communitykv-efficient-long-context-decoding-via-graph-partitioning)  
+   标签：评分：7.0/10、query:sparse-attn
+   evidence：基于社区检测的免训练稀疏注意力加速长上下文解码
+2. [The Evolution of Attention in Large Language Models: Mechanisms, Trade-offs, and Emerging Trends](/202610/07/2609.39661v1-the-evolution-of-attention-in-large-language-models-mechanisms-trade-offs-and-emerging-trends)  
    标签：评分：6.0/10、query:sparse-attn
-   evidence：内存高效窗口注意力降低计算开销
-10. [NAMVIS: Next-Scale Autoregressive Multi-View Image Synthesis](/202610/06/2610.04722v1-namvis-next-scale-autoregressive-multi-view-image-synthesis)  
+   evidence：综述稀疏访问与记忆压缩注意力机制
+3. [ALoDLM: Adaptively Looped Diffusion Language Models](/202610/07/2610.04198v1-alodlm-adaptively-looped-diffusion-language-models)  
    标签：评分：6.0/10、query:diff-accel
-   evidence：无扩散框架避免迭代去噪，降低推理成本
-11. [The Unexpired Plan: A Free Monitor for Accelerated Diffusion Policies](/202610/06/2610.05747v1-the-unexpired-plan-a-free-monitor-for-accelerated-diffusion-policies)  
-   标签：评分：6.0/10、query:diff-accel
-   evidence：免训练扩散策略加速及其监控器
+   evidence：自适应计算加速扩散语言生成
+4. [PHBA: Prefix-State Hybrid Block Attention](/202610/07/2610.08527v1-phba-prefix-state-hybrid-block-attention)  
+   标签：评分：6.0/10、query:sparse-attn
+   evidence：面向长上下文的top-k块稀疏检索注意力架构
 
 
 <div class="dpr-home-promo-card dpr-home-panel">

@@ -1,0 +1,1339 @@
+Title: PHBA: Prefix-State Hybrid Block Attention
+
+URL Source: https://arxiv.org/pdf/2610.08527v1
+
+Published Time: Wed, 07 Oct 2026 01:59:22 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+Under review as a conference paper at ICLR 2027 
+
+# PHBA: P REFIX -S TATE HYBRID BLOCK ATTENTION 
+
+Ruijie Li 1, Jiaxi Hu 1,∗, Shiyu Wang 2,∗, Yuxuan Liang 1,∗
+
+> 1
+
+The Hong Kong University of Science and Technology (Guangzhou) 
+
+> 2
+
+Independent researcher 
+
+> ∗
+
+Corresponding author 
+
+## ABSTRACT 
+
+Hybrid architectures combining linear sequence models with softmax attention provide an effective balance between efficient long-context modeling and precise token retrieval. Existing designs such as Native Hybrid Attention (NHA) combine compressed long-term states with sliding-window attention, but their exact atten-tion is restricted to a fixed local window. In this work, we introduce Prefix-State Hybrid Block Attention (PHBA), which replaces local sliding-window attention with top-k block-sparse retrieval and couples each retrieved block with a compact prefix state summarizing its preceding context. The prefix states are constructed by a gated linear recurrence at block boundaries and retrieved together with the corresponding token blocks, allowing the model to combine precise long-range evidence with compressed historical context within a unified layer. We further de-velop a hardware-aware Triton implementation that streams routed token blocks and prefix states without materializing large intermediate tensors. Experiments show that PHBA improves long-context and retrieval performance over strong linear and hybrid baselines while retaining efficient training and inference. 
+
+## 1 INTRODUCTION 
+
+Long-context language modeling requires both efficient sequence processing and reliable retrieval of information from distant positions. Standard self-attention (Vaswani et al., 2017; Dao et al., 2022) provides precise token-level access to the entire history, but its quadratic complexity makes it increasingly expensive as the context length grows. Linear and recurrent sequence mod-els (Katharopoulos et al., 2020; Choromanski et al., 2020; Gu et al., 2021; Smith et al., 2022; Sun et al., 2023; Gu & Dao, 2023; Dao & Gu, 2024; Yang et al., 2023; Arora et al., 2024; Hu et al., 2025; Qin et al., 2024; Zhang et al., 2024; Team et al., 2025; Hatamizadeh et al., 2026) offer a more effi-cient alternative by compressing historical information into fixed-size states , but this compression can limit precise in-context retrieval. A practical solution is to combine recurrent sequence modeling with sparse or local softmax atten-tion. Recent hybrid architectures mix efficient recurrent computation with token-level attention to improve the trade-off between long-range efficiency and recall (Arora et al., 2024; De et al., 2024; Du et al., 2026). For example, Native Hybrid Attention (NHA) (Du et al., 2026) combines a com-pressed recurrent state with sliding-window attention (SWA), allowing each layer to access both summarized long-term memory and precise recent tokens. However, the exact-attention component in SWA is inherently local: key–value pairs outside the fixed window are accessible only through the compressed recurrent state. As a result, the exact-attention budget cannot be allocated according to the content relevance between each query and the global history. This leaves a central challenge for long-context hybrid models: 
+
+Can sparse attention retrieve the globally relevant key–value content for each query while preserving its preceding context? 
+
+Sparse attention has long been explored as a way to extend token-level interaction beyond dense quadratic attention (Child et al., 2019; Kitaev et al., 2020; Beltagy et al., 2020; Zaheer et al., 2020; Roy et al., 2021). A natural way to extend exact attention beyond a fixed local window is content-dependent block retrieval. Top-K block-sparse attention allocates the sparse computation to relevant 1arXiv:2610.08527v1 [cs.LG] 6 Oct 2026 Under review as a conference paper at ICLR 2027 blocks from distant history rather than only to recent tokens. In particular, Mixture of Block Atten-tion (MoBA) (Lu et al., 2026) uses query-dependent block-level routing to identify a small number of historical blocks for each query. Based on this observation, we introduce Prefix-State Hybrid Block Attention (PHBA). PHBA replaces the fixed sliding-window component of conventional recurrent–attention hybrids with content-dependent block-sparse retrieval. In addition, PHBA associates each block with a com-pact prefix state constructed by a gated slot recurrence (Yang et al., 2023; Zhang et al., 2024) at the corresponding block boundary. When a query selects a historical block, it accesses both the exact tokens within that block and its aligned prefix state, which summarizes the causal history preced-ing the block. PHBA therefore couples high-resolution retrieved content with compressed context immediately preceding that content. The key design is to align recurrent memory with the same block structure used for sparse routing. Rather than relying on a single compressed history together with fixed local attention, PHBA exposes block-aligned prefix memories that can be selected together with distant exact-token blocks. This allows the model to recover broader historical context around retrieved content without maintaining a separate recurrent state for every token. Efficiently implementing this computation requires processing dynamically routed token blocks to-gether with their associated prefix states without materializing packed sparse payloads. We there-fore develop a hardware-aware Triton implementation that directly streams selected token and state blocks from their original memory layouts and uses compact routing metadata for efficient sparse execution. Combined with chunkwise prefix-state construction and online-softmax accumulation, the implementation supports efficient long-context training and inference. Experiments demonstrate that PHBA consistently improves retrieval and long-context modeling over strong recurrent, sparse-attention, and hybrid baselines while maintaining favorable efficiency at long sequence lengths. 
+
+## 2 PRELIMINARY 
+
+PHBA builds upon two components: block-sparse attention for selective token retrieval and gated slot memory for recurrent sequence modeling. This section briefly reviews these two components and introduces the notation used in PHBA. 2.1 BLOCK -S PARSE ATTENTION 
+
+Sparse attention reduces the cost of standard self-attention by allowing each query to attend to only a subset of historical tokens. Block-sparse attention groups the sequence into contiguous blocks and performs selection at the block level. Let the sequence be partitioned into blocks {B 1, . . . , BB }, and let Rt denote the set of blocks se-lected for query qt. The query attends to the tokens contained in the selected blocks: 
+
+oblk  
+
+> t
+
+= softmax qtK⊤Rt
+
+√d
+
+!
+
+VRt , (1) where KRt and VRt contain the key and value vectors from the selected blocks. Content-dependent block routing, as used in Mixture of Block Attention (MoBA), selects a small number of relevant blocks for each query. PHBA adopts this block-routed sparse-attention setting; the routing procedure is described in Sec. 3. 2.2 GATED SLOT MEMORY 
+
+Gated Slot Attention (GSA) (Zhang et al., 2024) represents historical information using a fixed number of key and value memory slots. Let fKt ∈ RM ×d and eVt ∈ RM ×dv denote the key and value memories, and let At ∈ (0 , 1) M denote a slot-wise retention gate. Using the coupled write gate It = 1 − At, the memories are updated as 
+
+fKt = Diag( At)fKt−1 + Itk⊤ 
+
+> t
+
+,
+
+eVt = Diag( At) eVt−1 + Itv⊤ 
+
+> t
+
+. (2) 2Under review as a conference paper at ICLR 2027 (in block B             
+
+> ₆)
+> ...
+> B
+> ₁B
+> ₂B
+> ₃B
+> ₄B
+> ₅
+> Key/Value Token Sequence (divided into blocks)
+> B
+> ₆(current)
+> Top-K Block Routing
+> find the most relevant historical blocks
+> (to prefix states) (to exact tokens)
+> qt
+> qtrow
+> qtrope
+> query for routing
+> Online-Softmax Token-State Attention
+> Top K Prefix State (compressed context)
+> Top K Exact Tokens (precise evidence)
+> P
+> ₂P
+> ₅P
+> ₆
+> B
+> ₆≤ t B
+> ₂B
+> ₅
+> ot
+> Key Block Value Block
+> Prefix-State Construction
+> recurrent compression
+> row preceding tokens (before B 6)
+> ... ... ... ...
+> all prefix state
+> top k index
+> rope rope rope
+
+Figure 1: Overview of PHBA. The RoPE query qrope  
+
+> t
+
+first performs Top-K Block Routing to select relevant historical blocks. PHBA attends to the retrieved exact tokens with qrope  
+
+> t
+
+and their Block-Aligned Prefix States 
+
+with qraw  
+
+> t
+
+, and combines both memory types through Online-Softmax Token–State Attention to produce ot.
+
+The shared slot-wise gate keeps the key and value memories temporally aligned. This recurrence is a specialization of gated linear attention (GLA) (Yang et al., 2023) and admits the same hardware-efficient chunkwise-parallel formulation. PHBA adopts this gated slot-memory construction to form block-aligned prefix states, but uses them differently from GSA: the resulting key/value slots are stored only at block boundaries and later participate in joint softmax attention together with routed exact-token blocks. 
+
+## 3 PREFIX -S TATE HYBRID BLOCK ATTENTION 
+
+Prefix-State Hybrid Block Attention (PHBA) combines block-sparse retrieval with recurrent prefix states within a single attention layer, as illustrated in Figure 1. For each query, PHBA retrieves a small number of relevant historical blocks at full token resolution, while compact recurrent states summarize the prefixes preceding these blocks. The exact token representations and their aligned prefix states share a common softmax normalization, which is evaluated efficiently through online-softmax merging without explicitly materializing a combined attention matrix. We describe PHBA in four parts: top-K block routing, prefix-state construction, online-softmax token–state attention, and efficient execution. Unless otherwise stated, we use single-head notation. Let Qraw , Kraw ∈
+
+RT ×d and V ∈ RT ×dv denote the projected queries, keys, and values. RoPE is applied to the token-attention queries and keys, producing Qrope and Krope .3.1 TOP -K BLOCK ROUTING 
+
+PHBA partitions the sequence into Nc = ⌈T /C ⌉ contiguous blocks of at most C tokens. Let Bb
+
+denote block b, and let c(t) denote the block containing query token t. Historical routing considers only blocks preceding the current block. PHBA uses a total exact-block budget of K blocks per query. Since the current block is always retained for local causal attention, Kh = K − 1 blocks remain for historical routing. Each block is represented for routing by the mean of its RoPE-transformed keys. For query t, PHBA selects the Kh historical blocks whose summaries have the largest similarity to the query: 
+
+¯krope  
+
+> b
+
+= 1
+
+|B b|
+
+X
+
+> i∈B b
+
+krope  
+
+> i
+
+, Rt = TopK 
+
+(qrope  
+
+> t
+
+)⊤ ¯krope   
+
+> bb<c (t)
+
+, K h
+
+
+
+. (3) The centroid is used only for routing. Once a historical block is selected, PHBA attends to its original token-level keys and values. The current block is not included in the historical route; instead, local 3Under review as a conference paper at ICLR 2027 causal attention over the current block forms part of the token branch. Therefore, the exact-token memory visible to query t is 
+
+Etok  
+
+> t
+
+= B≤tc(t) ∪ [
+
+> b∈R t
+
+Bb, (4) where B≤tc(t) contains the causal tokens in the current block. This provides local causal context together with query-dependent access to distant historical blocks. 3.2 PREFIX -S TATE CONSTRUCTION 
+
+Sparse retrieval provides exact token information from selected blocks, while recurrent prefix states provide a compact summary of earlier history. PHBA constructs separate prefix-key and prefix-value states using the gated recurrence introduced in Sec. 2.2. Let M denote the number of recurrent slots. For token t, PHBA predicts a retention gate At =
+
+σ(at)1/τ ∈ (0 , 1) M and uses the coupled write gate It = 1 − At. The prefix states are updated as 
+
+SKt = Diag( At)SKt−1 + It(kraw  
+
+> t
+
+)⊤,
+
+SVt = Diag( At)SVt−1 + Itv⊤ 
+
+> t
+
+, (5) where SKt ∈ RM ×d and SVt ∈ RM ×dv . The two recurrences share the same slot-wise retention and write gates, ensuring that each prefix-key slot and its corresponding prefix-value slot summarize the same historical positions with identical temporal weighting. For a block Bb beginning at position τb, PHBA stores the states immediately before the block: 
+
+P Kb = SKτb−1, P Vb = SVτb−1. (6) Thus, (P Kb , P Vb ) summarizes the causal prefix preceding Bb and does not contain tokens from the block itself. For query t, the candidate prefix-state blocks are 
+
+Est  
+
+> t
+
+= {c(t)} ∪ R t. (7) States associated with blocks having an empty causal prefix are masked. The current-block state summarizes all history before the local block, while each routed state provides the prefix associated with the corresponding historical evidence block. 3.3 ONLINE -S OFTMAX TOKEN –S TATE ATTENTION 
+
+PHBA attends jointly to two types of memory: exact token representations and block-aligned prefix states. The token branch uses RoPE-transformed queries and keys, whereas the prefix-state branch uses the raw query and the raw prefix-state keys. For a token i ∈ E tok  
+
+> t
+
+and a prefix-state slot m from block b ∈ E st  
+
+> t
+
+, the corresponding attention logits are 
+
+ℓtok  
+
+> t,i
+
+= (qrope  
+
+> t
+
+)⊤krope 
+
+> i
+
+√d , ℓst  
+
+> t,b,m
+
+= (qraw  
+
+> t
+
+)⊤pKb,m 
+
+√d , (8) where pKb,m and pVb,m denote the m-th key and value slots of the prefix state associated with block b.Although the two memory types are evaluated through separate sparse branches, they are normalized jointly. Define their branch-wise partition functions as 
+
+Ztok  
+
+> t
+
+= X
+
+> i∈E tok
+> t
+
+eℓtok  
+
+> t,i
+
+, Zst  
+
+> t
+
+= X
+
+> b∈E st
+> t
+> M
+
+X
+
+> m=1
+
+eℓst  
+
+> t,b,m
+
+. (9) The PHBA output is 
+
+oPHBA  
+
+> t
+
+=
+
+X
+
+> i∈E tok
+> t
+
+eℓtok  
+
+> t,i
+
+vi + X
+
+> b∈E st
+> t
+> M
+
+X
+
+> m=1
+
+eℓst  
+
+> t,b,m
+
+pVb,m 
+
+Ztok  
+
+> t
+
++ Zst 
+
+> t
+
+. (10) 4Under review as a conference paper at ICLR 2027 Importantly, PHBA does not explicitly concatenate the token and prefix-state memories. Instead, each branch maintains its own online-softmax statistics. Let Otok  
+
+> t
+
+, L tok  
+
+> t
+
+and Ost  
+
+> t
+
+, L st  
+
+> t
+
+denote the normalized outputs and log-sum-exp statistics of the token and prefix-state branches, respectively. The two branches are merged exactly as 
+
+Lt = LSE  Ltok  
+
+> t
+
+, L st 
+
+> t
+
+ ,
+
+Ot = eLtok   
+
+> t−Lt
+
+Otok  
+
+> t
+
++ eLst   
+
+> t−Lt
+
+Ost  
+
+> t
+
+. (11) This online-softmax merge is exactly equivalent to applying a single softmax over the union of exact tokens and prefix-state slots, while avoiding explicit concatenation of the two memory types. Consequently, each query allocates probability mass directly between exact token evidence and com-pressed prefix information, rather than combining independently normalized branch outputs through an external fusion weight. In implementation, the two branch outputs need not be materialized sep-arately: the same online-softmax merge is applied incrementally while streaming the selected token and prefix-state blocks. The hardware-efficient realization is described in Sec. 3.4 and Algorithm 6. 3.4 HARDWARE -E FFICIENT CHUNKWISE AND SPARSE EXECUTION 
+
+PHBA addresses two sources of training inefficiency. First, the recurrent prefix-state construction is reformulated into a chunkwise-parallel computation, avoiding token-wise recurrent execution within each chunk. Second, routed attention is implemented with metadata-driven sparse kernels that avoid gathering selected queries and memory blocks into packed payload tensors. Together, these two designs enable efficient training while preserving the PHBA formulation in Sec. 3.3. 
+
+Chunkwise Prefix-State Update. The prefix-state recurrence follows the gated slot-memory structure of GSA and admits the same chunkwise decomposition as gated linear attention. We use the same block partition as in Sec. 3.1. For packed inputs, the recurrence is applied independently to each sequence and the incoming state is reset to zero at its first block. Let Cn = |B n| denote the length of block n. For block [n], define 
+
+−→
+
+A[n],i =
+
+> i
+
+Y
+
+> j=1
+
+A[n],j , ←−
+
+A[n],i =
+
+> Cn
+
+Y
+
+> j=i+1
+
+A[n],j . (12) where the products are elementwise. For compact notation, we write S[n] = [ SK
+
+> [n]
+
+, SV
+
+> [n]
+
+] and Z[n] =[Kraw [n] , V[n]]. Let I[n] = 1 − A[n] and W[n] = I[n] ⊙ ←−
+
+A[n]. The boundary state is updated as 
+
+S[n+1] = Diag 
+
+−→
+
+A[n],C n
+
+
+
+S[n] + W ⊤
+
+> [n]
+
+Z[n]. (13) Only the boundary state is recurrent across chunks, while the writes within each chunk are evaluated in parallel. The incoming state S[n] is stored as the prefix state associated with chunk [n]. Thus, PHBA retains the causal recurrent update while exposing only block-aligned prefix states to the sub-sequent sparse attention computation. A detailed derivation of Eq. 13 is provided in Appendix A.1.1. 
+
+Operator-Aware Sparse Execution. PHBA is designed around a simple systems constraint: routed attention should not first gather selected query rows and memory blocks into packed sparse payload tensors. Such a pipeline would introduce additional HBM round trips before the atten-tion kernel can start. PHBA instead materializes only compact integer routing metadata and directly loads the required query rows, token blocks, and prefix-state blocks from their original HBM layouts into on-chip SRAM/registers. Algorithm 1 first produces the query-centric historical routes used by the forward pass. During training, the same routing decisions are additionally reformatted into block-major variable-length metadata for the backward pass, without moving the underlying payloads. For the forward pass, block-local causal FlashAttention first computes row-wise outputs and log-sum-exp statistics. The fused sparse kernel then extends the corresponding online-softmax accumulators with the current-block prefix state, routed historical token blocks, and their aligned prefix states. This is exactly equivalent to the joint token–state softmax in Eq. 10 and the online-softmax merge in Eq. 11, with-out explicitly concatenating the two memory types. Algorithm 2 summarizes the forward execution. 5Under review as a conference paper at ICLR 2027 
+
+Algorithm 1 PHBA Routing and Block-Major Metadata Construction 
+
+Require: RoPE queries/keys Qrope , Krope ∈ RT ×H×d in HBM. Boundaries cu . Block size C.Total exact-block budget K. 
+
+> 1:
+
+Set historical routing budget Kh ← K − 1. 
+
+> 2:
+
+Construct current block ids c ∈ ZT , block-row pointers BlockPtr ∈ ZNc+1 , and prefix-validity mask PrefixValid ∈ { 0, 1}Nc from cu and C, where PrefixValid[ b] = 1 iff block b has a nonempty causal prefix.  
+
+> 3:
+
+Compute key-block centroids ¯Krope ∈ RNc×H×d using Algorithm 3.  
+
+> 4:
+
+Select historical top-Kh blocks Rc ∈ ZT ×H×Kh using Algorithm 4.  
+
+> 5:
+
+Set historical-token routes Rtok ← Rc. 
+
+> 6:
+
+Broadcast c over heads as cH ∈ ZT ×H×1 and set prefix-state routes Rst ← [cH ; Rc] along the route dimension.  
+
+> 7:
+
+Set any entry in Rst whose routed block b has PrefixValid[ b] = 0 to −1. 
+
+> 8:
+
+During training, reformat Rtok and Rst into block-major varlen metadata for sparse backward using Algorithm 5.  
+
+> 9:
+
+return Rc, c, BlockPtr , PrefixValid and, during training, (ρtok , Offset tok , C tok blk ),
+
+(ρst , Offset st , C st blk ).
+
+Algorithm 2 PHBA Forward Pass 
+
+Require: Token tensors Qraw , Qrope , Krope ∈ RT ×H×d and V ∈ RT ×H×dv in HBM. Prefix states P K ∈ RNc×H×M ×d and P V ∈ RNc×H×M ×dv in HBM. Routes Rc, current block ids 
+
+c, block-row pointers BlockPtr , and prefix-validity mask PrefixValid . Tile sizes Br , B c. 
+
+> 1:
+
+Run block-local causal FlashAttention according to BlockPtr and write Oloc ∈ RT ×H×dv and 
+
+Lloc ∈ RT ×H to HBM.  
+
+> 2:
+
+Run F USED SPARSE FORWARD (Algorithm 6) with (Qraw , Qrope , Krope , V , P K , P V ), routes 
+
+(Rc, c), BlockPtr , PrefixValid , seed (Oloc , L loc ), and tile sizes Br , B c. 
+
+> 3:
+
+The fused kernel extends the corresponding online-softmax accumulators with the current-block prefix state, historical exact-token blocks, and their aligned prefix states.  
+
+> 4:
+
+The fused kernel writes final output O and joint log-sum-exp L to HBM.  
+
+> 5:
+
+return O, L .Detailed centroid computation, top-K selection, metadata reformatting, sparse forward, and back-ward kernels are provided in Appendix A.1. 
+
+## 4 EXPERIMENTS 
+
+4.1 EXPERIMENTAL SETUP 
+
+Models and Training. We evaluate PHBA at two scales: 760M models trained on 50B tokens and 1.3B models trained on 100B tokens. All models are trained from scratch on FineWeb-Edu (Penedo et al., 2024) with an 8K context length. Unless otherwise specified, PHBA uses M = 128 prefix-state slots and block size C = 128 . For the 1.3B main comparison, we use a fixed 1/8 exact-token budget, corresponding to K = 8 blocks at 8K. Additional architecture, optimization, and training details are provided in Appendix A.2.1. 
+
+Baselines. We compare PHBA with Transformer (Vaswani et al., 2017), MoBA (Lu et al., 2026), GSA (Zhang et al., 2024), KDA (Team et al., 2025), and NHA (Du et al., 2026). All baselines are trained on the same data and context length at matched model scale; efficient baselines use matched token budgets where applicable. Detailed baseline information is provided in Appendix A.2.2. 
+
+Evaluation. We evaluate language modeling, zero-shot commonsense reasoning, long-context retrieval, and real-world understanding. Language modeling and commonsense evaluation use 
+
+lm-evaluation-harness (Gao et al., 2024). Models trained at 8K are directly evaluated at 16K–64K without further training. We use RULER/NIAH for long-context retrieval and Long-Bench for real-world understanding, truncating LongBench inputs beyond 8K to the first and last 4K tokens. Detailed benchmark descriptions are provided in Appendix A.2.3. 6Under review as a conference paper at ICLR 2027 
+
+Table 1: Short-context evaluation of 760M and 1.3B models. RULER/NIAH are evaluated at 4K and 8K and scaled by 100. Bold /underline denote best/second-best results. PHBA (default): M = C = 128 , K = 8 .
+
+PART I: Common Sense Reasoning & RULER Tasks 
+
+Model & Scale 
+
+Common Sense Reasoning RULER Tasks 
+
+ARC e ARC c Hella. PIQA Wino. Avg. CWE FWE HotpotQA SQuAD VT Avg 
+
+(acc ↑) (acc ↑) (acc ↑) (acc ↑) (acc ↑) (acc ↑) 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑
+
+760M params with 50B training tokens 
+
+PHBA (origin) 66.96 34.30 52.14 70.73 55.33 55.89 26.3 3.6 19.5 22.1 20.2 15.6 24.4 14.6 1.0 2.0 18.3 11.6 w. C = 512 , K = 2 64.10 32.34 48.25 69.70 52.25 53.33 4.8 0.3 1.6 3.4 23.0 16.4 26.6 10.0 10.9 0.6 13.4 6.1 w. C = 256 , K = 4 64.35 32.00 49.89 69.70 53.67 53.92 20.0 0.6 4.1 9.2 21.0 15.8 24.3 9.7 9.0 0.4 15.7 7.1 w. C = 64 , K = 16 67.51 34.22 53.25 71.38 55.88 56.45 34.7 5.5 11.0 3.9 24.4 22.2 37.8 22.1 0.9 0.3 21.8 10.8 w. M = 64 66.08 32.59 51.70 70.40 55.64 55.28 10.1 3.1 2.9 2.7 24.6 19.0 33.1 19.6 1.8 0.0 14.5 8.9 w. M = 256 64.94 31.31 48.85 70.13 55.96 54.24 21.4 4.0 0.0 0.0 23.4 18.8 27.9 12.9 4.8 0.1 15.5 7.2 w/o. gate 64.52 34.39 49.98 70.24 53.75 54.58 30.5 1.1 4.1 2.1 20.0 17.0 21.9 10.9 0.6 0.0 15.4 6.2 w. mean 65.61 33.53 50.19 70.24 57.38 55.39 18.1 0.1 7.5 4.1 20.8 17.8 24.9 15.2 7.4 0.8 15.7 7.6 
+
+1.3B params with 100B training tokens 
+
+Transformer 72.14 38.74 57.41 71.33 58.33 59.59 38.8 2.2 25.7 27.2 30.2 24.6 34.3 25.6 5.6 0.0 26.9 15.9 MoBA 70.16 36.09 56.25 71.38 55.96 57.97 35.2 1.6 18.2 3.9 25.2 21.0 37.4 22.0 0.8 5.5 23.4 10.8 GSA 68.94 35.84 56.15 72.31 56.67 57.98 1.5 0.4 1.3 2.0 17.2 15.8 14.4 10.1 32.4 23.6 13.4 10.4 KDA 73.53 40.02 58.89 73.45 59.43 61.06 28.6 3.5 41.8 33.3 23.6 21.6 23.4 14.1 7.6 10.8 25.0 16.7 NHA 71.42 36.09 58.35 74.37 58.48 59.75 33.5 7.0 45.7 23.1 11.8 26.2 19.2 27.2 21.8 1.3 26.4 15.1 PHBA 71.17 38.14 58.58 72.63 59.83 60.07 31.0 24.2 31.3 45.3 29.0 13.4 43.4 16.2 1.5 20.5 27.2 23.9 PART II: Language Modeling Tasks 760M params with 50B training tokens 1.3B params with 100B training tokens 
+
+Model Wiki. (ppl ↓) Lamb. (acc ↑) Lamb. (ppl ↓) Model Wiki. (ppl ↓) Lamb. (acc ↑) Lamb. (ppl ↓)PHBA (origin) 18.33 42.98 16.33 Transformer 15.67 46.69 12.26 w. C = 512 , K = 2 19.76 40.31 19.34 MoBA 16.22 47.22 13.04 w. C = 256 , K = 4 19.19 40.52 17.86 GSA 16.86 40.93 16.74 w. C = 64 , K = 16 17.34 45.24 14.60 KDA 16.18 48.65 10.91 w. M = 64 18.84 43.74 15.91 NHA 15.96 48.34 11.51 w. M = 256 19.74 41.90 18.15 PHBA 15.21 49.27 10.80 
+
+w/o. gate 18.88 43.31 16.11 Table Color Legend 
+
+w. mean 18.76 43.24 16.38 Blue: Proposed Method Gray: Primary Baseline Red: Average Columns 
+
+PART III: NIAH Tasks 
+
+Model & Scale 
+
+Single-Key NIAH Multi-Key NIAH NIAH (Extra) Avg 
+
+Task 1 Task 2 Task 3 Task 1 Task 2 Task 3 MultiQuery MultiValue Mean 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑ 4k ↑ 8k ↑
+
+760M params with 50B training tokens 
+
+PHBA (origin) 99.4 20.4 97.4 42.8 67.4 11.4 78.0 44.0 43.2 5.6 18.8 0.0 41.7 22.2 46.0 25.0 61.5 21.4 w. C = 512 , K = 2 78.6 12.6 36.2 19.6 25.4 3.6 32.0 20.4 1.4 0.6 1.0 0.2 23.1 13.9 23.1 15.8 27.6 10.8 w. C = 256 , K = 4 88.0 6.2 66.6 33.2 35.2 6.0 43.2 26.0 5.6 2.4 12.6 0.6 27.1 19.0 29.3 20.3 38.5 14.2 w. C = 64 , K = 16 99.2 52.0 98.8 61.6 57.6 12.2 82.8 51.8 24.2 5.8 11.6 1.6 44.8 20.8 42.9 25.3 57.7 28.9 
+
+w. M = 64 99.0 20.2 93.4 50.4 41.4 12.0 72.2 42.2 10.2 1.4 9.4 0.2 32.7 23.0 39.0 23.2 49.7 21.6 w. M = 256 66.2 3.6 75.4 23.2 13.2 4.6 42.6 18.4 2.6 0.2 7.6 0.0 29.7 9.3 31.4 11.9 33.6 8.9 w/o. gate 92.6 37.4 65.2 21.0 32.8 5.6 36.0 16.2 2.6 0.6 4.8 0.4 30.5 13.5 24.9 14.0 36.2 13.6 w. mean 94.8 53.8 68.6 36.6 4.2 6.0 50.0 35.6 9.0 0.4 4.4 0.0 29.4 17.3 29.9 20.8 36.3 21.3 
+
+1.3B params with 100B training tokens 
+
+Transformer 99.8 72.4 100.0 73.6 63.2 42.6 84.2 68.0 75.8 40.2 12.0 1.0 57.9 31.3 43.2 26.8 67.0 44.5 
+
+MoBA 98.8 64.0 83.0 37.4 15.8 10.6 41.8 32.8 7.2 3.2 8.6 0.0 30.0 19.0 29.5 21.4 39.3 23.6 GSA 93.0 60.8 88.0 20.2 2.4 1.0 24.2 21.6 0.0 0.0 0.0 0.0 34.4 14.2 34.4 14.0 34.6 16.5 KDA 100.0 29.6 86.2 49.2 46.0 19.4 26.4 53.0 0.2 14.0 0.0 0.4 42.7 27.1 49.3 28.0 43.8 27.5 NHA 100.0 98.6 95.0 48.2 53.8 10.8 30.0 24.8 40.0 0.0 0.0 0.0 38.2 19.4 39.1 17.4 49.5 27.4 PHBA 100.0 99.4 98.6 39.6 54.4 23.6 76.0 26.6 45.8 0.0 13.0 0.0 55.8 20.5 59.0 26.1 62.6 29.5 4.2 SHORT -C ONTEXT LANGUAGE MODELING AND RETRIEVAL 
+
+Table 1 reports performance within the 8K training context. 
+
+Language Modeling and Commonsense Reasoning. Table 1 reports WikiText and LAM-BADA (Merity et al., 2016; Paperno et al., 2016) together with zero-shot ARC, HellaSwag, PIQA, and WinoGrande (Clark et al., 2018; Zellers et al., 2019; Bisk et al., 2020; Sakaguchi et al., 2021). At 1.3B scale, PHBA achieves the best WikiText and LAMBADA results among the compared mod-els and a competitive commonsense average of 60.07, second only to KDA. This shows that routed retrieval and prefix-state memory preserve strong short-context modeling quality. 
+
+Short-Context Retrieval. On RULER (Hsieh et al., 2024) and its NIAH variants, PHBA consis-tently outperforms the other efficient baselines at 4K and 8K, trailing only the dense Transformer on NIAH. This demonstrates strong retrieval within the training context. 4.3 LONG -C ONTEXT RETRIEVAL AND UNDERSTANDING 
+
+We next evaluate the 1.3B models beyond the 8K training length. Figure 2 (a)–(c) reports RULER, NIAH, and LongBench averages, with complete results in Appendix Table 2. 7Under review as a conference paper at ICLR 2027 16K 32K 64K                          
+
+> 0510 15
+> Avg. score
+> (a) RULER
+> 10.4 16.7 9.3
+> 16K 32K 64K
+> 0510
+> Avg. score
+> (b) NIAH
+> 11.4 3.2 2.8
+> Transformer MoBA GSA KDA NHA PHBA
+> 10 15
+> Avg. score
+> 9.80 10.58 13.52 15.87 14.91
+> 18.14
+> (c) LongBench
+> C=512, K=2 C=256, K=4
+> C=128, K=8
+> C=64, K=16
+> 024
+> NIAH Avg.
+> 1.3 2.4 4.5 5.2 1.2 1.4 1.1 2.5 1.5 1.1 1.2 0.0
+> (d) Block Granularity
+> M=64 M=128 M=256
+> 024
+> NIAH Avg.  3.6 4.5 1.7 0.6 1.1 1.4 0.4 1.2 1.1
+> (e) Prefix-State Capacity
+> w/o gate Mean Gated
+> 024
+> NIAH Avg.
+> 0.8 3.6 4.5 0.3 1.1 1.1 0.6 1.1 1.2
+> (f) Gated State Construction
+> 6789
+> Kt/s
+> 9.148 8.522 7.419 5.431
+> Transformer MoBA GSA KDA NHA PHBA 16K 32K 64K Shadow: default Throughput (Kt/s)
+
+Figure 2: Long-context results and ablations. (a)–(b) RULER/NIAH averages at 16K/32K/64K; (c) Long-Bench average. (d)–(f) Ablations of block granularity, prefix-state capacity, and gated state construction; (d) also reports throughput (1.3B, BS=1, 8K). Bars denote 16K/32K/64K results; shadows mark default settings. 
+
+Long-Context Retrieval. PHBA maintains the strongest overall RULER and NIAH (Hsieh et al., 2024) performance from 16K to 64K, with the advantage becoming more pronounced beyond the training length. Content-dependent routing preserves direct access to distant token-level informa-tion, while aligned prefix states provide the context preceding the retrieved blocks, improving long-context extrapolation over compressed memory or sparse token retrieval alone. 
+
+Long-Context Understanding. PHBA also achieves the strongest LongBench (Bai et al., 2024) average, with gains across document QA, summarization, and few-shot tasks while remaining com-petitive on code. This indicates that the retrieval gains transfer beyond controlled synthetic settings to real-world long-context tasks. 4.4 ABLATION AND DESIGN ANALYSIS 
+
+Figure 2 (d)–(f) summarizes the long-context ablations of block granularity, prefix-state capacity, and gated state construction. Short-context ablations are included in Table 1, with complete long-context results in Appendix Table 2. 
+
+Block Granularity. Under a fixed 1/8 exact-token budget, reducing C and increasing K gener-ally improves retrieval by enabling finer-grained routing (Figure 2 (d); Table 1). Smaller blocks, however, require more routed blocks and reduce throughput. We therefore use C = 128 and K = 8 
+
+as the default quality–efficiency trade-off. 
+
+Prefix-State Capacity. Figure 2 (e) and Table 1 show that performance does not improve mono-tonically with state size. M = 128 gives the strongest and most stable results across context lengths, while smaller states lack capacity and larger states provide no consistent benefit. 
+
+Gated State Construction. Figure 2 (f) and Table 1 show that the learned gated recurrence consis-tently outperforms ungated and mean-aggregation variants, especially under long-context extrapola-tion. This highlights the importance of adaptive retention and writing for prefix-state construction. 
+
+Token–State Composition. MoBA retrieves distant tokens without an aligned summary of their preceding context, whereas NHA combines recurrent memory with exact attention restricted to a fixed local window. PHBA instead couples routed historical blocks with their block-aligned prefix states, yielding stronger retrieval and long-context performance in Figure 2 (a)–(c) and Table 1. 4.5 TRAINING EFFICIENCY .Figure 3 compares end-to-end training throughput, with detailed benchmark settings and measure-ment protocols provided in Sec. A.2.4. With a fixed 64-token window, NHA is about 24% slower 8Under review as a conference paper at ICLR 2027    
+
+> 2K 4K 8K 16K
+> 0246810 12 14 16
+
+Sequence length Training throughput (Kt/s)             
+
+> Transformer SWA NHA MoBA ( K= 4 )PHBA ( K= 4 )
+> GSA SWA ( 1/8)NHA ( 1/8)MoBA ( C= 256 )PHBA ( C= 256 )
+
+Figure 3: Training efficiency on a single NVIDIA H20-96GB GPU. For MoBA and PHBA, both configurations maintain a fixed 1/8 sparse token budget: K = 4 dynamically adjusts the block size C, whereas C = 256 
+
+dynamically adjusts the number of routed blocks K. SWA ( 1/8) and NHA ( 1/8) similarly scale the window size with sequence length, while SWA and NHA use a fixed window size of 64 . All state-based models use 
+
+M = 128 memory slots. Zero throughput for NHA ( 1/8) denotes out-of-memory (OOM). 
+
+than SWA. Under the matched 1/8 budget, PHBA is 18 .4–34 .6% faster than NHA at 2K, while NHA runs out of memory from 4K onward in the evaluated implementation. Relative to MoBA, adding block-aligned prefix states incurs only 6.7–11 .9% overhead for C = 256 across 2K–16K. With K = 4 , PHBA reaches 8.79 Kt/s at 16K, 12 .8% higher than full attention, while GSA remains nearly length-independent due to its recurrent computation. 4.6 RELATED WORK 
+
+Efficient sequence models replace dense attention with structured or recurrent state updates, includ-ing S4/S5, RetNet, Mamba/Mamba-2, GLA, HGRN2, GSA, and recent gated or delta-rule variants such as DeltaNet, KDA, and Gated DeltaNet-2 (Gu et al., 2021; Smith et al., 2022; Sun et al., 2023; Gu & Dao, 2023; Dao & Gu, 2024; Yang et al., 2023; Qin et al., 2024; Zhang et al., 2024; Yang et al., 2024; Team et al., 2025; Hatamizadeh et al., 2026). A complementary line reduces softmax-attention cost through sparse connectivity, from Sparse Transformer, Reformer, Longformer, BigBird, and Routing Transformer to MoBA’s query-dependent block routing (Child et al., 2019; Kitaev et al., 2020; Beltagy et al., 2020; Zaheer et al., 2020; Roy et al., 2021; Lu et al., 2026). Hybrid architec-tures such as BASED, Griffin, and NHA combine recurrent or linear memory with local attention (Arora et al., 2024; De et al., 2024; Du et al., 2026); NHA further places recurrent key–value slots and sliding-window tokens under a shared softmax. In this work, PHBA builds on these lines by pairing content-routed historical blocks with block-aligned prefix states, so each selected block is accompanied by a compressed summary of its preceding context. 
+
+## 5 CONCLUSION 
+
+We introduced Prefix-State Hybrid Block Attention (PHBA), which combines content-dependent block-sparse retrieval with block-aligned recurrent prefix states for efficient long-context modeling. PHBA jointly attends to routed historical tokens and the compressed context preceding them, pro-viding both fine-grained retrieval and broader historical information within a unified softmax. A hardware-aware implementation further enables efficient chunkwise state construction and sparse execution without materializing packed payloads. Experiments demonstrate consistent improve-ments in retrieval and long-context understanding while preserving competitive language modeling quality and training efficiency. 9Under review as a conference paper at ICLR 2027 AI U SE STATEMENT 
+
+In this work, we used generative AI tools solely to aid and polish the writing. We did not use generative AI tools for research design, methodology, experiments, data analysis, or the generation of results. All AI-assisted content was reviewed by the authors. We take full responsibility for the final content of this work. ETHICS STATEMENT 
+
+This work studies efficient sequence modeling architectures and does not involve human subjects or the collection of sensitive personal data. Experiments are conducted using publicly available training and evaluation datasets. We are not aware of additional ethical concerns specific to the proposed method beyond those generally associated with large language models. REPRODUCIBILITY STATEMENT 
+
+We provide detailed specifications of PHBA in the main paper, including its routing, prefix-state construction, token–state attention, and efficient execution. The appendix contains the chunkwise derivation, complete operator pseudocode, training and evaluation settings, throughput benchmark protocol, and full experimental results. Together, these materials are intended to support faithful reproduction of the proposed method and experiments. The source code and implementation will be made publicly available upon acceptance. AUTHOR CONTRIBUTIONS 
+
+If you’d like to, you may include a section for author contributions as is done in many journals. This is optional and at the discretion of the authors. ACKNOWLEDGMENTS 
+
+Use unnumbered third level headings for the acknowledgments. All acknowledgments, including those to funding agencies, go at the end of the paper. 
+
+## REFERENCES 
+
+Simran Arora, Sabri Eyuboglu, Michael Zhang, Aman Timalsina, Silas Alberti, Dylan Zinsley, James Zou, Atri Rudra, and Christopher R´ e. Simple linear attention language models balance the recall-throughput tradeoff. arXiv preprint arXiv:2402.18668 , 2024. Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. Longbench: A bilingual, multitask benchmark for long context understanding. In Proceedings of the 62nd annual meeting of the association for computational linguistics (volume 1: Long papers) , pp. 3119–3137, 2024. Iz Beltagy, Matthew E Peters, and Arman Cohan. Longformer: The long-document transformer. 
+
+arXiv preprint arXiv:2004.05150 , 2020. Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. Piqa: Reasoning about physical com-monsense in natural language. In Proceedings of the AAAI conference on artificial intelligence ,volume 34, pp. 7432–7439, 2020. Rewon Child, Scott Gray, Alec Radford, and Ilya Sutskever. Generating long sequences with sparse transformers. arXiv preprint arXiv:1904.10509 , 2019. Krzysztof Choromanski, Valerii Likhosherstov, David Dohan, Xingyou Song, Andreea Gane, Tamas Sarlos, Peter Hawkins, Jared Davis, Afroz Mohiuddin, Lukasz Kaiser, et al. Rethinking attention with performers. arXiv preprint arXiv:2009.14794 , 2020. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+
+arXiv preprint arXiv:1803.05457 , 2018. 10 Under review as a conference paper at ICLR 2027 Tri Dao and Albert Gu. Transformers are ssms: Generalized models and efficient algorithms through structured state space duality. arXiv preprint arXiv:2405.21060 , 2024. Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R´ e. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems ,35:16344–16359, 2022. Soham De, Samuel L Smith, Anushan Fernando, Aleksandar Botev, George Cristian-Muraru, Al-bert Gu, Ruba Haroun, Leonard Berrada, Yutian Chen, Srivatsan Srinivasan, et al. Griffin: Mix-ing gated linear recurrences with local attention for efficient language models. arXiv preprint arXiv:2402.19427 , 2024. Jusen Du, Jiaxi Hu, Zhang Tao, Weigao Sun, and Yu Cheng. Native hybrid attention for efficient sequence modeling. In Proceedings of the 64th Annual Meeting of the Association for Computa-tional Linguistics (Volume 1: Long Papers) , pp. 3826–3842, 2026. Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Fos-ter, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muen-nighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. The language model evaluation harness, 07 2024. URL https://zenodo.org/records/12608602 .Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. Albert Gu, Karan Goel, and Christopher R´ e. Efficiently modeling long sequences with structured state spaces. arXiv preprint arXiv:2111.00396 , 2021. Ali Hatamizadeh, Yejin Choi, and Jan Kautz. Gated deltanet-2: Decoupling erase and write in linear attention. arXiv preprint arXiv:2605.22791 , 2026. Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. Ruler: What’s the real context size of your long-context language models? arXiv preprint arXiv:2404.06654 , 2024. Jiaxi Hu, Yongqi Pan, Jusen Du, Disen Lan, Xiaqiang Tang, Qingsong Wen, Yuxuan Liang, and Weigao Sun. Comba: Improving bilinear rnns with closed-loop control. arXiv preprint arXiv:2506.02475 , 2025. Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and Franc ¸ois Fleuret. Transformers are rnns: Fast autoregressive transformers with linear attention. In International conference on ma-chine learning , pp. 5156–5165. PMLR, 2020. Nikita Kitaev, Łukasz Kaiser, and Anselm Levskaya. Reformer: The efficient transformer. arXiv preprint arXiv:2001.04451 , 2020. Enzhe Lu, Zhejun Jiang, Jingyuan Liu, Yulun Du, Tao Jiang, Chao Hong, Shaowei Liu, Weiran He, Enming Yuan, Yuzhi Wang, et al. Moba: Mixture of block attention for long-context llms. 
+
+Advances in Neural Information Processing Systems , 38:17790–17815, 2026. Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture models. arXiv preprint arXiv:1609.07843 , 2016. Denis Paperno, Germ´ an Kruszewski, Angeliki Lazaridou, Ngoc-Quan Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fern´ andez. The lambada dataset: Word prediction requiring a broad discourse context. In Proceedings of the 54th annual meeting of the association for computational linguistics (volume 1: Long papers) , pp. 1525–1534, 2016. Guilherme Penedo, Hynek Kydl´ ıˇ cek, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, Thomas Wolf, et al. The fineweb datasets: Decanting the web for the finest text data at scale. Advances in Neural Information Processing Systems , 37:30811–30849, 2024. Zhen Qin, Songlin Yang, Weixuan Sun, Xuyang Shen, Dong Li, Weigao Sun, and Yiran Zhong. Hgrn2: Gated linear rnns with state expansion. arXiv preprint arXiv:2404.07904 , 2024. 11 Under review as a conference paper at ICLR 2027 Aurko Roy, Mohammad Saffar, Ashish Vaswani, and David Grangier. Efficient content-based sparse attention with routing transformers. Transactions of the Association for Computational Linguis-tics , 9:53–68, 2021. Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adver-sarial winograd schema challenge at scale. Communications of the ACM , 64(9):99–106, 2021. Jimmy TH Smith, Andrew Warrington, and Scott W Linderman. Simplified state space layers for sequence modeling. arXiv preprint arXiv:2208.04933 , 2022. Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jianyong Wang, and Furu Wei. Retentive network: A successor to transformer for large language models. arXiv preprint arXiv:2307.08621 , 2023. Kimi Team, Yu Zhang, Zongyu Lin, Xingcheng Yao, Jiaxi Hu, Fanqing Meng, Chengyin Liu, Xin Men, Songlin Yang, Zhiyuan Li, et al. Kimi linear: An expressive, efficient attention architecture. 
+
+arXiv preprint arXiv:2510.26692 , 2025. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural informa-tion processing systems , 30, 2017. Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear attention transformers with hardware-efficient training. arXiv preprint arXiv:2312.06635 , 2023. Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear transform-ers with the delta rule over sequence length. Advances in neural information processing systems ,37:115491–115522, 2024. Manzil Zaheer, Guru Guruganesh, Kumar Avinava Dubey, Joshua Ainslie, Chris Alberti, Santiago Ontanon, Philip Pham, Anirudh Ravula, Qifan Wang, Li Yang, et al. Big bird: Transformers for longer sequences. Advances in neural information processing systems , 33:17283–17297, 2020. Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a ma-chine really finish your sentence? In Proceedings of the 57th annual meeting of the association for computational linguistics , pp. 4791–4800, 2019. Yu Zhang, Songlin Yang, Ruijie Zhu, Yue Zhang, Leyang Cui, Yiqiao Wang, Bolun Wang, Freda Shi, Bailin Wang, Wei Bi, et al. Gated slot attention for efficient linear-time sequence modeling. 
+
+Advances in Neural Information Processing Systems , 37:116870–116898, 2024. 
+
+## A APPENDIX 
+
+A.1 PHBA O PERATOR PSEUDOCODE 
+
+This appendix expands the PHBA kernels in Section 3.4. We write C for the token block size, M
+
+for the number of prefix-state slots, and H for the number of heads. A logical block is either a token block or a prefix-state block. A physical tile is the smaller query, memory, or feature tile loaded from HBM to SRAM/registers by one Triton program. The important implementation choice is that PHBA does not build packed sparse payload tensors. The forward kernel consumes the query-centric historical routes Rc directly and loads routed token and prefix-state blocks from their original HBM layouts. During training, the same routing decisions are reformatted into block-major integer metadata ρ, Offset , C blk for efficient sparse backward. The generic symbols ρ, Offset , C blk denote either the historical-token metadata (ρtok , Offset tok , C tok blk )
+
+or the prefix-state metadata (ρst , Offset st , C st blk ) from the main text. 12 Under review as a conference paper at ICLR 2027 A.1.1 CHUNKWISE PARALLEL PREFIX -S TATE MEMORY CONSTRUCTION 
+
+This subsection derives the chunkwise parallel form of the prefix-state recurrence in Eq. 5. For each token t, PHBA maintains the combined slot-state matrix St = fKt, eVt
+
+ ∈ RM ×(d+dv ) and writes 
+
+zt = kraw  
+
+> t
+
+, vt
+
+ ∈ Rd+dv . The recurrent update is 
+
+St = Diag( At)St−1 + Itz⊤ 
+
+> t
+
+, (14) where At ∈ (0 , 1) M is the retention gate and It = 1 − At is the coupled write gate. PHBA sep-arates memory formation from sparse readout: the recurrence constructs boundary prefix key/value memories, and the attention layer later selects among them. We now derive the chunkwise parallel form. For packed inputs, the recurrence is reset at each sequence boundary specified by cu , so the first block of every sequence receives a zero incoming state. For any token-wise tensor X, let X[n] denote its rows in chunk n, where Cn = |B n|. Thus 
+
+Kraw [n] ∈ RCn×d, V[n] ∈ RCn×dv , and A[n], I[n] ∈ RCn×M stack the raw keys, values, retention gates, and write gates in this chunk. Define Z[n] = Kraw [n] , V[n]
+
+ ∈ RCn×(d+dv ). Partially unrolling Eq. 14 for the r-th row inside chunk n gives 
+
+S[n],r = Diag 
+
+> r
+
+Y
+
+> i=1
+
+A[n],i 
+
+!
+
+S[n],0 +
+
+> r
+
+X
+
+> i=1
+
+I[n],i ⊙
+
+> r
+
+Y
+
+> j=i+1
+
+A[n],j 
+
+ z⊤
+
+> [n],i
+
+, (15) where z[n],i = kraw [n],i , v[n],i 
+
+. Here S[n],0 is the boundary state entering chunk n, and S[n],C n is the boundary state leaving it. For brevity, we write S[n] ≡ S[n],0 and S[n+1] ≡ S[n],C n .As in chunkwise GLA, define the cumulative retention products 
+
+−→
+
+A[n],r =
+
+> r
+
+Y
+
+> j=1
+
+A[n],j , ←−
+
+A[n],r =
+
+> Cn
+
+Y
+
+> j=r+1
+
+A[n],j . (16) All products over the gate vectors are elementwise. The forward product −→
+
+A propagates boundary memory across the chunk, while the backward product ←−
+
+A decays each within-chunk write to the chunk boundary. Let ←−
+
+A[n] ∈ RCn×M stack these backward products. The compact write matrix is 
+
+W[n] = I[n] ⊙ ←−
+
+A[n] ∈ RCn×M , ∆[n] = W ⊤
+
+> [n]
+
+Z[n] ∈ RM ×(d+dv ). (17) Then the chunkwise boundary update becomes 
+
+S[n+1] = Diag 
+
+−→
+
+A[n],C n
+
+
+
+S[n]
+
+| {z }
+
+> inter-chunk recurrence
+
++ ∆[n]
+
+|{z} 
+
+> intra-chunk parallel write
+
+. (18) Equation 18 is the form used for parallel training. Only the boundary state S[n] is sequential across chunks. Inside each chunk, the writes reduce to matrix products over chunk rows and state slots. Thus PHBA materializes one prefix key/value state per chunk boundary rather than one recurrent state per token. For numerical stability, the implementation forms these cumulative retention factors from chunk-local prefix sums of log A rather than explicitly multiplying gate values. A.1.2 ROUTING METADATA KERNELS 
+
+PHBA uses a three-stage routing pipeline: compute block centroids, select top-Kh historical block ids with a tiled score kernel, and reformat the query-centric routes into block-major metadata for sparse backward. The dense query–centroid score matrix is never materialized to HBM. The main routing procedure also constructs PrefixValid ∈ { 0, 1}Nc , where PrefixValid[ b] = 1 iff block b has a nonempty causal prefix. 
+
+Block Centroids. Algorithm 3 computes one routing centroid for each block and attention head. Blocks are formed independently within each packed sequence specified by cu , and only valid rows contribute to the centroid. 13 Under review as a conference paper at ICLR 2027 
+
+Algorithm 3 Fused Key-Block Centroid Computation 
+
+Require: RoPE keys Krope ∈ RT ×H×d in HBM. Block-row pointers BlockPtr ∈ ZNc+1 induced by cu and block size C. 
+
+> 1:
+
+Allocate centroid tensor ¯Krope ∈ RNc×H×d in HBM.  
+
+> 2:
+
+for each block j and head h in parallel do  
+
+> 3:
+
+Set Bj = [BlockPtr[ j], BlockPtr[ j + 1]) . 
+
+> 4:
+
+Stream valid rows of Krope   
+
+> Bj,h
+
+from HBM through SRAM and accumulate their sum in fp32 registers.  
+
+> 5:
+
+Divide by |B j | on chip and write ¯Krope  
+
+> j,h
+
+to HBM.  
+
+> 6:
+
+end for  
+
+> 7:
+
+return ¯Krope .
+
+Historical Block Selection. Algorithm 4 scans centroid tiles and maintains a running top-Kh
+
+list for each query and head. Only blocks from the same packed sequence and strictly preceding the query’s current block are eligible. If fewer than Kh blocks are available, unused route entries remain −1. The discrete route indices are treated as non-differentiable metadata. 
+
+Algorithm 4 Tiled Top-K Historical Block Selection 
+
+Require: RoPE queries Qrope ∈ RT ×H×d and centroids ¯Krope ∈ RNc×H×d in HBM. Boundaries 
+
+cu . Block-row pointers BlockPtr . Current block ids c. Total exact-block budget K. Tile sizes 
+
+Br , B c. 
+
+> 1:
+
+Set historical routing budget Kh ← K − 1. 
+
+> 2:
+
+For each head and packed sequence, partition query rows and centroid rows into tiles of sizes 
+
+Br and Bc, respectively.  
+
+> 3:
+
+Initialize Rc ∈ ZT ×H×Kh to −1 in HBM.  
+
+> 4:
+
+for each query tile i and head h in parallel do  
+
+> 5:
+
+Load Qrope  
+
+> i,h
+
+from HBM to SRAM and initialize top-Kh scores to −∞ and block ids to −1. 
+
+> 6:
+
+for each centroid tile j in the same packed sequence do  
+
+> 7:
+
+Load ¯Krope  
+
+> j,h
+
+from HBM to SRAM.  
+
+> 8:
+
+Compute Sij,h ← Qrope  
+
+> i,h
+
+( ¯Krope  
+
+> j,h
+
+)⊤ on chip.  
+
+> 9:
+
+Apply row-wise b < c (t) and valid-row masks and update the running top-Kh distinct block ids in registers.  
+
+> 10:
+
+end for  
+
+> 11:
+
+Write the final block ids to Rc in HBM.  
+
+> 12:
+
+end for  
+
+> 13:
+
+return Rc.
+
+Block-Major Metadata. Algorithm 5 inverts the query-centric routing relation. It counts query– head rows assigned to each logical block–head pair, prefix-sums the counts to obtain contiguous ranges, and scatters flattened query–head row ids into these ranges. Only integer metadata is mate-rialized; token and state payloads remain in their original HBM layouts. A.1.3 QUERY -T ILE FUSED SPARSE FORWARD KERNEL 
+
+Algorithm 6 implements the PHBA forward pass directly from the query-centric routes Rc. Each query tile starts from the block-local causal FlashAttention output and log-sum-exp, then extends the same online-softmax accumulators with the current-block prefix state, routed historical token blocks, and their aligned prefix states. Within a query tile, the Br Kh historical route entries use a fixed-capacity schedule rather than dynamic compaction. A leader mask marks the first valid occurrence of each historical block id, allowing one loaded block to serve all rows in the tile that route to it. The token branch uses 
+
+(Qrope , Krope , V ), whereas the state branch uses (Qraw , P K , P V ). Payload tensors remain in their original HBM layouts. 14 Under review as a conference paper at ICLR 2027 
+
+Algorithm 5 Reformat Routes to Block-Major Varlen Metadata 
+
+Require: Query-centric routes R ∈ ZT ×H×Ksel in HBM, with distinct valid block ids within each query–head row. Number of logical blocks Nc. Number of heads H. 
+
+> 1:
+
+Initialize Cblk ∈ ZNcH to zero in HBM.  
+
+> 2:
+
+for each route slot (t, h, k ) in parallel do  
+
+> 3:
+
+Set b ← R[t, h, k ]. 
+
+> 4:
+
+if b ≥ 0 then  
+
+> 5:
+
+atomicAdd(& Cblk [bH + h], 1) . 
+
+> 6:
+
+end if  
+
+> 7:
+
+end for  
+
+> 8:
+
+Exclusive prefix-sum Cblk to obtain Offset ∈ ZNcH+1 with Offset[0] = 0 . 
+
+> 9:
+
+Set Nedge ← Offset[ NcH], allocate ρ ∈ ZNedge , and initialize Cursor ∈ ZNcH to zero in HBM.  
+
+> 10:
+
+for each route slot (t, h, k ) in parallel do  
+
+> 11:
+
+Set b ← R[t, h, k ]. 
+
+> 12:
+
+if b ≥ 0 then  
+
+> 13:
+
+Set e ← bH + h, r ← tH + h, and p ← atomicAdd(&Cursor[ e], 1) . 
+
+> 14:
+
+Store r into ρ[Offset[ e] + p]. 
+
+> 15:
+
+end if  
+
+> 16:
+
+end for  
+
+> 17:
+
+return ρ, Offset , C blk .A.1.4 SPARSE BACKWARD KERNEL 
+
+The backward pass complements the query-centric forward with a block-major schedule. Algo-rithm 7 uses ρ and Offset to enumerate the query–head rows accessing each token or prefix-state block. Sparse scores and probabilities are recomputed on chip from the final joint log-sum-exp L,avoiding materialized sparse probability tensors. For compactness, let (Qtok , Ktok  
+
+> j,h
+
+, V tok  
+
+> j,h
+
+) denote (Qrope , Krope  
+
+> Bj,h
+
+, VBj ,h ), and let (Qst , Kst 
+
+> j,h
+
+, V st 
+
+> j,h
+
+)
+
+denote (Qraw , P Kj,h , P Vj,h ), where Bj = [BlockPtr[ j], BlockPtr[ j + 1]) . The two logical memories therefore contain |B j | token rows and M prefix-state slots, respectively. A.2 ADDITIONAL EXPERIMENTAL DETAILS 
+
+A.2.1 MODEL ARCHITECTURE AND TRAINING .We train all models from scratch on FineWeb-Edu with a context length of 8K. The 760M and 1.3B models are trained on 50B and 100B tokens, respectively, with hidden dimensions of 1536 and 2048 and a head dimension of 128. The 1.3B models use 16 attention heads and an MLP expansion ratio of 4. Unless otherwise specified, PHBA uses M = 128 prefix-state slots and block size C = 128 .For the 1.3B main comparison, the exact-token budget is fixed to 1/8 of the sequence. At the 8K training length, this corresponds to 1024 exact tokens per query, or K = 8 blocks consisting of the current causal block and seven routed historical blocks. We use a 32K SentencePiece tokenizer and optimize all models with AdamW, using β1 = 0 .9,
+
+β2 = 0 .95 , a peak learning rate of 3 × 10 −4, weight decay of 0.1, and gradient clipping at 1.0.The learning rate follows cosine decay with a 1% warmup. Training uses a global batch size of 64 sequences (524,288 tokens per optimization step) in bfloat16 on 8 NVIDIA B200-192GB GPUs. A.2.2 BASELINE CONFIGURATION .We compare PHBA with Transformer (Vaswani et al., 2017), MoBA (Lu et al., 2026), GSA (Zhang et al., 2024), KDA (Team et al., 2025), and NHA (Du et al., 2026). To isolate the effect of the sequence-mixing mechanism, all compared models use standalone architectures rather than hybrid layer compositions. All baselines are trained on the same data and context length at matched model scale, while following the recommended architectural configurations of the corresponding methods. Sparse-attention methods use matched exact-token budgets where applicable. 15 Under review as a conference paper at ICLR 2027 
+
+Algorithm 6 Query-Tile Fused Token–State Sparse Forward 
+
+Require: Qraw , Qrope ∈ RT ×H×d, Krope ∈ RT ×H×d, and V ∈ RT ×H×dv in HBM. Prefix states 
+
+P K , P V in HBM. Routes Rc and current block ids c. Block-row pointers BlockPtr . Prefix-validity mask PrefixValid . Seed Oloc , L loc . Tile sizes Br , B c.
+
+1: Divide query rows within each current block and head into contiguous tiles of size Br .
+
+2: for each query tile Qi in parallel do 
+
+3: Let ci and hi be the current block and head shared by rows in Qi.
+
+4: Load Qrope  
+
+> i
+
+, Qraw  
+
+> i
+
+and Oloc  
+
+> i
+
+, L loc  
+
+> i
+
+from HBM. 
+
+5: Initialize row-wise fp32 online-softmax accumulators as mi ← Lloc  
+
+> i
+
+, ℓi ← 1, and Ui ←
+
+Oloc  
+
+> i
+
+.
+
+▷ e Lloc  
+
+> i
+
+Oloc  
+
+> i
+
+equals the unnormalized local-attention numerator. 
+
+6: Load historical routes Rci to SRAM, setting padded query rows to −1.
+
+7: Set μcur  
+
+> i
+
+← PrefixValid[ ci] and divide the M current-prefix slots into tiles of size Bc.
+
+8: for each current-prefix-state tile do 
+
+9: Load the corresponding P Kci,h i , P Vci,h i rows from HBM to SRAM under validity and tail masks. 
+
+10: Compute scores using Qraw  
+
+> i
+
+/√d, mask invalid scores to −∞ , and update (mi, ℓ i, Ui)
+
+on chip. 
+
+11: end for 
+
+12: Flatten Rci into bi = ( bi, 1, . . . , b i,J ) with J = Br Kh.
+
+13: Compute leader mask λi,p ← 1[bi,p ≥ 0] 1[bi,p /∈ { bi, 1, . . . , b i,p −1}] on chip. 
+
+14: for each fixed candidate slot p = 1 , . . . , J do 
+
+15: Set b ← bi,p , ˜b ← max( b, 0) , and χi,p [r] ← λi,p 1[∃k : Rci [r, k ] = b].
+
+16: Set B˜b ← [BlockPtr[ ˜b], BlockPtr[ ˜b + 1]) and divide it into token-memory tiles of size 
+
+Bc.
+
+17: for each token-memory tile do 
+
+18: Load the corresponding Krope  
+
+> B˜b,h i
+
+, VB˜b,h i rows from HBM to SRAM under leader and tail masks. 
+
+19: Compute scores using Qrope  
+
+> i
+
+/√d, mask rows with χi,p [r] = 0 and invalid tails, and update (mi, ℓ i, Ui) on chip. 
+
+20: end for 
+
+21: Set μst  
+
+> i,p
+
+← λi,p PrefixValid[ ˜b] and divide the M aligned-prefix slots into tiles of size 
+
+Bc.
+
+22: for each prefix-state tile do 
+
+23: Load the corresponding P K
+
+> ˜b,h i
+
+, P V
+
+> ˜b,h i
+
+rows from HBM to SRAM under validity and tail masks. 
+
+24: Compute scores using Qraw  
+
+> i
+
+/√d, mask rows with χi,p [r] = 0 or μst  
+
+> i,p
+
+= 0 , and update (mi, ℓ i, Ui) on chip. 
+
+25: end for 
+
+26: end for 
+
+27: Finalize Oi ← Ui/ℓ i and Li ← mi + log ℓi, and write Oi, L i to HBM. 
+
+28: end for 
+
+29: return output O and log-sum-exp L.A.2.3 EVALUATION PROTOCOL .For short-context evaluation, we report language modeling on WikiText and LAMBADA (Mer-ity et al., 2016; Paperno et al., 2016), together with zero-shot commonsense reasoning on ARC-Easy/Challenge, HellaSwag, PIQA, and WinoGrande (Clark et al., 2018; Zellers et al., 2019; Bisk et al., 2020; Sakaguchi et al., 2021). All short-context evaluations use 
+
+lm-evaluation-harness (Gao et al., 2024). For long-context evaluation, models trained only at 8K are directly evaluated at 16K, 32K, and 64K without further training or fine-tuning. We use RULER (Hsieh et al., 2024) to evaluate retrieval and reasoning over long sequences, including common-word extraction (CWE), question answering based on HotpotQA and SQuAD, and controlled NIAH variants. We further evaluate real-world long-context understanding on LongBench (Bai et al., 2024), covering document QA, summariza-16 Under review as a conference paper at ICLR 2027 
+
+Algorithm 7 Metadata-Driven Sparse Backward 
+
+Require: Token tensors Qraw , Qrope , Kraw , Krope , V in HBM. Prefix states P K , P V and reten-tion gates A. Block-row pointers BlockPtr and boundaries cu . Final output and gradient 
+
+O, dO ∈ RT ×H×dv , joint log-sum-exp L ∈ RT ×H , block-major metadata (ρβ , Offset β , C β
+
+> blk
+
+)
+
+for β ∈ { tok , st }, and tile sizes Br , B c.
+
+1: Compute D ← rowsum( dO ◦ O) and initialize query and memory-gradient buffers to zero. 
+
+2: Run block-local FlashAttention-style backward using the final joint L, D and accumulate into the token-gradient buffers. 
+
+3: for β ∈ { tok , st } do 
+
+4: for each logical block j and head h with Cβ
+
+> blk
+
+[jH + h] > 0 in parallel do 
+
+5: Read routed query rows Rβj,h from ρβ , Offset β and partition (Kβj,h , V βj,h ) into memory tiles of size Bc.
+
+6: for each memory tile M do 
+
+7: Load Kβ
+
+> M,h
+
+, V β 
+
+> M,h
+
+and initialize dK β
+
+> M,h
+
+, dV β 
+
+> M,h
+
+← 0.
+
+8: for each Br -sized query tile in Rβj,h do 
+
+9: Gather Qβ , dO , L, D to SRAM. 
+
+10: Recompute S ← Qβ (Kβ
+
+> M,h
+
+)⊤/√d and mask invalid tail columns. 
+
+11: Compute Π ← exp( S − L), dΠ ← dO (V β
+
+> M,h
+
+)⊤, and dS ← Π ◦ (dΠ − D).
+
+12: Accumulate dV β 
+
+> M,h
+
++= Π⊤dO and dK β 
+
+> M,h
+
++= dS ⊤Qβ /√d.
+
+13: Atomically scatter-add dSK β
+
+> M,h
+
+/√d to the corresponding dQ β rows. 
+
+14: end for 
+
+15: Accumulate dK β
+
+> M,h
+
+, dV β 
+
+> M,h
+
+into HBM. 
+
+16: end for 
+
+17: end for 
+
+18: end for 
+
+19: Stack direct prefix-state adjoints as dP [n] ← [dP K
+
+> [n]
+
+, dP V
+
+> [n]
+
+].
+
+20: Traverse blocks in reverse within each packed sequence, with zero propagated adjoint at the terminal boundary. 
+
+21: for each block [n] in reverse order do 
+
+22: Set ¯S[n+1] ← dP [n+1] + ¯S prop [n+1] , with dP [n+1] = 0 at an unexposed terminal boundary. 
+
+23: Load the incoming boundary state S[n] ← [P K
+
+> [n]
+
+, P V
+
+> [n]
+
+].
+
+24: Recompute the chunk-local cumulative retention factors and W[n] ← I[n] ⊙ ←−
+
+A[n] from the retained gate values. 
+
+25: Backpropagate ¯S[n+1] once through S[n+1] ← Diag( −→
+
+A[n],C n )S[n] + W ⊤
+
+> [n]
+
+Z[n], obtaining 
+
+¯S prop [n] ← Diag( −→
+
+A[n],C n ) ¯S[n+1] and gradients to Z[n] = [ Kraw [n] , V[n]] and A[n], including the coupled write dependence I[n] = 1 − A[n].
+
+26: end for 
+
+27: Backpropagate the retention-gate gradients through A = σ(a)1/τ .
+
+28: Backpropagate token-path query/key gradients through RoPE, combine them with the raw query/key gradients from the state path, and combine token-attention and state-construction gradients for V .
+
+29: return accumulated token, state, and gate gradients. tion, few-shot learning, and code-related tasks. LongBench inputs of at most 8K tokens are evaluated in full; longer inputs are truncated by retaining the first 4K and last 4K tokens. A.2.4 EFFICIENCY BENCHMARK PROTOCOL .Due to hardware availability, the efficiency benchmarks are conducted on a single NVIDIA H20-96GB GPU rather than the NVIDIA B200-192GB GPUs used for model training. All compared methods are evaluated on the same H20-96GB hardware and under the same BF16 training configu-ration. We benchmark end-to-end training throughput at sequence lengths of 2K, 4K, 8K, and 16K, and report throughput in thousands of processed tokens per second (Kt/s). For sparse-attention meth-17 Under review as a conference paper at ICLR 2027 ods, we compare configurations under a matched 1/8 exact-token budget. For MoBA and PHBA, we consider two complementary parameterizations. In the fixed-K setting, K = 4 and the block size C is adjusted with sequence length to preserve the 1/8 token budget. In the fixed-block setting, 
+
+C = 256 and the number of selected blocks K is adjusted accordingly. This keeps the amount of exact token-level attention comparable across sequence lengths while exposing the different routing and block-size trade-offs. For SWA and NHA, we report both a fixed-window configuration with window size 64 and a matched-budget configuration in which the window size grows with sequence length to maintain the same 1/8 token budget. All state-based methods use M = 128 memory slots. Transformer uses full causal attention. Each measurement covers the complete training computa-tion, including forward and backward propagation and parameter updates. Input preparation and data-loading overhead are excluded from the timing so that the comparison reflects model and op-erator efficiency. Measurements are taken after warm-up iterations to remove initialization effects. NHA with the 1/8 configuration exceeds the available GPU memory from 4K onward under the evaluated implementation; these cases are reported as OOM (zero throughput in Fig. 3). 18 Under review as a conference paper at ICLR 2027 
+
+Table 2: Long-context evaluation on RULER, NIAH, and LongBench. Metrics are multiplied by 100. Bold 
+
+and underline indicate the best and second-best results within each model scale, respectively. PHBA (origin) uses M = 128 , C = 128 , and K = 8 .
+
+PART I: RULER Tasks (Long Context) Model & Scale CWE HotpotQA SQuAD Avg 
+
+16k ↑ 32k ↑ 64k ↑ 16k ↑ 32k ↑ 64k ↑ 16k ↑ 32k ↑ 64k ↑ 16k ↑ 32k ↑ 64k ↑
+
+760M params with 50B training tokens 
+
+PHBA (origin) 0.1 0.0 0.0 12.8 10.0 6.4 8.8 6.9 5.5 7.2 5.6 4.0 w. C = 512 , K = 2 0.1 0.0 0.0 11.8 10.4 10.4 8.0 6.8 5.5 6.6 5.7 5.3 
+
+w. C = 256 , K = 4 0.1 0.0 0.1 9.4 10.6 9.8 4.3 4.7 4.3 4.6 5.1 4.7 w. C = 64 , K = 16 0.1 0.0 0.0 12.8 8.8 0.4 9.1 7.1 0.2 7.3 5.3 0.2 w. M = 64 0.2 0.0 0.0 10.8 11.4 9.0 8.9 5.2 5.1 6.6 5.5 4.7 w. M = 256 0.1 0.0 0.0 12.2 9.6 9.6 9.1 6.7 4.9 7.1 5.4 4.8 w/o. gate 0.1 0.0 0.0 8.2 4.4 3.2 4.6 3.4 1.9 4.3 2.6 1.7 w. mean 0.2 0.0 0.0 10.4 11.0 9.2 7.0 5.9 4.2 5.9 5.6 4.5 
+
+1.3B params with 100B training tokens 
+
+Transformer 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 MoBA 0.0 0.0 0.0 0.0 0.0 0.0 1.1 0.1 0.0 0.4 0.0 0.0 GSA 0.2 0.0 0.0 14.0 14.8 13.6 9.0 8.6 9.2 7.7 7.8 7.6 KDA 0.2 0.0 0.2 15.4 15.0 13.0 12.9 11.7 9.5 9.5 8.9 7.6 NHA 0.5 0.1 0.0 16.0 15.6 13.4 11.3 9.2 7.7 9.3 8.3 7.0 PHBA 5.0 26.0 4.0 14.0 13.0 13.4 12.2 11.0 10.4 10.4 16.7 9.3 PART II: NIAH Tasks (Long Context) Model & Scale Multi-Key NIAH NIAH (Extra) Avg Task 1 Task 2 Task 3 MultiQuery MultiValue Mean 
+
+16k 32k 64k 16k 32k 64k 16k 32k 64k 16k 32k 64k 16k 32k 64k 16k 32k 64k 
+
+760M params with 50B training tokens 
+
+PHBA (origin) 10.0 2.2 3.2 0.0 0.0 0.0 0.2 0.0 0.0 4.8 1.2 0.3 7.4 1.9 2.4 4.5 1.1 1.2 w. C = 512 , K = 2 3.2 2.2 3.2 0.2 0.0 0.0 0.4 0.0 0.0 1.3 1.9 2.6 1.6 1.7 1.8 1.3 1.2 1.5 
+
+w. C = 256 , K = 4 3.6 2.2 3.2 0.0 0.0 0.0 0.0 0.0 0.0 2.9 2.3 0.0 5.4 2.6 2.4 2.4 1.4 1.1 w. C = 64 , K = 16 10.6 5.8 0.0 0.2 0.0 0.0 0.0 0.0 0.0 6.1 2.4 0.0 9.2 4.3 0.0 5.2 2.5 0.0 w. M = 64 7.0 2.2 1.8 0.8 0.0 0.0 0.0 0.0 0.0 3.9 0.4 0.0 6.1 0.2 0.4 3.6 0.6 0.4 w. M = 256 3.2 2.2 3.2 0.0 0.0 0.0 0.4 0.0 0.0 2.4 2.3 0.0 2.3 2.6 2.1 1.7 1.4 1.1 w/o. gate 2.4 1.4 2.8 0.0 0.0 0.0 0.0 0.0 0.0 0.3 0.0 0.0 1.5 0.1 0.4 0.8 0.3 0.6 w. mean 8.6 3.4 3.2 0.2 0.0 0.0 0.0 0.0 0.0 3.3 0.7 0.2 5.9 1.3 2.2 3.6 1.1 1.1 
+
+1.3B params with 100B training tokens 
+
+Transformer 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 MoBA 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 GSA 9.4 5.8 3.8 0.0 0.0 0.0 0.0 0.0 0.0 6.3 4.1 3.1 8.3 5.2 2.5 4.8 3.0 1.9 KDA 13.0 2.6 3.2 3.4 0.2 0.0 0.4 0.0 0.0 9.4 2.4 1.7 11.0 3.4 2.4 7.4 1.7 1.5 NHA 10.0 4.6 5.8 0.0 0.0 0.0 0.0 0.0 0.0 8.9 4.6 2.7 9.4 5.4 3.0 5.7 2.9 2.3 PHBA 13.6 8.2 6.2 20.0 0.0 0.0 0.0 0.0 0.0 11.5 2.1 3.0 11.9 5.8 4.7 11.4 3.2 2.8 PART III: LongBench Tasks Model & Scale Single-Doc Multi-Doc Summarization Few-shot Code Avg MF. Qasp. Hotp. 2Wiki. Gov. Multi. SAM. TREC Triv. LCC Repo. 
+
+760M params with 50B training tokens 
+
+PHBA (origin) 14.82 6.54 6.03 8.84 8.77 8.74 19.06 38.67 24.19 12.95 12.90 14.68 w. C = 512 , K = 2 14.02 4.87 6.08 8.61 6.82 6.43 18.75 32.67 24.11 15.73 17.35 14.13 w. C = 256 , K = 4 13.96 5.37 6.17 7.86 6.26 8.41 22.10 29.33 21.08 16.29 18.11 14.09 w. C = 64 , K = 16 15.35 6.31 7.17 8.61 8.22 6.97 24.62 43.67 24.33 15.13 14.91 15.94 
+
+w. M = 64 16.50 5.93 6.05 9.33 10.85 10.55 16.80 37.83 17.83 15.78 18.54 15.09 w. M = 256 13.99 5.32 5.90 8.78 8.17 8.75 17.27 40.67 21.71 14.84 15.17 14.60 w/o. gate 12.04 5.62 5.91 9.33 7.75 9.64 12.12 24.00 23.71 16.05 14.30 12.77 w. mean 13.71 6.18 5.70 7.70 7.49 7.22 19.56 30.33 22.85 15.85 19.68 14.21 
+
+1.3B params with 100B training tokens 
+
+Transformer 10.97 5.83 4.21 5.68 7.60 6.74 10.38 23.00 16.15 8.38 8.91 9.80 MoBA 10.01 5.80 3.74 6.34 8.63 7.43 11.47 25.00 16.39 12.07 9.53 10.58 GSA 13.48 5.33 6.43 8.57 6.31 7.37 24.58 19.00 21.78 16.49 19.34 13.52 KDA 13.64 6.26 7.57 8.33 7.58 8.77 27.20 33.00 22.17 18.64 21.43 15.87 NHA 13.63 6.08 5.41 7.95 5.96 10.06 24.77 32.50 13.34 21.54 22.78 14.91 PHBA 15.79 7.16 7.49 9.85 12.10 9.26 25.06 46.83 26.75 18.39 20.81 18.14 
+
+19
