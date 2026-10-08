@@ -1,0 +1,653 @@
+Title: Koopman Observers for Diffusion Acceleration: Correcting Feature Forecasts with Shallow Measurements
+
+URL Source: https://arxiv.org/pdf/2610.10366v1
+
+Published Time: Thu, 08 Oct 2026 01:43:46 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# Koopman Observers for Diffusion Acceleration: Correcting Feature Forecasts with Shallow Measurements 
+
+Hanru Bai Yuanchao Xu Fengyi Li 
+
+ETH Zurich Max Planck Institute for Intelligent Systems Kyoto University MIT 
+
+## Abstract 
+
+Feature caching accelerates diffusion sam-pling by replacing expensive network evalu-ations with predictions from previously com-puted activations. However, forecasts based only on past features cannot directly in-corporate changes in the current denoising state. We investigate whether inexpensive, freshly computed features can serve as obser-vations for correcting these predictions. We introduce an observation-corrected Koopman framework for accelerating frozen diffusion models. Using calibration trajectories, we identify finite-dimensional, time-dependent Koopman approximations that jointly de-scribe the increments of shallow and deep network features. During accelerated sam-pling, these operators predict the evolution of expensive deep features, while innovations in the observed shallow features correct the predicted state. Periodic full evaluations re-fresh the observer, and all generative-model parameters remain unchanged. This formu-lation enables controlled comparisons of tem-poral prediction and observation correction. Across three 10,000-image runs per dataset, our method reduces paired Inception-feature MSE by 19 .9% on CIFAR-10 and 11 .9% on a ten-class ImageNet subset relative to channelwise affine prediction under the same four-partial-step schedule. Matched abla-tions attribute additional reductions of 4 .54% and 4 .67% to observation correction. The observer achieves 1.89 × and 1.85 × mea-sured speedups over DDIM-50, supporting improved reference-sampler fidelity without retraining the denoiser. 
+
+## 1 INTRODUCTION 
+
+Diffusion models generate samples through repeated denoising network evaluations, making inference com-putationally expensive (Ho et al., 2020). Feature caching reduces this cost by reusing intermediate ac-tivations, while forecasting methods predict their evo-lution between full evaluations (Ma et al., 2024). Ap-proaches such as TaylorSeer (Liu et al., 2025b) and FastCache (Liu et al., 2025a) demonstrate the po-tential of temporal extrapolation and learned linear prediction. However, improving the forecaster alone leaves an important question: how can predictions incorporate information about the current denoising state? A forecast constructed exclusively from past activa-tions cannot directly incorporate changes in the cur-rent denoising state. This matters because approx-imation errors alter subsequent network inputs, po-tentially making historical trajectories less informa-tive. Nevertheless, a partial forward pass can pro-vide inexpensive, fresh shallow features even when deeper computation is skipped. DeepCache (Ma et al., 2024) already exploits this computational structure; our question is whether these features can additionally serve as measurements for correcting deep-feature fore-casts . This differs from controlling forecast reliability: RACER uses disagreement between forecasts to adjust trust and refresh decisions (Li et al., 2026). We in-stead investigate an explicit measurement innovation, formed from the discrepancy between predicted and observed shallow features, to update the unobserved deep state. Figure 1 illustrates selected cases in which observation correction improves agreement with full-model generation. We introduce an observation-corrected Koopman framework for accelerating frozen diffusion mod-els. Koopman methods describe nonlinear dynam-ics through the evolution of observable functions, with finite-dimensional approximations identified from data (Williams et al., 2015; Brunton et al., 2022). arXiv:2610.10366v1 [cs.LG] 7 Oct 2026 Koopman Observers for Diffusion Acceleration Same-noise generated outputs RGB error to full reference         
+
+> Full reference Open-loop Corrected Open-loop Corrected
+> Sample 1
+> −62.5%
+> feature MSE
+> 0.05372 0.02017
+> Sample 2
+> −62.3%
+> feature MSE
+> 0.08485 0.03200
+> Sample 3
+> −44.0%
+> feature MSE
+> 0.03287 0.01840 00.31 0.62
+
+Figure 1: Observation correction on selected Im-ageNet examples. Each row compares full-model generation, open-loop prediction, and observation-corrected prediction using the same initial noise and class label. The accelerated variants share the full-evaluation schedule. Examples are selected for large pixel-MSE reductions among samples that also im-prove in Inception-feature MSE, with one example per class. They illustrate improvement cases, not average performance. Images are generated at 64 ×64 on a ten-class ImageNet subset. Full-model outputs are gener-ated references, not ground-truth images. Heatmaps show per-pixel RGB RMSE on [0 , 1]-scaled images us-ing a shared color scale. Numerical values and percent-age reductions report Inception-feature MSE relative to the full-model reference. Building on this perspective, we construct joint observ-ables from shallow- and deep-feature increments and their recent history. The frozen network supplies non-linear feature representations, while time-dependent affine operators capture their temporal evolution and cross-feature coupling. These are calibrated approxi-mations: we do not assume that the chosen observables form an exact Koopman-invariant subspace. Following the prediction–correction principle of state observers (Luenberger, 1966), each accelerated step first forecasts the joint feature increment. A partial network evaluation then supplies the current shallow observation. A calibrated gain maps its innovation into a correction of the deep-feature estimate, which is passed to the original decoder. Periodic full evalu-ations refresh the observer. This closes the prediction loop through measurements of the current sampling state, without accessing the skipped deep features. All denoiser parameters remain frozen; only feature bases, transition operators, and correction gains are fitted of-fline. Our contributions are threefold: 
+
+• Joint Koopman modeling of diffusion fea-tures. We formulate feature acceleration through time-dependent, finite-dimensional operators on joint shallow–deep increment observables. This representation makes temporal prediction and cross-feature coupling explicit, providing a com-mon framework for distinguishing channelwise forecasting from coupled feature dynamics. 
+
+• Measurement-driven correction without denoiser retraining. We develop a causal sam-pling procedure that combines operator predic-tion, fresh shallow-feature innovations, and peri-odic full-evaluation refreshes. Its distinguishing mechanism is a calibrated update of unobserved deep features from observed prediction residuals. 
+
+• Controlled evidence for the value of obser-vation correction. We separate the effects of temporal prediction and feedback using channel-wise, open-loop, and observation-corrected pre-dictors under the same full-evaluation schedule. Across three sampling runs with 10,000 images per dataset per run, our observer reduces final-image Inception-feature mean squared error by 19 .9% on CIFAR-10 and 11 .9% on a ten-class Im-ageNet subset relative to the channelwise affine baseline at the four-partial-step budget. Matched correction ablations show additional reductions of 4.54% and 4.67% over disabled correction. The evaluated observer implementations achieve 1.89 × and 1 .85 × measured speedups over full 50-step DDIM sampling. Stage-wise diagnostics and information-matched controls further reveal when correction helps and characterize the limitations of the observer parameterization. 
+
+## 2 RELATED WORK 
+
+Diffusion acceleration and feature forecasting. 
+
+Diffusion models require repeated denoising evalua-tions (Ho et al., 2020). DDIM and DPM-Solver reduce the number of sampling evaluations (Song et al., 2021; Lu et al., 2022), whereas feature caching reduces com-putation within each step. DeepCache updates inex-pensive shallow features while reusing deep represen-tations (Ma et al., 2024). TaylorSeer, Spectrum, and L2P forecast features using temporal extrapolation, spectral expansions, and learned historical coefficients, respectively (Liu et al., 2025b; Han et al., 2026; Shen et al., 2026). FastCache further incorporates learnable linear approximations (Liu et al., 2025a). Our work in-vestigates how freshly computed shallow observations can correct deep-feature predictions. 
+
+Adaptive caching and feedback. HarmoniCa ad-dresses trajectory dependencies and training–inference mismatch in feature caching (Huang et al., 2025). RACER uses forecast disagreement to adjust trust and Hanru Bai, Yuanchao Xu, Fengyi Li 
+
+reallocate full evaluations (Li et al., 2026). WorldDyn-Cache combines a lifted latent surrogate with risk-controlled exact transitions for diffusion world mod-els (Chen et al., 2026). These methods establish adap-tive control and dynamics-inspired approximation as existing directions. Our method computes a measure-ment innovation from the discrepancy between pre-dicted and observed shallow features. This innovation directly updates the estimated deep state, providing a distinct mechanism for incorporating feedback. 
+
+Koopman modeling and state estimation. 
+
+Koopman methods describe nonlinear dynamics through observable functions, with finite-dimensional approximations identified from data (Williams et al., 2015; Brunton et al., 2022; Bai and Ding; Bai et al., 2026). State observers combine predictions and mea-surements to estimate unobserved variables (Luen-berger, 1966). We apply these principles to joint shallow–deep feature increments using time-dependent affine operators and calibrated correction gains. Un-like WorldDynCache’s local-memory surrogate, we ex-plicitly identify feature-transition matrices. We as-sume neither an exact invariant observable subspace nor guaranteed observer convergence. Since an uncon-strained affine observer can also be expressed as direct regression on the same inputs, its practical value must be assessed against same-information regression con-trols. 
+
+## 3 PRELIMINARIES AND PROBLEM FORMULATION 
+
+3.1 Diffusion Sampling 
+
+Let ϵθ denote a frozen denoising network and {tk}N −1
+
+> k=0
+
+a decreasing diffusion-time grid. The index k follows the order of sampling. For deterministic sampling, in-cluding DDIM with η = 0 (Song et al., 2021), the update is 
+
+xk+1 = Φ k
+
+ xk, ϵ θ (xk, t k, c ), (1) where c denotes conditioning and Φ k is the prescribed sampler update. Starting from Gaussian noise x0, full sampling evaluates the entire denoiser at every step. Our objective is to reduce network computation while keeping the sampling grid and denoiser parameters fixed. For notational simplicity, guidance is omitted. When used, feature estimation is applied separately to the conditional and unconditional branches. 
+
+3.2 Partial Evaluation and Feature Estimation 
+
+We partition the denoiser into a shallow computation, an expensive deep computation, and a final readout. At the current accelerated sampling state ˜ xk, define 
+
+sk = Sθ (˜ xk, t k, c ),dk = Dθ (˜ xk, t k, c ). (2) Here sk contains the shallow features required by the retained skip connections, and dk is the deep repre-sentation entering the final decoder. A full evaluation produces Rθ (dk, s k, t k, c ). The functions Sθ , Dθ , and 
+
+Rθ are components of the original frozen network. Let F denote the full-evaluation indices. Shallow fea-tures are computed at every step, while deep features are evaluated only when k ∈ F . Otherwise, a causal estimator supplies ˆdk =
+
+(
+
+dk, k ∈ F ,Gk(Hk−1, s k), k / ∈ F , (3) where Hk−1 contains previously computed observa-tions, cached features, and estimated states. The es-timator cannot access the current deep feature at a skipped evaluation. The accelerated update becomes ˜xk+1 = Φ k
+
+ ˜xk, R θ ( ˆdk, s k, t k, c ). (4) Importantly, dk is defined at ˜ xk. It can differ from the deep feature along the full-sampling reference tra-jectory because earlier approximations change subse-quent inputs. 
+
+3.3 Finite-Dimensional Koopman Approximation 
+
+For dynamics qk+1 = Fk(qk), the time-dependent Koopman operator acts on an observable function g
+
+as (Kkg)( q) = g(Fk(q)) . (5) This operator is linear in g, even when Fk is nonlin-ear (Brunton et al., 2022; Xu et al., 2025). The state 
+
+qk may include the sample, conditioning, time, and history required to define the observables. Given a finite observable dictionary vk = ψ(qk), data-driven identification yields an affine approximation 
+
+vk+1 = Akvk + bk + rk, (6) where rk captures finite-dictionary closure and iden-tification errors (Williams et al., 2015). We do not assume that this residual vanishes. Koopman Observers for Diffusion Acceleration 
+
+In the next section, we construct vk from joint shallow– deep feature increments and use current shallow obser-vations to correct its predicted evolution. The observ-able bases, transition matrices, and correction gains are calibrated offline without updating θ. We evaluate approximation fidelity and sampling cost separately from distributional generation quality. 
+
+## 4 METHOD 
+
+We construct a feature observer with three operations: joint increment prediction, shallow-observation correc-tion, and periodic full refreshes. Figure 2 (left) sum-marizes the partial evaluation path, the observer up-date, and offline calibration. All denoiser parameters remain frozen. 
+
+4.1 Joint Increment Observables 
+
+We describe the channel vectors at one spatial location and suppress the conditioning branch. Features are spatially aligned, and the same operators are applied at every location. Let Pd ∈ RCd×r and Ps ∈ RCs×r
+
+be orthonormal channel bases obtained from the sec-ond moments of calibration feature increments. With positive calibration scales σd and σs, define 
+
+uk = P ⊤ 
+
+> d
+
+(dk − dk−1)
+
+σd
+
+, y k = P ⊤ 
+
+> s
+
+(sk − sk−1)
+
+σs
+
+, v k =
+
+uk
+
+yk
+
+
+
+.
+
+(7) The scales are the root mean square values of the pro-jected increments. Let J = [ Ir 0] and H = [0 Ir ]select the deep and shallow components. The shallow increment yk remains observable at partial evaluations. Measuring the deep increment uk requires consecutive full evaluations. These increments are nonlinear ob-servables of the sample and its preceding state because the underlying features come from the frozen network. 
+
+4.2 Offline Operator and Gain Identification 
+
+Following Figure 2 (left, panel c), we collect full-sampling trajectories and split complete trajectories into calibration, validation, and held-out diagnostic sets. Patches and conditioning branches from one tra-jectory remain in the same split. For each transition, affine EDMD-style regression (Williams et al., 2015) gives (Ak−1, b k−1) = arg min 
+
+> A,b
+
+1
+
+MkMkX
+
+> j=1
+
+v(j) 
+
+> k
+
+− Av (j) 
+
+> k−1
+
+− b 22
+
++ λk
+
+ ∥A − I2r ∥2 
+
+> F
+
++ ∥b∥22
+
+ ,
+
+(8) where j indexes calibration feature vectors. The iden-tity prior favors persistence of feature increments. The indexing follows the transition vk−1 7 → vk defined in the preliminaries. Let ρ(j) 
+
+> k
+
+= v(j) 
+
+> k
+
+−Ak−1v(j) 
+
+> k−1
+
+−bk−1 be the fitted residual. We learn a shallow-to-deep residual gain through 
+
+Ldk = arg min 
+
+> L
+
+1
+
+MkMkX
+
+> j=1
+
+Jρ (j) 
+
+> k
+
+− LHρ (j)
+
+> k
+> 22
+
++ γk∥L∥2 
+
+> F
+
+,Lk =
+
+Ldk
+
+Ir
+
+
+
+.
+
+(9) The effective ridge penalties include input second-moment scaling. Bases, scales, operators, and gains use calibration data only. Rank and regularization are selected on validation trajectories before evaluation on independent sampling cohorts. 
+
+4.3 Observation-Corrected Prediction 
+
+As illustrated in Figure 2 (left, panels a and b), at a partial evaluation, we first propagate the estimated increment state and compute its shallow innovation ¯vk = Ak−1 ˆvk−1 + bk−1, νk = yk − H ¯vk. (10) The prediction–correction update follows the state-observer principle (Luenberger, 1966) ˆvk = ¯ vk + Lkνk, ˆdk = ˆdk−1 + σdPdJ ˆvk. (11) Since HL k = Ir , the corrected shallow component satisfies H ˆvk = yk. Its deep component is updated through the calibrated cross-feature residual relation. The original decoder receives ˆdk and the current shal-low skips sk, followed by the unchanged sampler up-date. No current deep feature is computed during this operation. When r < C d, only the retained deep-increment subspace is updated between refreshes. 
+
+4.4 Refreshes and Computational Cost 
+
+Figure 2 (right) illustrates the alternation between full evaluations and observation-corrected partial steps. Each prediction episode begins with two consecutive full evaluations at indices a − 1 and a. These ini-tialize ˆda = da and ˆ va = va from measured feature differences. Subsequent partial steps recursively apply Eqs. (10)–(11). The next full-evaluation pair resets the feature and increment estimates at the current ac-celerated states. It does not reset the sample to the full-sampling reference trajectory. For m full evaluations among N sampling steps, the approximate online cost is 
+
+Tonline ≈ mT full + ( N − m)Tpartial , (12) Hanru Bai, Yuanchao Xu, Fengyi Li (a) Partial evaluation (b) Observer ̃                                 
+
+> xk
+> Shallow
+> Fresh skips sk
+> Skipped ̂εk
+> Readout
+> Observe yk
+> Memory Koopman
+> observer Reconstruct ̂
+> dk̂
+> vk̂
+> dk
+> Store for the next step ̂
+> vk− 1
+> Predict
+> Ak− 1 ,bk− 1
+> Σ
+> H̄vk
+> −
+> yk
+> +Gain
+> Lk
+> νk
+> +
+> Lkνk̄vk̂
+> vk
+> Ĥvk=yk
+> (c) Offline calibration Frozen denoiser
+> Full traces Project
+> Ps,Pd
+> Dynamics
+> Ak− 1 ,bk− 1
+> Correction
+> LkFull refreshes and partial steps F: full P: partial Shallow Deep Readout
+> F
+> a− 1
+> dk
+> Rθ̂
+> εk
+> F
+> a
+> dk
+> Rθ̂
+> εk
+> P
+> a+ 1 Skip
+> yk
+> k̂
+> dk
+> Rθ̂
+> εk
+> P
+> a+ 2 Skip
+> yk
+> k̂
+> dk
+> Rθ̂
+> εk
+> P
+> a+ 3 Skip
+> yk
+> k̂
+> dk
+> Rθ̂
+> εk
+> P
+> a+ 4 Skip
+> yk
+> k̂
+> dk
+> Rθ̂
+> εk
+> F
+> a+ 5
+> dk
+> Rθ̂
+> εk
+> F
+> a+ 6
+> dk
+> Rθ̂
+> εk
+> Initialize Observe + correct Refresh
+> k: Koopman observer State transfer Sampler unchanged
+
+Figure 2: Koopman observers for diffusion acceleration. Left: Fresh shallow observations correct the predicted joint increment state. The reconstructed deep feature and current shallow skips feed the retained readout, while expensive deep blocks are skipped. Projection bases, scales, time-dependent operators, and correction gains are identified from offline calibration trajectories. Right: Two full evaluations (F) initialize the observer state. Partial evaluations (P) use the Koopman observer Ok to predict, correct, and reconstruct deep features. Subsequent full evaluations refresh the estimates at the current accelerated samples. The schedule shows an illustrative interior segment. All denoiser weights remain frozen and the sampler is unchanged. where Tpartial includes shallow computation, projec-tions, prediction, correction, and the retained decoder and sampler operations. Actual latency is measured end to end, with offline calibration reported separately. Matching full-evaluation counts alone does not match runtime. 
+
+4.5 Error Propagation 
+
+Let ek = vk − ˆvk be the estimation error and ρk =
+
+vk − Ak−1vk−1 − bk−1 the residual of the identified dy-namics along the accelerated trajectory. Subtracting Eqs. (10)–(11) from Eq. (6) and using yk = Hv k gives 
+
+ek = ( I2r − LkH) ( Ak−1ek−1 + ρk) . (13) Because HL k = Ir , the shallow component of ek van-ishes, ek = ( euk , 0). Writing Ak−1 in blocks accord-ing to the deep and the shallow components, Ak−1 =
+
+ Auu k−1 Auy k−1 
+
+> Ayu k−1Ayy k−1
+
+, the deep error therefore obeys 
+
+euk =  Auu k−1 − LdkAyu k−1
+
+euk−1 +  ρuk − Ldkρyk
+
+. (14) This is the error recursion of a Luenberger observer with transition matrix Auu k−1, output matrix Ayu k−1 and gain Ldk: the measured shallow increment carries infor-mation about the propagated deep error only through the coupling block Ayu k−1. For block-diagonal dynam-ics, and in particular for channelwise models, Ayu k−1 = 0 and the correction acts on the residual alone. We make no claim of contraction; the closed-loop factor 
+
+Auu k−1 − LdkAyu k−1 is available offline and can be com-pared with Auu k−1.The gain (9) is the ridge regression of the deep residual on the shallow residual. Its effect on a single step is described by the following statement, whose proof is a direct computation (Appendix A). 
+
+Proposition 1. Let ϵ = ( ϵu, ϵ y ) be a random vector with finite second moments Σuu = E[ϵuϵu⊤], Σuy =
+
+E[ϵuϵy⊤] = Σ ⊤ 
+
+> yu
+
+and Σyy = E[ϵy ϵy⊤], let γ ≥ 0 be such that Σyy + γI is invertible, and let L = Σ uy M with 
+
+M = (Σ yy + γI )−1. Then 
+
+E∥ϵu∥2 − E∥ϵu − Lϵ y ∥2
+
+= tr Σuy M (Σ yy + 2 γI )M Σyu 
+
+ ≥ 0.
+
+For γ = 0 , L minimizes E∥ϵu −L′ϵy ∥2 over all matrices 
+
+L′, and the second moment of ϵu − Lϵ y is the Schur complement Σuu − Σuy Σ−1 
+
+> yy
+
+Σyu .
+
+Applied with ϵ distributed as the calibration residu-als, the proposition states that the correction with the gain (9) does not increase the mean squared deep er-ror at the step that follows a reinitialization, where 
+
+ea = 0 and the prior error equals ρa+1 . At the subse-quent steps the prior error is Ak−1ek−1 + ρk, and the statement holds to the extent that its second moments agree with those of the calibration residuals. The ra-tio tr(Σ uy Σ−1 
+
+> yy
+
+Σyu )/ tr Σ uu is the fraction of the deep residual that is linearly predictable from the shallow residual at step k; it measures how observable the deep increment is through the shallow one. Finally, the error of the deep feature passed to the decoder follows from Eq. (11). Since P ⊤ 
+
+> d
+
+Pd = Ir and 
+
+σdPdJv k = PdP ⊤ 
+
+> d
+
+(dk − dk−1), and since ˆda = da, one Koopman Observers for Diffusion Acceleration 
+
+Table 1: Generation quality and full-sampler fidelity at the middle latency budget. Each result uses 10,000 images per sampling run and three runs. FID reports mean and sample SD. Eϕ is mean paired Inception-feature MSE relative to full DDIM-50. All seven baseline families are within 3.81% of the observer latency. † denotes an adaptation to the native U-Net.                                                                                                     
+
+> CIFAR-10 ImageNet-10 Method FID ↓10 3Eϕ↓Speedup ↑FID ↓10 3Eϕ↓Speedup ↑
+> Full DDIM-50 13 .39 ±0.05 0.000 1.00 ×13 .72 ±0.08 0.000 1.00 ×
+> Reduced-step DDIM 15 .43 ±0.10 10.419 1.79 ×14 .55 ±0.10 21.492 1.67 ×
+> DPM-Solver++ 2M 16 .84 ±0.10 28.282 1.79 ×14 .76 ±0.09 38.720 1.67 ×
+> Feature reuse 15 .90 ±0.09 15.985 1.71 ×15 .95 ±0.04 37.214 1.69 ×
+> Linear extrapolation 13 .53 ±0.07 2.982 1.71 ×14 .08 ±0.09 14.924 1.69 ×
+> Channelwise affine 13 .59 ±0.07 2.795 1.71 ×14 .13 ±0.09 14.330 1.68 ×
+> DeepCache †14 .23 ±0.08 5.085 1.67 ×14 .63 ±0.09 22.843 1.65 ×
+> Spectrum †15 .24 ±0.09 12.146 1.69 ×14 .93 ±0.13 30.712 1.64 ×
+> Observer ( s= 3) 13 .51 ±0.08 1.776 1.73 ×14 .13 ±0.10 9.741 1.70 ×
+
+obtains for k > a dk − ˆdk = σdPdkX
+
+> i=a+1
+
+eui + ( I − PdP ⊤ 
+
+> d
+
+)( dk − da). (15) The first term accumulates the increment errors of the episode; the second is the drift of the deep feature outside the retained subspace since the last reinitial-ization, and it vanishes for r = Cd. The number of ac-cumulated terms grows with the length of the episode, which is why reinitializations are kept frequent and why the prediction error is examined as a function of the horizon (Appendix B.5). Eqs. (10)–(11) also show that ˆvk = (I2r −
+
+LkH)( Ak−1 ˆvk−1 + bk−1) + Lkyk is an affine map of (ˆ vk−1, y k) whose coefficients are constrained by the fac-torization through Ak−1 and Lk and by the identity prior; an unconstrained regression of the deep incre-ment on the same inputs is one of the controls in the experiments. 
+
+## 5 EXPERIMENTS 
+
+We evaluate whether Koopman observers accelerate frozen diffusion sampling while preserving the outputs of the full sampler. We distinguish fidelity to this sam-pler from distributional generation quality, then test whether current observations contribute beyond tem-poral prediction alone. 
+
+5.1 Experimental Setup Models and evaluation. We use two frozen class-conditional U-Net checkpoints with raw weights, on CIFAR-10 at 32 × 32 and a ten-class ImageNet sub-set at 64 ×64. The reference is deterministic DDIM-50 with classifier-free guidance scale 2.0. Our observer re-tains the same 50-step grid and uses offline calibration to identify projection bases, dynamics, and correction gains. The main predictor uses rank 256 for both shal-low and deep increments. No denoiser parameters are updated. All implementations were run on NVIDIA A100 GPUs. Each configuration generates 10,000 images for each of three sampling runs, with 1,000 images per class per run. Methods share initial noise and class labels within each run. We report FID and KID against real images, and paired Inception-feature MSE Eϕ against the cor-responding full-sampler outputs. Smaller Eϕ indicates closer agreement with the full sampler, not necessar-ily better generation quality. Summary statistics are means and sample standard deviations across sampling runs, not independently trained models. Real-data ref-erences, pixel errors, and calibration splits are detailed in Appendix B. 
+
+Timing and baselines. We measure FP32 sam-pling using batch sizes of 50 for CIFAR-10 and 20 for ImageNet-10. Latencies are medians of three syn-chronized repetitions after warmup, with randomized configuration order. Timing includes both guidance branches, feature prediction, correction, and sampler updates, but excludes noise creation, I/O, and metric computation. Baselines include reduced-step DDIM (Song et al., 2021), DPM-Solver++ (Lu et al., 2025), Deep-Cache (Ma et al., 2024), and Spectrum (Han et al., 2026), together with feature reuse, linear extrapola-tion, and channelwise affine prediction. DeepCache and Spectrum are adaptations to our native U-Net and feature locations. For each observer budget, base-line configurations are selected solely by independently measured latency from a fixed candidate set. We call a comparison approximately latency matched only when the absolute latency gap is at most 5%. Hanru Bai, Yuanchao Xu, Fengyi Li 
+
+5.2 Efficiency, Fidelity, and Generation Quality 
+
+We evaluate maximum partial-step runs of s ∈{2, 3, 4}, corresponding to 28, 23, and 20 full steps on the 50-step grid. Each full or partial step includes both guidance branches. Table 1 presents the middle budget, where all seven baseline families meet the la-tency tolerance on both datasets. Figure 3 shows all three budgets. At the middle budget, the observer achieves 1 .73 × ac-celeration on CIFAR-10 and 1 .70 × on ImageNet-10. Its FID is 13 .515 ± 0.079 and 14 .133 ± 0.097, com-pared with 13 .393 ± 0.049 and 13 .724 ± 0.083 for full DDIM-50. The corresponding increases in FID are 0.122 and 0.409. At approximately matched latency, the observer reduces Eϕ by 40.5% and 34.7% relative to linear extrapolation, and by 36.5% and 32.0% rel-ative to channelwise affine prediction. Its mean FID is also lower than those of reduced-step DDIM, DPM-Solver++, feature reuse, and the adapted DeepCache and Spectrum configurations at this budget. 
+
+5.3 Do Current Observations Improve Prediction? 
+
+To isolate measurement correction, we fix the rank-256 predictor, projection bases, dynamics, gains, and 
+
+s = 4 refresh positions. We compare current shal-low increments, increments delayed by one sampling step, and correction disabled. All three variants use the same unfused implementation and recompute the current shallow skip features supplied to the decoder. Only the correction input or its application changes. Current observations reduce Eϕ by 4.54% on CIFAR-10 and 4.67% on ImageNet-10 relative to disabled cor-rection. Relative to delayed observations, the reduc-tions are 12.78% and 17.44%. For both contrasts, the per-run 95% paired-bootstrap intervals for the error ratio lie below one in all three runs on both datasets (Appendix B.6). Current observations also reduce class-conditional mean error relative to disabled cor-rection in all ten classes of each dataset after averaging the three runs. The measured latency overhead over disabled correc-tion is 0.63% on CIFAR-10 and 0.66% on ImageNet-10 in the matched unfused implementation. Thus, the benefit of fresh measurements is a reproducible reduc-tion in full-sampler approximation error. The delayed-observation intervention tests this fixed observer’s de-pendence on timely inputs. It does not establish that a predictor fitted specifically for delayed measurements would perform equally poorly. 1.5 1.7 1.9 2.1 14 15 16 17 
+
+> FID (lower is better)
+
+CIFAR-10    
+
+> 1.5 1.7 1.9 2.1 14.0 14.5 15.0 15.5 16.0 16.5
+
+ImageNet-10       
+
+> 1.5 1.7 1.9 2.1
+> Measured speedup
+> 10 0
+> 10 1
+> Paired feature MSE (×10 3)
+> 1.5 1.7 1.9 2.1
+> Measured speedup
+> 10 1
+> DDIM DPM++ 2M Feature reuse Linear Channel affine DeepCache (adapted) Spectrum (adapted) Koopman observer Full DDIM-50 FID
+
+Figure 3: Distributional quality and reference fidelity are different objectives. FID (top) and paired Inception-feature MSE (bottom) against mea-sured speedup on CIFAR-10 (left) and ImageNet-10 (right). Points show means over three sampling runs, with error bars indicating sample SD. The bottom row uses a logarithmic vertical axis. Baselines are the con-figurations selected by timing for the three observer budgets, with repeated selections shown once. Every point is plotted at its actual measured speedup, in-cluding configurations outside the 5% matching toler-ance. Lines connect evaluated configurations as visual guides. Dashed horizontal lines show full DDIM-50 FID. 
+
+5.4 Dependence on Sampling Stage and Prediction Horizon 
+
+We reuse the reference-trajectory diagnostics to exam-ine where observation correction is effective. Figure 4 evaluates eight anchor steps and prediction horizons of one, two, and four steps. Only positions that are par-tial evaluations under the s = 4 schedule are included. Correction reduces local deep-feature error at all 23 evaluated positions on CIFAR-10, but at only 7 of 23 positions on ImageNet-10. At the earliest ImageNet-10 anchor, the reductions range from 13.6% to 19.1%, while most middle and late positions show small in-creases in error. These results reveal stage-dependent benefits of correction. They describe prediction on reference trajectories and do not include feedback through the evolving accelerated image state. Koopman Observers for Diffusion Acceleration 
+
+Table 2: Effect of current observations with a fixed fitted predictor and the same s = 4 schedule. All three variants use the unfused implementation and fresh shallow decoder skips. Ex is pixel MSE on floating-point images in [ −1, 1]. Errors and FID report mean and sample SD across three sampling runs. Latency is the median of three synchronized repetitions. 
+
+Dataset Correction input FID ↓ 10 3Eϕ ↓ 10 3Ex ↓ s/batch CIFAR-10 Disabled 13 .638 ± 0.070 2.842 ± 0.050 0.244 ± 0.003 3.757 CIFAR-10 One-step delayed 13 .807 ± 0.067 3.110 ± 0.027 0.308 ± 0.003 3.787 CIFAR-10 Current 13 .669 ± 0.071 2.713 ± 0.047 0.224 ± 0.005 3.781 ImageNet-10 Disabled 14 .266 ± 0.107 18 .172 ± 0.230 4.277 ± 0.052 5.310 ImageNet-10 One-step delayed 14 .335 ± 0.021 20 .984 ± 0.124 5.086 ± 0.009 5.357 ImageNet-10 Current 14 .257 ± 0.073 17 .323 ± 0.235 3.900 ± 0.045 5.344 3 9 15 21 27 33 39 45                      
+
+> 124
+> Prediction horizon
+> 0.41 0.48 0.40 0.11 0.12 0.18 0.05 0.09 0.16 0.07 0.11 0.18 0.10 0.12 0.22 0.13 0.14 0.22 0.10 0.14 0.25 0.10 0.22 N/A
+> Open-loop relative MSE
+> CIFAR-10
+> 3915 21 27 33 39 45
+> 124
+> 0.07 0.07 0.11 0.08 0.15 0.33 0.20 0.37 0.62 0.29 0.40 0.59 0.17 0.28 0.43 0.14 0.15 0.27 0.11 0.12 0.22 0.10 0.23 N/A
+> Open-loop relative MSE
+> ImageNet-10
+> 3915 21 27 33 39 45
+> Anchor sampling step
+> 124
+> Prediction horizon
+> +8.4 +15.0 +23.4 +4.4 +4.9 +2.9 +4.4 +2.5 +2.5 +2.4 +2.1 +2.1 +3.0 +2.1 +2.0 +2.9 +1.4 +1.2 +0.7 +0.7 +1.1 +0.6 +1.0 N/A
+> Correction gain (%)
+> 3915 21 27 33 39 45
+> Anchor sampling step
+> 124
+> +19.1 +14.8 +13.6 +2.1 +1.3 +1.2 -1.3 -0.6 +0.2 -2.0 -1.1 -0.5 -0.9 -0.9 -0.7 -1.3 -1.7 -1.5 -1.2 -1.4 -0.9 -1.4 -0.8 N/A
+> Correction gain (%)
+> 0.0 0.2 0.4 0.6
+> −20 020
+
+Figure 4: Stage-dependent prediction and cor-rection. Columns show CIFAR-10 and ImageNet-10. Top: open-loop deep-feature squared error normalized by feature-reuse error at the same position. Bottom: correction gain, 100(1 − Eobs /E open ). Positive val-ues indicate improvement. Each cell aggregates 60 CIFAR-10 or 40 ImageNet-10 development trajecto-ries. Anchor steps are zero based and follow sampling order from high to low noise. Gray cells target full evaluations and are excluded. 
+
+5.5 The Role of Temporal Dynamics 
+
+Additional controls distinguish temporal modeling from static shallow-to-deep regression and assess the effects of state dimension and cross-channel coupling (Table 5). On the same s = 4 schedule, static regression gives Eϕ = 0.012275 on CIFAR-10 and 0.034979 on ImageNet-10, compared with 0.002713 and 0.017323 for the rank-256 observer. Increasing the observer rank from 64 to 256 reduces paired feature error by 10.7% and 11.0%. At rank 64, dense dynamics improve on diagonal dynamics by 12.6% on CIFAR-10 but only 0.5% on ImageNet-10. These configuration comparisons support tempo-ral state modeling in the evaluated predictor family, while showing that the benefit of cross-channel cou-pling is dataset dependent. The earlier full-trajectory diagnostics show the same aggregate ordering of linear extrapolation, fitted open-loop dynamics, and observation-corrected dynamics (Appendix B.5). The final-image evaluations addition-ally account for changes to subsequent sampling states caused by earlier approximations. Batch-size timing and the limits of the available calibration-cost records are reported in Appendix B.7. 
+
+## 6 CONCLUSION 
+
+We have formulated the acceleration of a frozen dif-fusion model as a state estimation problem: the deep features skipped at a partial evaluation are an unob-served state, the shallow features computed in any case are measurements, and a time-dependent affine Koop-man approximation of the increments supplies the dy-namics. The resulting observer corrects its prediction by the innovation of the shallow measurement, and its error obeys the recursion of a Luenberger observer in which the identified coupling block plays the role of the output matrix. In the experiments the correc-tion reduces the error relative to the full sampler be-yond what coupled open-loop prediction achieves, at speedups of about 1 .5–1 .6× on two class-conditional U-Nets. The scope of these results is limited in three respects. The guarantee of Proposition 1 concerns one step and the calibration distribution; no contraction of the closed loop is established, and the growth of the error over an episode is governed by Eqs. (14) and (15). The fitted predictor is tied to the checkpoint, the sampling grid and the conditioning, and its transfer to another setting requires a check of the prediction accuracy and possibly a recalibration. Finally, the evaluation cov-ers two U-Net checkpoints at low resolution; diffusion transformers, and text-to-image and video models re-main to be examined. A natural refinement is to fit the gains on the residuals of the closed loop rather than on the calibration residuals, so that Proposition 1 applies at every step of an episode. Hanru Bai, Yuanchao Xu, Fengyi Li 
+
+Acknowledgement 
+
+Y.X. acknowledge support from JST CREST Grant No. JPMJCR24Q1, including the AIP Challenge Pro-gram. 
+
+References 
+
+Hanru Bai and Weiyang Ding. Konode: Koopman-driven neural ordinary differential equations with evolving parameters for time series analysis. Hanru Bai, Weiyang Ding, and Difan Zou. Hierarchi-cal koopman diffusion: Fast generation with inter-pretable diffusion trajectory. Advances in Neural Information Processing Systems , 38:87345–87379, 2026. Steven L. Brunton, Marko Budiˇ si´ c, Eurika Kaiser, and J. Nathan Kutz. Modern Koopman theory for dynamical systems. SIAM Review , 64(2):229–340, 2022. Leyang Chen, Junyi Wu, Shaoqiu Zhang, and Yu-lun Zhang. WorldDynCache: Risk-controlled latent dynamics approximation for diffusion world model. 
+
+arXiv preprint arXiv:2608.01845 , 2026. Jiaqi Han, Juntong Shi, Puheng Li, Haotian Ye, Qiushan Guo, and Stefano Ermon. Adaptive spec-tral feature forecasting for diffusion sampling accel-eration. arXiv preprint arXiv:2603.01623 , 2026. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denois-ing diffusion probabilistic models. In Advances in Neural Information Processing Systems , volume 33, pages 6840–6851, 2020. Yushi Huang, Zining Wang, Ruihao Gong, Jing Liu, Xinjie Zhang, Jinyang Guo, Xianglong Liu, and Jun Zhang. HarmoniCa: Harmonizing training and in-ference for better feature caching in diffusion trans-former acceleration. In Proceedings of the 42nd In-ternational Conference on Machine Learning , vol-ume 267 of Proceedings of Machine Learning Re-search , pages 25835–25858. PMLR, 2025. Yanchao Li, Jiaqing Xie, Ben Gao, Wanhao Liu, Yanbo Wang, TY Tsui, Jinfei Liu, Yuqiang Li, and Tianfan Fu. Disagree to accelerate: Closing the loop on diffusion feature forecasts. arXiv preprint arXiv:2608.01740 , 2026. Dong Liu, Yanxuan Yu, Jiayi Zhang, Yifan Li, Ben Lengerich, and Ying Nian Wu. FastCache: Fast caching for diffusion transformer through learnable linear approximation. arXiv preprint arXiv:2505.20353 , 2025a. Jiacheng Liu, Chang Zou, Yuanhuiyi Lyu, Junjie Chen, and Linfeng Zhang. From reusing to forecast-ing: Accelerating diffusion models with TaylorSeers. In Proceedings of the IEEE/CVF International Con-ference on Computer Vision (ICCV) , pages 15853– 15863, 2025b. Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. DPM-Solver: A fast ODE solver for diffusion probabilistic model sam-pling in around 10 steps. In Advances in Neural Information Processing Systems , volume 35, pages 5775–5787, 2022. Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. DPM-Solver++: Fast solver for guided sampling of diffusion probabilistic models. Machine Intelligence Research , 22(4):730– 751, 2025. doi: 10.1007/s11633-025-1562-4. David G. Luenberger. Observers for multivariable sys-tems. IEEE Transactions on Automatic Control , 11 (2):190–197, 1966. Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deep-Cache: Accelerating diffusion models for free. In 
+
+Proceedings of the IEEE/CVF Conference on Com-puter Vision and Pattern Recognition (CVPR) ,pages 15762–15772, 2024. Zhirong Shen, Rui Huang, Jiacheng Liu, Chang Zou, Peiliang Cai, Shikang Zheng, Zhengyi Shi, Liang Feng, and Linfeng Zhang. Beyond fixed formulas: Data-driven linear predictor for efficient diffusion models. arXiv preprint arXiv:2604.26365 , 2026. Jiaming Song, Chenlin Meng, and Stefano Ermon. De-noising diffusion implicit models. In International Conference on Learning Representations , 2021. Matthew O. Williams, Ioannis G. Kevrekidis, and Clarence W. Rowley. A data–driven approximation of the Koopman operator: Extending dynamic mode decomposition. Journal of Nonlinear Science , 25(6): 1307–1346, 2015. Yuanchao Xu, Kaidi Shao, Isao Ishikawa, Yuka Hashimoto, Nikos Logothetis, and Zhongwei Shen. A data-driven framework for koopman semigroup es-timation in stochastic dynamical systems. Chaos: An Interdisciplinary Journal of Nonlinear Science ,35(10):103123, 10 2025. ISSN 1054-1500. doi: 10. 1063/5.0283640. URL https://doi.org/10.1063/ 5.0283640 .Table 3: Complete-trajectory splits for offline identification. The diagnostic split is separate from the formal generation evaluation. Rank is the dimension of each projected increment.              
+
+> Dataset Calibration Validation Diagnostic Rank r
+> CIFAR-10 120 60 60 256 ImageNet-10 80 40 40 256
+
+## A PROOF OF PROPOSITION 1 
+
+Proof. For a matrix L′ let F (L′) = E∥ϵu − L′ϵy ∥2 = tr Σ uu − 2 tr( L′Σyu ) + tr( L′Σyy L′⊤ ). With L = Σ uy M and 
+
+M = (Σ yy + γI )−1,
+
+F (0) − F (L) = tr Σuy (2 M − M Σyy M )Σ yu 
+
+,
+
+2M − M Σyy M = M (Σ yy + 2 γI )M, 
+
+which gives the stated expression. Since M is symmetric and Σ yy + 2 γI is positive semidefinite, F (0) − F (L) = tr (M Σyu )⊤(Σ yy + 2 γI )( M Σyu ) ≥ 0. For γ = 0, F is a convex quadratic function of L′ with gradient −2Σ uy +2L′Σyy , which vanishes exactly at L = Σ uy Σ−1 
+
+> yy
+
+; the second moment of ϵu−Lϵ y is Σ uu −LΣyu −Σuy L⊤+LΣyy L⊤ =Σuu − Σuy Σ−1 
+
+> yy
+
+Σyu .Eq. (13) follows from vk − ¯vk = Ak−1ek−1 + ρk and ˆ vk − ¯vk = LkH(vk − ¯vk); Eq. (14) is its first block row, with 
+
+ek−1 = ( euk−1, 0); and Eq. (15) follows by summing ( di − ˆdi) − (di−1 − ˆdi−1) = σdPdeui + ( I − PdP ⊤ 
+
+> d
+
+)( di − di−1)over i = a + 1 , . . . , k .
+
+## B ADDITIONAL EXPERIMENTAL DETAILS 
+
+B.1 Datasets and Reference Distributions 
+
+The CIFAR-10 real-image reference contains the 50,000 training images. The ImageNet-10 reference contains 13,000 ImageNet training images, with 1,300 images in each checkpoint class: airliner, bee, black swan, cup, dingo, Egyptian cat, electric locomotive, ferret, goldfish, and panda. Images are converted to RGB, resized to a shorter side of 74 pixels with bilinear interpolation, and center-cropped to 64 × 64. This is a ten-class subset, not ImageNet-1k evaluation. Generated floating-point images in [ −1, 1] are quantized using 
+
+Q(x) = uint8 (clip (127 .5( x + 1) + 0 .5, 0, 255)) . (16) FID, KID, and paired feature errors use the same 2048-dimensional Inception-v3-compatible features from 
+
+torch-fidelity==0.4.0 . For each configuration and sampling run, FID is computed after merging all 10,000 generated feature vectors. FID scores from separate shards are never averaged. The reported mean and sample SD are then computed across the three complete sampling runs. 
+
+B.2 Offline Identification and Data Splits 
+
+Calibration uses previously collected full-sampling feature trajectories from the frozen checkpoints (Table 3). Splits are defined by complete initial-noise trajectory. All sampled spatial locations and both guidance branches of a trajectory remain in the same split. The collector retains 16 fixed spatial locations per trajectory. Projection bases, normalization scales, dynamics, and gains are estimated from the calibration split. Predictor hyperparameters are selected using the validation split. The separate diagnostic split supports development analyses. The new 10,000-image sampling runs are separate from these calibration trajectories. The main observer has rank 256 for both deep and shallow increments, giving a joint state dimension of 512. The selected dynamics ridge parameter is 1.0 in the implementation’s normalized coordinates on both datasets. The static rank-256 regression uses ridge 0.03. All identified parameters remain fixed during evaluation. Hanru Bai, Yuanchao Xu, Fengyi Li 
+
+Table 4: Observer results across the three refresh budgets. FID and KID report mean and sample SD across three sampling runs. Each run generates 10,000 images. Speedup is relative to full DDIM-50 at the main batch size. Eϕ reports mean paired feature error.                                                              
+
+> Dataset sFID ↓10 3KID ↓10 3Eϕ↓Speedup ↑
+> CIFAR-10 213 .495 ±0.050 6.319 ±0.133 0.743 1.527 ×
+> CIFAR-10 313 .515 ±0.079 6.224 ±0.098 1.776 1.733 ×
+> CIFAR-10 413 .669 ±0.071 6.393 ±0.115 2.713 1.890 ×
+> ImageNet-10 213 .914 ±0.079 2.665 ±0.024 4.662 1.504 ×
+> ImageNet-10 314 .133 ±0.097 2.760 ±0.032 9.741 1.701 ×
+> ImageNet-10 414 .257 ±0.074 2.802 ±0.029 17.323 1.845 ×
+
+The calibrated operator models network-feature increments. It is not identified with the checkpoint’s native bottleneck operator. No exact finite-dimensional Koopman-invariance claim is required. Offline predictor fitting is distinct from training the denoiser. 
+
+B.3 Refresh Schedules and Baseline Implementations 
+
+The deterministic sampling grid is 
+
+tk =
+
+
+
+999 
+
+
+
+1 − k
+
+49 
+
+ 
+
+, k = 0 , . . . , 49 , (17) as implemented by integer conversion of a 50-point linear grid. With maximum partial run length s, a step k is fully evaluated when k < 4, k ≥ 48, or ( k − 2) mod ( s + 2) < 2. The resulting full/partial counts are 28/22, 23/27, and 20/30 for s = 2 , 3, 4. Each step includes a conditional and an unconditional evaluation. These counts are guidance pairs, not single-branch network-call counts. Consecutive full evaluations reinitialize feature increments on the current accelerated trajectory. They do not reset the image state to a separately generated reference. Reduced-step DDIM and DPM-Solver++ use candidate step counts 20, 24, 26, 28, 30, 32, 34, 36, 38, and 40. DPM-Solver++ uses DPMSolverMultistepScheduler from diffusers==0.38.0 , the checkpoint’s beta schedule, epsilon prediction, solver order 2, and linear timestep spacing. Thresholding with maximum sample value 1.0 gives fixed clipping of the predicted clean image to [ −1, 1]. Karras sigma spacing is not used. These settings define the tested solver configuration and do not constitute an exhaustive solver search. Feature reuse, linear extrapolation, and channelwise affine prediction use the outer decoder feature location. Their timing candidates include the s = 4 schedule and schedules with 2, 4, 6, 8, 10, 12, or 16 additional full steps. Additional refreshes prioritize consecutive pairs to recover exact feature increments. Equal full-step counts do not imply identical refresh positions. DeepCache is adapted to two stage boundaries of the native U-Net, with uniform refresh intervals of 2, 3, 4, or 6. It reuses high-level features and recomputes current shallow decoder skips. Spectrum uses the saved official predictor code with previously validation-selected parameters and our feature location and s ∈ { 2, 3, 4}
+
+schedules. These entries evaluate adaptations on the present checkpoints, not reproductions of the original papers’ benchmarks. 
+
+Latency matching. For each dataset and observer budget, we select the closest-latency configuration within each baseline family using timing alone. The middle budget selects DDIM-28 and DPM-Solver++-28 on CIFAR-10, and DDIM-30 and DPM-Solver++-30 on ImageNet-10. All seven baseline families are within 3.81% of the observer latency at this budget. At s = 4, the closest DeepCache candidate is 11.10% faster on CIFAR-10 and 11.03% faster on ImageNet-10. The closest Spectrum candidate is 11.63% and 12.60% slower, respectively. These four comparisons fall outside the 5% tolerance and are not described as latency matched. Their results remain plotted at their actual measured latencies. Koopman Observers for Diffusion Acceleration 
+
+Table 5: Predictor controls on the same s = 4 refresh schedule. Feature errors report mean and sample SD across three sampling runs. The rank-256 observer uses fused inference. Other configurations can differ in rank, fitting, or implementation. The strict correction intervention is reported in Table 2.                                                                                  
+
+> CIFAR-10 ImageNet-10 Predictor 10 3Eϕ↓Speedup 10 3Eϕ↓Speedup Feature reuse 18 .270 ±0.144 1.93 ×50 .543 ±0.169 1.89 ×
+> Linear extrapolation 4.395 ±0.058 1.92 ×21 .794 ±0.277 1.88 ×
+> Channelwise affine 3.388 ±0.067 1.92 ×19 .653 ±0.339 1.88 ×
+> Static regression, r= 256 12 .275 ±0.029 1.89 ×34 .979 ±0.361 1.85 ×
+> Diagonal observer, r= 64 3.478 ±0.056 1.90 ×19 .560 ±0.239 1.85 ×
+> Dense observer, r= 64 3.038 ±0.057 1.90 ×19 .460 ±0.198 1.85 ×
+> Open-loop, r= 256 2.842 ±0.050 1.87 ×18 .172 ±0.230 1.83 ×
+> Dense observer, r= 256 2.713 ±0.048 1.89 ×17 .323 ±0.235 1.85 ×
+
+B.4 Observation Interventions and Predictor Controls 
+
+The current, delayed, and disabled correction variants load the same rank-256 base artifact. They share projection bases, normalization, operators, gains, and full refresh positions. All use the unfused implementation. The delayed variant replaces the correction’s current shallow increment with the preceding sampling step’s measured increment. Fresh shallow activations are still used by the decoder, and actual shallow measurements continue to be recorded. Disabling correction suppresses the joint-state innovation update, including both its deep and shallow components. It does not change only the deep gain while retaining shallow-state assimilation. The main rank-256 observer uses an algebraically fused implementation. Its full-cohort feature MSE is 0.002712826 on CIFAR-10 and 0.017322962 on ImageNet-10. The corresponding unfused current-input vari-ant gives 0.002712838 and 0.017323433. These numerical differences are retained. Fused and unfused timings are not interchanged in the strict ablation. Artifact inspection confirms that the stored open-loop and base observer files have identical projection bases, operators, and gains on both datasets. Their correction flags differ. The open-loop control therefore reproduces the disabled-correction outputs in this evaluation. It is not an independently fitted source of evidence for the value of correction. Static regression, rank-64 observation-corrected dynamics, and rank-64 diagonal dynamics are additional cali-brated configurations. Their comparisons characterize complete predictors and may change fitted parameters or numerical implementation. In particular, the rank comparison also compares rank-256 fused inference with rank-64 unfused inference. We therefore use the same-fit observation interventions for the most direct test of correction. These controls do not establish that the observer is more expressive than every direct affine predictor with the same input information. 
+
+B.5 Feature Prediction on Reference Trajectories 
+
+The earlier local diagnostic uses 60 CIFAR-10 and 40 ImageNet-10 development trajectories from full sampling. Two consecutive full evaluations initialize the predictor. Predictions are assessed at horizons of one, two, and four steps from anchor indices 3, 9, 15, 21, 27, 33, 39, and 45. Squared deep-feature errors are aggregated and normalized by feature reuse at the same anchors and horizons. The feature-reuse reference is consequently one. Observation correction reduces aggregate diagnostic error from 0.3829 to 0.3664 on CIFAR-10 and from 0.3907 to 0.3763 on ImageNet-10. These measurements use shallow observations on full reference trajectories. The formal generation results evaluate this accumulated effect separately. Hanru Bai, Yuanchao Xu, Fengyi Li 
+
+Table 6: Local deep-feature prediction on earlier development diagnostic trajectories. Errors are normalized by feature reuse and aggregated over horizons of one, two, and four steps.             
+
+> Predictor CIFAR-10 ImageNet-10 Feature reuse 1.0000 1.0000 Linear extrapolation 0.6022 0.6886 Static shallow-to-deep 0.5964 0.5643 Open-loop dynamics 0.3829 0.3907 Observation-corrected dynamics 0.3664 0.3763
+
+Table 7: Paired feature-error ratios for the strict observation interventions at s = 4. Brackets give per-run 95% paired-bootstrap intervals from 1,000 resamples. Ratios below one favor current observations. Intervals are not pooled across runs.                                         
+
+> Dataset Comparison Run 1 Run 2 Run 3 CIFAR-10 Current / disabled 0.9529 0.9591 0.9518 [0 .9463 ,0.9594] [0 .9521 ,0.9667] [0 .9414 ,0.9616] CIFAR-10 Current / delayed 0.8622 0.8774 0.8770 [0 .8500 ,0.8743] [0 .8657 ,0.8887] [0 .8646 ,0.8902] ImageNet-10 Current / disabled 0.9541 0.9541 0.9516 [0 .9481 ,0.9602] [0 .9478 ,0.9605] [0 .9456 ,0.9578] ImageNet-10 Current / delayed 0.8260 0.8332 0.8174 [0 .8132 ,0.8384] [0 .8203 ,0.8466] [0 .8058 ,0.8289]
+
+B.6 Paired Errors and Uncertainty 
+
+For accelerated output ˆ xi and full DDIM-50 output xfull  
+
+> i
+
+with the same initial noise and class label, we define 
+
+Eϕ = 1
+
+N D 
+
+> N
+
+X
+
+> i=1
+
+ϕ(Q(ˆ xi)) − ϕ Q(xfull  
+
+> i
+
+) 22 , D = 2048 . (18) Pixel MSE Ex is computed directly between floating-point outputs in [ −1, 1] and averaged over pixels, channels, and images. It is not computed after uint8 quantization. Full-sampler outputs are generated references, not ground-truth images. For each predefined comparison, we jointly resample paired image indices 1,000 times within each run. Each bootstrap statistic is the ratio of the two resampled mean feature errors. We report the 2.5th and 97.5th percentiles separately for each run. These intervals describe variation across images conditional on the checkpoint and fitted predictor. They are not FID uncertainty, model-training uncertainty, or pooled three-run confidence intervals. KID is the average of 20 random subset estimates, each using 500 real and 500 generated feature vectors. We distinguish the standard deviation across these subsets from the sample SD of the three run-level KID means. Only the latter is reported alongside mean KID in the result tables. 
+
+Classwise analysis. After averaging the three runs, current observations improve on disabled correction in every class of both datasets. Relative improvements range from 0.37% to 9.07% on CIFAR-10 and from 0.77% to 6.51% on ImageNet-10. Relative to delayed correction, current observations improve nine of ten ImageNet classes. The airliner class is an exception, with a 5.20% increase in error. Classwise averages are descriptive and do not imply improvement for every image or every run within a class. 
+
+B.7 Batch-Size Sensitivity and Offline Cost 
+
+We independently repeat timing at batch sizes 10, 20, 50, and 100 on CIFAR-10, and 5, 10, 20, and 40 on ImageNet-10. Each configuration is warmed up, and three synchronized repetitions are measured in randomized Koopman Observers for Diffusion Acceleration 
+
+Table 8: Separate batch-size timing measurements for s = 4. Latencies are seconds per batch, measured as the median of three synchronized repetitions after warmup. Each speedup uses the full sampler timed again at the corresponding batch size.                                                       
+
+> Dataset Batch Full Reuse Channel Observer Speedup CIFAR-10 10 3.399 1.586 1.589 1.603 2.121 ×
+> CIFAR-10 20 4.166 2.119 2.124 2.149 1.939 ×
+> CIFAR-10 50 7.043 3.657 3.671 3.728 1.889 ×
+> CIFAR-10 100 12.507 6.565 6.594 6.706 1.865 ×
+> ImageNet-10 54.093 2.098 2.102 2.130 1.922 ×
+> ImageNet-10 10 5.959 3.069 3.082 3.131 1.903 ×
+> ImageNet-10 20 9.717 5.150 5.173 5.265 1.846 ×
+> ImageNet-10 40 17.315 9.413 9.459 9.637 1.797 ×
+
+order at each batch size. The full sampler is timed again to define each speedup. For s = 4, observer speedups range from 1 .87 × to 2 .12 × on CIFAR-10 and from 1 .80 × to 1 .92 × on ImageNet-10. These are throughput-dependent timing results. The formal quality evaluation uses only the main batch sizes 50 and 20. The completed GPU suite reuses previously calibrated predictors and does not measure end-to-end offline identi-fication cost. Earlier collector logs record trajectory collection but do not provide a complete, hardware-matched measurement including basis construction, operator fitting, and gain fitting. The serialized base observer occupies approximately 73.37 MiB per dataset. The fused deployment artifact occupies approximately 36.05 MiB, excluding the denoiser. Serialized file size is not peak accelerator memory usage. 
+
+B.8 Evaluation Records and Reproducibility 
+
+The timing pool contains 66 configurations per dataset, including the proposed method and ablations. The expanded control set and timing-selected baselines yield 34 distinct evaluated configurations per dataset. Across two datasets, three sampling runs, and 10,000 images per run, the evaluation completes 2,040,000 configuration-level generations. Initial noise is shared across methods, so this count does not represent 2,040,000 independent initial conditions. All configurations are retained in the evaluation records, including those that do not improve FID or paired fidelity. The records contain per-run FID and KID, per-image paired errors, classwise summaries, timing repe-titions, configuration hashes, and completion markers. All 204 configuration-level runs contain 10,000 samples. Recorded correctness checks compare the split full-forward path with native DDIM and compare each DeepCache full-forward branch with native execution. Maximum output differences in these checks are zero on both datasets. The current-observation intervention also matches the existing unfused base observer exactly on the check inputs. These checks validate the tested execution paths. 
+
+B.9 Qualitative Evaluation and Scope 
+
+For the formal evaluation, preview grids retain the first 40 image indices of each run, corresponding to four images per class. The same indices are used across methods. These previews are not selected according to improvement. The selected ImageNet teaser examples in the introduction come from an earlier development cohort and illustrate individual improvement cases. They are separate from the fixed-index formal-evaluation previews and should not be interpreted as representative random samples.

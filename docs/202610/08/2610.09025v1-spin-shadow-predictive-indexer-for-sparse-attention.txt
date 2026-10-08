@@ -1,0 +1,289 @@
+Title: SPIN: Shadow Predictive Indexer for Sparse Attention
+
+URL Source: https://arxiv.org/pdf/2610.09025v1
+
+Published Time: Thu, 08 Oct 2026 00:12:20 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+> 2026-10-8
+
+# Spin: Shadow Predictive Indexer for Sparse Attention 
+
+Yao Fu, Cyrus Chang, Ritchie Zhao, Bryce Long, Yueying Li, Mahdi Kamani, Samkit Jain, Rahul Raman, Tara Safavi, Shreya Gupta, Parsa Ashrafi Fashi, Minseok Lee, Julien Demouth, Bita Darvish Rouhani 
+
+Indexer-based sparse attention reduces the cost of core attention by passing only a fixed, small number of important tokens to it. However, the indexer must still score the entire KV cache at every decoding step. This scoring overhead becomes a major bottleneck as the context length grows. We propose Spin (Shadow 
+
+Predictive In dexer) to reduce this indexer overhead. Spin uses lightweight, history-based prediction to identify important KV blocks, avoiding the need to score the full KV cache at every decoding step. Spin treats KV blocks and speculative decoding as first-class design and implementation considerations. Across extensive evaluations on long-context and agentic benchmarks, Spin achieves 30–40% sparsity while preserving task quality. In end-to-end vLLM serving, Spin improves output throughput by up to 14.9% and reduces median inter-token latency by up to 13.2%. 
+
+# 1. Introduction 
+
+DeepSeek Sparse Attention [11] (DSA) is a sparse attention architecture that relies on an indexer to score each token in the context. DSA and its variants have seen significant adoption among frontier open-source models, including DeepSeek-V4 [12], GLM-5.2 [26], MiniMax-M3 [15], and LongCat-2.0 [17]. Core attention processes a fixed top-𝐾 budget, whereas the indexer scales linearly with context length, making it the dominant bottleneck in long-context inference. DeepSeek-V4’s CSA layer [12] combines the original DSA with a new token-level compressor, effectively reducing DSA’s context length by 4 ×. This, however, does not change the indexer’s linear scaling with context length; thus, at very long context lengths (e.g., 512K–1M), the indexer remains a major contributor to DeepSeek-V4’s decode inter-token latency (ITL). We observe that DSA’s indexer patterns are predictable, similar to temporal patterns previously observed in attention scores [23, 24]. Indexer scores can be positively correlated with (1) previous DSA layers’ indexer scores in the same decode iteration ( prev-layer ) and (2) the same layer’s scores from previous iterations (prev-iter ). Our benchmarking results show that prev-iter signals correlate more strongly with current scores than prev-layer signals. This motivates Shadow Predictive In dexer ( SPIN ), which uses simple per-request statistics of each DSA layer’s scores from previous decoding iterations to predict token importance and skip less important context tokens, thereby sparsifying the indexer input. Skipped blocks receive no score updates and may remain excluded even after becoming important. We address this with random exploration within a fixed block budget to refresh skipped blocks at low overhead. To enable efficient implementation in LLM serving frameworks, Spin applies sparsity at the KV-block level. Spin is training-free and introduces no new auxiliary layers or networks. We implement Spin for the DeepSeek-V4 model class in vLLM [14] for accuracy evaluation. Across the long-context benchmarks LongBench-v2 [4], AA-LCR [3], MRCRv2 [18], and RULER [13], and the agentic benchmark tau2-airline [7, 25], Spin preserves comparable task quality at 30–40% block sparsity. We further integrate Spin with random exploration into vLLM, improving output throughput by up to 14.9% and reducing median inter-token latency by up to 13.2%. Our concrete contributions are as follows: 1. We evaluate various prev-iter and prev-layer prediction signals for the indexer in DeepSeek-V4 and show that prev-iter indexer scores provide the most accurate predictions. 2. We propose Spin to sparsify the indexer based on prev-iter scores and an exploration mechanism and ablate various methods to pool the per-token scores into a block-level prediction. 3. We evaluate Spin on DeepSeek-V4 across long-context and agentic benchmarks and integrate it into vLLM, improving output throughput by up to 14.9% and reducing median inter-token latency by up to 13.2%. 4. We compare exploration methods on MRCRv2 and show that exploration can recover task quality 
+
+> © 2026 NVIDIA. All rights reserved. arXiv:2610.09025v1 [cs.LG] 6 Oct 2026 Spin : Shadow Predictive Indexer for Sparse Attention
+
+while retaining the same block budget. 5. We evaluate Spin during speculative target-model verification using DeepSeek-V4’s native multi-token prediction (MTP) on SPEED-Bench [1]. 
+
+# 2. DSA Indexer Patterns and Prediction 
+
+In each decode iteration, DSA’s indexer computes a scalar score for each context token. For query token 
+
+𝑡 , the indexer projects its representation into a multi-head query 𝑞 𝑡 . The key 𝑘 𝑖 for each context token 𝑖 is generated earlier and cached during inference. Rotary positional encodings (RoPE) [19] are applied to half of each head’s dimensions. The indexer score for context token 𝑖 is 𝑧 𝑡 [𝑖 ] = ∑︀ 𝑛 ℎ 
+
+> ℎ=1
+
+𝑤 ℎ ReLU( 𝑞 𝑡,ℎ · 𝑘 𝑖,ℎ ), where 𝑛 ℎ
+
+is the number of heads, and 𝑞 𝑡,ℎ , 𝑘 𝑖,ℎ , and 𝑤 ℎ are the query, key, and weight for head ℎ. The top-𝐾 tokens with the highest scores are selected and passed to core attention, with 𝐾 in practice ranging from 512 to 2048. The DSA indexer exhibits patterns that can be predicted in different ways. Figure 1 visualizes the top-𝐾 
+
+selection mask from a single layer on a prompt from summscreenfd [8]. The vertical axis represents decode iterations. Vertical-line and diagonal-band patterns are clearly visible. Vertical lines indicate that the indexer tends to select the same tokens across multiple iterations. Diagonal bands resemble well-documented "slash" patterns in some attention heads [10, 24], which are known to be caused by RoPE [6, 9]. Among the DSA models we examine, DeepSeek-V3.2 is the only one with prominent diagonal bands; the others exhibit mostly vertical patterns. Both patterns allow prediction of indexer scores using scores from the previous iteration (prev-iter prediction). DeepSeek-V3.2 Indexer top-𝐾 DeepSeek-V4 Indexer top-𝐾 
+
+Figure 1 | Indexer top-𝐾 patterns from a single DSA layer on a prompt from summscreenfd . The y-axis represents decode iterations. The prompt is 9.7K tokens long, and 1,400 context KV slots are visualized along the x-axis. DeepSeek-V3.2 exhibits prominent diagonal bands and vertical lines, whereas DeepSeek-V4 exhibits mostly vertical patterns. Indexer scores can also be predicted using scores from earlier layers in the same decode iteration ( prev-layer 
+
+prediction). This is the core idea behind GLM-5’s IndexCache [5] and indexer sharing across adjacent layers in GLM-5.2 [26]. We compare four predictors derived from two signal sources—previous layers and previous decode iterations—against a random baseline. Each method constructs a proxy for the target indexer scores: 1. Random : Sample indexer scores independently and uniformly at random. The expected score correlation is zero. 2. Prev-layer : Reuse the indexer scores from the preceding DSA layer in the same decode iteration. 3. Prev-layer (best-of-5 oracle) : Consider the indexer scores from the five preceding DSA layers and report the best of the five. 4. Prev-iter : Reuse the indexer scores from the preceding decode iteration at the same DSA layer. 5. Prev-iter (offset 1) : Shift the prev-iter indexer scores by one position to align with the diagonal pattern. To test whether the prediction signals generalize across models, tasks, and context lengths, we evaluate them on both DeepSeek-V3.2 and DeepSeek-V4 Flash using two diagnostic prompts: a 9.7K-token summscreenfd 
+
+> 2Spin : Shadow Predictive Indexer for Sparse Attention
+
+summarization prompt and a 94K-token AA-LCR [3] reasoning prompt. At each decode iteration, we compare the predicted scores and top-𝐾 indices with the original indexer outputs, reporting Pearson correlation for score prediction and recall for top-𝐾 selection. For summscreenfd , we disable thinking and evaluate all DSA layers. For AA-LCR , we enable thinking but evaluate only layers {0, 10 , 20 , 30 , 40 , 50 , 60 } and omit the prev-layer best-of-5 oracle to limit evaluation cost. Table 1 | Comparison of indexer prediction methods — profiling results for one prompt each from 
+
+summscreenfd (length: 9.7k) and AA-LCR (length: 94k). Values are averaged over layers and decode iterations. The best method is shown in bold, and the second-best method is underlined. 
+
+DeepSeek-V3.2 DeepSeek-V4 Flash 
+
+summscreenfd AA-LCR summscreenfd AA-LCR 
+
+Method Pearson correlation top-𝐾 
+
+recall Pearson correlation top-𝐾 
+
+recall Pearson correlation top-𝐾 
+
+recall Pearson correlation top-𝐾 
+
+recall Random baseline 0.000 0.203 0.000 0.022 0.000 0.203 0.000 0.022 Prev-layer 0.289 0.359 0.431 0.164 0.547 0.482 0.519 0.306 Prev-layer (Bo5) 0.500 0.461 – – 0.626 0.525 – –Prev-iter 0.913 0.824 0.902 0.615 0.876 0.751 0.849 0.577 
+
+Prev-iter (offset 1) 0.807 0.660 0.665 0.314 0.526 0.460 0.571 0.302 Table 1 shows the score correlation and top-𝐾 recall for each prediction method, averaged over layers and decode iterations. Prev-iter prediction is the most accurate method and also scales well to longer contexts. From summscreenfd to AA-LCR , the context length increases by a factor of 9 .7, and the random recall baseline drops proportionally. However, the prev-iter recall rate is largely maintained. Prev-layer prediction works better on DeepSeek-V4 than on DeepSeek-V3.2 but lags prev-iter on both models. Motivated by these results, we design Spin to predict block importance from per-layer statistics accumu-lated across previous decode iterations. 
+
+# 3. SPIN 
+
+3.1. Overview 
+
+Spin extends naive prev-iter score prediction in three ways: 1. Maintain exponential moving averages (EMAs) of previous indexer scores along the vertical and diagonal patterns. This allows Spin to capture longer-term signals in both patterns. 2. Pool the predicted token-level scores into blocks. This allows Spin to skip entire KV blocks and integrate efficiently with paged-attention backends. 3. Reserve a small fraction of the block budget for random exploration. This allows Spin to refresh observations of skipped blocks without increasing the number of blocks scored. 
+
+3.2. Spin Algorithm 
+
+Spin operates over the KV slots visible to the indexer; for DeepSeek-V4, each slot corresponds to a compressed token. To predict the indexer score of slot 𝑖 at query position 𝑞 𝑡 , Spin combines two EMA statistics: 𝑉 [𝑖 ], the vertical score associated with absolute slot 𝑖 , and 𝐷 [𝑞 𝑡 − 𝑖 ], the diagonal score associated with relative offset 
+
+𝑞 𝑡 − 𝑖 . The predicted score is ^𝑧 𝑡 [𝑖 ] = max ( 𝑉 [𝑖 ], 𝐷 [𝑞 𝑡 − 𝑖 ]) . (1) 
+
+Spin partitions the slots into logical blocks of size 𝑏 , matching the block size used by the attention backend, and defines 𝑏 (𝑖 ) = ⌊𝑖/𝑏 ⌋ as the block containing slot 𝑖 . It then max-pools the predicted scores within each block to produce a predicted block score: 
+
+𝑆 𝑡 [𝑗 ] = max   
+
+> 𝑖 :𝑏 (𝑖 )= 𝑗
+
+^𝑧 𝑡 [𝑖 ]. (2) 
+
+> 3Spin : Shadow Predictive Indexer for Sparse Attention
+
+Algorithm 1: Core Spin block-selection and EMA-update logic for one decode iteration 
+
+Input: Indexer query position 𝑞 𝑡 ; context length 𝑁 𝑡 in KV slots; state 𝑉, 𝐷 ; block size 𝑏 ; post-indexer selection size 𝐾 ; target block sparsity 𝜌 ; EMA decay 𝛼 
+
+Output: Post-indexer top-𝐾 slot set 𝑇 𝑡 and updated state 𝑉, 𝐷  
+
+> 1
+
+𝐵 𝑡 ← ⌈ 𝑁 𝑡 /𝑏 ⌉ ; // total number of context blocks  
+
+> 2
+
+for 𝑗 ← 0 to 𝐵 𝑡 − 1 do  
+
+> 3
+
+𝑆 𝑡 [𝑗 ] ← max 𝑗𝑏 ≤𝑖< min {(𝑗 +1) 𝑏,𝑁 𝑡 } max {𝑉 [𝑖 ], 𝐷 [𝑞 𝑡 − 𝑖 ]} ; // predicted scores  
+
+> 4
+
+𝑚 𝑡 ← min {𝐵 𝑡 , max( ⌈𝐾/𝑏 ⌉, ⌈(1 − 𝜌 )𝐵 𝑡 ⌉)} ; // number of blocks to select  
+
+> 5
+
+𝑀 𝐵 𝑡 ← TopK( {𝑆 𝑡 [0] , . . . , 𝑆 𝑡 [𝐵 𝑡 − 1] }, 𝑚 𝑡 ) ; // selected blocks  
+
+> 6
+
+𝑧 𝑡 ← Indexer( 𝑀 𝐵 𝑡 ) ; // indexer scores in logical KV-slot coordinates  
+
+> 7
+
+𝑇 𝑡 ← TopK( 𝑧 𝑡 , 𝐾 );  
+
+> 8
+
+foreach 𝑖 ∈ dom( 𝑧 𝑡 ) do  
+
+> 9
+
+𝑉 [𝑖 ] ← 𝛼𝑉 [𝑖 ] + (1 − 𝛼 )𝑧 𝑡 [𝑖 ] ; // EMA updates  
+
+> 10
+
+𝐷 [𝑞 𝑡 − 𝑖 ] ← 𝛼𝐷 [𝑞 𝑡 − 𝑖 ] + (1 − 𝛼 )𝑧 𝑡 [𝑖 ]; We study alternative pooling methods in Section 4.6. Let 𝐾 denote the output size of the post-indexer top-𝐾 selection. The target block sparsity 𝜌 ∈ [0 , 1] denotes the desired fraction of context blocks to skip. The resulting number of selected blocks, 𝑚 𝑡 , is lower-bounded by ⌈𝐾/𝑏 ⌉ to provide capacity for at least 𝐾 slots and capped by the number of available blocks. The 𝑚 𝑡 highest-scoring blocks are passed to the indexer, which computes scores for all slots in those blocks. The original post-indexer top-𝐾 operator then selects 𝐾 slots from these scores for core attention. The pre-indexer block selection operates over one predicted score per block rather than one per slot, reducing the size of the selection problem. After the indexer evaluates the selected blocks, their scores update the corresponding 𝑉 and 𝐷 EMA states. Because skipped blocks produce no scores, Spin updates its full EMA state from only partial observations at each decode iteration. If an important slot lies in a skipped block, its EMA statistics are not updated and may become stale. We mitigate this failure mode with exploration in the next subsection. By design, Spin ’s block prediction and EMA update can be scheduled asynchronously and overlapped with the forward pass of other layers. Algorithm 1 summarizes Spin ’s core block-selection and EMA-update logic. For clarity, it omits several practical details. Spin resets 𝑉 and 𝐷 to zero after prefill. For multi-turn inference, it repeats this reset at the start of each turn. In both cases, the first decode iteration runs without block pruning to initialize the EMA state. We also always retain the sink block and the newest active block. Exploration is described separately below. 
+
+3.2.1. Staleness Mitigation 
+
+With Spin enabled, blocks with lower predicted scores may be excluded from the indexer input and therefore receive no EMA updates. However, these blocks can still become important at later decode steps. Periodic full-indexer refresh revisits all blocks, but increases scoring work relative to the usual sparse steps. We instead reserve part of the existing block budget for exploration. At each iteration, a fraction 𝛾 of the block budget 𝑚 𝑡 is reserved for exploration. The remaining budget retains the forced blocks and the highest-scoring blocks following Algorithm 1. Exploration fills the reserved positions with distinct blocks chosen from those not already selected. Forced blocks count toward 𝑚 𝑡 , and the exploration budget is capped by the remaining capacity. The total number of selected blocks remains unchanged, preserving the block budget. The explored blocks receive fresh indexer scores and EMA updates, allowing previously missed slots to reflect their current importance. We compare several exploration methods and choose random exploration, which recovers task quality with low implementation overhead. Details are presented in Section 4.6. 
+
+> 4Spin : Shadow Predictive Indexer for Sparse Attention
+
+3.2.2. Speculative Decoding 
+
+For a speculative draft of length 𝑑 , the target model evaluates 𝑑 + 1 verifier queries in a single forward pass, indexed by rows 𝑟 ∈ { 0, . . . , 𝑑 }. Row 𝑟 is valid if the first 𝑟 draft tokens are accepted; row 0 is therefore always valid. These verifier queries share the same context KV cache but have different query positions and hidden states. A potential concern when applying Spin to speculative decoding is that independently predicted block masks for each query may have a large union, reducing the realized block sparsity. However, we observe that the block masks selected for adjacent verifier queries overlap substantially (Section 4.5). Based on this observation, Spin predicts a block mask for each verifier query and uses their union as the shared indexer-input mask. EMA updates are deferred until the verification outcomes are known. If 𝑎 draft tokens are accepted, the observations from rows 0 , . . . , 𝑎 are replayed in order to update the EMA state. The remaining rows are off the committed decode path and are discarded. We evaluate this design using DeepSeek-V4’s native MTP implementation and study its impact on speculative-decoding acceptance in Section 4.5. 
+
+# 4. Experimental Evaluation 
+
+In this section, we evaluate Spin ’s impact on inference quality and performance. We also conduct microbench-marks of its key design choices. Specifically, we answer the following questions: 1. How does Spin affect task quality on long-context and agentic benchmarks? 2. How much does Spin improve end-to-end output throughput and inter-token latency in vLLM? 3. How does Spin interact with speculative decoding, and does applying it during target-model verification affect average acceptance length? 4. How effectively does exploration mitigate staleness, and how sensitive is Spin to the block-pooling method? 
+
+4.1. Experimental Setup 
+
+We evaluate Spin on DeepSeek-V4 Flash and Pro, using Flash as the primary model. The evaluation covers long-context benchmarks ( LongBench-v2 , AA-LCR , MRCRv2 , and RULER ), the agentic benchmark tau2-airline , and speculative decoding on SPEED-Bench . Unless otherwise specified, sparse experiments use logical blocks of 64 compressed indexer slots, max block pooling, and an EMA decay of 0.5. The LongBench-v2, AA-LCR, RULER, tau2-airline, block-reduction, and MTP results evaluate the core predictor without exploration. The MRCRv2 study compares exploration policies, and the end-to-end implementation uses random exploration with 𝛾 = 0 .05. We use Spin (𝑥 %) to denote a target block sparsity of 𝑥 %, meaning that 𝑥 % is the intended fraction of context blocks to skip. Realized block sparsity is the measured fraction skipped after budget rounding, forced-block retention, and, for speculative decoding, mask union. We compare each Spin configuration with a matched all-keep control, in which no blocks are skipped, using the same model and evaluation protocol. To measure mean and p99 miss, we compute dense indexer scores within the DeepSeek-V4 indexer path and apply Spin ’s block masks before top-𝐾 selection. We report the task-specific score as the primary quality metric and top-𝐾 miss rate (mean and p99) as auxiliary diagnostic metrics. The miss rate is the fraction of ground truth top-𝐾 indices removed due to Spin ’s block-sparse mask. In the MRCRv2 exploration study, the indexer scores only the selected blocks, and we report task scores. Benchmark-specific setup details and hyperparameters are described in their respective subsections. End-to-end serving performance is measured using the integrated vLLM implementation described in Section 4.4. 
+
+4.2. Long-context Benchmarks Cross-model quality. We evaluate whether Spin preserves task quality on DeepSeek-V4 Flash and Pro using LongBench-v2 . We follow the official evaluation protocol but increase the maximum output length 
+
+> 5Spin : Shadow Predictive Indexer for Sparse Attention
+
+from 128 to 1,024 tokens to reduce output truncation. Table 2 reports the zero-shot exact-match scores for all-keep and Spin configurations. Across target sparsities from 20% to 50%, all Spin scores differ from the corresponding all-keep score by at most 2.6% in relative terms. These results show that Spin maintains comparable task quality on both Flash and Pro with up to 50% target block sparsity. Table 2 | LongBench-v2 exact-match score (%) over all 503 examples. Configuration DeepSeek-V4 Flash DeepSeek-V4 Pro All-keep 53.48 58.05 
+
+Spin (20%) 53.08 57.85 
+
+Spin (30%) 52.09 57.06 
+
+Spin (40%) 54.27 58.25 
+
+Spin (50%) 54.08 58.65 
+
+Sensitivity to selection misses. We evaluate how sensitive task quality is to the selection misses introduced by Spin on AA-LCR and RULER using DeepSeek-V4 Flash. The AA-LCR evaluation contains 100 questions with mean and maximum prompt lengths of 95.5K and 115.2K tokens, respectively. We repeat the evaluation five times with different random seeds to obtain a more stable score estimate. RULER covers 13 tasks at six context lengths from 4K to 128K, with 500 examples per task–length cell, yielding 39,000 examples per configuration. Given this large evaluation set, we run each configuration once. Table 3 | AA-LCR and RULER results for DeepSeek-V4 Flash. AA-LCR scores are averaged over execution-level runs; RULER scores are macro-averaged over task–length cells. AA-LCR RULER Configuration Score Mean miss P99 miss Score Mean miss P99 miss All-keep 64.40 – – 90.20 – –
+
+Spin (20%) 62.60 0.88% 7.81% 90.13 5.72% 19.92% 
+
+Spin (30%) 64.60 1.92% 13.48% 90.00 10.07% 29.49% 
+
+Spin (40%) 64.00 3.46% 20.31% 89.69 14.87% 38.67% 
+
+Spin (50%) 62.00 5.78% 28.52% 88.96 20.68% 48.83% Table 3 reports the task score, mean miss, and p99 miss for all-keep and different sparse configurations. Across target sparsities from 20% to 50%, AA-LCR scores differ from all-keep by at most 2.4 points, or 3.7% in relative terms, without a monotonic decrease. On RULER , scores decrease slightly and monotonically as miss rates increase. RULER exhibits substantially higher miss rates than AA-LCR : at 50% sparsity, its p99 miss reaches 48.83%, but task-score degradation remains small—only 1.24 points, or 1.4% relative to all-keep. 
+
+Long-context stress test. We evaluate Spin on DeepSeek-V4 Flash using the 8-needle MRCRv2 setting at 256K, 512K, and 1M context lengths. Each configuration uses the same 100 official prompts per context bin over 40 seeded repeats, with thinking enabled at maximum reasoning effort and an output limit of 8,192 tokens. The three examples that exceed the model context limit in the 1M bin retain zero scores. Table 4 compares Spin without exploration and with 5% random exploration. Table 4 | MRCRv2 task scores without exploration and with 5% random exploration. Each score averages 40 repeats over 100 fixed prompts per context bin. 256K 512K 1M Sparsity No exploration Random No exploration Random No exploration Random All-keep 57.15 41.13 37.44 20% 58.94 56.82 43.76 45.67 36.74 35.16 30% 54.22 59.71 39.73 45.96 32.09 33.54 40% 53.42 57.84 37.47 47.56 32.70 37.44 50% 46.28 54.45 35.00 44.96 29.76 33.86 Without exploration, Spin shows a clear task-score gap relative to all-keep as target sparsity increases 
+
+> 6Spin : Shadow Predictive Indexer for Sparse Attention
+
+beyond 20%. Random exploration substantially narrows this gap up to 50% target sparsity, despite variation across runs. We ablate alternative exploration methods in Section 4.6. 
+
+4.3. Agentic Benchmarks tau2-airline We evaluate Spin with DeepSeek-V4 Flash on tau2-airline , a multi-turn agentic bench-mark containing 50 tasks. We run four seeded trials per task for each configuration, yielding 200 trajectories per configuration. The target agent uses temperature 0 and top-𝑝 1. The hosted GPT-5.2 user simulator is fixed across all configurations at temperature 0. Table 5 | tau2-airline results for DeepSeek-V4 Flash. Mean and p99 miss are selection-fidelity metrics over eligible sparse decode rows and are not applicable to the all-keep control. Agent configuration Score Mean miss P99 miss All-keep 72.5% – –
+
+Spin (20%) 70.5% 5.9% 21.1% 
+
+Spin (30%) 73.5% 10.9% 30.9% 
+
+Spin (40%) 70.0% 17.3% 41.4% 
+
+Spin (50%) 69.5% 25.7% 53.1% At 30% target sparsity, Spin shows no degradation in task score. Even at 50% sparsity, the score decreases by only 4.1% relative to all-keep, despite the mean miss reaching 25.7%. In a separate evaluation on Terminal-Bench 2.1 with DeepSeek-V4 Flash, Spin at 40% target sparsity matches the all-keep score (62.5% for both), although a few tasks produce substantially longer agent trajectories. 
+
+4.4. End-to-End vLLM Performance 
+
+We integrate Spin into vLLM v0.27.0rc2 and evaluate its end-to-end serving performance with DeepSeek-V4 Flash on eight NVIDIA B300 GPUs using tensor parallelism of eight (TP8) and expert parallelism of eight (EP8). These runs use the same block size, max pooling, EMA decay, warmup, and forced-block policies as the task-quality evaluations. We reserve 5% of the block budget for exploration. We evaluate a workload with a long cached context, a common setting in agentic tasks. We pre-populate one distinct cached prefix for each request before sending the measured wave. The workload contains 507K cached context tokens and 5K new input tokens. After one warmup batch, we measure 96 concurrent requests, each generating 16K output tokens. We report output throughput in tokens per second (TPS) and median inter-token latency (ITL). Table 6 | End-to-end serving performance for DeepSeek-V4 Flash with 507K cached context tokens and 5K new input tokens. The batch size is 96, and each request generates 16K tokens. TPS gain and ITL reduction are computed relative to the matched all-keep setting. Target block sparsity Output TPS TPS gain Median ITL (ms) ITL reduction 0% (all-keep) 4720.29 – 17.837 –40% 5218.65 +10.6% 16.204 9.2% 50% 5421.45 +14.9% 15.484 13.2% Table 6 reports the end-to-end results. Spin improves output throughput by 10.6–14.9% and reduces median ITL by 9.2–13.2%. Increasing target block sparsity from 40% to 50% increases the output TPS gain by 40.7%. This occurs because Spin ’s overhead is largely fixed. Once this overhead is paid, the additional reduction in indexer work translates more directly into end-to-end speedup. 
+
+4.5. Speculative Decoding 
+
+We study how Spin interacts with speculative decoding using DeepSeek-V4’s native multi-token prediction (MTP) with a draft length of three. Extending Spin to multiple verifier queries requires decisions about     
+
+> 7Spin : Shadow Predictive Indexer for Sparse Attention 10 20 30 40 50
+> Realized block sparsity (%)
+> 2510 20
+> P99 miss (%)
+> Row-0 sharing, row-0 update Row-0 sharing, prefix-valid update Row-local union, row-0 update Row-local union, prefix-valid update
+
+Figure 2 | MTP policy ablation over 60 AA-LCR traces with a draft length of three. Each point reports p99 miss and realized block sparsity for one target sparsity under one mask-construction and EMA-update strategy. constructing a shared sparse mask and updating the EMA state after verification. We first ablate these choices through offline trace replay and then evaluate the selected policy’s impact on speculative-decoding acceptance online. 
+
+Offline policy ablation. We collect 60 MTP traces by running 15 curated AA-LCR prompts with DeepSeek-V4 Flash and Pro in both chat and thinking modes. Each trace records the verifier queries and their acceptance outcomes. For mask construction, we compare row-0 sharing, which shares the row-0 mask across all verifier rows, with row-local union, which unions masks predicted separately for each row. For EMA updating, we compare row-0 update with prefix-valid update, which sequentially updates from all prefix-valid rows after the acceptance outcomes are known. We replay Spin on the collected traces at seven target block sparsities from 10% to 50% and report the aggregated p99 miss rate. Figure 2 shows that prefix-valid update has the larger effect, reducing p99 miss by 5.9–11.0% relative to row-0 update. Mask construction has a smaller effect. At matched realized sparsity, row-local union achieves slightly lower p99 miss than row-0 sharing. Mean miss follows the same trend and is therefore omitted from the figure. We therefore adopt row-local union with prefix-valid update as Spin ’s default MTP strategy. 
+
+Online acceptance behavior. We then evaluate the selected strategy online on SPEED-Bench using DeepSeek-V4 Flash. We compare it with all-keep MTP and a sparse baseline using row-0 sharing with row-0 update. Both sparse configurations use 40% target block sparsity. Average acceptance length is the mean number of tokens committed per verification step, including the target-model token, and therefore ranges from one to four. Draft-token acceptance rate is the fraction of proposed draft tokens accepted by the target model. We exclude 27 responses flagged for repetition across all three algorithms (0.59–0.85% per configuration) and ten requests with incomplete mask statistics, leaving 1,499 matched requests. Table 7 | Online MTP acceptance behavior on a common subset of 1,499 SPEED-Bench requests after excluding repetition-flagged responses and requests without complete mask statistics. Condition Average acceptance length Draft-token acceptance rate Realized sparsity All-keep MTP 2.4049 47.19% –Row-0 sharing + row-0 update 2.4059 47.39% 39.67% Row-local union + prefix-valid update 2.4097 47.28% 39.51% Across the three configurations, average acceptance length differs by at most 0.0049, and draft-token acceptance rate differs by less than 0.5% relative to all-keep. The selected Spin strategy therefore shows no visible change in observed MTP acceptance behavior on this matched subset while retaining 39.51% realized block sparsity. Its realized sparsity is only 0.4% lower than that of the row-0-sharing baseline, indicating that 
+
+> 8Spin : Shadow Predictive Indexer for Sparse Attention
+
+verifier rows select largely overlapping KV blocks. 
+
+4.6. Spin Design Ablations Block reduction. We ablate two block-reduction design choices in Spin : where in the prediction algorithm slot-level signals are reduced to blocks and how values within each block are pooled. We define three variants, ordered from the latest to the earliest block reduction: • A0: Compute predicted slot scores, select top-𝐾 slots, then expand the selection to blocks. Every block containing at least one selected slot is selected. • A1 (Spin’s default): Compute predicted slot scores, pool them within each block to obtain predicted block scores, and select the top-𝑚 𝑡 blocks. • A2: Pool indexer scores within each block and use the pooled scores to update block-level 𝑉 /𝐷 EMA states. Use these states to directly predict block scores for top-𝑚 𝑡 block selection. A0 therefore performs block conversion latest, after slot selection. A1 pools predicted slot scores into predicted block scores while retaining slot-level EMA states. A2 performs block reduction earliest, before the EMA predictor. A0 has no pooling operator. For A1 and A2, Max takes the largest value in each block, Top-4 averages up to the four largest values, and Mean averages all values. 10 20 30 40 50       
+
+> Realized block sparsity (%)
+> 0510 15 20 25
+> p99 miss (%)
+> (a) Position of block reduction
+> A0: select slots, then expand A1-Max A2-Max 20 30 40 50
+> Realized block sparsity (%)
+> 010 20 30
+> Relative p99-miss change vs. Max (%)
+> Mean Top-4
+> (b) Pooling within A1
+> 20 30 40 50
+> Realized block sparsity (%)
+> Mean Top-4
+> (c) Pooling within A2
+
+Figure 3 | Block-reduction ablation. Panel (a) compares P99 miss rates for A0, A1-Max, and A2-Max; panels (b) and (c) show relative changes in P99 miss for Mean and Top-4 compared with Max pooling in A1 and A2. Results average per-layer, per-trace P99 over all 60 curated AA-LCR traces and C4A layers. Figure 3(a) shows that A0 and A1-Max remain close, whereas A2-Max produces consistently higher p99 miss. Mean pooling consistently increases p99 miss. Top-4 remains close to Max but is not uniformly better. Within A1, it is slightly worse at 10–20% sparsity, near parity at 25–35%, and modestly better at 40–50%. We choose A1 because it directly controls target block sparsity, whereas A0 controls a pre-expansion slot budget and therefore determines realized block sparsity only indirectly. A1-Max also achieves lower p99 miss 20% 30% 40% 50% −20 −10 010 20           
+
+> Score change from all-keep (%)  (a) 256K
+> 20% 30% 40% 50%
+> (b) 512K
+> 20% 30% 40% 50%
+> (c) 1M
+> Target block sparsity
+> Staleness score (5%) Block age (5%) Random (5%) No exploration All-keep
+
+Figure 4 | Exploration-policy comparison on MRCRv2 at 256K, 512K, and 1M context lengths. Scores are shown as percentage changes relative to all-keep at each target block sparsity. Each point averages 40 repeats over 100 fixed prompts. All exploration methods reserve 5% of the retained-block budget. 
+
+> 9Spin : Shadow Predictive Indexer for Sparse Attention
+
+than A2-Max. We choose Max over Top-4 because it is simpler and avoids the low-sparsity regression while remaining close across the evaluated range. 
+
+Staleness mitigation. The MRCRv2 results show that random exploration can recover task quality without increasing the selected-block budget. We compare it with two alternatives under the same setup. Staleness-score exploration combines staleness and predicted importance to rank candidate blocks. Block-age exploration selects the least recently observed blocks. All three methods reserve 5% of the retained-block budget for exploration. Figure 4 shows that all three exploration methods yield higher mean task scores than no exploration at 30–50% target sparsity, but no method consistently leads across context lengths and sparsities. We choose random exploration for its simpler implementation, which requires no age tracking or age-based selection. 
+
+# 5. Related Work 
+
+Temporal correlation in attention. It is well documented that attention scores form vertical and diagonal patterns in certain heads; many papers have leveraged these patterns to sparsify and speed up attention during decode. H 2O [27] selects heavy-hitter tokens using accumulated historical attention scores while retaining a separate budget for recent tokens. StreamingLLM [21] instead retains attention-sink tokens together with a sliding window of recent tokens. Several works also analyze the diagonal pattern and its origin in RoPE positional encoding [6, 10, 24]. AttentionPredictor [23] learns to predict next-token attention scores from their temporal history. PRR [20] applies an EMA block predictor to dynamic sparse attention, using predicted blocks to speculatively execute core attention while the original block selector runs and repairing missed blocks afterward. Rather than assuming temporal prediction is the right choice, Section 2 empirically compares previous-iteration prediction against random and cross-layer alternatives and shows that previous-iteration prediction is more accurate. 
+
+Indexer-based sparse attention and its optimizations. Recent work reduces indexer cost through several complementary mechanisms. Cross-layer reuse avoids repeated indexing at adjacent layers. Index-Cache [5], discussed in Section 2, studies training-free and training-aware methods that reuse top-𝐾 indices across DSA layers. GLM-5.2 natively deploys this mechanism from mid-training [26]. HISA [22] reduces indexer cost through hierarchical filtering, running DSA’s original token-level indexer only within blocks selected by a coarse block-level stage. LongCat-2.0 later combines cross-layer reuse and hierarchical filtering with streaming-aware indexing in LongCat Sparse Attention [17]. MiniMax Sparse Attention [15] instead adopts a native block-level Index Branch that selects blocks independently for each GQA group. MISA [28] routes a query-dependent subset of indexer heads to perform full-prefix token-level scoring, while PIVOT [16] amortizes a full-prefix indexer scan across grouped queries. Closest to our work, TISA [2] partitions prefix positions into fixed contiguous groups, refreshes one group per decode step in round-robin order, and reuses cached scores for the remaining groups before running top-𝐾 over the complete score cache. Unlike TISA’s fixed refresh schedule, Spin explicitly models vertical and diagonal temporal patterns with per-slot and relative-offset EMA states and selects indexer-input blocks according to predicted importance. Other work targets later stages of sparse attention. Guess-Verify-Refine [9] uses temporal correlation to accelerate the post-indexer top-𝐾 operator. Spin instead applies temporal prediction before the indexer, using vertical and diagonal slot-level EMAs to prune its input. This introduces partial observations and motivates exploration within the selected-block budget. 
+
+# 6. Limitations 
+
+Spin predicts block importance from historical indexer scores and therefore has limited ability to anticipate patterns not represented in its history, such as sudden attention shifts. In addition, Spin ’s predictions affect their own future observations: once a block is skipped, its indexer scores are not observed, which may create self-reinforcing prediction errors. Random exploration gives skipped blocks another opportunity to be observed, but does not guarantee timely discovery or full task-score recovery. Incorporating other prediction signals is left for future work. 
+
+> 10 Spin : Shadow Predictive Indexer for Sparse Attention
+
+Our current evaluation focuses on DeepSeek-V4 and its native MTP. Although we expect the observations and designs to apply more broadly, this has not been demonstrated on other indexer-based sparse-attention models, such as GLM-5, MiniMax-M3, and LongCat-2.0, or with other speculative-decoding methods. 
+
+# 7. Conclusion 
+
+Spin shows that temporal statistics of indexer scores can serve as an effective proxy for current block importance. Using vertical and diagonal EMA statistics, Spin skips up to 40% of indexer input blocks while preserving comparable task quality across the evaluated long-context and agentic benchmarks. Random exploration mitigates stale observations within the same block budget. The core predictor also retains block sparsity without a visible change in acceptance behavior under DeepSeek-V4’s native MTP. Our integrated vLLM implementation improves output throughput by up to 14.9% and reduces median inter-token latency by up to 13.2%. Spin remains limited by sudden attention shifts and the feedback between its predictions and future observations. Combining temporal history with current-query or cross-layer signals may reduce worst-case misses and is a natural direction for future work. 
+
+# References 
+
+[1] Talor Abramovich, Maor Ashkenazi, Izzy Putterman, Benjamin Chislett, Tiyasa Mitra, Bita Darvish Rouhani, Ran Zilberstein, and Yonatan Geifman. SPEED-Bench: A unified and diverse benchmark for speculative decoding. arXiv preprint , February 2026. URL https://arxiv.org/abs/2604.09557 .[2] Anonymous. TISA: Exploiting temporal locality to accelerate indexing sparse attention. ACL Rolling Review (ARR) submission , May 2026. URL https://openreview.net/forum?id=6kOo3YtMdu .[3] Artificial Analysis. Artificial analysis long context reasoning benchmark leaderboard, 2025. URL 
+
+https://artificialanalysis.ai/evaluations/artificial-analysis-long-context-reasoning .[4] Yushi Bai, Shangqing Tu, Jiajie Zhang, Hao Peng, Xiaozhi Wang, Xin Lv, Shulin Cao, Jiazheng Xu, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. Longbench v2: Towards deeper understanding and reasoning on realistic long-context multitasks, 2025. URL https://arxiv.org/abs/2412.15204 .[5] Yushi Bai, Qian Dong, Ting Jiang, Xin Lv, Zhengxiao Du, Aohan Zeng, Jie Tang, and Juanzi Li. IndexCache: Accelerating sparse attention via cross-layer index reuse. arXiv preprint , March 2026. URL 
+
+https://arxiv.org/abs/2603.12201 .[6] Federico Barbero, Alex Vitvitskyi, Christos Perivolaropoulos, Razvan Pascanu, and Petar Veličković. Round and round we go! what makes rotary positional encodings useful? In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=GtvuNrk58a .[7] Victor Barres, Honghua Dong, Soham Ray, Xujie Si, and Karthik Narasimhan. 𝜏 2-bench: Evaluating conversational agents in a dual-control environment, 2025. URL https://arxiv.org/abs/2506.07982 .[8] Mingda Chen, Zewei Chu, Sam Wiseman, and Kevin Gimpel. SummScreen: A dataset for abstractive screenplay summarization. Annual Meeting of the Association for Computational Linguistics (ACL) , May 2022. URL https://aclanthology.org/2022.acl-long.589 .[9] Long Cheng, Ritchie Zhao, Timmy Liu, Mindy Li, Xianjie Qiao, Kefeng Duan, Yu-Jung Chen, Xiaoming Chen, Bita Darvish Rouhani, and June Yang. Guess-Verify-Refine: Data-aware top-K for sparse-attention decoding on Blackwell via temporal correlation. arXiv preprint , April 2026. URL https: //arxiv.org/abs/2604.22312 .[10] Yuan Cheng, Fengzhuo Zhang, Yunlong Hou, Cunxiao Du, Chao Du, Tianyu Pang, Aixin Sun, and Zhuoran Yang. Demystifying the slash pattern in attention: The role of RoPE. arXiv preprint , 2026. URL https://arxiv.org/abs/2601.08297 .[11] DeepSeek-AI. DeepSeek-V3.2: Pushing the frontier of open large language models. arXiv preprint ,December 2025. URL https://arxiv.org/abs/2512.02556 .
+
+> 11 Spin : Shadow Predictive Indexer for Sparse Attention
+
+[12] DeepSeek-AI. DeepSeek-V4: Towards highly efficient million-token context intelligence. arXiv preprint ,April 2026. URL https://arxiv.org/abs/2606.19348 .[13] Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. RULER: What’s the real context size of your long-context language models? 
+
+Conference on Language Modeling (COLM) , April 2024. URL https://arxiv.org/abs/2404.06654 .[14] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with PagedAttention. Symposium on Operating Systems Principles (SOSP) , September 2023. URL 
+
+https://arxiv.org/abs/2309.06180 .[15] Xunhao Lai, Weiqi Xu, Yufeng Yang, Qiaorui Chen, Yang Xu, Lunbin Zeng, Xiaolong Li, Haohai Sun, Haichao Zhu, Vito Zhang, Jinkai Hu, Jiayao Li, Rui Gao, Zekun Li, Songquan Zhu, Jingkai Zhou, and Pengyu Zhao. MiniMax sparse attention. arXiv preprint , June 2026. URL https://arxiv.org/abs/ 2606.13392 .[16] Hong Liu, Yuan Cheng, Lin Niu, Yi Su, Yufei Xue, Anmin Liu, Guanghua Yu, and Jianchen Zhu. PIVOT: Efficient query-group indexing for token-level sparse attention. arXiv preprint , July 2026. URL 
+
+https://arxiv.org/abs/2607.24593 .[17] LongCat. Introducing LongCat-2.0, June 2026. URL https://longcat.chat/blog/longcat-2.0/ .[18] OpenAI. Introducing GPT-4.1 in the API, April 2025. URL https://openai.com/index/gpt-4-1/ .[19] Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, and Yunfeng Liu. RoFormer: Enhanced transformer with rotary position embedding. arXiv preprint , April 2021. URL https://arxiv.org/abs/ 2104.09864 .[20] Tianyu Wang, Gourav Rattihalli, Aditya Dhakal, Junbo Li, Zhiwei Ren, Dejan Milojicic, and Longfei Shangguan. Predict, reuse, and repair: Accelerating dynamic sparse attention for long-context LLM decoding. arXiv preprint , June 2026. URL https://arxiv.org/abs/2606.30389 .[21] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. International Conference on Learning Representations (ICLR) , September 2024. URL https://arxiv.org/abs/2309.17453 .[22] Yufei Xu, Fanxu Meng, Fan Jiang, Yuxuan Wang, Ruijie Zhou, Zhaohui Wang, Jiexi Wu, Zhixin Pan, Xiaojuan Tang, Wenjie Pei, Tongxuan Liu, Di Yin, Xing Sun, and Muhan Zhang. HISA: Efficient hierarchical indexing for fine-grained sparse attention. arXiv preprint , March 2026. URL https: //arxiv.org/abs/2603.28458 .[23] Qingyue Yang, Jie Wang, Xing Li, Zhihai Wang, Chen Chen, Lei Chen, Xianzhi Yu, Wulong Liu, Jianye Hao, Mingxuan Yuan, and Bin Li. AttentionPredictor: Temporal patterns matter for KV cache compression. Conference on Neural Information Processing Systems (NeurIPS) , February 2025. URL 
+
+https://arxiv.org/abs/2502.04077 .[24] Qingyue Yang, Jie Wang, Xing Li, Yinqi Bai, Xialiang Tong, Huiling Zhen, Jianye Hao, Mingxuan Yuan, and Bin Li. Why attention patterns exist: A unifying temporal perspective analysis. International Conference on Learning Representations (ICLR) , 2026. URL https://arxiv.org/abs/2601.21709 .[25] Shunyu Yao, Noah Shinn, Pedram Razavi, and Karthik Narasimhan. 𝜏 -bench: A benchmark for tool-agent-user interaction in real-world domains, 2024. URL https://arxiv.org/abs/2406.12045 .[26] Z.ai. GLM-5.2: Built for long-horizon tasks, June 2026. URL https://z.ai/blog/glm-5.2 .[27] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, Zhangyang Wang, and Beidi Chen. H2O: Heavy-hitter oracle for efficient generative inference of large language models. Conference on Neural Information Processing Systems (NeurIPS) , June 2023. URL https://arxiv.org/abs/2306.14048 .[28] Ruijie Zhou, Fanxu Meng, Yufei Xu, Tongxuan Liu, Guangming Lu, Muhan Zhang, and Wenjie Pei. MISA: Mixture of indexer sparse attention for long-context LLM inference. arXiv preprint , May 2026. URL https://arxiv.org/abs/2605.07363 .
